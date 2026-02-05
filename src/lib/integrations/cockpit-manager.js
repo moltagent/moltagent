@@ -1,0 +1,1452 @@
+/**
+ * MoltAgent CockpitManager -- Deck as Control Plane
+ *
+ * Architecture Brief:
+ * -------------------
+ * Problem: The agent needs a visual, non-code management interface where a human
+ * can configure behavior, persona, guardrails, and operating mode by editing
+ * kanban cards on a Nextcloud Deck board.
+ *
+ * Pattern: Read-on-heartbeat configuration reader. CockpitManager reads a dedicated
+ * Deck board ("Moltagent Cockpit") on every heartbeat pulse, translates card states
+ * (labels, stars, descriptions) into a structured config object, and compiles a
+ * system prompt overlay. Status cards are written back with runtime metrics.
+ * Bootstrap creates the board idempotently on first run.
+ *
+ * Key Dependencies:
+ *   - DeckClient (HTTP transport to Nextcloud Deck API)
+ *   - config.js (cockpit section: adminUser, board title, cache TTL)
+ *   - HeartbeatManager (calls readConfig + updateStatus on each pulse)
+ *   - AgentLoop (consumes buildSystemPromptOverlay for LLM context)
+ *
+ * Data Flow:
+ *   HeartbeatManager.pulse()
+ *     -> cockpitManager.readConfig()  [Deck API: GET stacks with full=true]
+ *     -> cockpitManager.buildSystemPromptOverlay()  [pure transform, no I/O]
+ *     -> cockpitManager.updateStatus(metrics)  [Deck API: PUT card descriptions]
+ *
+ * Dependency Map:
+ *   cockpit-manager.js depends on: deck-client, config
+ *   Used by: heartbeat-manager (pulse cycle), agent-loop (system prompt)
+ *   Tested by: test/unit/integrations/cockpit-manager.test.js
+ *
+ * @module integrations/cockpit-manager
+ * @version 1.0.0
+ */
+
+'use strict';
+
+const appConfig = require('../config');
+
+// ===========================================================================
+// Constants
+// ===========================================================================
+
+/**
+ * Board title for the Cockpit board.
+ * @type {string}
+ */
+const BOARD_TITLE = 'Moltagent Cockpit';
+
+/**
+ * Board color (hex without #).
+ * @type {string}
+ */
+const BOARD_COLOR = '0082c9';
+
+/**
+ * Label definitions for the Cockpit board.
+ * Order matters: labels are created in this order during bootstrap.
+ * @type {Array<{title: string, color: string}>}
+ */
+const LABEL_DEFS = [
+  { title: '⚙️1', color: 'e9322d' },   // option 1 / off / minimal
+  { title: '⚙️2', color: 'f0c400' },   // option 2 / moderate / balanced
+  { title: '⚙️3', color: '00b600' },   // option 3 / on / maximum
+  { title: '⚙️★', color: 'ffd700' },   // active / starred (Styles + Modes)
+  { title: '⚙️4', color: '0000ff' },   // custom (read from description)
+  { title: '⚙️5', color: '7c3aed' },   // reserved (violet)
+  { title: '⚙️6', color: 'ff6f61' },   // reserved (coral)
+  { title: '⚙️7', color: '17a2b8' },   // reserved (teal)
+  { title: '⚙️8', color: '795548' },   // reserved (brown)
+  { title: '⚙️9', color: '6c757d' }    // reserved (slate)
+];
+
+/**
+ * Stack definitions for the Cockpit board.
+ * Order is the display order (left to right).
+ * @type {Array<{key: string, title: string}>}
+ */
+const STACK_DEFS = [
+  { key: 'styles',     title: '\ud83d\udca1 Styles' },
+  { key: 'persona',    title: '\ud83c\udfad Persona' },
+  { key: 'guardrails', title: '\ud83d\udee1\ufe0f Guardrails' },
+  { key: 'modes',      title: '\ud83c\udf19 Modes' },
+  { key: 'system',     title: '\ud83d\udd27 System' },
+  { key: 'status',     title: '\ud83d\udcca Status' }
+];
+
+/**
+ * Default cards for each stack. Each entry specifies the stack key,
+ * card title, card description, and optional default label title.
+ * @type {Object<string, Array<{title: string, description: string, defaultLabel?: string}>>}
+ */
+const DEFAULT_CARDS = {
+  styles: [
+    {
+      title: 'Concise Executive',
+      description: 'Short sentences. No filler. Lead with the answer,\nthen context. Bullet points for lists. Think CEO briefing.\n\n---\n\nCommunication style preset. Star (\u2699\ufe0f\u2605) the style you want\nactive. Only one style can be active at a time. Edit the\ndescription to customize how your agent writes and speaks.',
+      defaultLabel: '\u2699\ufe0f\u2605'
+    },
+    {
+      title: 'Warm Professional',
+      description: 'Friendly but polished. Explain reasoning, acknowledge\ncontext. Use "we" language.\n\n---\n\nCommunication style preset. Star (\u2699\ufe0f\u2605) the style you want\nactive. Only one style can be active at a time.'
+    },
+    {
+      title: 'Blunt Analyst',
+      description: 'Direct, no softening. State facts, flag risks, challenge\nassumptions. Numbers over narratives. Flag what\'s missing\nfrom the data.\n\n---\n\nCommunication style preset. Star (\u2699\ufe0f\u2605) the style you want\nactive. Only one style can be active at a time.'
+    },
+    {
+      title: 'Creative Partner',
+      description: 'Playful, generative, lateral. Build on ideas rather than\ncritique them. Offer unexpected connections. Use \'yes and\'\nthinking. Save the critical analysis for later.\n\n---\n\nCommunication style preset. Star (\u2699\ufe0f\u2605) the style you want\nactive. Only one style can be active at a time.'
+    },
+    {
+      title: 'Warm Teacher',
+      description: 'Patient and encouraging. Explain the \'why\' behind things.\nUse analogies. Check understanding. No jargon unless the\nhuman uses it first.\n\n---\n\nCommunication style preset. Star (\u2699\ufe0f\u2605) the style you want\nactive. Only one style can be active at a time.'
+    }
+  ],
+  persona: [
+    { title: 'Name',      description: 'Molti\n\n---\n\nYour agent\'s name. Used in Talk messages, email signatures,\nand self-references. Change the name above the line to\nrename your agent.', defaultLabel: '\u2699\ufe0f4' },
+    { title: 'Humor',     description: '\u2699\ufe0f1 none / \u2699\ufe0f2 light / \u2699\ufe0f3 playful\n\n---\n\nHow much humor your agent uses in conversation.\n\u2699\ufe0f1 keeps things strictly professional. \u2699\ufe0f3 allows jokes,\nwordplay, and lighter moments when appropriate.', defaultLabel: '\u2699\ufe0f2' },
+    { title: 'Emoji',     description: '\u2699\ufe0f1 none / \u2699\ufe0f2 minimal / \u2699\ufe0f3 generous\n\n---\n\nEmoji usage in messages and comments. \u2699\ufe0f1 means pure text.\n\u2699\ufe0f2 allows occasional emoji for emphasis. \u2699\ufe0f3 uses them\nfreely for tone and visual scanning.', defaultLabel: '\u2699\ufe0f1' },
+    { title: 'Language',  description: 'EN\n\n---\n\nPrimary language for agent communication. Use ISO codes:\nEN, PT, DE, FR, ES, etc. For bilingual, use: EN+PT\nYour agent will respond in this language by default but\nswitches to match the human\'s language when different.', defaultLabel: '\u2699\ufe0f4' },
+    { title: 'Verbosity', description: '\u2699\ufe0f1 concise / \u2699\ufe0f2 balanced / \u2699\ufe0f3 detailed\n\n---\n\nResponse length preference. \u2699\ufe0f1 gives the shortest useful\nanswer. \u2699\ufe0f3 provides thorough explanations with context.\n\u2699\ufe0f2 adapts to the complexity of the question.', defaultLabel: '\u2699\ufe0f1' },
+    { title: 'Formality', description: '\u2699\ufe0f1 formal / \u2699\ufe0f2 balanced / \u2699\ufe0f3 casual\n\n---\n\nCommunication tone. \u2699\ufe0f1 for professional/client-facing work.\n\u2699\ufe0f3 for relaxed, conversational interaction. \u2699\ufe0f2 reads the\nroom and adjusts.', defaultLabel: '\u2699\ufe0f2' }
+  ],
+  guardrails: [
+    {
+      title: 'Never delete files without asking',
+      description: 'Never delete files without explicit confirmation from the\nhuman. Always list what will be deleted and wait for\napproval before proceeding.\n\n---\n\nHard constraint. The agent will always ask before any\ndestructive file operation, regardless of initiative level\nor mode. Remove this card to lift the restriction.'
+    },
+    {
+      title: 'Confirm before sending external communications',
+      description: 'When sending emails to external addresses, always CC the\nhuman owner on the message.\n\n---\n\nHard constraint. Ensures the human has visibility on all\noutbound communication. Remove this card to allow the\nagent to send external emails independently.'
+    },
+    {
+      title: 'Route credential-sensitive operations through local LLM',
+      description: 'For financial transactions, credential changes, or\npermission modifications: always notify the human in Talk\nbefore proceeding, even in Full Auto mode.\n\n---\n\nSafety constraint for high-impact operations. The agent\nwill pause and ask before taking irreversible actions\ninvolving money, access, or permissions.'
+    },
+    {
+      title: 'Maximum 8 tool calls per reasoning cycle',
+      description: 'Hard limit on tool iterations per user request to prevent\nrunaway loops and excessive token consumption.\n\n---\n\nPerformance guardrail. Prevents the agent from spiraling\ninto long tool-call chains. Increase if complex workflows\nrequire more steps.'
+    }
+  ],
+  modes: [
+    {
+      title: 'Full Auto',
+      description: 'Process all inbox items, execute workflows, handle routine\ntasks independently. Only pause for guardrail-gated\noperations or explicit human review requests.\n\n---\n\nBehavioral mode. Star (\u2699\ufe0f\u2605) the mode you want active.\nFull Auto is the most autonomous mode \u2014 the agent works\nthrough its queue without waiting for instruction.',
+      defaultLabel: '\u2699\ufe0f\u2605'
+    },
+    {
+      title: 'Focus Mode',
+      description: 'Only respond to direct messages. Pause all proactive work,\ninbox processing, and workflow execution. Minimal\nnotifications.\n\n---\n\nUse when you need the agent to stop background activity\nand only respond when spoken to. Good for deep work\nsessions where notifications are distracting.'
+    },
+    {
+      title: 'Meeting Day',
+      description: 'Prioritize calendar preparation and meeting follow-ups.\nPrepare briefing docs 30 minutes before each meeting.\nSummarize action items after meetings end. Reduce other\nproactive work.\n\n---\n\nActivates meeting-centric behavior. The agent shifts\nfocus to your calendar and deprioritizes other tasks.'
+    },
+    {
+      title: 'Creative Session',
+      description: 'Verbose, exploratory responses. Suggest connections and\nideas. Don\'t optimize for brevity. Brainstorm freely.\nPull in related knowledge from wiki.\n\n---\n\nFor brainstorming and creative work. The agent becomes\nmore generative and less structured.'
+    },
+    {
+      title: 'Out of Office',
+      description: 'Auto-respond to incoming messages with a short "away"\nnotice. Queue non-urgent tasks. Only escalate items\nmarked urgent or from VIP contacts. Send the human a\ndaily summary instead of individual notifications.\n\n---\n\nFor vacation or extended absence. The agent holds the\nfort, handles what it can, and batches everything else\nfor your return.'
+    }
+  ],
+  system: [
+    { title: 'Search Provider',  description: '\u2699\ufe0f1 none / \u2699\ufe0f2 searxng / \u2699\ufe0f3 searxng / \u2699\ufe0f4 custom\n\n---\n\nWeb search capability for the research job.\n\u2699\ufe0f1  No web search. Agent relies on its training knowledge.\n\u2699\ufe0f2  SearXNG (self-hosted, private, no tracking).\n\u2699\ufe0f3  Same as \u2699\ufe0f2 (SearXNG is the recommended default).\n\u2699\ufe0f4  Custom: write the search endpoint URL above the line.', defaultLabel: '\u2699\ufe0f3' },
+    { title: 'Models', description: '\u2699\ufe0f1 all-local / \u2699\ufe0f2 smart mix / \u2699\ufe0f3 cloud-first / \u2699\ufe0f4 custom\n\n---\n\nYour agent does six types of work. Each can use a different\nmodel. Models are tried left to right \u2014 first is preferred,\nrest are fallbacks.\n\nJobs:\n  quick    \u2014 classify, route, label, simple decisions\n  tools    \u2014 Deck, Calendar, Mail, File operations\n  thinking \u2014 analysis, planning, complex reasoning\n  writing  \u2014 emails, documents, creative content\n  research \u2014 web search + synthesis\n  coding   \u2014 write, debug, review code\n\nPresets:\n  \u2699\ufe0f1  Everything runs locally. Free, private, slower.\n  \u2699\ufe0f2  Quick tasks local, complex work on cloud. Best balance.\n  \u2699\ufe0f3  Everything on cloud. Maximum quality, highest cost.\n  \u2699\ufe0f4  Write your own roster above the --- line.', defaultLabel: '\u2699\ufe0f2' },
+    { title: 'Daily Digest',    description: '\u2699\ufe0f1 off / \u2699\ufe0f2 morning (08:00) / \u2699\ufe0f3 morning (08:00)\n\n---\n\nDaily summary message in Talk with overnight activity,\nupcoming calendar, and pending tasks.\n\u2699\ufe0f1  No digest.\n\u2699\ufe0f2  Sent at 08:00 local time.\n\u2699\ufe0f4  Custom: write your preferred time above the line.', defaultLabel: '\u2699\ufe0f3' },
+    { title: 'Auto-tag Files',  description: '\u2699\ufe0f1 off / \u2699\ufe0f2 on / \u2699\ufe0f3 on\n\n---\n\nAutomatically tag files in Nextcloud based on content.\n\u2699\ufe0f1  No auto-tagging.\n\u2699\ufe0f2  Tag files on upload and when processing tasks.', defaultLabel: '\u2699\ufe0f3' },
+    { title: 'Initiative Level', description: '\u2699\ufe0f1 minimal / \u2699\ufe0f2 moderate / \u2699\ufe0f3 active / \u2699\ufe0f4 autonomous\n\n---\n\nHow proactive your agent is between conversations.\n\u2699\ufe0f1  Only responds when spoken to. No background work.\n\u2699\ufe0f2  Checks inbox, processes queued tasks on heartbeat.\n\u2699\ufe0f3  Suggests improvements, flags issues, prepares briefs.\n\u2699\ufe0f4  Takes action within guardrails without asking first.', defaultLabel: '\u2699\ufe0f2' },
+    { title: 'Working Hours',   description: '08:00-18:00\n\n---\n\nWhen your agent is allowed to do proactive work. Outside\nthese hours, the agent sleeps \u2014 it still responds if you\nmessage it directly in Talk.\nFormat: HH:MM-HH:MM (24-hour).\n\u2699\ufe0f4  Custom: write your hours above the line.', defaultLabel: '\u2699\ufe0f4' },
+    { title: '\ud83d\udcb0 Budget Limits', description: 'Daily cloud limit: \u20ac5.00\nMonthly cloud limit: \u20ac50.00\nWorkflow model: auto\nWarning threshold: 80%\n\n---\n\nCost controls for cloud LLM usage. The agent automatically\nswitches to local models when limits are reached.\nEdit the values above the line to adjust.', defaultLabel: '\u2699\ufe0f4' },
+    { title: '\ud83d\udd0a Voice', description: '\u2699\ufe0f1 off / \u2699\ufe0f2 listen / \u2699\ufe0f3 full voice\n\n---\n\nVoice processing mode.\n\u2699\ufe0f1  Off \u2014 voice messages are ignored.\n\u2699\ufe0f2  Listen \u2014 transcribe voice messages, respond as text.\n\u2699\ufe0f3  Full \u2014 transcribe voice, respond with voice + text.', defaultLabel: '\u2699\ufe0f1' },
+    { title: '\ud83c\udfe5 Infrastructure', description: 'Services:\n- ollama: auto\n- whisper: auto\n- searxng: auto\n- nextcloud: auto\n\nNotify on failure: on\nAuto-heal: on\nCheck interval: 3\n\n---\n\nService health monitoring. The agent checks these endpoints\non every Nth heartbeat and reports status on the Health card.\nauto = use default URL. Replace with a custom URL if needed.', defaultLabel: '\u2699\ufe0f4' }
+  ],
+  status: [
+    { title: 'Health',           description: '\ud83d\udfe2 OK -- Uptime: 0d 0h -- Last error: none' },
+    { title: 'Tasks This Week',  description: 'Open: 0 -- In Progress: 0 -- Completed: 0 -- Overdue: 0' },
+    { title: 'Costs This Month', description: 'Total: \u20ac0.00 -- Claude: \u20ac0.00 (0 calls) -- Ollama: local' },
+    { title: 'Knowledge',        description: 'Wiki pages: 0 -- People: 0 -- Projects: 0 -- Research: 0' },
+    { title: 'Recent Actions',   description: '(none yet)' },
+    { title: '\ud83d\udcb0 Costs', description: 'Today: \u20ac0.00\nThis month: \u20ac0.00' }
+  ]
+};
+
+/**
+ * Persona option value maps.
+ * For each persona card title, maps label key to config value.
+ * @type {Object<string, {option1: string, option2: string, option3: string}>}
+ */
+const PERSONA_VALUE_MAP = {
+  Humor:     { off: 'none',    moderate: 'light',    on: 'playful' },
+  Emoji:     { off: 'none',    moderate: 'minimal',  on: 'generous' },
+  Verbosity: { off: 'concise', moderate: 'balanced', on: 'detailed' },
+  Formality: { off: 'formal',  moderate: 'balanced', on: 'casual' }
+};
+
+/**
+ * System option value maps.
+ * @type {Object<string, {option1: string, option2: string, option3: string}>}
+ */
+const SYSTEM_VALUE_MAP = {
+  'Search Provider':   { off: 'custom',     moderate: 'perplexity', on: 'searxng' },
+  'LLM Tier':          { off: 'local-only', moderate: 'balanced',   on: 'premium' },
+  'Daily Digest':      { off: 'off',        moderate: 'off',        on: 'on' },
+  'Auto-tag Files':    { off: 'off',        moderate: 'off',        on: 'on' },
+  'Initiative Level':  { off: '1',          moderate: '2',          on: '3' },
+  '\ud83d\udd0a Voice':        { off: 'off',        moderate: 'listen',     on: 'full' }
+};
+
+/**
+ * Acceptable titles for the Models card (matched case-insensitively).
+ * Supports the renamed card ("Models") and legacy titles.
+ * @type {Array<string>}
+ */
+const MODELS_CARD_TITLES = ['models', 'llm tier', 'llm provider'];
+
+// ===========================================================================
+// Custom Error
+// ===========================================================================
+
+/**
+ * Custom error class for Cockpit operations
+ */
+class CockpitError extends Error {
+  /**
+   * @param {string} message
+   * @param {string} [phase='unknown'] - Bootstrap, read, write, etc.
+   * @param {*} [cause=null] - Original error
+   */
+  constructor(message, phase = 'unknown', cause = null) {
+    super(message);
+    this.name = 'CockpitError';
+    this.phase = phase;
+    this.cause = cause;
+  }
+}
+
+// ===========================================================================
+// CockpitManager
+// ===========================================================================
+
+class CockpitManager {
+  /**
+   * @param {Object} options
+   * @param {Object} options.deckClient - DeckClient instance (must support NCRequestManager mode)
+   * @param {Object} [options.config] - Config overrides
+   * @param {string} [options.config.adminUser] - Admin username for board sharing
+   * @param {string} [options.config.boardTitle] - Board title override
+   * @param {number} [options.config.cacheTTLMs] - Cache TTL in ms (default: 300000 = 5 min)
+   * @param {Function} [options.auditLog] - Audit logging function
+   */
+  constructor({ deckClient, config = {}, auditLog } = {}) {
+    if (!deckClient) {
+      throw new Error('CockpitManager requires a deckClient instance');
+    }
+
+    this.deck = deckClient;
+    this.adminUser = config.adminUser || appConfig.cockpit?.adminUser || '';
+    this.boardTitle = config.boardTitle || appConfig.cockpit?.boardTitle || BOARD_TITLE;
+    this.auditLog = auditLog || (async () => {});
+
+    /** @type {number|null} Resolved board ID */
+    this.boardId = null;
+
+    /** @type {Object<string, number>} stackKey -> stackId mapping */
+    this.stacks = {};
+
+    /** @type {Object<string, Object>} labelTitle -> {id, title, color} mapping */
+    this.labels = {};
+
+    /** @type {Object|null} Last read config object from readConfig() */
+    this.cachedConfig = null;
+
+    /** @type {number} Timestamp when cache expires */
+    this.cacheExpiry = 0;
+
+    /** @type {number} Cache time-to-live in milliseconds */
+    this.CACHE_TTL = config.cacheTTLMs || appConfig.cockpit?.cacheTTLMs || 5 * 60 * 1000;
+
+    /** @type {boolean} Whether initialize() has been called successfully */
+    this._initialized = false;
+  }
+
+  // ===========================================================================
+  // Lifecycle
+  // ===========================================================================
+
+  /**
+   * Find or create the Cockpit board and resolve stack/label IDs.
+   * Must be called once before readConfig() or updateStatus().
+   * Safe to call multiple times (idempotent).
+   *
+   * @returns {Promise<void>}
+   * @throws {CockpitError} If board resolution fails
+   */
+  async initialize() {
+    try {
+      // Find existing board by title
+      const boards = await this.deck.listBoards();
+      let board = boards.find(b => b.title === this.boardTitle);
+
+      if (!board) {
+        // Board doesn't exist, create it
+        const bootstrapResult = await this.bootstrap();
+        this.boardId = bootstrapResult.boardId;
+        this.stacks = bootstrapResult.stacks;
+        this.labels = bootstrapResult.labels;
+      } else {
+        // Board exists, resolve IDs
+        this.boardId = board.id;
+
+        // Get board details for labels
+        const boardDetails = await this.deck.getBoard(this.boardId);
+
+        // Get stacks with cards
+        const stacks = await this.deck.getStacks(this.boardId);
+
+        // Resolve IDs
+        this._resolveIdsFromBoard({
+          stacks: stacks,
+          labels: boardDetails.labels || []
+        });
+
+        // Migrate old label names (Option 1/2/3 -> Off/Moderate/On)
+        const labelsMigrated = await this._migrateLabels();
+        if (labelsMigrated > 0) {
+          // Re-fetch board details to update this.labels with new titles
+          const refreshedBoard = await this.deck.getBoard(this.boardId);
+          this.labels = {};
+          for (const label of (refreshedBoard.labels || [])) {
+            if (label.title) this.labels[label.title] = label;
+          }
+        }
+
+        // Create any missing default cards (e.g. Budget Limits added after first bootstrap)
+        await this._ensureMissingCards(stacks);
+      }
+
+      this._initialized = true;
+    } catch (err) {
+      throw new CockpitError(
+        `Failed to initialize CockpitManager: ${err.message}`,
+        'initialize',
+        err
+      );
+    }
+  }
+
+  /**
+   * Create the Cockpit board with all stacks, labels, and default cards.
+   * Idempotent: skips creation of items that already exist.
+   *
+   * Steps:
+   * 1. Create board with BOARD_TITLE and BOARD_COLOR
+   * 2. Share with admin user (if configured)
+   * 3. Delete default stacks ("To do", "Doing", "Done") that Deck creates
+   * 4. Create 6 stacks (Styles, Persona, Guardrails, Modes, System, Status)
+   * 5. Create labels (Active, Option 1, Option 2, Option 3, Custom)
+   * 6. Create default cards in each stack
+   * 7. Assign default labels to Persona + System cards
+   * 8. Star default Style (Concise Executive) and Mode (Full Auto)
+   *
+   * @returns {Promise<{boardId: number, stacks: Object, labels: Object}>}
+   * @throws {CockpitError} If bootstrap fails
+   */
+  async bootstrap() {
+    try {
+      // 1. Create board
+      const boardPath = '/index.php/apps/deck/api/v1.0/boards';
+      const board = await this.deck._request('POST', boardPath, {
+        title: this.boardTitle,
+        color: BOARD_COLOR
+      });
+      const boardId = board.id;
+
+      // 2. Share with admin user (if configured)
+      if (this.adminUser) {
+        try {
+          await this.deck.shareBoard(boardId, this.adminUser, 0, true, true, true);
+        } catch (err) {
+          // Non-critical, continue
+        }
+      }
+
+      // 3. Delete default stacks
+      const defaultStacks = await this.deck.getStacks(boardId);
+      await this._deleteDefaultStacks(boardId, defaultStacks);
+
+      // 4. Create stacks
+      const stacks = {};
+      for (let i = 0; i < STACK_DEFS.length; i++) {
+        const def = STACK_DEFS[i];
+        const stack = await this.deck.createStack(boardId, def.title, i);
+        stacks[def.key] = stack.id;
+      }
+
+      // 5. Create labels
+      const labels = {};
+      const labelPath = `/index.php/apps/deck/api/v1.0/boards/${boardId}/labels`;
+      for (const labelDef of LABEL_DEFS) {
+        const label = await this.deck._request('POST', labelPath, {
+          title: labelDef.title,
+          color: labelDef.color
+        });
+        labels[label.title] = label;
+      }
+
+      // 6. Create cards in each stack
+      for (const [stackKey, stackId] of Object.entries(stacks)) {
+        const cardDefs = DEFAULT_CARDS[stackKey] || [];
+        for (let i = 0; i < cardDefs.length; i++) {
+          const cardDef = cardDefs[i];
+          const cardPath = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards`;
+          const card = await this.deck._request('POST', cardPath, {
+            title: cardDef.title,
+            description: cardDef.description,
+            type: 'plain',
+            order: i
+          });
+
+          // 7. Assign default labels
+          if (cardDef.defaultLabel) {
+            const label = labels[cardDef.defaultLabel];
+            if (label) {
+              const assignPath = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${card.id}/assignLabel`;
+              try {
+                await this.deck._request('PUT', assignPath, { labelId: label.id });
+              } catch (err) {
+                // Non-critical, continue
+              }
+            }
+          }
+        }
+      }
+
+      // Store resolved IDs
+      this.boardId = boardId;
+      this.stacks = stacks;
+      this.labels = labels;
+
+      return { boardId, stacks, labels };
+    } catch (err) {
+      throw new CockpitError(
+        `Failed to bootstrap Cockpit board: ${err.message}`,
+        'bootstrap',
+        err
+      );
+    }
+  }
+
+  // ===========================================================================
+  // Read (called on heartbeat)
+  // ===========================================================================
+
+  /**
+   * Read all cockpit configuration from the Deck board.
+   * Returns a structured config object. Cached for CACHE_TTL ms.
+   *
+   * Makes a single API call (GET stacks with cards) and parses all stacks.
+   *
+   * @returns {Promise<CockpitConfig>} Full cockpit configuration object
+   * @throws {CockpitError} If read fails
+   */
+  async readConfig() {
+    if (!this._initialized) {
+      throw new CockpitError('CockpitManager not initialized — call initialize() first', 'read');
+    }
+
+    // Check cache
+    if (this.cachedConfig && Date.now() < this.cacheExpiry) {
+      return this.cachedConfig;
+    }
+
+    try {
+      // Fetch all stacks with cards
+      const stacks = await this.deck.getStacks(this.boardId);
+
+      // Build a map by matching stack titles to STACK_DEFS keys
+      const stacksByKey = {};
+      for (const stack of stacks) {
+        for (const def of STACK_DEFS) {
+          // Match if the stack title includes the emoji/title from STACK_DEFS
+          const titlePart = def.title.split(' ')[1]; // Extract the text part after emoji
+          if (stack.title && stack.title.includes(titlePart)) {
+            stacksByKey[def.key] = stack.cards || [];
+            break;
+          }
+        }
+      }
+
+      // Parse each stack
+      const config = {
+        style: await this.getActiveStyle(stacksByKey.styles),
+        persona: await this.getPersona(stacksByKey.persona),
+        guardrails: await this.getGuardrails(stacksByKey.guardrails),
+        mode: await this.getActiveMode(stacksByKey.modes),
+        system: await this.getSystemSettings(stacksByKey.system)
+      };
+
+      // Parse Budget Limits card from System stack
+      const systemCards = stacksByKey.system || [];
+      const budgetCard = systemCards.find(c => c.title && c.title.includes('Budget'));
+      if (budgetCard) {
+        config.budget = this._parseBudgetCard(budgetCard.description);
+      }
+
+      // Cache the result
+      this.cachedConfig = config;
+      this.cacheExpiry = Date.now() + this.CACHE_TTL;
+
+      return config;
+    } catch (err) {
+      throw new CockpitError(
+        `Failed to read Cockpit config: ${err.message}`,
+        'read',
+        err
+      );
+    }
+  }
+
+  /**
+   * Get the currently active communication style.
+   * Finds the card in the Styles stack with the "Active" label.
+   *
+   * @param {Array<Object>} [cards] - Pre-fetched cards from Styles stack
+   * @returns {Promise<{name: string, description: string}|null>}
+   */
+  async getActiveStyle(cards) {
+    let styleCards = cards;
+
+    if (!styleCards) {
+      const stacks = await this.deck.getStacks(this.boardId);
+      const stylesStack = stacks.find(s => s.id === this.stacks.styles);
+      styleCards = stylesStack?.cards || [];
+    }
+
+    const activeCard = this._findStarredCard(styleCards);
+    if (!activeCard) return null;
+
+    return {
+      name: activeCard.title,
+      description: activeCard.description || ''
+    };
+  }
+
+  /**
+   * Get all active guardrails.
+   * Every card in the Guardrails stack is a hard behavioral constraint.
+   *
+   * @param {Array<Object>} [cards] - Pre-fetched cards from Guardrails stack
+   * @returns {Promise<Array<{title: string, description: string}>>}
+   */
+  async getGuardrails(cards) {
+    let guardrailCards = cards;
+
+    if (!guardrailCards) {
+      const stacks = await this.deck.getStacks(this.boardId);
+      const guardrailsStack = stacks.find(s => s.id === this.stacks.guardrails);
+      guardrailCards = guardrailsStack?.cards || [];
+    }
+
+    return guardrailCards.map(card => ({
+      title: card.title,
+      description: card.description || ''
+    }));
+  }
+
+  /**
+   * Get the currently active operating mode.
+   * Finds the card in the Modes stack with the "Active" label.
+   *
+   * @param {Array<Object>} [cards] - Pre-fetched cards from Modes stack
+   * @returns {Promise<{name: string, description: string}|null>}
+   */
+  async getActiveMode(cards) {
+    let modeCards = cards;
+
+    if (!modeCards) {
+      const stacks = await this.deck.getStacks(this.boardId);
+      const modesStack = stacks.find(s => s.id === this.stacks.modes);
+      modeCards = modesStack?.cards || [];
+    }
+
+    const activeCard = this._findStarredCard(modeCards);
+    if (!activeCard) return null;
+
+    return {
+      name: activeCard.title,
+      description: activeCard.description || ''
+    };
+  }
+
+  /**
+   * Get persona configuration from Persona stack cards.
+   * Each card is a personality dimension; the assigned label determines the value.
+   *
+   * Label mapping:
+   *   ⚙1 (red)    -> first option (none / concise / formal)
+   *   ⚙2 (yellow) -> second option (light / balanced / balanced)
+   *   ⚙3 (green)  -> third option (playful / detailed / casual)
+   *   ⚙4 (blue)   -> read card description for value
+   *
+   * @param {Array<Object>} [cards] - Pre-fetched cards from Persona stack
+   * @returns {Promise<PersonaConfig>}
+   */
+  async getPersona(cards) {
+    let personaCards = cards;
+
+    if (!personaCards) {
+      const stacks = await this.deck.getStacks(this.boardId);
+      const personaStack = stacks.find(s => s.id === this.stacks.persona);
+      personaCards = personaStack?.cards || [];
+    }
+
+    const config = {
+      name: 'Molti',
+      humor: 'light',
+      emoji: 'none',
+      language: 'EN',
+      verbosity: 'concise',
+      formality: 'balanced'
+    };
+
+    for (const card of personaCards) {
+      const title = card.title;
+
+      if (title === 'Name' || title === 'Language') {
+        // Custom labels, read description
+        const resolved = this._resolveCardValue(card, {});
+        if (resolved.source === 'custom') {
+          config[title.toLowerCase()] = resolved.value;
+        }
+      } else if (PERSONA_VALUE_MAP[title]) {
+        // Map label to value
+        const resolved = this._resolveCardValue(card, PERSONA_VALUE_MAP[title]);
+        config[title.toLowerCase()] = resolved.value;
+      }
+    }
+
+    return config;
+  }
+
+  /**
+   * Get system settings from System stack cards.
+   * Same label-as-value pattern as Persona.
+   *
+   * @param {Array<Object>} [cards] - Pre-fetched cards from System stack
+   * @returns {Promise<SystemConfig>}
+   */
+  async getSystemSettings(cards) {
+    let systemCards = cards;
+
+    if (!systemCards) {
+      const stacks = await this.deck.getStacks(this.boardId);
+      const systemStack = stacks.find(s => s.id === this.stacks.system);
+      systemCards = systemStack?.cards || [];
+    }
+
+    const config = {
+      searchProvider: 'searxng',
+      llmTier: 'balanced',
+      dailyDigest: 'off',
+      autoTagFiles: false,
+      initiativeLevel: 2,
+      workingHours: '08:00-18:00'
+    };
+
+    for (const card of systemCards) {
+      const title = card.title;
+
+      if (title === 'Working Hours') {
+        // Custom label, read description
+        const resolved = this._resolveCardValue(card, {});
+        if (resolved.source === 'custom') {
+          config.workingHours = resolved.value;
+        }
+      } else if (title === 'Initiative Level') {
+        const resolved = this._resolveCardValue(card, SYSTEM_VALUE_MAP[title]);
+        const parsed = parseInt(resolved.value, 10);
+        config.initiativeLevel = isNaN(parsed) ? 2 : parsed;
+      } else if (title === 'Daily Digest') {
+        // Option 3 = on, read description for time
+        const resolved = this._resolveCardValue(card, SYSTEM_VALUE_MAP[title]);
+        if (resolved.value === 'on') {
+          config.dailyDigest = card.description || '08:00';
+        } else {
+          config.dailyDigest = 'off';
+        }
+      } else if (title === 'Auto-tag Files') {
+        const resolved = this._resolveCardValue(card, SYSTEM_VALUE_MAP[title]);
+        config.autoTagFiles = resolved.value === 'on';
+      } else if (title === 'Search Provider') {
+        const resolved = this._resolveCardValue(card, SYSTEM_VALUE_MAP[title]);
+        config.searchProvider = resolved.value;
+      } else if (MODELS_CARD_TITLES.includes(title.toLowerCase())) {
+        config.modelsConfig = this._parseModelsCard(card);
+        // Backward compat: keep llmTier for any old consumers
+        const presetToTier = { 'all-local': 'local-only', 'smart-mix': 'balanced', 'cloud-first': 'premium' };
+        config.llmTier = presetToTier[config.modelsConfig.preset] || 'balanced';
+      } else if (title === '\ud83d\udd0a Voice' || title.includes('Voice')) {
+        const resolved = this._resolveCardValue(card, SYSTEM_VALUE_MAP['\ud83d\udd0a Voice']);
+        const validVoiceModes = ['off', 'listen', 'full'];
+        if (validVoiceModes.includes(resolved.value)) {
+          config.voice = resolved.value;
+        } else if (resolved.source === 'custom' && resolved.value) {
+          // Backward compat: old ⚙4 card with "Voice input: on/off" format
+          const match = resolved.value.match(/voice\s*input\s*:\s*(on|off)/i);
+          config.voice = match && match[1].toLowerCase() === 'on' ? 'listen' : 'off';
+        } else {
+          config.voice = 'off';
+        }
+      } else if (title === '\ud83c\udfe5 Infrastructure' || title.includes('Infrastructure')) {
+        config.infra = this._parseInfraCard(card.description);
+      }
+    }
+
+    return config;
+  }
+
+  // ===========================================================================
+  // Write (called by HeartbeatManager)
+  // ===========================================================================
+
+  /**
+   * Update Status stack cards with current runtime metrics.
+   * Only updates existing cards (never creates or deletes in Status stack).
+   *
+   * @param {Object} statusData
+   * @param {Object} [statusData.health] - Health metrics
+   * @param {Object} [statusData.tasks] - Task metrics
+   * @param {Object} [statusData.costs] - Cost metrics from BudgetEnforcer
+   * @param {Object} [statusData.knowledge] - Knowledge metrics
+   * @param {Array}  [statusData.recentActions] - Recent proactive actions
+   * @returns {Promise<void>}
+   */
+  async updateStatus(statusData) {
+    if (!this._initialized) return;
+
+    try {
+      // Fetch Status stack cards
+      const stacks = await this.deck.getStacks(this.boardId);
+      const statusStack = stacks.find(s => s.id === this.stacks.status);
+      if (!statusStack) return;
+
+      const cards = statusStack.cards || [];
+
+      // Update each known status card
+      const updates = [
+        { title: 'Health', formatter: this._formatHealthStatus.bind(this), data: statusData.health },
+        { title: 'Tasks This Week', formatter: this._formatTaskStatus.bind(this), data: statusData.tasks },
+        { title: 'Costs This Month', formatter: this._formatCostStatus.bind(this), data: statusData.costs },
+        { title: 'Knowledge', formatter: (data) => {
+          if (!data) return 'Wiki pages: 0 -- People: 0 -- Projects: 0 -- Research: 0';
+          return `Wiki pages: ${data.wikiPages || 0} -- People: ${data.people || 0} -- Projects: ${data.projects || 0} -- Research: ${data.research || 0}`;
+        }, data: statusData.knowledge },
+        { title: 'Recent Actions', formatter: this._formatRecentActions.bind(this), data: statusData.recentActions },
+        { title: '\ud83d\udcb0 Costs', formatter: this._formatDailyCostStatus.bind(this), data: statusData.costs }
+      ];
+
+      for (const update of updates) {
+        const card = cards.find(c => c.title === update.title);
+        if (!card) continue;
+
+        try {
+          const description = update.formatter(update.data);
+          const updatePath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${this.stacks.status}/cards/${card.id}`;
+          await this.deck._request('PUT', updatePath, {
+            title: card.title,
+            description: description,
+            type: 'plain',
+            owner: card.owner || 'moltagent'
+          });
+        } catch (err) {
+          console.warn(`[CockpitManager] Failed to update ${card.title}:`, err.message);
+        }
+      }
+    } catch (err) {
+      console.warn('[CockpitManager] updateStatus failed:', err.message);
+    }
+  }
+
+  // ===========================================================================
+  // System Prompt Overlay
+  // ===========================================================================
+
+  /**
+   * Compile the cached cockpit config into a text block for system prompt injection.
+   * Pure synchronous function -- uses this.cachedConfig (no I/O).
+   *
+   * Returns empty string if no config is cached yet.
+   *
+   * @returns {string} Markdown-formatted overlay text
+   */
+  buildSystemPromptOverlay() {
+    if (!this.cachedConfig) {
+      return '';
+    }
+
+    const c = this.cachedConfig;
+    const parts = [];
+
+    parts.push('## Active Configuration (from Cockpit)');
+    parts.push('');
+
+    // Communication Style
+    if (c.style) {
+      parts.push(`### Communication Style: ${c.style.name}`);
+      parts.push(c.style.description);
+      parts.push('');
+    }
+
+    // Persona
+    if (c.persona) {
+      parts.push('### Persona');
+      parts.push(`- Name: ${c.persona.name}`);
+      parts.push(`- Humor: ${c.persona.humor}`);
+      parts.push(`- Emoji: ${c.persona.emoji}`);
+      parts.push(`- Language: ${c.persona.language}`);
+      parts.push(`- Verbosity: ${c.persona.verbosity}`);
+      parts.push(`- Formality: ${c.persona.formality}`);
+      parts.push('');
+    }
+
+    // Guardrails
+    if (c.guardrails && c.guardrails.length > 0) {
+      parts.push('### Guardrails (MUST OBEY)');
+      c.guardrails.forEach((rail, idx) => {
+        parts.push(`${idx + 1}. **${rail.title}**: ${rail.description}`);
+      });
+      parts.push('');
+    }
+
+    // Current Mode
+    if (c.mode) {
+      parts.push(`### Current Mode: ${c.mode.name}`);
+      parts.push(c.mode.description);
+      parts.push('');
+    }
+
+    return parts.join('\n');
+  }
+
+  // ===========================================================================
+  // Private Helpers
+  // ===========================================================================
+
+  /**
+   * Parse a Budget Limits card description into a config object.
+   * Expected format (one key-value per line):
+   *   Daily cloud limit: €5.00
+   *   Monthly cloud limit: €50.00
+   *   Workflow model: auto
+   *   Warning threshold: 80%
+   *
+   * @private
+   * @param {string} description - Card description text
+   * @returns {Object} Parsed budget config
+   */
+  _parseBudgetCard(description) {
+    const config = {};
+    const lines = (description || '').split('---')[0].split('\n');
+    for (const line of lines) {
+      const match = line.match(/^(.+?):\s*[€$]?([\d.]+|[\w-]+)/i);
+      if (match) {
+        const key = match[1].trim().toLowerCase();
+        const val = match[2];
+        if (key.includes('daily'))    config.dailyLimit = parseFloat(val);
+        if (key.includes('monthly'))  config.monthlyLimit = parseFloat(val);
+        if (key.includes('model'))    config.workflowModel = val;
+        if (key.includes('warning'))  config.warningThreshold = parseFloat(val) / 100;
+      }
+    }
+    return config;
+  }
+
+  /**
+   * Parse a Voice card description into a config object.
+   * Expected format (one key-value per line):
+   *   Voice input: on
+   *   STT model: small
+   *   Meeting notes: off
+   *
+   * @private
+   * @param {string} description - Card description text
+   * @returns {Object} Parsed voice config
+   */
+  _parseVoiceCard(description) {
+    const config = { voiceInput: true, sttModel: 'small', meetingNotes: false };
+    const lines = (description || '').split('---')[0].split('\n');
+    for (const line of lines) {
+      const match = line.match(/^(.+?):\s*(.+)/i);
+      if (!match) continue;
+      const key = match[1].trim().toLowerCase();
+      const val = match[2].trim().toLowerCase();
+      if (key.includes('voice input') || key.includes('input'))
+        config.voiceInput = val === 'on' || val === 'true';
+      if (key.includes('stt model') || key.includes('model'))
+        config.sttModel = val;
+      if (key.includes('meeting notes') || key.includes('notes'))
+        config.meetingNotes = val === 'on' || val === 'true';
+    }
+    return config;
+  }
+
+  /**
+   * Parse an Infrastructure card description into a config object.
+   * Expected format:
+   *   Services:
+   *   - ollama: auto
+   *   - whisper: http://...
+   *
+   *   Notify on failure: on
+   *   Auto-heal: on
+   *   Check interval: 3
+   *
+   * @private
+   * @param {string} description - Card description text
+   * @returns {Object} Parsed infra config
+   */
+  _parseInfraCard(description) {
+    const config = { services: {}, notifyOnFailure: true, autoHeal: true, checkInterval: 3 };
+    const lines = (description || '').split('---')[0].split('\n');
+    let inServices = false;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      // Detect "Services:" header
+      if (/^services:/i.test(trimmed)) {
+        inServices = true;
+        continue;
+      }
+
+      // Service entry: "- name: url"
+      if (inServices && trimmed.startsWith('-')) {
+        const match = trimmed.match(/^-\s*(\w+):\s*(.+)/i);
+        if (match) {
+          config.services[match[1].toLowerCase()] = match[2].trim();
+        }
+        continue;
+      }
+
+      // Key-value settings (end service section)
+      const kvMatch = trimmed.match(/^(.+?):\s*(.+)/i);
+      if (kvMatch) {
+        inServices = false;
+        const key = kvMatch[1].trim().toLowerCase();
+        const val = kvMatch[2].trim().toLowerCase();
+        if (key.includes('notify'))
+          config.notifyOnFailure = val === 'on' || val === 'true';
+        if (key.includes('auto-heal') || key.includes('heal'))
+          config.autoHeal = val === 'on' || val === 'true';
+        if (key.includes('check interval') || key.includes('interval'))
+          config.checkInterval = parseInt(val) || 3;
+      }
+    }
+
+    return config;
+  }
+
+  /**
+   * Parse the Models card into a modelsConfig object.
+   * Maps ⚙ labels to presets, or parses a custom roster from the card description.
+   *
+   * @private
+   * @param {Object} card - Deck card object
+   * @returns {{ preset?: string, roster?: Object }} Models configuration
+   */
+  _parseModelsCard(card) {
+    const { source } = this._resolveCardValue(card, {});
+
+    if (source === 'custom') {
+      const roster = this._parseCustomRoster(card.description);
+      if (Object.keys(roster).length > 0) {
+        return { roster };
+      }
+      console.warn('[CockpitManager] Custom roster (⚙4) is empty, falling back to smart-mix');
+      return { preset: 'smart-mix' };
+    }
+
+    // Map label source to preset
+    const sourceToPreset = {
+      off: 'all-local',       // ⚙1
+      moderate: 'smart-mix',  // ⚙2
+      on: 'cloud-first',      // ⚙3
+      default: 'smart-mix'    // no label
+    };
+
+    return { preset: sourceToPreset[source] || 'smart-mix' };
+  }
+
+  /**
+   * Parse a custom roster from a Models card description.
+   * Reads lines above the `---` separator. Each line: `job: player1, player2`.
+   * Ignores the `credentials` job (security invariant).
+   *
+   * @private
+   * @param {string} description - Card description text
+   * @returns {Object} Map of job → [player1, player2, ...]
+   */
+  _parseCustomRoster(description) {
+    if (!description) return {};
+
+    // Split on --- separator, take only content above it
+    const parts = description.split('---');
+    const configSection = parts[0];
+
+    const roster = {};
+    const lines = configSection.split('\n');
+
+    for (const line of lines) {
+      const match = line.match(/^\s*(quick|tools|thinking|writing|research|coding)\s*:\s*(.+)/i);
+      if (!match) continue;
+
+      const job = match[1].toLowerCase();
+
+      // Security invariant: credentials job cannot be overridden
+      if (job === 'credentials') continue;
+
+      const players = match[2].split(',').map(p => p.trim()).filter(Boolean);
+      if (players.length > 0) {
+        roster[job] = players;
+      }
+    }
+
+    return roster;
+  }
+
+  /**
+   * Find a card with the "Active" label in a list of cards.
+   * @private
+   * @param {Array<Object>} cards - Cards to search
+   * @returns {Object|null} Card with Active label, or null
+   */
+  _findStarredCard(cards) {
+    if (!Array.isArray(cards)) return null;
+
+    for (const card of cards) {
+      if (Array.isArray(card.labels)) {
+        for (const label of card.labels) {
+          if (!label.title) continue;
+          // Match ⚙★ (current) or ⭐ Active (legacy)
+          if (label.title === '\u2699\ufe0f\u2605' || label.title.includes('Active')) {
+            return card;
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Determine the option value from a card's assigned labels.
+   * @private
+   * @param {Object} card - Deck card object
+   * @param {Object} valueMap - Map of { option1, option2, option3 } to values
+   * @returns {{ value: string, source: string }} Resolved value and which label was used
+   */
+  _resolveCardValue(card, valueMap) {
+    if (!card || !Array.isArray(card.labels)) {
+      return { value: valueMap?.moderate || '', source: 'default' };
+    }
+
+    for (const label of card.labels) {
+      if (!label.title) continue;
+
+      // ⚙4 (current) or Custom (legacy)
+      if (label.title === '\u2699\ufe0f4' || label.title.includes('Custom')) {
+        // Strip documentation below --- separator
+        const raw = card.description || '';
+        const value = raw.split('---')[0].trim();
+        return { value, source: 'custom' };
+      }
+      // ⚙1 (current) or Off (A3) or Option 1 (original)
+      if (label.title === '\u2699\ufe0f1' || label.title.includes('Off') || label.title.includes('Option 1')) {
+        return { value: valueMap?.off || '', source: 'off' };
+      }
+      // ⚙2 (current) or Moderate (A3) or Option 2 (original)
+      if (label.title === '\u2699\ufe0f2' || label.title.includes('Moderate') || label.title.includes('Option 2')) {
+        return { value: valueMap?.moderate || '', source: 'moderate' };
+      }
+      // ⚙3 (current) or On (A3) or Option 3 (original)
+      if (label.title === '\u2699\ufe0f3' || label.title.includes('On') || label.title.includes('Option 3')) {
+        return { value: valueMap?.on || '', source: 'on' };
+      }
+    }
+
+    return { value: valueMap?.moderate || '', source: 'default' };
+  }
+
+  /**
+   * Format health status description for the Health card.
+   * @private
+   * @param {Object} health - Health metrics
+   * @returns {string} Formatted description
+   */
+  _formatHealthStatus(health) {
+    // New rich format: if infra check results are present, render per-service lines
+    if (health?.infra) {
+      const infra = health.infra;
+      const parts = [];
+
+      // Overall status line
+      const overallEmoji = infra.overall === 'ok' ? '\ud83d\udfe2' : (infra.overall === 'down' ? '\ud83d\udd34' : '\ud83d\udfe1');
+      parts.push(`${overallEmoji} ${(infra.overall || 'unknown').toUpperCase()}`);
+
+      // Per-service lines
+      if (infra.services) {
+        for (const [id, svc] of Object.entries(infra.services)) {
+          if (svc.ok) {
+            parts.push(`\ud83d\udfe2 ${id} (${svc.latencyMs}ms)`);
+          } else {
+            const reason = svc.error || 'error';
+            parts.push(`\ud83d\udd34 ${id} -- ${reason}`);
+          }
+        }
+      }
+
+      // System stat warnings
+      if (infra.systemStats) {
+        if (infra.systemStats.ramUsedPct != null && infra.systemStats.ramUsedPct > 85) {
+          parts.push(`\u26a0\ufe0f RAM: ${infra.systemStats.ramUsedPct}%`);
+        }
+        if (infra.systemStats.diskUsedPct != null && infra.systemStats.diskUsedPct > 90) {
+          parts.push(`\u26a0\ufe0f Disk: ${infra.systemStats.diskUsedPct}%`);
+        }
+      }
+
+      // Uptime line
+      const uptimeDays = health.uptimeDays || infra.systemStats?.uptimeDays || 0;
+      parts.push(`Uptime: ${uptimeDays}d`);
+
+      return parts.join('\n');
+    }
+
+    // Legacy format (backwards-compatible)
+    const status = health?.status || 'OK';
+    const emoji = status === 'OK' ? '\ud83d\udfe2' : '\ud83d\udd34';
+    const uptimeDays = health?.uptimeDays || 0;
+    const uptimeHours = health?.uptimeHours || 0;
+    const lastError = health?.lastError || 'none';
+
+    return `${emoji} ${status} -- Uptime: ${uptimeDays}d ${uptimeHours}h -- Last error: ${lastError}`;
+  }
+
+  /**
+   * Format task summary for the Tasks card.
+   * @private
+   * @param {Object} tasks - Task metrics
+   * @returns {string} Formatted description
+   */
+  _formatTaskStatus(tasks) {
+    const open = tasks?.open || 0;
+    const inProgress = tasks?.inProgress || 0;
+    const completed = tasks?.completed || 0;
+    const overdue = tasks?.overdue || 0;
+
+    return `Open: ${open} -- In Progress: ${inProgress} -- Completed: ${completed} -- Overdue: ${overdue}`;
+  }
+
+  /**
+   * Format cost summary for the Costs card.
+   * @private
+   * @param {Object} costs - Cost metrics
+   * @returns {string} Formatted description
+   */
+  _formatCostStatus(costs) {
+    if (!costs || !costs.providers) {
+      return 'Total: €0.00 -- Ollama: local';
+    }
+
+    // Sum costs across all providers from BudgetEnforcer.getFullReport()
+    let totalCost = 0;
+    let claudeCost = 0;
+    let claudeCalls = 0;
+    for (const [providerId, summary] of Object.entries(costs.providers)) {
+      const cost = summary?.daily?.cost || 0;
+      totalCost += cost;
+      if (providerId.includes('claude') || providerId.includes('anthropic')) {
+        claudeCost += cost;
+        claudeCalls += summary?.daily?.calls || 0;
+      }
+    }
+
+    const proactiveCost = costs.proactive?.dailyCost || 0;
+    const reactiveCost = totalCost - proactiveCost;
+
+    return `Total: €${totalCost.toFixed(2)} -- Claude: €${claudeCost.toFixed(2)} (${claudeCalls} calls) -- Ollama: local -- Proactive: €${proactiveCost.toFixed(2)} -- Reactive: €${reactiveCost.toFixed(2)}`;
+  }
+
+  /**
+   * Format recent actions for the Recent Actions card.
+   * @private
+   * @param {Array} actions - Recent proactive actions (last 5)
+   * @returns {string} Formatted description
+   */
+  _formatRecentActions(actions) {
+    if (!Array.isArray(actions) || actions.length === 0) {
+      return '(none yet)';
+    }
+
+    return actions.map((action, index) => {
+      const timestamp = action.timestamp || 'unknown time';
+      const description = action.description || action.action || 'unknown action';
+      return `${index + 1}. [${timestamp}] ${description}`;
+    }).join('\n');
+  }
+
+  /**
+   * Format daily + monthly cost summary for the 💰 Costs status card.
+   * @private
+   * @param {Object} costs - BudgetEnforcer.getFullReport() output
+   * @returns {string} Formatted description
+   */
+  _formatDailyCostStatus(costs) {
+    if (!costs || !costs.providers) {
+      return 'Today: \u20ac0.00\nThis month: \u20ac0.00';
+    }
+
+    let dailyTotal = 0;
+    let monthlyTotal = 0;
+    for (const summary of Object.values(costs.providers)) {
+      dailyTotal += summary?.daily?.cost || 0;
+      monthlyTotal += summary?.monthly?.cost || 0;
+    }
+
+    return `Today: \u20ac${dailyTotal.toFixed(2)}\nThis month: \u20ac${monthlyTotal.toFixed(2)}`;
+  }
+
+  /**
+   * Create any DEFAULT_CARDS entries that are missing from existing stacks.
+   * Called during initialize() on existing boards so that cards added in
+   * later releases (e.g. Budget Limits) appear without a full re-bootstrap.
+   * Safe and idempotent — only creates cards that don't exist by exact title match.
+   *
+   * @private
+   * @param {Array<Object>} stacks - Fetched stacks with cards
+   * @returns {Promise<void>}
+   */
+  async _ensureMissingCards(stacks) {
+    for (const def of STACK_DEFS) {
+      const stackId = this.stacks[def.key];
+      if (!stackId) continue;
+
+      const cardDefs = DEFAULT_CARDS[def.key] || [];
+      if (cardDefs.length === 0) continue;
+
+      // Find the matching stack in fetched data
+      const stack = stacks.find(s => s.id === stackId);
+      const existingTitles = new Set((stack?.cards || []).map(c => c.title));
+
+      for (let i = 0; i < cardDefs.length; i++) {
+        const cardDef = cardDefs[i];
+        if (existingTitles.has(cardDef.title)) continue;
+
+        // Card is missing — create it
+        const cardPath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${stackId}/cards`;
+        const card = await this.deck._request('POST', cardPath, {
+          title: cardDef.title,
+          description: cardDef.description,
+          type: 'plain',
+          order: i
+        });
+
+        // Assign default label if specified
+        if (cardDef.defaultLabel) {
+          const label = this.labels[cardDef.defaultLabel];
+          if (label) {
+            const assignPath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${stackId}/cards/${card.id}/assignLabel`;
+            try {
+              await this.deck._request('PUT', assignPath, { labelId: label.id });
+            } catch (err) {
+              // Non-critical
+            }
+          }
+        }
+
+        console.log(`[CockpitManager] Created missing card: "${cardDef.title}" in stack "${def.title}"`);
+      }
+    }
+  }
+
+  /**
+   * Resolve stack IDs and label IDs from the current board.
+   * Updates this.stacks and this.labels.
+   * @private
+   * @param {Object} boardData - Full board object with stacks and labels arrays
+   */
+  _resolveIdsFromBoard(boardData) {
+    // Map stacks: match stack titles to STACK_DEFS keys
+    if (Array.isArray(boardData.stacks)) {
+      for (const stack of boardData.stacks) {
+        for (const def of STACK_DEFS) {
+          // Match if the stack title includes the emoji/title from STACK_DEFS
+          if (stack.title && stack.title.includes(def.title.split(' ')[1])) {
+            this.stacks[def.key] = stack.id;
+            break;
+          }
+        }
+      }
+    }
+
+    // Map labels: store by title
+    if (Array.isArray(boardData.labels)) {
+      for (const label of boardData.labels) {
+        if (label.title) {
+          this.labels[label.title] = label;
+        }
+      }
+    }
+  }
+
+  /**
+   * Migrate label names from any previous generation to the ⚙ namespace.
+   * Matches by color (stable across all generations) and updates title + color
+   * via PUT if the label doesn't already match the target.
+   * Safe and idempotent — skips labels already at their target.
+   *
+   * Handles three generations:
+   *   Gen 1 (original): Option 1/2/3, ⭐ Active, 🔵 Custom
+   *   Gen 2 (A3):       🔴 Off, 🟡 Moderate, 🟢 On
+   *   Gen 3 (A3b):      ⚙1, ⚙2, ⚙3, ⚙★, ⚙4
+   *
+   * @private
+   * @returns {Promise<number>} Number of labels migrated
+   */
+  async _migrateLabels() {
+    // Key = OLD color on board, value = target title + optional new color
+    const MIGRATIONS = {
+      'e9322d': { to: '\u2699\ufe0f1' },                          // red: Option 1 / Off → ⚙1
+      'f0c400': { to: '\u2699\ufe0f2' },                          // yellow: Option 2 / Moderate → ⚙2
+      '00b600': { to: '\u2699\ufe0f3' },                          // green: Option 3 / On → ⚙3
+      'ff8700': { to: '\u2699\ufe0f\u2605', newColor: 'ffd700' }, // orange→gold: Active → ⚙★
+      '0082c9': { to: '\u2699\ufe0f4', newColor: '0000ff' }       // teal→blue: Custom → ⚙4
+    };
+
+    let migrated = 0;
+
+    for (const label of Object.values(this.labels)) {
+      const migration = MIGRATIONS[label.color?.toLowerCase()];
+      if (!migration) continue;
+      if (label.title === migration.to) continue; // already at target
+
+      try {
+        const labelPath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/labels/${label.id}`;
+        await this.deck._request('PUT', labelPath, {
+          title: migration.to,
+          color: migration.newColor || label.color
+        });
+        console.log(`[CockpitManager] Migrated label: "${label.title}" -> "${migration.to}"`);
+        label.title = migration.to;
+        if (migration.newColor) label.color = migration.newColor;
+        migrated++;
+      } catch (err) {
+        console.warn(`[CockpitManager] Failed to migrate label "${label.title}": ${err.message}`);
+      }
+    }
+
+    // Create any reserved labels that don't exist yet on the board
+    const existingTitles = new Set(Object.values(this.labels).map(l => l.title));
+    for (const def of LABEL_DEFS) {
+      if (existingTitles.has(def.title)) continue;
+      try {
+        const labelPath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/labels`;
+        const label = await this.deck._request('POST', labelPath, {
+          title: def.title,
+          color: def.color
+        });
+        this.labels[label.title] = label;
+        console.log(`[CockpitManager] Created reserved label: "${def.title}"`);
+        migrated++;
+      } catch (err) {
+        console.warn(`[CockpitManager] Failed to create label "${def.title}": ${err.message}`);
+      }
+    }
+
+    return migrated;
+  }
+
+  /**
+   * Delete the default stacks that Deck creates ("To do", "Doing", "Done").
+   * @private
+   * @param {number} boardId - Board ID
+   * @param {Array<Object>} existingStacks - Current stacks on the board
+   * @returns {Promise<void>}
+   */
+  async _deleteDefaultStacks(boardId, existingStacks) {
+    const defaultStackTitles = ['To do', 'Doing', 'Done'];
+
+    for (const stack of existingStacks) {
+      if (defaultStackTitles.includes(stack.title)) {
+        const path = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stack.id}`;
+        try {
+          await this.deck._request('DELETE', path);
+        } catch (err) {
+          // Ignore errors, continue deleting other stacks
+        }
+      }
+    }
+  }
+}
+
+// ===========================================================================
+// Type Definitions (for JSDoc)
+// ===========================================================================
+
+/**
+ * @typedef {Object} CockpitConfig
+ * @property {{name: string, description: string}|null} style - Active communication style
+ * @property {PersonaConfig} persona - Persona settings
+ * @property {Array<{title: string, description: string}>} guardrails - Active guardrails
+ * @property {{name: string, description: string}|null} mode - Active operating mode
+ * @property {SystemConfig} system - System settings
+ */
+
+/**
+ * @typedef {Object} PersonaConfig
+ * @property {string} name - Agent name (e.g., "Molti")
+ * @property {string} humor - none | light | playful
+ * @property {string} emoji - none | minimal | generous
+ * @property {string} language - Language code(s) (e.g., "EN", "EN+PT")
+ * @property {string} verbosity - concise | balanced | detailed
+ * @property {string} formality - formal | balanced | casual
+ */
+
+/**
+ * @typedef {Object} SystemConfig
+ * @property {string} searchProvider - searxng | perplexity | custom
+ * @property {string} llmTier - local-only | balanced | premium
+ * @property {string} dailyDigest - Time string (e.g., "08:00") or "off"
+ * @property {boolean} autoTagFiles - Whether to auto-tag files
+ * @property {number} initiativeLevel - 1-4
+ * @property {string} workingHours - Time range (e.g., "08:00-18:00")
+ */
+
+// ===========================================================================
+// Exports
+// ===========================================================================
+
+module.exports = CockpitManager;
+module.exports.CockpitError = CockpitError;
+module.exports.BOARD_TITLE = BOARD_TITLE;
+module.exports.LABEL_DEFS = LABEL_DEFS;
+module.exports.STACK_DEFS = STACK_DEFS;
+module.exports.DEFAULT_CARDS = DEFAULT_CARDS;
+module.exports.PERSONA_VALUE_MAP = PERSONA_VALUE_MAP;
+module.exports.SYSTEM_VALUE_MAP = SYSTEM_VALUE_MAP;
+module.exports.MODELS_CARD_TITLES = MODELS_CARD_TITLES;

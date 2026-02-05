@@ -1,0 +1,60 @@
+# ===========================
+# MoltAgent .gitignore
+# ===========================
+
+# --- Dependencies ---
+node_modules/
+package-lock.json
+
+# --- Environment & Credentials ---
+# NEVER commit secrets — they live in NC Passwords
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+credentials/
+secrets/
+
+# --- Logs ---
+logs/
+*.log
+npm-debug.log*
+
+# --- Runtime & State ---
+*.pid
+*.sock
+*.lock
+!package-lock.json
+
+# --- Manual backups (you made these — git replaces them) ---
+moltagent-backup-*/
+*-backup-*
+*.bak
+*.backup
+
+# --- Editor & OS ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Claude Code ---
+# Keep .claude/agents/ tracked (your agent configs)
+# But ignore ephemeral Claude state
+.claude/agent-memory/
+.claude/*.jsonl
+
+# --- Test & Coverage ---
+coverage/
+.nyc_output/
+
+# --- Build artifacts ---
+dist/
+build/
+tmp/

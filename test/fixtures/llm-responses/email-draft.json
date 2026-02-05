@@ -1,0 +1,17 @@
+{
+  "formal": {
+    "response": "Dear Sir/Madam,\n\nI hope this email finds you well. I am writing to follow up on our recent discussion regarding the project timeline.\n\nPlease let me know if you require any additional information.\n\nBest regards"
+  },
+  "casual": {
+    "response": "Hey!\n\nJust wanted to reach out about the project. Let me know when you're free to chat.\n\nCheers"
+  },
+  "meeting_request": {
+    "response": "Hi,\n\nI would like to schedule a meeting to discuss the Q1 goals. Would tomorrow at 2 PM work for you?\n\nPlease let me know your availability.\n\nThanks"
+  },
+  "follow_up": {
+    "response": "Hi,\n\nI wanted to follow up on my previous email. Have you had a chance to review the proposal?\n\nLooking forward to hearing from you.\n\nBest"
+  },
+  "thank_you": {
+    "response": "Hi,\n\nThank you for taking the time to meet with me today. I really appreciate your insights on the project.\n\nI'll send over the action items we discussed shortly.\n\nBest regards"
+  }
+}

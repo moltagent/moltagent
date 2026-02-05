@@ -1,0 +1,13 @@
+{
+  "uid": "email-001",
+  "from": "sender@example.com",
+  "fromName": "Test Sender",
+  "to": "recipient@example.com",
+  "subject": "Test Subject",
+  "date": "2025-02-05T10:00:00Z",
+  "body": "This is a test email body.\n\nIt has multiple paragraphs.\n\nBest regards,\nTest Sender",
+  "snippet": "This is a test email body. It has multiple paragraphs.",
+  "isRead": false,
+  "hasAttachments": false,
+  "messageId": "<msg-001@example.com>"
+}

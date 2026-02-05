@@ -1,0 +1,1008 @@
+/**
+ * MoltAgent CalDAV Client
+ * 
+ * Full calendar integration for Nextcloud:
+ * - Calendar discovery (owned + shared)
+ * - Event CRUD (create, read, update, delete)
+ * - Availability/free-busy checking
+ * - Meeting invitations via email
+ * - Recurring events support
+ * - Time zone handling
+ * 
+ * @version 1.0.0
+ */
+
+const https = require('https');
+const http = require('http');
+const { URL } = require('url');
+const crypto = require('crypto');
+
+class CalDAVClient {
+  /**
+   * @param {Object} config
+   * @param {string} config.ncUrl - Nextcloud base URL
+   * @param {string} config.username - CalDAV username
+   * @param {string} config.password - CalDAV password
+   * @param {Object} [config.defaultCalendar] - Default calendar to use
+   * @param {Function} [config.auditLog] - Audit logging function
+   */
+  constructor(config) {
+    this.ncUrl = config.ncUrl.replace(/\/$/, '');
+    this.username = config.username;
+    this.password = config.password;
+    this.defaultCalendar = config.defaultCalendar || 'personal';
+    this.auditLog = config.auditLog || (async () => {});
+    
+    // Parse URL for request options
+    const url = new URL(this.ncUrl);
+    this.requestDefaults = {
+      hostname: url.hostname,
+      port: url.port || (url.protocol === 'https:' ? 443 : 80),
+      protocol: url.protocol,
+      auth: `${this.username}:${this.password}`
+    };
+    
+    // Cache for calendars
+    this._calendarsCache = null;
+    this._cacheExpiry = 0;
+    this._cacheTTL = 60000; // 1 minute
+  }
+
+  // ============================================================
+  // HTTP Request Helpers
+  // ============================================================
+
+  /**
+   * Make a CalDAV request
+   */
+  async _request(method, path, { body = null, headers = {}, depth = null } = {}) {
+    return new Promise((resolve, reject) => {
+      const options = {
+        ...this.requestDefaults,
+        method,
+        path,
+        headers: {
+          'Content-Type': 'application/xml; charset=utf-8',
+          ...headers
+        }
+      };
+
+      if (depth !== null) {
+        options.headers['Depth'] = depth.toString();
+      }
+
+      if (body) {
+        options.headers['Content-Length'] = Buffer.byteLength(body);
+      }
+
+      const transport = this.requestDefaults.protocol === 'https:' ? https : http;
+      
+      const req = transport.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          resolve({
+            status: res.statusCode,
+            headers: res.headers,
+            body: data
+          });
+        });
+      });
+
+      req.on('error', reject);
+      
+      if (body) {
+        req.write(body);
+      }
+      req.end();
+    });
+  }
+
+  /**
+   * Parse XML response (simple parser for CalDAV responses)
+   */
+  _parseXML(xml) {
+    // Extract href and properties from multistatus response
+    const responses = [];
+    const responseRegex = /<d:response>([\s\S]*?)<\/d:response>/gi;
+    let match;
+
+    while ((match = responseRegex.exec(xml)) !== null) {
+      const responseXml = match[1];
+      
+      // Extract href
+      const hrefMatch = /<d:href>([^<]+)<\/d:href>/i.exec(responseXml);
+      const href = hrefMatch ? hrefMatch[1] : null;
+
+      // Extract displayname
+      const displayNameMatch = /<d:displayname>([^<]*)<\/d:displayname>/i.exec(responseXml);
+      const displayName = displayNameMatch ? displayNameMatch[1] : null;
+
+      // Extract calendar color
+      const colorMatch = /calendar-color[^>]*>([^<]*)</i.exec(responseXml);
+      const color = colorMatch ? colorMatch[1] : null;
+
+      // Check if it's a calendar
+      const isCalendar = /<cal:calendar\s*\/>/i.test(responseXml);
+      
+      // Check supported components
+      const supportsVEVENT = /<cal:comp\s+name="VEVENT"/i.test(responseXml);
+      const supportsVTODO = /<cal:comp\s+name="VTODO"/i.test(responseXml);
+
+      // Extract etag
+      const etagMatch = /<d:getetag>([^<]+)<\/d:getetag>/i.exec(responseXml);
+      const etag = etagMatch ? etagMatch[1].replace(/"/g, '') : null;
+
+      // Extract calendar-data (for events)
+      const calDataMatch = /<cal:calendar-data[^>]*>([\s\S]*?)<\/cal:calendar-data>/i.exec(responseXml);
+      const calendarData = calDataMatch ? this._decodeXMLEntities(calDataMatch[1]) : null;
+
+      responses.push({
+        href,
+        displayName,
+        color,
+        isCalendar,
+        supportsVEVENT,
+        supportsVTODO,
+        etag,
+        calendarData
+      });
+    }
+
+    return responses;
+  }
+
+  /**
+   * Decode XML entities
+   */
+  _decodeXMLEntities(text) {
+    return text
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
+  }
+
+  // ============================================================
+  // Calendar Discovery
+  // ============================================================
+
+  /**
+   * Get all calendars for the user
+   * @returns {Promise<Array>} List of calendars
+   */
+  async getCalendars(forceRefresh = false) {
+    // Check cache
+    if (!forceRefresh && this._calendarsCache && Date.now() < this._cacheExpiry) {
+      return this._calendarsCache;
+    }
+
+    const body = `<?xml version="1.0" encoding="utf-8" ?>
+<d:propfind xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns" xmlns:ical="http://apple.com/ns/ical/">
+  <d:prop>
+    <d:resourcetype />
+    <d:displayname />
+    <ical:calendar-color />
+    <cal:supported-calendar-component-set />
+    <cs:getctag />
+    <oc:owner-principal />
+  </d:prop>
+</d:propfind>`;
+
+    const response = await this._request(
+      'PROPFIND',
+      `/remote.php/dav/calendars/${this.username}/`,
+      { body, depth: 1 }
+    );
+
+    if (response.status !== 207) {
+      throw new Error(`Failed to get calendars: ${response.status}`);
+    }
+
+    const parsed = this._parseXML(response.body);
+    
+    // Filter to actual calendars (not inbox/outbox/trashbin)
+    const calendars = parsed
+      .filter(r => r.isCalendar && r.href && !r.href.includes('/inbox/') && !r.href.includes('/outbox/') && !r.href.includes('/trashbin/'))
+      .map(r => {
+        // Extract calendar ID from href
+        const parts = r.href.split('/').filter(Boolean);
+        const calendarId = parts[parts.length - 1];
+        
+        return {
+          id: calendarId,
+          href: r.href,
+          displayName: r.displayName || calendarId,
+          color: r.color,
+          supportsEvents: r.supportsVEVENT,
+          supportsTasks: r.supportsVTODO,
+          isDeckCalendar: calendarId.startsWith('app-generated--deck--')
+        };
+      });
+
+    // Update cache
+    this._calendarsCache = calendars;
+    this._cacheExpiry = Date.now() + this._cacheTTL;
+
+    await this.auditLog('caldav_calendars_listed', { count: calendars.length });
+
+    return calendars;
+  }
+
+  /**
+   * Get calendars that support events (not just tasks)
+   */
+  async getEventCalendars() {
+    const calendars = await this.getCalendars();
+    return calendars.filter(c => c.supportsEvents);
+  }
+
+  /**
+   * Get a specific calendar by ID
+   */
+  async getCalendar(calendarId) {
+    const calendars = await this.getCalendars();
+    return calendars.find(c => c.id === calendarId);
+  }
+
+  // ============================================================
+  // Event Operations
+  // ============================================================
+
+  /**
+   * Get events from a calendar within a time range
+   * @param {string} calendarId - Calendar ID
+   * @param {Date} start - Start of range
+   * @param {Date} end - End of range
+   * @returns {Promise<Array>} List of events
+   */
+  async getEvents(calendarId, start, end) {
+    const startStr = this._formatDateTime(start);
+    const endStr = this._formatDateTime(end);
+
+    const body = `<?xml version="1.0" encoding="utf-8" ?>
+<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop>
+    <d:getetag />
+    <c:calendar-data />
+  </d:prop>
+  <c:filter>
+    <c:comp-filter name="VCALENDAR">
+      <c:comp-filter name="VEVENT">
+        <c:time-range start="${startStr}" end="${endStr}" />
+      </c:comp-filter>
+    </c:comp-filter>
+  </c:filter>
+</c:calendar-query>`;
+
+    const response = await this._request(
+      'REPORT',
+      `/remote.php/dav/calendars/${this.username}/${calendarId}/`,
+      { body, depth: 1 }
+    );
+
+    if (response.status !== 207) {
+      throw new Error(`Failed to get events: ${response.status}`);
+    }
+
+    const parsed = this._parseXML(response.body);
+    const events = parsed
+      .filter(r => r.calendarData)
+      .map(r => this._parseICS(r.calendarData, r.href, r.etag));
+
+    await this.auditLog('caldav_events_queried', { 
+      calendar: calendarId, 
+      start: start.toISOString(), 
+      end: end.toISOString(),
+      count: events.length 
+    });
+
+    return events;
+  }
+
+  /**
+   * Get all events for today
+   */
+  async getTodayEvents(calendarId = null) {
+    const calendars = calendarId 
+      ? [{ id: calendarId }] 
+      : await this.getEventCalendars();
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const allEvents = [];
+    for (const cal of calendars) {
+      const events = await this.getEvents(cal.id, today, tomorrow);
+      events.forEach(e => e.calendarId = cal.id);
+      allEvents.push(...events);
+    }
+
+    // Sort by start time
+    allEvents.sort((a, b) => new Date(a.start) - new Date(b.start));
+
+    return allEvents;
+  }
+
+  /**
+   * Get events for the next N hours
+   */
+  async getUpcomingEvents(hours = 24, calendarId = null) {
+    const calendars = calendarId 
+      ? [{ id: calendarId }] 
+      : await this.getEventCalendars();
+
+    const now = new Date();
+    const end = new Date(now.getTime() + hours * 60 * 60 * 1000);
+
+    const allEvents = [];
+    for (const cal of calendars) {
+      const events = await this.getEvents(cal.id, now, end);
+      events.forEach(e => e.calendarId = cal.id);
+      allEvents.push(...events);
+    }
+
+    // Sort by start time
+    allEvents.sort((a, b) => new Date(a.start) - new Date(b.start));
+
+    return allEvents;
+  }
+
+  /**
+   * Get a specific event by UID
+   */
+  async getEvent(calendarId, uid) {
+    const response = await this._request(
+      'GET',
+      `/remote.php/dav/calendars/${this.username}/${calendarId}/${uid}.ics`
+    );
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (response.status !== 200) {
+      throw new Error(`Failed to get event: ${response.status}`);
+    }
+
+    return this._parseICS(response.body, null, response.headers.etag);
+  }
+
+  /**
+   * Create a new event
+   * @param {Object} event - Event details
+   * @param {string} event.summary - Event title
+   * @param {Date} event.start - Start time
+   * @param {Date} event.end - End time
+   * @param {string} [event.description] - Description
+   * @param {string} [event.location] - Location
+   * @param {Array<string>} [event.attendees] - Attendee email addresses
+   * @param {boolean} [event.allDay] - All-day event
+   * @param {string} [event.calendarId] - Target calendar
+   * @returns {Promise<Object>} Created event
+   */
+  async createEvent(event) {
+    const calendarId = event.calendarId || this.defaultCalendar;
+    const uid = this._generateUID();
+    const ics = this._buildICS({
+      ...event,
+      uid,
+      created: new Date(),
+      modified: new Date()
+    });
+
+    const response = await this._request(
+      'PUT',
+      `/remote.php/dav/calendars/${this.username}/${calendarId}/${uid}.ics`,
+      {
+        body: ics,
+        headers: {
+          'Content-Type': 'text/calendar; charset=utf-8',
+          'If-None-Match': '*'
+        }
+      }
+    );
+
+    if (response.status !== 201) {
+      throw new Error(`Failed to create event: ${response.status} - ${response.body}`);
+    }
+
+    await this.auditLog('caldav_event_created', {
+      calendar: calendarId,
+      uid,
+      summary: event.summary,
+      start: event.start.toISOString(),
+      attendees: event.attendees?.length || 0
+    });
+
+    return {
+      uid,
+      calendarId,
+      ...event,
+      href: `/remote.php/dav/calendars/${this.username}/${calendarId}/${uid}.ics`
+    };
+  }
+
+  /**
+   * Update an existing event
+   */
+  async updateEvent(calendarId, uid, updates, etag = null) {
+    // First, get the current event
+    const current = await this.getEvent(calendarId, uid);
+    if (!current) {
+      throw new Error(`Event not found: ${uid}`);
+    }
+
+    // Merge updates
+    const updated = {
+      ...current,
+      ...updates,
+      uid,
+      modified: new Date()
+    };
+
+    const ics = this._buildICS(updated);
+
+    const headers = {
+      'Content-Type': 'text/calendar; charset=utf-8'
+    };
+    if (etag) {
+      headers['If-Match'] = `"${etag}"`;
+    }
+
+    const response = await this._request(
+      'PUT',
+      `/remote.php/dav/calendars/${this.username}/${calendarId}/${uid}.ics`,
+      { body: ics, headers }
+    );
+
+    if (response.status !== 204 && response.status !== 200) {
+      throw new Error(`Failed to update event: ${response.status}`);
+    }
+
+    await this.auditLog('caldav_event_updated', {
+      calendar: calendarId,
+      uid,
+      updates: Object.keys(updates)
+    });
+
+    return updated;
+  }
+
+  /**
+   * Delete an event
+   */
+  async deleteEvent(calendarId, uid, etag = null) {
+    const headers = {};
+    if (etag) {
+      headers['If-Match'] = `"${etag}"`;
+    }
+
+    const response = await this._request(
+      'DELETE',
+      `/remote.php/dav/calendars/${this.username}/${calendarId}/${uid}.ics`,
+      { headers }
+    );
+
+    if (response.status !== 204 && response.status !== 200) {
+      throw new Error(`Failed to delete event: ${response.status}`);
+    }
+
+    await this.auditLog('caldav_event_deleted', { calendar: calendarId, uid });
+
+    return true;
+  }
+
+  // ============================================================
+  // Scheduling & Invitations
+  // ============================================================
+
+  /**
+   * Schedule a meeting with attendees (sends invitations)
+   * @param {Object} meeting - Meeting details
+   * @param {string} meeting.summary - Meeting title
+   * @param {Date} meeting.start - Start time
+   * @param {Date} meeting.end - End time
+   * @param {Array<string>} meeting.attendees - Attendee email addresses
+   * @param {string} [meeting.description] - Description
+   * @param {string} [meeting.location] - Location
+   * @param {string} [meeting.organizerEmail] - Organizer email (required for invitations)
+   */
+  async scheduleMeeting(meeting) {
+    if (!meeting.attendees || meeting.attendees.length === 0) {
+      throw new Error('Meeting must have at least one attendee');
+    }
+
+    if (!meeting.organizerEmail) {
+      throw new Error('Organizer email is required for sending invitations');
+    }
+
+    // Create event with attendees - Nextcloud will send invitations
+    const event = await this.createEvent({
+      ...meeting,
+      sequence: 0,
+      status: 'CONFIRMED',
+      organizer: {
+        email: meeting.organizerEmail,
+        name: meeting.organizerName || this.username
+      }
+    });
+
+    await this.auditLog('caldav_meeting_scheduled', {
+      uid: event.uid,
+      summary: meeting.summary,
+      attendees: meeting.attendees,
+      organizer: meeting.organizerEmail
+    });
+
+    return event;
+  }
+
+  /**
+   * Cancel a meeting (sends cancellation notices)
+   */
+  async cancelMeeting(calendarId, uid, reason = null) {
+    const event = await this.getEvent(calendarId, uid);
+    if (!event) {
+      throw new Error(`Event not found: ${uid}`);
+    }
+
+    // Update status to CANCELLED
+    await this.updateEvent(calendarId, uid, {
+      status: 'CANCELLED',
+      sequence: (event.sequence || 0) + 1
+    });
+
+    await this.auditLog('caldav_meeting_cancelled', {
+      calendar: calendarId,
+      uid,
+      reason
+    });
+
+    return true;
+  }
+
+  // ============================================================
+  // Free/Busy & Availability
+  // ============================================================
+
+  /**
+   * Check if a time slot is free
+   * @param {Date} start - Start time
+   * @param {Date} end - End time
+   * @param {string} [calendarId] - Specific calendar (null = all calendars)
+   * @returns {Promise<Object>} Availability info
+   */
+  async checkAvailability(start, end, calendarId = null) {
+    const events = calendarId
+      ? await this.getEvents(calendarId, start, end)
+      : await this.getUpcomingEvents(
+          Math.ceil((end - start) / (1000 * 60 * 60)),
+          null
+        ).then(events => events.filter(e => 
+          new Date(e.start) < end && new Date(e.end) > start
+        ));
+
+    const conflicts = events.filter(e => {
+      const eventStart = new Date(e.start);
+      const eventEnd = new Date(e.end);
+      return eventStart < end && eventEnd > start;
+    });
+
+    return {
+      isFree: conflicts.length === 0,
+      conflicts: conflicts.map(e => ({
+        uid: e.uid,
+        summary: e.summary,
+        start: e.start,
+        end: e.end
+      }))
+    };
+  }
+
+  /**
+   * Find free slots in a time range
+   * @param {Date} rangeStart - Start of search range
+   * @param {Date} rangeEnd - End of search range
+   * @param {number} durationMinutes - Required slot duration
+   * @param {Object} [options] - Options
+   * @param {number} [options.workdayStart=9] - Workday start hour
+   * @param {number} [options.workdayEnd=17] - Workday end hour
+   * @param {boolean} [options.excludeWeekends=true] - Exclude weekends
+   * @returns {Promise<Array>} List of free slots
+   */
+  async findFreeSlots(rangeStart, rangeEnd, durationMinutes, options = {}) {
+    const {
+      workdayStart = 9,
+      workdayEnd = 17,
+      excludeWeekends = true
+    } = options;
+
+    // Get all events in range
+    const events = await this.getUpcomingEvents(
+      Math.ceil((rangeEnd - rangeStart) / (1000 * 60 * 60))
+    );
+
+    // Build busy periods
+    const busyPeriods = events.map(e => ({
+      start: new Date(e.start),
+      end: new Date(e.end)
+    })).sort((a, b) => a.start - b.start);
+
+    const freeSlots = [];
+    const slotDuration = durationMinutes * 60 * 1000;
+    
+    // Iterate through the range day by day
+    const current = new Date(rangeStart);
+    current.setHours(workdayStart, 0, 0, 0);
+
+    while (current < rangeEnd) {
+      const dayOfWeek = current.getDay();
+      
+      // Skip weekends if requested
+      if (excludeWeekends && (dayOfWeek === 0 || dayOfWeek === 6)) {
+        current.setDate(current.getDate() + 1);
+        current.setHours(workdayStart, 0, 0, 0);
+        continue;
+      }
+
+      // Set day boundaries
+      const dayStart = new Date(current);
+      dayStart.setHours(workdayStart, 0, 0, 0);
+      const dayEnd = new Date(current);
+      dayEnd.setHours(workdayEnd, 0, 0, 0);
+
+      // Find free slots in this day
+      let slotStart = new Date(Math.max(dayStart.getTime(), rangeStart.getTime()));
+      
+      // Get busy periods for this day
+      const dayBusy = busyPeriods.filter(p => 
+        p.start < dayEnd && p.end > dayStart
+      );
+
+      for (const busy of dayBusy) {
+        // Check if there's a free slot before this busy period
+        if (busy.start.getTime() - slotStart.getTime() >= slotDuration) {
+          freeSlots.push({
+            start: new Date(slotStart),
+            end: new Date(busy.start),
+            durationMinutes: Math.floor((busy.start - slotStart) / 60000)
+          });
+        }
+        // Move slot start to after this busy period
+        slotStart = new Date(Math.max(slotStart.getTime(), busy.end.getTime()));
+      }
+
+      // Check for free slot at end of day
+      const effectiveDayEnd = new Date(Math.min(dayEnd.getTime(), rangeEnd.getTime()));
+      if (effectiveDayEnd.getTime() - slotStart.getTime() >= slotDuration) {
+        freeSlots.push({
+          start: new Date(slotStart),
+          end: effectiveDayEnd,
+          durationMinutes: Math.floor((effectiveDayEnd - slotStart) / 60000)
+        });
+      }
+
+      // Move to next day
+      current.setDate(current.getDate() + 1);
+      current.setHours(workdayStart, 0, 0, 0);
+    }
+
+    return freeSlots;
+  }
+
+  /**
+   * Simple availability check: "Am I free at X time?"
+   */
+  async amIFreeAt(dateTime) {
+    const start = new Date(dateTime);
+    const end = new Date(start.getTime() + 60 * 60 * 1000); // 1 hour window
+    const availability = await this.checkAvailability(start, end);
+    return availability.isFree;
+  }
+
+  // ============================================================
+  // ICS Parsing & Building
+  // ============================================================
+
+  /**
+   * Parse ICS data into an event object
+   */
+  _parseICS(icsData, href = null, etag = null) {
+    const event = { href, etag, raw: icsData };
+
+    // Extract UID
+    const uidMatch = /UID:([^\r\n]+)/i.exec(icsData);
+    event.uid = uidMatch ? uidMatch[1] : null;
+
+    // Extract SUMMARY
+    const summaryMatch = /SUMMARY:([^\r\n]+)/i.exec(icsData);
+    event.summary = summaryMatch ? this._unescapeICS(summaryMatch[1]) : null;
+
+    // Extract DESCRIPTION
+    const descMatch = /DESCRIPTION:([^\r\n]+(?:\r?\n [^\r\n]+)*)/i.exec(icsData);
+    event.description = descMatch ? this._unescapeICS(descMatch[1].replace(/\r?\n /g, '')) : null;
+
+    // Extract LOCATION
+    const locMatch = /LOCATION:([^\r\n]+)/i.exec(icsData);
+    event.location = locMatch ? this._unescapeICS(locMatch[1]) : null;
+
+    // Extract DTSTART
+    const startMatch = /DTSTART[^:]*:([^\r\n]+)/i.exec(icsData);
+    event.start = startMatch ? this._parseICSDateTime(startMatch[1]) : null;
+    event.allDay = startMatch && startMatch[0].includes('VALUE=DATE') && !startMatch[0].includes('VALUE=DATE-TIME');
+
+    // Extract DTEND
+    const endMatch = /DTEND[^:]*:([^\r\n]+)/i.exec(icsData);
+    event.end = endMatch ? this._parseICSDateTime(endMatch[1]) : null;
+
+    // Extract STATUS
+    const statusMatch = /STATUS:([^\r\n]+)/i.exec(icsData);
+    event.status = statusMatch ? statusMatch[1] : 'CONFIRMED';
+
+    // Extract SEQUENCE
+    const seqMatch = /SEQUENCE:([^\r\n]+)/i.exec(icsData);
+    event.sequence = seqMatch ? parseInt(seqMatch[1]) : 0;
+
+    // Extract ORGANIZER
+    const orgMatch = /ORGANIZER[^:]*:([^\r\n]+)/i.exec(icsData);
+    if (orgMatch) {
+      const cnMatch = /CN=([^;:]+)/i.exec(orgMatch[0]);
+      event.organizer = {
+        email: orgMatch[1].replace('mailto:', ''),
+        name: cnMatch ? cnMatch[1] : null
+      };
+    }
+
+    // Extract ATTENDEE(s)
+    const attendees = [];
+    const attendeeRegex = /ATTENDEE[^:]*:([^\r\n]+)/gi;
+    let attendeeMatch;
+    while ((attendeeMatch = attendeeRegex.exec(icsData)) !== null) {
+      const cnMatch = /CN=([^;:]+)/i.exec(attendeeMatch[0]);
+      const partstatMatch = /PARTSTAT=([^;:]+)/i.exec(attendeeMatch[0]);
+      attendees.push({
+        email: attendeeMatch[1].replace('mailto:', ''),
+        name: cnMatch ? cnMatch[1] : null,
+        status: partstatMatch ? partstatMatch[1] : 'NEEDS-ACTION'
+      });
+    }
+    event.attendees = attendees;
+
+    return event;
+  }
+
+  /**
+   * Build ICS data from an event object
+   */
+  _buildICS(event) {
+    const lines = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//MoltAgent//CalDAV Client//EN',
+      'CALSCALE:GREGORIAN',
+      'METHOD:REQUEST',
+      'BEGIN:VEVENT'
+    ];
+
+    // UID
+    lines.push(`UID:${event.uid}`);
+
+    // Timestamps
+    lines.push(`DTSTAMP:${this._formatDateTime(new Date())}`);
+    if (event.created) {
+      lines.push(`CREATED:${this._formatDateTime(event.created)}`);
+    }
+    if (event.modified) {
+      lines.push(`LAST-MODIFIED:${this._formatDateTime(event.modified)}`);
+    }
+
+    // Start/End
+    if (event.allDay) {
+      lines.push(`DTSTART;VALUE=DATE:${this._formatDate(event.start)}`);
+      lines.push(`DTEND;VALUE=DATE:${this._formatDate(event.end)}`);
+    } else {
+      lines.push(`DTSTART:${this._formatDateTime(event.start)}`);
+      lines.push(`DTEND:${this._formatDateTime(event.end)}`);
+    }
+
+    // Summary
+    if (event.summary) {
+      lines.push(`SUMMARY:${this._escapeICS(event.summary)}`);
+    }
+
+    // Description
+    if (event.description) {
+      lines.push(`DESCRIPTION:${this._escapeICS(event.description)}`);
+    }
+
+    // Location
+    if (event.location) {
+      lines.push(`LOCATION:${this._escapeICS(event.location)}`);
+    }
+
+    // Status
+    lines.push(`STATUS:${event.status || 'CONFIRMED'}`);
+
+    // Sequence
+    lines.push(`SEQUENCE:${event.sequence || 0}`);
+
+    // Organizer
+    if (event.organizer) {
+      const cn = event.organizer.name ? `;CN=${event.organizer.name}` : '';
+      lines.push(`ORGANIZER${cn}:mailto:${event.organizer.email}`);
+    }
+
+    // Attendees
+    if (event.attendees && event.attendees.length > 0) {
+      for (const attendee of event.attendees) {
+        const email = typeof attendee === 'string' ? attendee : attendee.email;
+        const name = typeof attendee === 'object' ? attendee.name : null;
+        const status = typeof attendee === 'object' ? attendee.status : 'NEEDS-ACTION';
+        
+        let line = 'ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT';
+        line += `;PARTSTAT=${status}`;
+        line += ';RSVP=TRUE';
+        if (name) {
+          line += `;CN=${name}`;
+        }
+        line += `:mailto:${email}`;
+        lines.push(line);
+      }
+    }
+
+    lines.push('END:VEVENT');
+    lines.push('END:VCALENDAR');
+
+    return lines.join('\r\n');
+  }
+
+  /**
+   * Format a Date as ICS datetime (UTC)
+   */
+  _formatDateTime(date) {
+    const d = new Date(date);
+    return d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  }
+
+  /**
+   * Format a Date as ICS date only
+   */
+  _formatDate(date) {
+    const d = new Date(date);
+    return d.toISOString().split('T')[0].replace(/-/g, '');
+  }
+
+  /**
+   * Parse ICS datetime string
+   */
+  _parseICSDateTime(str) {
+    // Handle date-only format (YYYYMMDD)
+    if (str.length === 8) {
+      const year = str.substring(0, 4);
+      const month = str.substring(4, 6);
+      const day = str.substring(6, 8);
+      return `${year}-${month}-${day}`;
+    }
+
+    // Handle datetime format (YYYYMMDDTHHMMSSZ or YYYYMMDDTHHMMSS)
+    const match = /(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z?/.exec(str);
+    if (match) {
+      const [, year, month, day, hour, min, sec] = match;
+      return new Date(Date.UTC(
+        parseInt(year),
+        parseInt(month) - 1,
+        parseInt(day),
+        parseInt(hour),
+        parseInt(min),
+        parseInt(sec)
+      )).toISOString();
+    }
+
+    return str;
+  }
+
+  /**
+   * Escape special characters for ICS
+   */
+  _escapeICS(str) {
+    return str
+      .replace(/\\/g, '\\\\')
+      .replace(/;/g, '\\;')
+      .replace(/,/g, '\\,')
+      .replace(/\n/g, '\\n');
+  }
+
+  /**
+   * Unescape ICS special characters
+   */
+  _unescapeICS(str) {
+    return str
+      .replace(/\\n/g, '\n')
+      .replace(/\\,/g, ',')
+      .replace(/\\;/g, ';')
+      .replace(/\\\\/g, '\\');
+  }
+
+  /**
+   * Generate a unique event UID
+   */
+  _generateUID() {
+    const random = crypto.randomBytes(16).toString('hex');
+    const timestamp = Date.now().toString(36);
+    return `${timestamp}-${random}@moltagent`;
+  }
+
+  // ============================================================
+  // Convenience Methods for MoltAgent
+  // ============================================================
+
+  /**
+   * Get a human-readable summary of today's calendar
+   */
+  async getTodaySummary() {
+    const events = await this.getTodayEvents();
+    
+    if (events.length === 0) {
+      return {
+        text: "No events scheduled for today.",
+        events: []
+      };
+    }
+
+    const lines = [`Today's calendar (${events.length} event${events.length > 1 ? 's' : ''}):`];
+    
+    for (const event of events) {
+      const start = new Date(event.start);
+      const timeStr = event.allDay 
+        ? 'All day' 
+        : start.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      
+      lines.push(`• ${timeStr}: ${event.summary}`);
+      if (event.location) {
+        lines.push(`  📍 ${event.location}`);
+      }
+    }
+
+    return {
+      text: lines.join('\n'),
+      events
+    };
+  }
+
+  /**
+   * Quick schedule: "Schedule a meeting with X tomorrow at 2pm"
+   */
+  async quickSchedule(summary, dateTime, durationMinutes = 60, attendees = []) {
+    const start = new Date(dateTime);
+    const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+
+    // Check availability first
+    const availability = await this.checkAvailability(start, end);
+    
+    if (!availability.isFree) {
+      return {
+        success: false,
+        reason: 'conflict',
+        conflicts: availability.conflicts
+      };
+    }
+
+    const event = await this.createEvent({
+      summary,
+      start,
+      end,
+      attendees
+    });
+
+    return {
+      success: true,
+      event
+    };
+  }
+}
+
+module.exports = CalDAVClient;

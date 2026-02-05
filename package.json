@@ -1,0 +1,56 @@
+{
+  "name": "moltagent-deck",
+  "version": "1.0.0",
+  "description": "NC Deck integration for MoltAgent task management",
+  "main": "src/lib/integrations/deck-client.js",
+  "scripts": {
+    "setup": "node scripts/setup-deck-board.js",
+    "test": "node scripts/run-all-tests.js",
+    "test:unit": "node scripts/run-all-tests.js --unit",
+    "test:integration": "node scripts/run-all-tests.js --integration",
+    "test:handlers": "node test/unit/handlers/message-router.test.js && node test/unit/handlers/email-handler.test.js",
+    "test:llm": "node test/unit/llm/router.test.js",
+    "test:errors": "node test/unit/errors/error-handler.test.js",
+    "test:deck": "node scripts/test-deck-integration.js",
+    "lint": "eslint src/ test/ webhook-server.js",
+    "lint:fix": "eslint src/ test/ webhook-server.js --fix",
+    "prepare": "husky"
+  },
+  "keywords": [
+    "moltagent",
+    "nextcloud",
+    "deck",
+    "task-management",
+    "ai-agent"
+  ],
+  "author": "MoltAgent Contributors",
+  "license": "AGPL-3.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "src/",
+    "scripts/",
+    "config/",
+    "docs/"
+  ],
+  "dependencies": {
+    "@extractus/article-extractor": "^8.0.20",
+    "cheerio": "^1.2.0",
+    "imap": "^0.8.19",
+    "js-yaml": "^4.1.1",
+    "mailparser": "^3.9.3",
+    "mammoth": "^1.11.0",
+    "nodemailer": "^8.0.0",
+    "pdf-parse": "^2.4.5",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7"
+  },
+  "lint-staged": {
+    "*.js": "eslint"
+  }
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Ollama keep-alive timer (prevent cold start)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=4min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Ollama keep-alive ping
+After=ollama.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/moltagent/scripts/ollama-keepalive.sh
+Environment=OLLAMA_URL=http://localhost:11434
+Environment=OLLAMA_MODEL=qwen3:8b

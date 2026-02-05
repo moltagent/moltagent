@@ -1,0 +1,29 @@
+{
+  "check_inbox": {
+    "response": "{\"action\": \"check_inbox\"}"
+  },
+  "check_unread": {
+    "response": "{\"action\": \"check_unread\"}"
+  },
+  "search_emails_from": {
+    "response": "{\"action\": \"search_emails\", \"from\": \"john@example.com\"}"
+  },
+  "search_emails_subject": {
+    "response": "{\"action\": \"search_emails\", \"subject\": \"project update\"}"
+  },
+  "draft_email": {
+    "response": "{\"action\": \"draft_email\", \"to\": \"recipient@example.com\", \"subject\": \"Meeting Tomorrow\", \"topic\": \"meeting\"}"
+  },
+  "draft_reply": {
+    "response": "{\"action\": \"draft_reply\", \"content\": \"I agree with your proposal\"}"
+  },
+  "summarize_emails": {
+    "response": "{\"action\": \"summarize_emails\", \"topic\": \"project\"}"
+  },
+  "read_email": {
+    "response": "{\"action\": \"read_email\"}"
+  },
+  "unknown": {
+    "response": "{\"action\": \"unknown\"}"
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "boards": [
+    {
+      "id": 1,
+      "title": "MoltAgent Tasks",
+      "color": "0082c9",
+      "owner": {
+        "uid": "admin",
+        "displayname": "Administrator"
+      },
+      "stacks": [
+        {
+          "id": 101,
+          "title": "Inbox",
+          "order": 0
+        },
+        {
+          "id": 102,
+          "title": "In Progress",
+          "order": 1
+        },
+        {
+          "id": 103,
+          "title": "Review",
+          "order": 2
+        },
+        {
+          "id": 104,
+          "title": "Done",
+          "order": 3
+        }
+      ],
+      "labels": [
+        {
+          "id": 1,
+          "title": "urgent",
+          "color": "ff0000"
+        },
+        {
+          "id": 2,
+          "title": "research",
+          "color": "00ff00"
+        },
+        {
+          "id": 3,
+          "title": "blocked",
+          "color": "ffff00"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Personal Tasks",
+      "color": "e67c73",
+      "owner": {
+        "uid": "user1",
+        "displayname": "User One"
+      }
+    }
+  ]
+}

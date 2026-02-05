@@ -1,0 +1,26 @@
+{
+  "uid": "email-003",
+  "from": "sender@example.com",
+  "fromName": "Document Sender",
+  "to": "recipient@example.com",
+  "subject": "Documents for Review",
+  "date": "2025-02-04T15:30:00Z",
+  "body": "Hi,\n\nPlease find attached the documents for your review:\n\n1. Project proposal (proposal.pdf)\n2. Budget spreadsheet (budget.xlsx)\n\nLet me know if you have any questions.\n\nThanks!",
+  "snippet": "Please find attached the documents for your review: 1. Project proposal",
+  "isRead": true,
+  "hasAttachments": true,
+  "attachmentCount": 2,
+  "messageId": "<msg-003@example.com>",
+  "attachments": [
+    {
+      "filename": "proposal.pdf",
+      "contentType": "application/pdf",
+      "size": 256000
+    },
+    {
+      "filename": "budget.xlsx",
+      "contentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "size": 48000
+    }
+  ]
+}

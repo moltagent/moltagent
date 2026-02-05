@@ -1,0 +1,48 @@
+# MoltAgent Provider Configuration
+# Providers are tried in the order listed for each role
+
+# Provider definitions
+providers:
+  # Local - always available (sovereign/free)
+  ollama-local:
+    adapter: ollama
+    endpoint: http://138.201.246.236:11434
+    model: qwen3:8b
+
+  # Value tier - uncomment and configure as needed
+  # deepseek:
+  #   adapter: deepseek
+  #   credentialName: deepseek-api-key
+  #   model: deepseek-chat
+
+  # mistral:
+  #   adapter: mistral
+  #   credentialName: mistral-api-key
+  #   model: mistral-small-latest
+
+  # Premium tier - uncomment and configure as needed
+  # claude:
+  #   adapter: anthropic
+  #   credentialName: claude-api-key
+  #   model: claude-sonnet-4-20250514
+
+  # gpt4:
+  #   adapter: openai
+  #   credentialName: openai-api-key
+  #   model: gpt-4o
+
+# Role assignments (providers tried in order listed)
+roles:
+  sovereign: [ollama-local]
+  free: [ollama-local]
+  value: [ollama-local]
+  premium: [ollama-local]
+
+# Fallback chains
+fallbackChain:
+  ollama-local: []
+
+# Daily budget limits in USD
+budgets:
+  daily: {}
+  monthly: {}

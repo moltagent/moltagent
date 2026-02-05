@@ -1,0 +1,67 @@
+# MoltAgent Deck Configuration
+#
+# This file configures the NC Deck integration for task management.
+# Copy to your config directory and adjust as needed.
+
+deck:
+  # Enable/disable Deck integration
+  enabled: true
+  
+  # Board name (created automatically if doesn't exist)
+  boardName: "MoltAgent Tasks"
+  
+  # Days to keep completed cards before auto-archiving
+  # Set to 0 to disable auto-archiving
+  archiveAfterDays: 180
+  
+  # Process inbox cards during heartbeat
+  processInHeartbeat: true
+  
+  # Stack names (customize if needed, but keep the keys)
+  stacks:
+    inbox: "Inbox"           # New tasks from humans
+    queued: "Queued"         # Accepted, waiting for capacity
+    working: "Working"       # Currently being processed
+    done: "Done"             # Completed tasks
+    reference: "Reference"   # Standing information
+  
+  # Labels (customize colors if desired)
+  # Colors are hex without # prefix
+  labels:
+    - title: "urgent"
+      color: "ED1C24"        # Red
+    - title: "research"
+      color: "0082C9"        # Blue
+    - title: "writing"
+      color: "2ECC71"        # Green
+    - title: "admin"
+      color: "7F8C8D"        # Gray
+    - title: "blocked"
+      color: "F39C12"        # Orange
+  
+  # Task processing settings
+  processing:
+    # Skip cards with these labels
+    skipLabels:
+      - "blocked"
+    
+    # Maximum cards to process per heartbeat
+    maxCardsPerCycle: 5
+    
+    # Timeout for individual task processing (ms)
+    taskTimeout: 300000      # 5 minutes
+  
+  # LLM routing for different task types
+  routing:
+    research:
+      defaultRole: "value"
+      urgentRole: "premium"
+    writing:
+      defaultRole: "premium"  # Quality matters for writing
+      urgentRole: "premium"
+    admin:
+      defaultRole: "value"
+      urgentRole: "value"
+    generic:
+      defaultRole: "value"
+      urgentRole: "premium"

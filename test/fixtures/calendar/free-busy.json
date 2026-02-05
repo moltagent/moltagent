@@ -1,0 +1,41 @@
+{
+  "busy_slots": [
+    {
+      "start": "2025-02-05T09:00:00Z",
+      "end": "2025-02-05T09:15:00Z",
+      "event": "Morning Standup"
+    },
+    {
+      "start": "2025-02-05T10:00:00Z",
+      "end": "2025-02-05T11:30:00Z",
+      "event": "Project Planning"
+    },
+    {
+      "start": "2025-02-05T14:00:00Z",
+      "end": "2025-02-05T14:30:00Z",
+      "event": "1:1 with Manager"
+    }
+  ],
+  "free_slots": [
+    {
+      "start": "2025-02-05T09:15:00Z",
+      "end": "2025-02-05T10:00:00Z",
+      "duration_minutes": 45
+    },
+    {
+      "start": "2025-02-05T11:30:00Z",
+      "end": "2025-02-05T12:00:00Z",
+      "duration_minutes": 30
+    },
+    {
+      "start": "2025-02-05T13:00:00Z",
+      "end": "2025-02-05T14:00:00Z",
+      "duration_minutes": 60
+    },
+    {
+      "start": "2025-02-05T14:30:00Z",
+      "end": "2025-02-05T18:00:00Z",
+      "duration_minutes": 210
+    }
+  ]
+}

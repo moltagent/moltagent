@@ -1,0 +1,80 @@
+{
+  "inbox": [
+    {
+      "id": 101,
+      "title": "Research topic X",
+      "description": "Investigate the feasibility of implementing feature X.\n\nConsider:\n- Technical requirements\n- Time estimates\n- Dependencies",
+      "stackId": 101,
+      "order": 0,
+      "labels": [
+        {"id": 2, "title": "research", "color": "00ff00"}
+      ],
+      "assignedUsers": [],
+      "duedate": "2025-02-10T00:00:00Z",
+      "createdAt": "2025-02-01T10:00:00Z",
+      "lastModified": "2025-02-01T10:00:00Z"
+    },
+    {
+      "id": 102,
+      "title": "Urgent: Fix production bug",
+      "description": "Users reporting 500 errors on login page.\n\nSteps to reproduce:\n1. Go to login page\n2. Enter credentials\n3. Click submit\n4. Error appears",
+      "stackId": 101,
+      "order": 1,
+      "labels": [
+        {"id": 1, "title": "urgent", "color": "ff0000"}
+      ],
+      "assignedUsers": [
+        {"uid": "developer1", "displayname": "Dev One"}
+      ],
+      "duedate": "2025-02-05T18:00:00Z",
+      "createdAt": "2025-02-05T08:00:00Z",
+      "lastModified": "2025-02-05T08:00:00Z"
+    }
+  ],
+  "in_progress": [
+    {
+      "id": 201,
+      "title": "Implement user authentication",
+      "description": "Add OAuth2 authentication flow.\n\nTasks:\n- Set up OAuth provider\n- Create login endpoints\n- Add session management\n- Write tests",
+      "stackId": 102,
+      "order": 0,
+      "labels": [],
+      "assignedUsers": [
+        {"uid": "developer1", "displayname": "Dev One"}
+      ],
+      "duedate": "2025-02-15T00:00:00Z",
+      "createdAt": "2025-01-25T10:00:00Z",
+      "lastModified": "2025-02-04T14:30:00Z"
+    }
+  ],
+  "review": [
+    {
+      "id": 301,
+      "title": "Update documentation",
+      "description": "Review and update API documentation for v2.0 release.",
+      "stackId": 103,
+      "order": 0,
+      "labels": [],
+      "assignedUsers": [],
+      "duedate": null,
+      "createdAt": "2025-02-03T10:00:00Z",
+      "lastModified": "2025-02-04T16:00:00Z"
+    }
+  ],
+  "done": [
+    {
+      "id": 401,
+      "title": "Set up CI/CD pipeline",
+      "description": "Configure GitHub Actions for automated testing and deployment.",
+      "stackId": 104,
+      "order": 0,
+      "labels": [],
+      "assignedUsers": [
+        {"uid": "developer1", "displayname": "Dev One"}
+      ],
+      "duedate": null,
+      "createdAt": "2025-01-20T10:00:00Z",
+      "lastModified": "2025-01-28T11:00:00Z"
+    }
+  ]
+}

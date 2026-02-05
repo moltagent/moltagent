@@ -1,0 +1,21 @@
+{
+  "uid": "email-002",
+  "from": "organizer@example.com",
+  "fromName": "Meeting Organizer",
+  "to": "attendee@example.com",
+  "subject": "Meeting Request: Project Sync",
+  "date": "2025-02-05T10:00:00Z",
+  "body": "Hi,\n\nPlease join our project sync meeting.\n\nWhen: February 6, 2025 at 2:00 PM\nWhere: Conference Room A\nDuration: 1 hour\n\nAgenda:\n- Review progress\n- Discuss blockers\n- Plan next steps\n\nPlease confirm your attendance.\n\nBest,\nOrganizer",
+  "snippet": "Please join our project sync meeting. When: February 6, 2025 at 2:00 PM",
+  "isRead": false,
+  "hasAttachments": false,
+  "messageId": "<msg-002@example.com>",
+  "isMeetingRequest": true,
+  "meetingDetails": {
+    "start": "2025-02-06T14:00:00Z",
+    "end": "2025-02-06T15:00:00Z",
+    "location": "Conference Room A",
+    "organizer": "organizer@example.com",
+    "summary": "Project Sync"
+  }
+}

@@ -1,0 +1,4 @@
+# In _buildICS function, remove the METHOD:REQUEST line
+# Change:
+#   'METHOD:REQUEST',
+# To: (remove the line entirely)

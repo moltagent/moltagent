@@ -1,0 +1,54 @@
+{
+  "today": [
+    {
+      "uid": "event-001",
+      "summary": "Morning Standup",
+      "start": "2025-02-05T09:00:00Z",
+      "end": "2025-02-05T09:15:00Z",
+      "location": "Zoom",
+      "description": "Daily team standup meeting"
+    },
+    {
+      "uid": "event-002",
+      "summary": "Project Planning",
+      "start": "2025-02-05T10:00:00Z",
+      "end": "2025-02-05T11:30:00Z",
+      "location": "Conference Room A",
+      "description": "Sprint planning session"
+    },
+    {
+      "uid": "event-003",
+      "summary": "Lunch",
+      "start": "2025-02-05T12:00:00Z",
+      "end": "2025-02-05T13:00:00Z",
+      "location": null,
+      "description": null
+    },
+    {
+      "uid": "event-004",
+      "summary": "1:1 with Manager",
+      "start": "2025-02-05T14:00:00Z",
+      "end": "2025-02-05T14:30:00Z",
+      "location": "Office 302",
+      "description": "Weekly check-in"
+    }
+  ],
+  "upcoming": [
+    {
+      "uid": "event-005",
+      "summary": "Team Retrospective",
+      "start": "2025-02-06T15:00:00Z",
+      "end": "2025-02-06T16:00:00Z",
+      "location": "Conference Room B",
+      "description": "Sprint retrospective"
+    },
+    {
+      "uid": "event-006",
+      "summary": "Client Demo",
+      "start": "2025-02-07T10:00:00Z",
+      "end": "2025-02-07T11:00:00Z",
+      "location": "Virtual - Teams",
+      "description": "Q1 feature demo for client"
+    }
+  ]
+}

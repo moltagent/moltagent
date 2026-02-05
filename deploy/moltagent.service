@@ -1,0 +1,61 @@
+# MoltAgent systemd service unit
+#
+# Installation:
+#   1. Create credential store: sudo mkdir -p /etc/credstore
+#   2. Store NC password: echo -n 'your-password' | sudo tee /etc/credstore/moltagent-nc-password
+#   3. Secure permissions: sudo chmod 600 /etc/credstore/moltagent-nc-password
+#   4. Copy this file: sudo cp moltagent.service /etc/systemd/system/
+#   5. Reload systemd: sudo systemctl daemon-reload
+#   6. Enable service: sudo systemctl enable moltagent
+#   7. Start service: sudo systemctl start moltagent
+#
+# Logs: journalctl -u moltagent -f
+
+[Unit]
+Description=MoltAgent - Nextcloud AI Assistant
+Documentation=https://github.com/yourorg/moltagent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/moltagent
+
+# Security: Load NC password from secure credential store
+# This sets CREDENTIALS_DIRECTORY env var pointing to a tmpfs with the credential
+LoadCredential=nc-password:/etc/credstore/moltagent-nc-password
+
+# Run the bot
+ExecStart=/usr/bin/node /opt/moltagent/webhook-server.js
+
+# Environment (non-sensitive config only)
+Environment=NODE_ENV=production
+Environment=NC_URL=https://nx89136.your-storageshare.de
+Environment=NC_USER=moltagent
+Environment=OLLAMA_URL=http://138.201.246.236:11434
+Environment=OLLAMA_MODEL=deepseek-r1:8b
+Environment=DECK_BOARD_ID=8
+Environment=HEARTBEAT_INTERVAL=300000
+Environment=INITIATIVE_LEVEL=2
+Environment=SEARXNG_URL=http://localhost:8080
+# Primary Talk room for proactive messages (digest, alerts). Replies go to
+# whichever room the user messaged from; this room is for bot-initiated messages.
+# Environment=TALK_PRIMARY_ROOM=your-primary-room-token
+Environment=KNOWLEDGE_ADMIN_USER=Funana
+Environment=TEST_NC_PASSWORDS=false
+
+# Restart policy
+Restart=on-failure
+RestartSec=30
+
+# Security hardening
+
+# Resource limits
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moltagent
+
+[Install]
+WantedBy=multi-user.target

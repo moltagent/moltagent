@@ -1,0 +1,47 @@
+{
+  "env": {
+    "node": true,
+    "es2022": true
+  },
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "script"
+  },
+  "rules": {
+    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+    "no-undef": "error",
+    "no-const-assign": "error",
+    "no-dupe-keys": "error",
+    "no-duplicate-case": "error",
+    "no-empty": ["warn", { "allowEmptyCatch": false }],
+    "no-ex-assign": "error",
+    "no-extra-boolean-cast": "warn",
+    "no-func-assign": "error",
+    "no-irregular-whitespace": "error",
+    "no-unreachable": "error",
+    "no-unsafe-negation": "error",
+    "use-isnan": "error",
+    "valid-typeof": "error",
+    "eqeqeq": ["warn", "always", { "null": "ignore" }],
+    "no-eval": "error",
+    "no-implied-eval": "error",
+    "no-new-func": "error",
+    "no-return-await": "warn",
+    "no-self-compare": "error",
+    "no-throw-literal": "warn",
+    "no-useless-concat": "warn",
+    "no-useless-return": "warn",
+    "prefer-promise-reject-errors": "warn",
+    "require-await": "warn",
+    "no-shadow": "warn",
+    "no-use-before-define": ["error", { "functions": false, "classes": true }],
+    "strict": ["warn", "global"],
+    "no-console": "off",
+    "no-process-exit": "off"
+  },
+  "ignorePatterns": [
+    "node_modules/",
+    "coverage/",
+    "*.min.js"
+  ]
+}

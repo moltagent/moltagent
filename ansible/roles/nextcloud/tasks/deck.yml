@@ -1,0 +1,271 @@
+---
+# ansible/roles/nextcloud/tasks/deck.yml
+#
+# MoltAgent NC Deck Setup Tasks
+# Enables Deck app and creates the MoltAgent Tasks board
+#
+# Variables required:
+#   - nc_url: Nextcloud URL
+#   - nc_admin_user: Admin username
+#   - nc_admin_password: Admin password
+#   - moltagent_password: MoltAgent user password
+
+- name: Check if Deck app is enabled
+  uri:
+    url: "{{ nc_url }}/ocs/v2.php/cloud/apps?filter=enabled"
+    method: GET
+    user: "{{ nc_admin_user }}"
+    password: "{{ nc_admin_password }}"
+    headers:
+      OCS-APIRequest: "true"
+      Accept: "application/json"
+    return_content: yes
+    status_code: [200]
+  register: enabled_apps
+
+- name: Enable Deck app if not enabled
+  uri:
+    url: "{{ nc_url }}/ocs/v2.php/cloud/apps/deck"
+    method: POST
+    user: "{{ nc_admin_user }}"
+    password: "{{ nc_admin_password }}"
+    headers:
+      OCS-APIRequest: "true"
+    status_code: [100, 200]
+  when: "'deck' not in enabled_apps.content"
+  register: deck_enabled
+
+- name: Wait for Deck app to initialize
+  pause:
+    seconds: 3
+  when: deck_enabled.changed | default(false)
+
+# ──────────────────────────────────────────────────────────
+# Check for existing board
+# ──────────────────────────────────────────────────────────
+
+- name: List MoltAgent user boards
+  uri:
+    url: "{{ nc_url }}/index.php/apps/deck/api/v1.0/boards"
+    method: GET
+    user: "moltagent"
+    password: "{{ moltagent_password }}"
+    headers:
+      OCS-APIRequest: "true"
+      Accept: "application/json"
+    return_content: yes
+    status_code: [200]
+  register: deck_boards
+
+- name: Check if MoltAgent Tasks board exists
+  set_fact:
+    moltagent_board: "{{ deck_boards.json | selectattr('title', 'equalto', 'MoltAgent Tasks') | list | first | default(None) }}"
+
+- name: Set board_exists fact
+  set_fact:
+    board_exists: "{{ moltagent_board is not none }}"
+
+# ──────────────────────────────────────────────────────────
+# Create board if it doesn't exist
+# ──────────────────────────────────────────────────────────
+
+- name: Create MoltAgent Tasks board
+  uri:
+    url: "{{ nc_url }}/index.php/apps/deck/api/v1.0/boards"
+    method: POST
+    user: "moltagent"
+    password: "{{ moltagent_password }}"
+    headers:
+      OCS-APIRequest: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      title: "MoltAgent Tasks"
+      color: "0082c9"
+    status_code: [200, 201]
+  register: new_board
+  when: not board_exists
+
+- name: Set board ID for new board
+  set_fact:
+    moltagent_board_id: "{{ new_board.json.id }}"
+  when: not board_exists
+
+- name: Set board ID for existing board
+  set_fact:
+    moltagent_board_id: "{{ moltagent_board.id }}"
+  when: board_exists
+
+# ──────────────────────────────────────────────────────────
+# Create stacks
+# ──────────────────────────────────────────────────────────
+
+- name: Get existing stacks
+  uri:
+    url: "{{ nc_url }}/index.php/apps/deck/api/v1.0/boards/{{ moltagent_board_id }}"
+    method: GET
+    user: "moltagent"
+    password: "{{ moltagent_password }}"
+    headers:
+      OCS-APIRequest: "true"
+      Accept: "application/json"
+    return_content: yes
+    status_code: [200]
+  register: board_details
+
+- name: Extract existing stack names
+  set_fact:
+    existing_stack_names: "{{ board_details.json.stacks | map(attribute='title') | map('lower') | list }}"
+
+- name: Define required stacks
+  set_fact:
+    required_stacks:
+      - { title: "Inbox", order: 0 }
+      - { title: "Queued", order: 1 }
+      - { title: "Working", order: 2 }
+      - { title: "Done", order: 3 }
+      - { title: "Reference", order: 4 }
+
+- name: Create missing stacks
+  uri:
+    url: "{{ nc_url }}/index.php/apps/deck/api/v1.0/boards/{{ moltagent_board_id }}/stacks"
+    method: POST
+    user: "moltagent"
+    password: "{{ moltagent_password }}"
+    headers:
+      OCS-APIRequest: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      title: "{{ item.title }}"
+      order: "{{ item.order }}"
+    status_code: [200, 201]
+  loop: "{{ required_stacks }}"
+  when: item.title | lower not in existing_stack_names
+
+# ──────────────────────────────────────────────────────────
+# Create labels
+# ──────────────────────────────────────────────────────────
+
+- name: Extract existing label names
+  set_fact:
+    existing_label_names: "{{ board_details.json.labels | map(attribute='title') | map('lower') | list }}"
+
+- name: Define required labels
+  set_fact:
+    required_labels:
+      - { title: "urgent", color: "ED1C24" }
+      - { title: "research", color: "0082C9" }
+      - { title: "writing", color: "2ECC71" }
+      - { title: "admin", color: "7F8C8D" }
+      - { title: "blocked", color: "F39C12" }
+
+- name: Create missing labels
+  uri:
+    url: "{{ nc_url }}/index.php/apps/deck/api/v1.0/boards/{{ moltagent_board_id }}/labels"
+    method: POST
+    user: "moltagent"
+    password: "{{ moltagent_password }}"
+    headers:
+      OCS-APIRequest: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      title: "{{ item.title }}"
+      color: "{{ item.color }}"
+    status_code: [200, 201]
+  loop: "{{ required_labels }}"
+  when: item.title | lower not in existing_label_names
+
+# ──────────────────────────────────────────────────────────
+# Create welcome card (only for new boards)
+# ──────────────────────────────────────────────────────────
+
+- name: Get Inbox stack ID
+  set_fact:
+    inbox_stack_id: "{{ (board_details.json.stacks | selectattr('title', 'equalto', 'Inbox') | list | first).id | default(none) }}"
+  when: not board_exists
+
+- name: Get Inbox stack ID (refresh for new board)
+  uri:
+    url: "{{ nc_url }}/index.php/apps/deck/api/v1.0/boards/{{ moltagent_board_id }}"
+    method: GET
+    user: "moltagent"
+    password: "{{ moltagent_password }}"
+    headers:
+      OCS-APIRequest: "true"
+      Accept: "application/json"
+    return_content: yes
+    status_code: [200]
+  register: board_refresh
+  when: not board_exists and inbox_stack_id is none
+
+- name: Set Inbox stack ID from refresh
+  set_fact:
+    inbox_stack_id: "{{ (board_refresh.json.stacks | selectattr('title', 'equalto', 'Inbox') | list | first).id }}"
+  when: not board_exists and inbox_stack_id is none
+
+- name: Create welcome card
+  uri:
+    url: "{{ nc_url }}/index.php/apps/deck/api/v1.0/boards/{{ moltagent_board_id }}/stacks/{{ inbox_stack_id }}/cards"
+    method: POST
+    user: "moltagent"
+    password: "{{ moltagent_password }}"
+    headers:
+      OCS-APIRequest: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      title: "👋 Welcome to MoltAgent Tasks!"
+      description: |
+        # How to Use This Board
+
+        This board is where you assign tasks to your MoltAgent AI assistant.
+
+        ## Workflow
+
+        1. **Create a card** in the **Inbox** column
+        2. Add a **clear title** describing what you need
+        3. Add **details** in the description
+        4. Optionally add **labels**: urgent, research, writing, admin
+        5. MoltAgent will process it automatically
+
+        ## Columns
+
+        - **Inbox** — New tasks for the bot
+        - **Queued** — Accepted, waiting for capacity
+        - **Working** — Currently being processed
+        - **Done** — Completed tasks
+        - **Reference** — Standing information
+
+        ## Labels
+
+        - 🔴 urgent — Process first
+        - 🔵 research — Research/investigation
+        - 🟢 writing — Content creation
+        - ⚫ admin — File/organizational tasks
+        - 🟠 blocked — Waiting for human input
+
+        ---
+
+        *Delete this card when you're ready to start!*
+      type: "plain"
+      order: 0
+    status_code: [200, 201]
+  when: not board_exists
+
+# ──────────────────────────────────────────────────────────
+# Output results
+# ──────────────────────────────────────────────────────────
+
+- name: Display setup results
+  debug:
+    msg: |
+      
+      ✅ MoltAgent Deck Setup Complete
+      
+      Board: MoltAgent Tasks (ID: {{ moltagent_board_id }})
+      Status: {{ 'Created new board' if not board_exists else 'Verified existing board' }}
+      
+      Stacks: Inbox, Queued, Working, Done, Reference
+      Labels: urgent, research, writing, admin, blocked
