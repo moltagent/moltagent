@@ -1148,7 +1148,8 @@ async function initialize() {
         searxngClient: searxngClient,
         webReader: webReaderInstance,
         contactsClient: contactsClient,
-        memorySearcher: memorySearcher
+        memorySearcher: memorySearcher,
+        emailHandler: emailHandler
       });
       console.log(`[INIT] ToolRegistry ready (${toolRegistry.size} tools)`);
 

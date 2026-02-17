@@ -33,15 +33,12 @@ test('wiki_write requires approval', () => {
   assert.ok(result.approvalPrompt.includes('wiki_write'), 'Prompt should mention operation name');
 });
 
-test('mail_send requires approval', () => {
+test('mail_send is allowed (HITL handled by SOUL.md instruction, not guard)', () => {
   const guard = new ToolGuard();
   const result = guard.evaluate('mail_send');
 
-  assert.strictEqual(result.allowed, false, 'mail_send should require approval');
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED', 'Should be APPROVAL_REQUIRED level');
-  assert.strictEqual(result.requiresAction, 'await_approval', 'Should require await_approval action');
-  assert.ok(result.approvalPrompt, 'Should provide approval prompt');
-  assert.ok(result.approvalPrompt.includes('mail_send'), 'Prompt should mention operation name');
+  assert.strictEqual(result.allowed, true, 'mail_send should be allowed (HITL in SOUL.md)');
+  assert.strictEqual(result.level, 'ALLOWED', 'Should be ALLOWED level');
 });
 
 test('notification_send requires approval', () => {

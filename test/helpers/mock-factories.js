@@ -177,6 +177,7 @@ function createMockCollectivesClient(responses = {}) {
     searchPages: async (cId, query) => responses.searchPages || [],
     readPageContent: async (path) => responses.readPageContent || '',
     writePageContent: async (path, content) => responses.writePageContent || undefined,
+    touchPage: async () => {},
     findPageByTitle: async (title) => {
       if (responses.findPageByTitle === null) return null;
       return responses.findPageByTitle || null;

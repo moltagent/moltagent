@@ -265,6 +265,67 @@ class CollectivesClient {
   }
 
   // ===========================================================================
+  // Content Sanitization
+  // ===========================================================================
+
+  /**
+   * Sanitize content by stripping Tiptap/Prosemirror internal tags and
+   * stray HTML, converting them to clean markdown equivalents.
+   * @private
+   * @param {string} content - Raw content that may contain HTML/Tiptap tags
+   * @returns {string} Clean markdown content
+   */
+  _sanitizeContent(content) {
+    if (!content || typeof content !== 'string') return content || '';
+
+    let s = content;
+
+    // Tiptap heading wrappers → markdown headings
+    s = s.replace(/<heading\s+level="(\d)">([\s\S]*?)<\/heading>/gi,
+      (_, lvl, text) => '#'.repeat(parseInt(lvl)) + ' ' + text.trim());
+
+    // Tiptap paragraph wrappers → plain text + newline
+    s = s.replace(/<paragraph>([\s\S]*?)<\/paragraph>/gi, '$1\n');
+
+    // Tiptap list wrappers
+    s = s.replace(/<bulletlist>/gi, '');
+    s = s.replace(/<\/bulletlist>/gi, '');
+    s = s.replace(/<orderedlist>/gi, '');
+    s = s.replace(/<\/orderedlist>/gi, '');
+    s = s.replace(/<listitem><paragraph>([\s\S]*?)<\/paragraph><\/listitem>/gi, '- $1\n');
+    s = s.replace(/<listitem>([\s\S]*?)<\/listitem>/gi, '- $1\n');
+
+    // Tiptap hardbreak
+    s = s.replace(/<hardbreak\s*\/?>/gi, '\n');
+
+    // Standard HTML tags that might leak through
+    s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi,
+      (_, lvl, text) => '#'.repeat(parseInt(lvl)) + ' ' + text.trim());
+    s = s.replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, '$1\n');
+    s = s.replace(/<br\s*\/?>/gi, '\n');
+    s = s.replace(/<ul[^>]*>/gi, '');
+    s = s.replace(/<\/ul>/gi, '');
+    s = s.replace(/<ol[^>]*>/gi, '');
+    s = s.replace(/<\/ol>/gi, '');
+    s = s.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, '- $1\n');
+    s = s.replace(/<strong[^>]*>([\s\S]*?)<\/strong>/gi, '**$1**');
+    s = s.replace(/<b[^>]*>([\s\S]*?)<\/b>/gi, '**$1**');
+    s = s.replace(/<em[^>]*>([\s\S]*?)<\/em>/gi, '*$1*');
+    s = s.replace(/<i[^>]*>([\s\S]*?)<\/i>/gi, '*$1*');
+    s = s.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '`$1`');
+    s = s.replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
+    s = s.replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, '> $1');
+
+    // Strip any remaining unknown tags
+    s = s.replace(/<\/?[a-zA-Z][a-zA-Z0-9]*(?:\s[^>]*)?\/?>/g, '');
+
+    // Fix excess newlines introduced by replacements
+    s = s.replace(/\n{3,}/g, '\n\n');
+
+    return s.trim();
+  }
+
+  // ===========================================================================
   // Page Content (WebDAV)
   // ===========================================================================
 
@@ -278,7 +339,8 @@ class CollectivesClient {
     const fullPath = `Collectives/${this.collectiveName}/${pagePath}`;
     try {
       const response = await this._webdavRequest('GET', fullPath);
-      return typeof response.body === 'string' ? response.body : (response.body ? String(response.body) : '');
+      const raw = typeof response.body === 'string' ? response.body : (response.body ? String(response.body) : '');
+      return this._sanitizeContent(raw);
     } catch (err) {
       if (err.statusCode === 404) return null;
       throw err;
@@ -294,7 +356,23 @@ class CollectivesClient {
   async writePageContent(pagePath, content) {
     if (pagePath.includes('..')) throw new CollectivesApiError('Path traversal not allowed');
     const fullPath = `Collectives/${this.collectiveName}/${pagePath}`;
-    await this._webdavRequest('PUT', fullPath, content);
+    const sanitized = this._sanitizeContent(content);
+    await this._webdavRequest('PUT', fullPath, sanitized);
+  }
+
+  /**
+   * Touch a page via OCS API to invalidate NC Text editor cache.
+   * Call after WebDAV writes so the Collectives UI re-reads the .md file.
+   * @param {number} collectiveId - Collective ID
+   * @param {number} pageId - Page ID
+   * @returns {Promise<void>}
+   */
+  async touchPage(collectiveId, pageId) {
+    try {
+      await this._ocsRequest('GET', `/collectives/${collectiveId}/pages/${pageId}`);
+    } catch {
+      // Best effort — don't fail the write because of a cache touch
+    }
   }
 
   // ===========================================================================

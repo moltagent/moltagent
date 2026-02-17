@@ -56,7 +56,7 @@ const REQUIRES_APPROVAL = [
   'file_share',
 
   // Phase 2: External communication + shared knowledge writes
-  'mail_send',            // Sending email — always human approval
+  // mail_send — handled by SOUL.md instruction (LLM must confirm with user before calling)
   'wiki_write',           // Writing to shared knowledge — content review
   'notification_send',    // Pushing notifications — prevent spam
 ];

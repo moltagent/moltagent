@@ -29,8 +29,8 @@ class ToolRegistry {
    * @param {Object} [options.searchAdapters] - Map of commercial search adapters { brave, perplexity, exa }
    * @param {Object} [options.logger]
    */
-  constructor({ deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, logger }) {
-    this.clients = { deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters };
+  constructor({ deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, logger }) {
+    this.clients = { deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler };
     this.logger = logger || console;
 
     /** @type {Map<string, {name: string, description: string, parameters: Object, handler: Function}>} */
@@ -1646,6 +1646,12 @@ class ToolRegistry {
           // Update existing page
           await wiki.writePageContent(existing.path, writeContent);
 
+          // Touch page to invalidate NC Text editor cache
+          if (existing.page && existing.page.id) {
+            const cId = await wiki.resolveCollective();
+            await wiki.touchPage(cId, existing.page.id);
+          }
+
           // Log to learning log
           if (this.clients.learningLog) {
             try {
@@ -1686,6 +1692,10 @@ class ToolRegistry {
             ? `${existingByList.filePath}/${existingByList.fileName}`
             : existingByList.fileName || `${leafTitle}.md`;
           await wiki.writePageContent(fallbackPath, writeContent);
+          // Touch page to invalidate NC Text editor cache
+          if (existingByList.id) {
+            await wiki.touchPage(collectiveId, existingByList.id);
+          }
           return `Updated wiki page "${leafTitle}" (dedup: found via list scan).`;
         }
 
@@ -1699,6 +1709,11 @@ class ToolRegistry {
 
         // Write content
         await wiki.writePageContent(pagePath, writeContent);
+
+        // Touch page to invalidate NC Text editor cache
+        if (created.id) {
+          await wiki.touchPage(collectiveId, created.id);
+        }
 
         // Log to learning log
         if (this.clients.learningLog) {
@@ -2225,6 +2240,37 @@ class ToolRegistry {
         return `Updated card ${args.card_id}.${changes.length ? ' Changes: ' + changes.join(', ') + '.' : ''}`;
       }
     });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Email Tools
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const emailHandler = this.clients.emailHandler;
+    if (emailHandler) {
+      this.register({
+        name: 'mail_send',
+        description: 'Send an email. REQUIRES human approval before execution. Provide recipient, subject, and body. The email will be sent via SMTP from the configured Moltagent email account.',
+        parameters: {
+          type: 'object',
+          properties: {
+            to: { type: 'string', description: 'Recipient email address' },
+            subject: { type: 'string', description: 'Email subject line' },
+            body: { type: 'string', description: 'Email body text' }
+          },
+          required: ['to', 'subject', 'body']
+        },
+        handler: async (args) => {
+          if (!args.to || !args.to.includes('@')) {
+            return 'Invalid email address. Please provide a valid recipient email.';
+          }
+          const result = await emailHandler.confirmSendEmail(
+            { to: args.to, subject: args.subject, body: args.body },
+            'moltagent'
+          );
+          return result.message || `Email sent to ${args.to}.`;
+        }
+      });
+    }
   }
 }
 
