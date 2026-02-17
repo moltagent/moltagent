@@ -1,14 +1,15 @@
 'use strict';
 
 /**
- * ProviderChain - Decorator that adds fallback on 429 rate-limit errors.
+ * ProviderChain - Decorator that adds fallback on 429/529 rate-limit/overload errors.
  *
  * Wraps a primary LLM provider and transparently falls back to a secondary
- * provider when the primary throws a rate-limit error after exhausting its
- * own retries. Non-429 errors propagate normally.
+ * provider when the primary throws a rate-limit or overload error after
+ * exhausting its own retries. Tools are stripped on fallback to avoid
+ * overwhelming smaller models. Other errors propagate normally.
  *
  * @module agent/providers/provider-chain
- * @version 1.0.0
+ * @version 1.2.0
  */
 
 class ProviderChain {
@@ -33,7 +34,10 @@ class ProviderChain {
   }
 
   /**
-   * Send a chat request, falling back on 429 rate-limit errors.
+   * Send a chat request, falling back on rate-limit/overload errors.
+   *
+   * On fallback: tools are stripped so the smaller model can respond
+   * conversationally without choking on large tool schemas.
    *
    * Attaches `_routing` metadata to every result:
    *   { isFallback, primaryIsLocal, fallbackIsLocal, player }
@@ -88,41 +92,94 @@ class ProviderChain {
       return result;
     } catch (err) {
       if (this.fallback && this._isRateLimitError(err)) {
-        this.logger.warn(`[ProviderChain] Primary provider 429, falling back: ${err.message}`);
-        const result = await this.fallback.chat(params);
-        result._routing = {
-          isFallback: true,
-          primaryIsLocal: this.primaryIsLocal,
-          fallbackIsLocal: this.fallbackIsLocal,
-          player: 'fallback',
-        };
-        if (this.fallbackNotifier) {
-          try { this.fallbackNotifier.onRouteComplete(result); } catch (e) { /* silent */ }
+        const primaryReason = this._summarizeError(err, this.primary);
+        this.logger.warn(`[ProviderChain] ${primaryReason}, falling back to ${this._providerName(this.fallback)} (tool-free)`);
+
+        // Strip tools for fallback — small models choke on large tool schemas
+        const fallbackParams = { ...params, tools: [] };
+
+        try {
+          const result = await this.fallback.chat(fallbackParams);
+          result._routing = {
+            isFallback: true,
+            primaryIsLocal: this.primaryIsLocal,
+            fallbackIsLocal: this.fallbackIsLocal,
+            player: 'fallback',
+            primaryReason,
+          };
+          if (this.fallbackNotifier) {
+            try { this.fallbackNotifier.onRouteComplete(result); } catch (e) { /* silent */ }
+          }
+          return result;
+        } catch (fallbackErr) {
+          // Both providers failed — build a chained error with full context
+          const fallbackReason = this._summarizeError(fallbackErr, this.fallback);
+          const chainedErr = new Error(
+            `${primaryReason}, then ${fallbackReason}`
+          );
+          chainedErr._errorChain = {
+            primary: primaryReason,
+            fallback: fallbackReason,
+          };
+          throw chainedErr;
         }
-        return result;
       }
       throw err;
     }
   }
 
   /**
-   * Check whether an error is a rate-limit (429) error.
+   * Get a human-readable name for a provider.
+   * @param {Object} provider
+   * @returns {string}
+   * @private
+   */
+  _providerName(provider) {
+    return provider.model || provider.constructor?.name || 'unknown';
+  }
+
+  /**
+   * Build a short, human-readable error summary.
+   * @param {Error} err
+   * @param {Object} provider
+   * @returns {string}
+   * @private
+   */
+  _summarizeError(err, provider) {
+    const name = this._providerName(provider);
+    const msg = err.message || '';
+    if (msg.toLowerCase().includes('overloaded') || msg.includes('529')) {
+      return `${name} was overloaded`;
+    }
+    if (msg.toLowerCase().includes('timed out') || msg.toLowerCase().includes('timeout')) {
+      return `${name} timed out`;
+    }
+    if (msg.includes('rate limited') || msg.includes('429')) {
+      return `${name} was rate limited`;
+    }
+    return `${name} failed (${msg.substring(0, 80)})`;
+  }
+
+  /**
+   * Check whether an error is a rate-limit (429) or overload (529) error.
    *
    * Matches:
    *   - ClaudeToolsProvider: "Claude API rate limited after N retries: ..."
    *   - OllamaToolsProvider: "Ollama error 429: ..."
-   *   - Any error with status 429
+   *   - Any error with status 429 or 529
+   *   - Any error message containing "overloaded"
    *
    * @param {Error} err
    * @returns {boolean}
    * @private
    */
   _isRateLimitError(err) {
-    if (err.status === 429) return true;
+    if (err.status === 429 || err.status === 529) return true;
     if (!err.message) return false;
     return err.message.includes('rate limited') ||
            err.message.includes('Rate limited') ||
-           /\berror 429\b/.test(err.message);
+           err.message.toLowerCase().includes('overloaded') ||
+           /\berror (429|529)\b/.test(err.message);
   }
 }
 

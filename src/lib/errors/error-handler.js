@@ -40,8 +40,8 @@ const SAFE_MESSAGES = {
   [ErrorCategory.VALIDATION]: 'The request could not be processed. Please check your input.',
   [ErrorCategory.NOT_FOUND]: 'The requested resource was not found.',
   [ErrorCategory.CONFIGURATION]: 'This feature is not configured. Please contact your administrator.',
-  [ErrorCategory.TIMEOUT]: 'The operation took too long. Please try again.',
-  [ErrorCategory.INTERNAL]: 'Something went wrong. Please try again or contact support.',
+  [ErrorCategory.TIMEOUT]: 'The AI service took too long to respond. Please try again — it usually works on the second attempt.',
+  [ErrorCategory.INTERNAL]: 'Something unexpected went wrong on my end. Please try again in a moment.',
   [ErrorCategory.OUTPUT_BLOCKED]: 'The response was blocked for safety reasons.'
 };
 
@@ -198,8 +198,11 @@ class ErrorHandler {
     if (msg.includes('network') || msg.includes('connection') || msg.includes('socket')) {
       return ErrorCategory.NETWORK;
     }
-    if (msg.includes('timeout')) {
+    if (msg.includes('timeout') || msg.includes('timed out')) {
       return ErrorCategory.TIMEOUT;
+    }
+    if (msg.includes('overloaded') || msg.includes('overload')) {
+      return ErrorCategory.RATE_LIMITED;
     }
     if (msg.includes('invalid') || msg.includes('required') || msg.includes('malformed')) {
       return ErrorCategory.VALIDATION;

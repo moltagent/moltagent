@@ -120,11 +120,11 @@ class ClaudeToolsProvider {
 
         clearTimeout(timeoutId);
 
-        if (response.status === 429) {
+        if (response.status === 429 || response.status === 529) {
           const backoffMs = this._parseRetryAfter(response.headers, attempt);
 
           if (attempt < this.maxRetries) {
-            this.logger.warn(`[ClaudeToolsProvider] 429 rate limited, retry ${attempt + 1}/${this.maxRetries} in ${backoffMs}ms`);
+            this.logger.warn(`[ClaudeToolsProvider] ${response.status} ${response.status === 529 ? 'overloaded' : 'rate limited'}, retry ${attempt + 1}/${this.maxRetries} in ${backoffMs}ms`);
             await this._sleep(backoffMs);
             continue;
           }

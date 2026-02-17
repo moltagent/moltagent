@@ -136,8 +136,7 @@ class AgentLoop {
         // Friendly message on rate limit / overload instead of surfacing raw error
         if (this._isRateLimitError(llmErr)) {
           this.logger.warn(`[AgentLoop] LLM provider rate limited: ${llmErr.message}`);
-          lastResponse = "I'm a bit busy right now — the AI service is temporarily overloaded. " +
-                         'Please try again in a minute or two. 🕐';
+          lastResponse = this._buildFriendlyLLMError(llmErr);
           break;
         }
         throw llmErr;
@@ -347,7 +346,7 @@ class AgentLoop {
       } catch (llmErr) {
         if (this._isRateLimitError(llmErr)) {
           this.logger.warn(`[AgentLoop] Workflow LLM rate limited: ${llmErr.message}`);
-          lastResponse = 'Workflow processing paused — LLM service temporarily overloaded.';
+          lastResponse = 'Workflow processing paused — ' + this._buildFriendlyLLMError(llmErr);
           break;
         }
         throw llmErr;
@@ -653,11 +652,40 @@ class AgentLoop {
    * @private
    */
   _isRateLimitError(err) {
-    if (err.status === 429) return true;
+    if (err.status === 429 || err.status === 529) return true;
     if (!err.message) return false;
     const msg = err.message.toLowerCase();
     return msg.includes('rate limit') || msg.includes('overloaded') ||
-           msg.includes('error 429') || msg.includes('too many requests');
+           msg.includes('timed out') || msg.includes('error 429') ||
+           msg.includes('error 529') || msg.includes('too many requests');
+  }
+
+  /**
+   * Build a friendly user-facing message from an LLM error,
+   * including error chain context when available.
+   * @param {Error} err
+   * @returns {string}
+   * @private
+   */
+  _buildFriendlyLLMError(err) {
+    // ProviderChain attaches _errorChain when both primary and fallback fail
+    if (err._errorChain) {
+      return `I couldn't process that — ${err._errorChain.primary}, ` +
+             `then ${err._errorChain.fallback}. ` +
+             'Please try again in a moment.';
+    }
+
+    // Single provider failure
+    const msg = (err.message || '').toLowerCase();
+    if (msg.includes('overloaded') || msg.includes('529')) {
+      return "The AI service (Claude) is temporarily overloaded on Anthropic's side. " +
+             'Please try again in a minute or two.';
+    }
+    if (msg.includes('timed out')) {
+      return 'The AI service took too long to respond. Please try again.';
+    }
+    return "I'm a bit busy right now — the AI service is temporarily " +
+           'at capacity. Please try again in a minute or two.';
   }
 
   /**

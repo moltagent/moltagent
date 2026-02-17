@@ -111,9 +111,10 @@ console.log('\n=== ProviderChain Tests ===\n');
     }
   });
 
-  await asyncTest('fallback also fails — fallback error propagates', async () => {
+  await asyncTest('fallback also fails — chained error with both reasons', async () => {
     const primary = tracked(failingProvider('Claude API rate limited after 3 retries: overloaded'));
-    const fallback = tracked(failingProvider('Ollama error 503: model not loaded'));
+    const fallback = tracked(failingProvider('Ollama request timed out after 300000ms'));
+    fallback.model = 'qwen3:8b';
 
     const chain = new ProviderChain(primary, fallback, silentLogger);
 
@@ -121,13 +122,17 @@ console.log('\n=== ProviderChain Tests ===\n');
       await chain.chat({ system: 'test', messages: [], tools: [] });
       assert.fail('Should have thrown');
     } catch (err) {
-      assert.ok(err.message.includes('Ollama error 503'), `Expected Ollama error, got: ${err.message}`);
+      assert.ok(err.message.includes('was overloaded'), `Should mention primary overloaded, got: ${err.message}`);
+      assert.ok(err.message.includes('timed out'), `Should mention fallback timeout, got: ${err.message}`);
+      assert.ok(err._errorChain, 'Should have _errorChain metadata');
+      assert.ok(err._errorChain.primary.includes('overloaded'));
+      assert.ok(err._errorChain.fallback.includes('timed out'));
       assert.strictEqual(primary.callCount, 1);
       assert.strictEqual(fallback.callCount, 1);
     }
   });
 
-  await asyncTest('passes params through to fallback unchanged', async () => {
+  await asyncTest('strips tools when falling back (tool-free fallback)', async () => {
     let capturedParams = null;
     const primary = tracked(failingProvider('Claude API rate limited after 3 retries: overloaded'));
     const fallback = {
@@ -146,7 +151,9 @@ console.log('\n=== ProviderChain Tests ===\n');
 
     await chain.chat(params);
 
-    assert.deepStrictEqual(capturedParams, params);
+    assert.strictEqual(capturedParams.system, params.system, 'system prompt passed through');
+    assert.deepStrictEqual(capturedParams.messages, params.messages, 'messages passed through');
+    assert.deepStrictEqual(capturedParams.tools, [], 'tools stripped on fallback');
   });
 
   await asyncTest('_isRateLimitError detects rate-limit messages', async () => {
@@ -187,8 +194,8 @@ console.log('\n=== ProviderChain Tests ===\n');
 
     assert.ok(loggedMessage, 'Should have logged a warning');
     assert.ok(loggedMessage.includes('ProviderChain'));
-    assert.ok(loggedMessage.includes('429'));
-    assert.ok(loggedMessage.includes('rate limited'), 'Should include original error message');
+    assert.ok(loggedMessage.includes('rate limited') || loggedMessage.includes('overloaded'), 'Should include fallback reason');
+    assert.ok(loggedMessage.includes('falling back'), 'Should indicate fallback');
   });
 
   // ============================================================

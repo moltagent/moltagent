@@ -1191,7 +1191,7 @@ asyncTest('returns friendly busy message on overloaded error', async () => {
   });
 
   const response = await loop.process('Hello', 'room-abc');
-  assert.ok(response.includes('busy'), 'Should include busy in response');
+  assert.ok(response.includes('overloaded'), 'Should mention overloaded in response');
 });
 
 asyncTest('non-429 errors still propagate', async () => {

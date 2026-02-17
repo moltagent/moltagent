@@ -222,7 +222,7 @@ test('TC-MSG-004: Get RATE_LIMITED message', () => {
 test('TC-MSG-005: Get INTERNAL message', () => {
   const handler = new ErrorHandler();
   const message = handler.getUserMessage(ErrorCategory.INTERNAL);
-  assert.strictEqual(message, 'Something went wrong. Please try again or contact support.');
+  assert.strictEqual(message, 'Something unexpected went wrong on my end. Please try again in a moment.');
 });
 
 test('TC-MSG-006: Include request ID when enabled', () => {
@@ -251,7 +251,7 @@ asyncTest('TC-HANDLE-001: Handle error and return safe message', async () => {
   const error = new Error('Database query failed at postgres:5432');
   const result = await handler.handle(error, { operation: 'db_query' });
 
-  assert.strictEqual(result.message, 'Something went wrong. Please try again or contact support.');
+  assert.strictEqual(result.message, 'Something unexpected went wrong on my end. Please try again in a moment.');
   assert.ok(!result.message.includes('postgres'));
   assert.strictEqual(result.category, ErrorCategory.INTERNAL);
   assert.strictEqual(result.logged, true);
@@ -438,7 +438,7 @@ asyncTest('TC-WRAP-002: Catch and handle errors', async () => {
     await wrapped();
     assert.fail('Should have thrown');
   } catch (error) {
-    assert.strictEqual(error.message, 'Something went wrong. Please try again or contact support.');
+    assert.strictEqual(error.message, 'Something unexpected went wrong on my end. Please try again in a moment.');
   }
 });
 
