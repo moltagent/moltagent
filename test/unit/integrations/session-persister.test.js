@@ -156,7 +156,7 @@ async function runTests() {
     assert.ok(title.startsWith('Sessions/'), 'Title should start with Sessions/');
 
     // Frontmatter checks
-    assert.strictEqual(frontmatter.type, 'session');
+    assert.strictEqual(frontmatter.type, 'session_transcript');
     assert.strictEqual(frontmatter.room, session.roomToken);
     assert.strictEqual(frontmatter.user, session.userId);
     assert.strictEqual(frontmatter.messages, session.context.length);
@@ -164,8 +164,8 @@ async function runTests() {
     assert.ok(frontmatter.created, 'Should have created date');
     assert.ok(frontmatter.expired, 'Should have expired date');
 
-    // Body check
-    assert.ok(body.includes('# Session Summary'), 'Body should have heading');
+    // Body check — summary is now the direct body (no duplicate heading)
+    assert.ok(body, 'Body should contain summary content');
   });
 
   await asyncTest('TC-SP-006: Handles wiki write failure gracefully', async () => {

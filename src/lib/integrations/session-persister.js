@@ -31,6 +31,7 @@ class SessionPersister {
     this.config = config;
     this.minContextForPersistence = 6;
     this.minExchanges = 4; // At least 4 user/assistant messages (2 exchanges)
+    this.lastSummary = null; // Stored for warm memory consolidation after persistence
   }
 
   /**
@@ -56,7 +57,10 @@ class SessionPersister {
     // Generate summary using local model (sovereign role — zero cloud cost)
     const summary = await this._generateSummary(session, userAssistantMessages);
 
-    if (!summary) return null;
+    if (!summary) {
+      this.lastSummary = null;
+      return null;
+    }
 
     // Build page title: Sessions/{date}-{roomToken-prefix}
     const date = new Date(session.createdAt).toISOString().split('T')[0];
@@ -65,8 +69,9 @@ class SessionPersister {
 
     // Build frontmatter and body separately for writePageWithFrontmatter
     const frontmatter = {
-      type: 'session',
+      type: 'session_transcript',
       room: session.roomToken,
+      room_name: session.roomName || null,
       user: session.userId,
       created: new Date(session.createdAt).toISOString(),
       expired: new Date().toISOString(),
@@ -74,13 +79,15 @@ class SessionPersister {
       decay_days: 90,
     };
 
-    const body = `# Session Summary\n\n${summary}`;
+    const body = summary;
 
     try {
       await this.wiki.writePageWithFrontmatter(pageTitle, frontmatter, body);
+      this.lastSummary = summary; // Set only after successful wiki write
       return pageTitle;
     } catch (err) {
       console.error('[SessionPersister] Wiki write failed:', err.message);
+      this.lastSummary = null;
       return null;
     }
   }
@@ -103,12 +110,14 @@ class SessionPersister {
       const result = await this.router.route({
         job: JOBS.QUICK,
         task: 'session_summary',
-        content: `Summarize this conversation in 3-5 bullet points. Focus on:\n` +
-          `- Decisions made\n` +
-          `- Action items or commitments\n` +
-          `- Key facts discussed\n` +
-          `- Any open questions or next steps\n` +
-          `Be concise. No preamble.\n\n${transcript}`,
+        content: `Summarize this conversation with these exact sections:\n\n` +
+          `## Summary\n` +
+          `3-5 bullet points covering decisions, facts, and actions.\n\n` +
+          `## Continuation\n` +
+          `One sentence: what should we pick up next time?\n\n` +
+          `## Open Items\n` +
+          `Bullet list of unresolved questions or pending tasks. Write "None" if all resolved.\n\n` +
+          `Be concise. No preamble. Start directly with ## Summary.\n\n${transcript}`,
         requirements: { role: 'sovereign' },
         context: { trigger: 'session_summary' },
       });

@@ -368,6 +368,41 @@ function createMockInfraMonitor(overrides = {}) {
   };
 }
 
+// NCFilesClient Mock (in-memory file store)
+function createMockNCFilesClient(overrides = {}) {
+  const store = overrides._store || {};
+  return {
+    readFile: overrides.readFile || (async (filePath) => {
+      if (store[filePath] !== undefined) {
+        return { content: store[filePath], truncated: false, totalSize: store[filePath].length };
+      }
+      const err = new Error('File not found');
+      err.statusCode = 404;
+      throw err;
+    }),
+    writeFile: overrides.writeFile || (async (filePath, content) => {
+      store[filePath] = content;
+      return { success: true };
+    }),
+    mkdir: overrides.mkdir || (async () => ({ success: true })),
+    listDirectory: overrides.listDirectory || (async () => []),
+    _store: store,
+    ...overrides
+  };
+}
+
+// WarmMemory Mock
+function createMockWarmMemory(overrides = {}) {
+  let content = overrides.content || '# Working Memory\n\n## Where We Left Off\nNo previous sessions yet.\n\n## Open Items\nNo open items.\n\n## Key Context\nNo context recorded yet.';
+  return {
+    load: overrides.load || (async () => content),
+    save: overrides.save || (async (c) => { content = c; }),
+    consolidate: overrides.consolidate || (async () => content),
+    invalidateCache: overrides.invalidateCache || (() => {}),
+    ...overrides
+  };
+}
+
 module.exports = {
   createMockAuditLog,
   createMockCredentialBroker,
@@ -389,5 +424,7 @@ module.exports = {
   createMockDailyDigester,
   createMockHeartbeatFreshnessChecker,
   createMockBotEnroller,
-  createMockInfraMonitor
+  createMockInfraMonitor,
+  createMockNCFilesClient,
+  createMockWarmMemory
 };

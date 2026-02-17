@@ -184,6 +184,14 @@ try {
   MemorySearcher = null;
 }
 
+let WarmMemory;
+try {
+  WarmMemory = require('./src/lib/integrations/warm-memory');
+} catch {
+  console.warn('[WARN] WarmMemory not available');
+  WarmMemory = null;
+}
+
 let NCStatusIndicator;
 try {
   NCStatusIndicator = require('./src/lib/integrations/nc-status-indicator');
@@ -395,6 +403,7 @@ let botEnroller = null; // Auto-enable Talk bot in rooms
 let sessionManager = null; // Session 29b: shared session manager
 let sessionPersister = null; // Session 29b: persist expired session summaries to wiki
 let memorySearcher = null; // Session 29b: keyword-based memory search over wiki pages
+let warmMemory = null; // Session M1: warm memory layer (WARM.md)
 let sessionCleanupTimer = null; // Periodic SessionManager cleanup
 let webhookErrorHandler = null;
 let serverComponents = null; // Decomposed server components (webhook, command, health, message processor)
@@ -413,6 +422,20 @@ let infraMonitor = null; // Session 38: InfraMonitor for service health probing
 async function consoleAuditLog(event, data) {
   const timestamp = new Date().toISOString();
   console.log(`[AUDIT] ${timestamp} ${event}:`, JSON.stringify(data).substring(0, 200));
+}
+
+/**
+ * Extract a named ## section from structured markdown.
+ * Returns the content between the named header and the next header (or end).
+ * @param {string} markdown
+ * @param {string} sectionName
+ * @returns {string|null}
+ */
+function _extractSection(markdown, sectionName) {
+  if (!markdown) return null;
+  const pattern = new RegExp(`## ${sectionName}\\s*\\n([\\s\\S]*?)(?=\\n## |$)`, 'i');
+  const match = markdown.match(pattern);
+  return match ? match[1].trim() : null;
 }
 
 /**
@@ -650,6 +673,22 @@ async function initialize() {
       console.warn(`[INIT] NCFilesClient failed: ${err.message}`);
     }
   }
+  // Session M1: Initialize WarmMemory (warm layer for cross-session context)
+  if (WarmMemory && ncFilesClient) {
+    try {
+      warmMemory = new WarmMemory({
+        ncFilesClient,
+        logger: console,
+        config: { filePath: 'Memory/WARM.md', maxLines: 200, cacheTTLMs: 60000 }
+      });
+      await warmMemory.load(); // Creates Memory/ dir + initial WARM.md on first run
+      console.log('[INIT] WarmMemory ready');
+    } catch (err) {
+      console.warn(`[INIT] WarmMemory failed: ${err.message}`);
+      warmMemory = null;
+    }
+  }
+
   // Session 37: Initialize Voice Pipeline (WhisperClient + AudioConverter)
   if (WhisperClient && AudioConverter && appConfig.voice?.enabled !== false) {
     try {
@@ -888,6 +927,22 @@ async function initialize() {
               console.log(`[SessionPersister] Saved session summary: ${page}`);
               // Invalidate memory searcher cache after wiki write
               if (memorySearcher) memorySearcher.invalidateCache();
+
+              // M1: Consolidate warm memory from session summary
+              if (warmMemory && sessionPersister.lastSummary) {
+                try {
+                  const continuation = _extractSection(sessionPersister.lastSummary, 'Continuation');
+                  const openItems = _extractSection(sessionPersister.lastSummary, 'Open Items');
+                  await warmMemory.consolidate({
+                    continuation: continuation || '',
+                    openItems: openItems || '',
+                    timestamp: new Date().toISOString()
+                  });
+                  console.log('[WarmMemory] Consolidated from session summary');
+                } catch (wmErr) {
+                  console.error('[WarmMemory] Consolidation failed:', wmErr.message);
+                }
+              }
             }
           } catch (err) {
             console.error('[SessionPersister] Failed:', err.message);
@@ -1090,6 +1145,7 @@ async function initialize() {
         toolRegistry,
         conversationContext,
         contextLoader,
+        warmMemory,
         cockpitManager,
         dailyBriefing,
         toolGuard,
@@ -1361,6 +1417,7 @@ async function initialize() {
         workflowEngine,
         infraMonitor,
         voiceManager,
+        warmMemory,
         ncFlow: ncFlowActivityPoller || ncFlowWebhookReceiver ? {
           activityPoller: ncFlowActivityPoller,
           webhookReceiver: ncFlowWebhookReceiver,

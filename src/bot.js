@@ -83,6 +83,22 @@ try {
   MemorySearcher = null;
 }
 
+let NCFilesClient;
+try {
+  ({ NCFilesClient } = require('./lib/integrations/nc-files-client'));
+} catch {
+  console.warn('[WARN] NCFilesClient not available (bot)');
+  NCFilesClient = null;
+}
+
+let WarmMemory;
+try {
+  WarmMemory = require('./lib/integrations/warm-memory');
+} catch {
+  console.warn('[WARN] WarmMemory not available (bot)');
+  WarmMemory = null;
+}
+
 // Session 37: Voice Pipeline
 let WhisperClient, AudioConverter;
 try {
@@ -137,6 +153,19 @@ const CONFIG = {
     primaryRoom: appConfig.talk?.primaryRoom || appConfig.talk?.defaultToken || null
   }
 };
+
+/**
+ * Extract a named ## section from structured markdown.
+ * @param {string} markdown
+ * @param {string} sectionName
+ * @returns {string|null}
+ */
+function _extractSection(markdown, sectionName) {
+  if (!markdown) return null;
+  const pattern = new RegExp(`## ${sectionName}\\s*\\n([\\s\\S]*?)(?=\\n## |$)`, 'i');
+  const match = markdown.match(pattern);
+  return match ? match[1].trim() : null;
+}
 
 // Global credential broker (initialized in main)
 let credentialBroker = null;
@@ -241,6 +270,27 @@ async function main() {
   await ncRequestManager.resolveCanonicalUsername();
   talkQueue = new TalkSendQueue(ncRequestManager);
   console.log('[INIT] NC Request Manager ready for notifications');
+
+  // Initialize NCFilesClient + WarmMemory (Session M1)
+  let ncFilesClient = null;
+  let warmMemory = null;
+  if (NCFilesClient && ncRequestManager) {
+    try {
+      ncFilesClient = new NCFilesClient(ncRequestManager, { username: CONFIG.nextcloud.username });
+    } catch (err) {
+      console.warn(`[INIT] NCFilesClient (bot) failed: ${err.message}`);
+    }
+  }
+  if (WarmMemory && ncFilesClient) {
+    try {
+      warmMemory = new WarmMemory({ ncFilesClient, logger: console });
+      await warmMemory.load();
+      console.log('[INIT] WarmMemory ready (bot)');
+    } catch (err) {
+      console.warn(`[INIT] WarmMemory (bot) failed: ${err.message}`);
+      warmMemory = null;
+    }
+  }
 
   // Initialize NC Flow modules
   console.log('[INIT] Setting up NC Flow modules...');
@@ -448,6 +498,23 @@ async function main() {
             const page = await persister.persistSession(session);
             if (page) {
               console.log(`[SessionPersister] Saved session summary: ${page}`);
+              if (memorySearcher) memorySearcher.invalidateCache();
+
+              // M1: Consolidate warm memory from session summary
+              if (warmMemory && persister.lastSummary) {
+                try {
+                  const continuation = _extractSection(persister.lastSummary, 'Continuation');
+                  const openItems = _extractSection(persister.lastSummary, 'Open Items');
+                  await warmMemory.consolidate({
+                    continuation: continuation || '',
+                    openItems: openItems || '',
+                    timestamp: new Date().toISOString()
+                  });
+                  console.log('[WarmMemory] Consolidated from session summary (bot)');
+                } catch (wmErr) {
+                  console.error('[WarmMemory] Consolidation failed:', wmErr.message);
+                }
+              }
             }
           } catch (err) {
             console.error('[SessionPersister] Failed:', err.message);

@@ -146,6 +146,9 @@ class HeartbeatManager {
     this.freshnessChecker = config.freshnessChecker || null;
     this.agentContext = ''; // Loaded on start()
 
+    // Warm Memory (optional, for M2 micro-consolidation)
+    this.warmMemory = config.warmMemory || null;
+
     // Heartbeat state
     this.state = {
       isRunning: false,
@@ -614,6 +617,16 @@ class HeartbeatManager {
       this.state.consecutiveFailures++;
       results.errors.push({ component: 'heartbeat', error: err.message });
     }
+
+    // M2 Future: Micro-consolidation of warm memory from active session context
+    // When M2 implements extraction logic, uncomment and implement:
+    // if (this.warmMemory) {
+    //   try {
+    //     await this.warmMemory.microConsolidate(this.agentContext);
+    //   } catch (err) {
+    //     console.warn('[Heartbeat] Warm memory micro-consolidation error:', err.message);
+    //   }
+    // }
 
     // Set status back to ready after pulse completes (force to refresh NC timeout)
     await this.statusIndicator?.setStatus('ready', { force: true });

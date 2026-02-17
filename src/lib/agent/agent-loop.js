@@ -39,6 +39,7 @@ class AgentLoop {
     this.toolRegistry = options.toolRegistry;
     this.conversationContext = options.conversationContext;
     this.contextLoader = options.contextLoader || null;
+    this.warmMemory = options.warmMemory || null;
     this.cockpitManager = options.cockpitManager || null;
     this.dailyBriefing = options.dailyBriefing || null;
     this.toolGuard = options.toolGuard || null;
@@ -82,6 +83,18 @@ class AgentLoop {
       memoryContext = await this._loadMemoryContext();
     }
 
+    let warmMemoryContext = '';
+    if (this.warmMemory) {
+      try {
+        const warmContent = await this.warmMemory.load();
+        if (warmContent) {
+          warmMemoryContext = `<warm_memory>\n${warmContent}\n</warm_memory>`;
+        }
+      } catch (err) {
+        this.logger.warn('[AgentLoop] Warm memory load failed:', err.message);
+      }
+    }
+
     let briefingContext = '';
     if (this.dailyBriefing) {
       try {
@@ -92,7 +105,7 @@ class AgentLoop {
     }
 
     // 2. Build initial messages array
-    const systemPrompt = this._buildSystemPrompt(memoryContext, briefingContext, options);
+    const systemPrompt = this._buildSystemPrompt(memoryContext, briefingContext, options, warmMemoryContext);
     const tools = this.toolRegistry.getToolDefinitions();
 
     const messages = [
@@ -462,7 +475,7 @@ class AgentLoop {
   }
 
   /** @private */
-  _buildSystemPrompt(memoryContext, briefingContext, options = {}) {
+  _buildSystemPrompt(memoryContext, briefingContext, options = {}, warmMemoryContext = '') {
     // Inject current date/time in the configured timezone so the LLM knows today's date (P1-1)
     const now = new Date();
     const tz = this.timezone;
@@ -480,6 +493,10 @@ class AgentLoop {
 
     if (memoryContext) {
       prompt += `\n\n${memoryContext}`;
+    }
+
+    if (warmMemoryContext) {
+      prompt += `\n\n${warmMemoryContext}`;
     }
 
     if (briefingContext) {
