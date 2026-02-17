@@ -138,6 +138,10 @@ class MessageProcessor {
     /** @type {Object|null} - MicroPipeline instance */
     this.microPipeline = deps.microPipeline || null;
 
+    // M1: WarmMemory for post-response consolidation
+    /** @type {Object|null} - WarmMemory instance */
+    this.warmMemory = deps.warmMemory || null;
+
     // Session V2: VoiceManager for mode-aware voice orchestration
     /** @type {Object|null} - VoiceManager instance */
     this.voiceManager = deps.voiceManager || null;
@@ -284,11 +288,19 @@ class MessageProcessor {
       } else if (this.agentLoop) {
         // Session 14: AgentLoop handles all natural language via tool-calling LLM
         const voiceReplyEnabled = extracted._isVoice && this.voiceManager && this.voiceManager.mode === 'full';
-        response = await this.agentLoop.process(extracted.content, extracted.token, {
+        const agentOpts = {
           messageId: extracted.messageId,
           inputType: extracted._isVoice ? 'voice' : 'text',
           voiceReplyEnabled
-        });
+        };
+
+        // Bug 3 fix: Short confirmations shouldn't loop to max iterations
+        const trimmed = extracted.content.trim().toLowerCase();
+        if (trimmed.length <= 10 && /^(yes|no|ok|sure|yeah|nah|do it|go ahead|cancel|stop|yep|nope|y|n)$/.test(trimmed)) {
+          agentOpts.maxIterations = 2;
+        }
+
+        response = await this.agentLoop.process(extracted.content, extracted.token, agentOpts);
         result = { intent: 'agent_loop', provider: 'agent' };
         response = response || 'Sorry, I encountered an error processing your message.';
       } else {
@@ -355,6 +367,11 @@ class MessageProcessor {
           console.error('[Process] Failed to send Talk reply:', err.message);
         });
       }
+
+      // M1: Consolidate warm memory after substantive conversations
+      this._maybeConsolidate(session).catch(err => {
+        console.warn(`[WarmMemory] Post-response consolidation failed: ${err.message}`);
+      });
 
       // Set status back to ready after successful processing
       await this.statusIndicator?.setStatus('ready');
@@ -618,6 +635,51 @@ class MessageProcessor {
     // Check if the AgentLoop's ProviderChain has a local primary
     if (this.agentLoop?.llmProvider?.primaryIsLocal) return true;
     return false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // M1: Warm Memory Consolidation
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Consolidate warm memory after a substantive conversation.
+   * Fires after 3+ exchanges, debounced to at most once per 5 minutes.
+   * Non-blocking — errors are logged but don't affect the user response.
+   *
+   * @param {Object|null} session - SessionManager session object
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _maybeConsolidate(session) {
+    if (!this.warmMemory || !session) return;
+
+    const ctx = session.context || [];
+    const userMessages = ctx.filter(c => c.role === 'user');
+    const assistantMessages = ctx.filter(c => c.role === 'assistant');
+
+    // Only consolidate after 3+ exchanges (not on every "hi")
+    if (userMessages.length < 3 || assistantMessages.length < 3) return;
+
+    // Debounce: at most once per 5 minutes to avoid excessive WebDAV writes
+    const now = Date.now();
+    if (this._lastConsolidateTime && now - this._lastConsolidateTime < 300000) return;
+    this._lastConsolidateTime = now;
+
+    // Build a continuation summary from recent context
+    const recent = ctx.slice(-6); // Last 3 exchanges
+    const continuation = recent
+      .filter(c => c.role === 'user' || c.role === 'assistant')
+      .map(c => {
+        const text = (c.content || '').substring(0, 150);
+        return `${c.role}: ${text}`;
+      })
+      .join(' | ');
+
+    await this.warmMemory.consolidate({
+      continuation: continuation,
+      timestamp: new Date().toISOString()
+    });
+    console.log('[WarmMemory] Consolidated after substantive conversation');
   }
 
   // ---------------------------------------------------------------------------

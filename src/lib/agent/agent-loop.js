@@ -114,16 +114,17 @@ class AgentLoop {
     ];
 
     // 3. Agent loop
+    const maxIter = options.maxIterations || this.maxIterations;
     let iteration = 0;
     let lastResponse = null;
     const toolFailureCounts = {};  // toolName -> consecutive failure count
     let cumulativeToolResultChars = 0;
     const toolResultIndices = [];  // indices into messages[] of tool results
 
-    while (iteration < this.maxIterations) {
+    while (iteration < maxIter) {
       iteration++;
 
-      this.logger.info(`[AgentLoop] Iteration ${iteration}/${this.maxIterations}`);
+      this.logger.info(`[AgentLoop] Iteration ${iteration}/${maxIter}`);
 
       let response;
       try {
@@ -263,9 +264,31 @@ class AgentLoop {
       break;
     }
 
-    if (!lastResponse && iteration >= this.maxIterations) {
-      lastResponse = 'I ran into a loop trying to process your request. Please try rephrasing.';
-      this.logger.warn(`[AgentLoop] Hit max iterations (${this.maxIterations})`);
+    if (!lastResponse && iteration >= maxIter) {
+      // Check if we have pending tool results — give the LLM one final chance
+      // to summarize what happened (no tools, so it MUST give a text response).
+      // This prevents the "wiki_write on iteration 8" swallowed-result bug.
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg && lastMsg.role === 'tool') {
+        try {
+          this.logger.info('[AgentLoop] Final summarization call (tool results pending at max iterations)');
+          const finalResponse = await this.llmProvider.chat({
+            system: systemPrompt,
+            messages,
+            tools: []
+          });
+          if (finalResponse.content) {
+            lastResponse = finalResponse.content;
+          }
+        } catch (e) {
+          this.logger.warn(`[AgentLoop] Final summarization failed: ${e.message}`);
+        }
+      }
+
+      if (!lastResponse) {
+        lastResponse = 'I ran into a loop trying to process your request. Please try rephrasing.';
+        this.logger.warn(`[AgentLoop] Hit max iterations (${maxIter})`);
+      }
     }
 
     // 4. Sanitize output

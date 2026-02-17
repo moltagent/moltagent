@@ -940,22 +940,33 @@ async function initialize() {
             const page = await sessionPersister.persistSession(session);
             if (page) {
               console.log(`[SessionPersister] Saved session summary: ${page}`);
-              // NC Unified Search manages its own index — no cache to invalidate
+            }
 
-              // M1: Consolidate warm memory from session summary
-              if (warmMemory && sessionPersister.lastSummary) {
-                try {
-                  const continuation = _extractSection(sessionPersister.lastSummary, 'Continuation');
-                  const openItems = _extractSection(sessionPersister.lastSummary, 'Open Items');
-                  await warmMemory.consolidate({
-                    continuation: continuation || '',
-                    openItems: openItems || '',
-                    timestamp: new Date().toISOString()
-                  });
-                  console.log('[WarmMemory] Consolidated from session summary');
-                } catch (wmErr) {
-                  console.error('[WarmMemory] Consolidation failed:', wmErr.message);
-                }
+            // M1: Consolidate warm memory from session context directly
+            // (Don't depend on lastSummary — it's often null after restarts)
+            if (warmMemory && session.context && session.context.length >= 6) {
+              try {
+                const recentContext = session.context
+                  .filter(c => c.role === 'user' || c.role === 'assistant')
+                  .slice(-10)
+                  .map(c => `${c.role}: ${(c.content || '').substring(0, 200)}`)
+                  .join(' | ');
+
+                // Also try to extract structured data from persister if available
+                const continuation = (sessionPersister.lastSummary && _extractSection(sessionPersister.lastSummary, 'Continuation'))
+                  || recentContext;
+                const openItems = sessionPersister.lastSummary
+                  ? (_extractSection(sessionPersister.lastSummary, 'Open Items') || '')
+                  : '';
+
+                await warmMemory.consolidate({
+                  continuation,
+                  openItems,
+                  timestamp: new Date().toISOString()
+                });
+                console.log('[WarmMemory] Consolidated from expired session');
+              } catch (wmErr) {
+                console.error('[WarmMemory] Consolidation failed:', wmErr.message);
               }
             }
           } catch (err) {
@@ -1350,6 +1361,7 @@ async function initialize() {
     audioConverter: audioConverter,
     voiceManager: voiceManager,
     microPipeline: microPipeline,
+    warmMemory: warmMemory,
     botNames: botNames,
     sendTalkReply: sendTalkReply,
     auditLog: auditLogger ? auditLogger.log.bind(auditLogger) : consoleAuditLog,
