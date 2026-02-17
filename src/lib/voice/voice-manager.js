@@ -1,17 +1,19 @@
 /**
- * VoiceManager — Mode-aware voice orchestration
+ * VoiceManager — Mode-aware voice orchestration with STT and TTS reply support
  *
  * Orchestrates voice processing with Cockpit mode awareness.
  * Downloads audio from Nextcloud, converts to WAV, transcribes via SpeachesClient.
+ * In 'full' mode also supports TTS voice replies: synthesizes speech, uploads the
+ * resulting MP3 to Nextcloud via WebDAV, then shares it into a Talk room.
  * Does NOT call AgentLoop — returns the transcript for the caller to route.
  *
  * Modes:
  *   'off'    — processVoiceMessage returns null immediately
  *   'listen' — download, convert, transcribe, return transcript
- *   'full'   — same as listen (future: may add TTS response)
+ *   'full'   — same as listen plus replyWithVoice() TTS reply capability
  *
  * @module voice/voice-manager
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 'use strict';
@@ -24,13 +26,15 @@ class VoiceManager {
    * @param {Object} options.speachesClient - SpeachesClient instance for STT/TTS
    * @param {Object} options.fileClient - NCFilesClient instance for downloading audio
    * @param {Object} [options.audioConverter] - AudioConverter for format conversion
+   * @param {Object} [options.ncRequestManager] - NCRequestManager for authenticated HTTP requests
    * @param {Object} [options.config] - Voice config from appConfig
    * @param {Object} [options.logger] - Logger instance
    */
-  constructor({ speachesClient, fileClient, audioConverter, config, logger } = {}) {
+  constructor({ speachesClient, fileClient, audioConverter, ncRequestManager, config, logger } = {}) {
     this.speachesClient = speachesClient || null;
     this.fileClient = fileClient || null;
     this.audioConverter = audioConverter || null;
+    this.ncRequestManager = ncRequestManager || null;
     this.config = config || {};
     this.logger = logger || console;
     this.mode = 'off';
@@ -152,6 +156,156 @@ class VoiceManager {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Synthesize a TTS reply and share it as a voice message in a Talk room.
+   * Only available when mode is 'full'.
+   *
+   * @param {string} roomToken - Talk room token to share the voice reply into
+   * @param {string} text - Text to synthesize
+   * @param {Object} [options] - Reserved for future use
+   * @returns {Promise<{success: boolean, reason?: string, filename?: string, size?: number}>}
+   */
+  async replyWithVoice(roomToken, text, options = {}) {
+    if (this.mode !== 'full') {
+      return { success: false, reason: 'voice_reply_disabled' };
+    }
+
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
+      return { success: false, reason: 'empty_text' };
+    }
+
+    try {
+      const sanitized = this._sanitizeForSpeech(text);
+
+      // 1. Synthesize speech via SpeachesClient
+      let audioBuffer;
+      try {
+        audioBuffer = await this.speachesClient.synthesize(sanitized, {
+          voice: this._getConfiguredVoice()
+        });
+      } catch (err) {
+        this.logger.warn(`[VoiceManager] TTS synthesis failed: ${err.message}`);
+        return { success: false, reason: 'tts_failed' };
+      }
+
+      // 2. Upload synthesized audio to Nextcloud via WebDAV PUT
+      const filename = `voice-reply-${Date.now()}.mp3`;
+      const remotePath = `Talk/${filename}`;
+      try {
+        const username = this.ncRequestManager.ncUser || 'moltagent';
+        const webdavPath = `/remote.php/dav/files/${username}/${remotePath}`;
+        await this.ncRequestManager.request(webdavPath, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'audio/mpeg'
+          },
+          body: audioBuffer
+        });
+      } catch (err) {
+        this.logger.warn(`[VoiceManager] Audio upload failed: ${err.message}`);
+        return { success: false, reason: 'upload_failed' };
+      }
+
+      // 3. Share the uploaded file into the Talk room
+      try {
+        await this._shareInTalk(roomToken, remotePath);
+      } catch (err) {
+        this.logger.warn(`[VoiceManager] Talk share failed: ${err.message}`);
+        return { success: false, reason: 'share_failed' };
+      }
+
+      const size = audioBuffer.length;
+      this.logger.info(`[VoiceManager] Voice reply shared in room ${roomToken}: ${filename} (${size} bytes)`);
+      return { success: true, filename, size };
+    } catch (err) {
+      this.logger.warn(`[VoiceManager] replyWithVoice error: ${err.message}`);
+      return { success: false, reason: 'tts_failed' };
+    }
+  }
+
+  /**
+   * Sanitize text for TTS by stripping markdown and other non-speakable tokens.
+   *
+   * @param {string} text - Raw text (may contain markdown)
+   * @returns {string} Clean, speakable text
+   * @private
+   */
+  _sanitizeForSpeech(text) {
+    let out = text;
+
+    // Remove fenced code blocks (``` ... ```) entirely — not speakable
+    out = out.replace(/```[\s\S]*?```/g, '');
+
+    // Strip markdown headers (# Heading → Heading)
+    out = out.replace(/^#{1,6}\s+/gm, '');
+
+    // Strip bold/italic markers (**text**, __text__, *text*, _text_)
+    out = out.replace(/\*\*([^*]+)\*\*/g, '$1');
+    out = out.replace(/__([^_]+)__/g, '$1');
+    out = out.replace(/\*([^*]+)\*/g, '$1');
+    out = out.replace(/_([^_]+)_/g, '$1');
+
+    // Strip inline code (`code` → code)
+    out = out.replace(/`([^`]+)`/g, '$1');
+
+    // Replace URLs with the word "link"
+    out = out.replace(/https?:\/\/\S+/g, 'link');
+
+    // Strip bullet list markers (- item, * item, 1. item at line start)
+    out = out.replace(/^[\t ]*[-*]\s+/gm, '');
+    out = out.replace(/^[\t ]*\d+\.\s+/gm, '');
+
+    // Strip common emoji (Unicode ranges: emoticons, misc symbols, supplemental symbols, etc.)
+    // Covers U+1F300–U+1FAFF and U+2600–U+27BF
+    out = out.replace(/[\u{1F300}-\u{1FAFF}]/gu, '');
+    out = out.replace(/[\u{2600}-\u{27BF}]/gu, '');
+
+    // Collapse multiple whitespace characters and newlines into a single space
+    out = out.replace(/\s+/g, ' ');
+
+    return out.trim();
+  }
+
+  /**
+   * Share a Nextcloud file into a Talk room via the OCS Share API.
+   *
+   * @param {string} roomToken - Talk room token (shareWith value for shareType 10)
+   * @param {string} remotePath - Nextcloud file path relative to the user's root (e.g. Talk/foo.mp3)
+   * @returns {Promise<Object>} OCS API response
+   * @private
+   */
+  async _shareInTalk(roomToken, remotePath) {
+    const body = new URLSearchParams({
+      path: remotePath,
+      shareType: '10',
+      shareWith: roomToken
+    }).toString();
+
+    const response = await this.ncRequestManager.request(
+      '/ocs/v2.php/apps/files_sharing/api/v1/shares',
+      {
+        method: 'POST',
+        headers: {
+          'OCS-APIRequest': 'true',
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body
+      }
+    );
+
+    return response;
+  }
+
+  /**
+   * Return the configured TTS voice identifier, if any.
+   *
+   * @returns {string|undefined}
+   * @private
+   */
+  _getConfiguredVoice() {
+    return this.config.speachesTtsVoice || this.config.ttsVoice || undefined;
   }
 
   /**

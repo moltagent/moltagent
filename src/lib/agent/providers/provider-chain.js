@@ -16,6 +16,10 @@ class ProviderChain {
    * @param {Object} primary - Primary LLM provider (must implement chat())
    * @param {Object|null} fallback - Fallback LLM provider (may be null)
    * @param {Object} [logger=console]
+   * @param {Object} [options={}]
+   * @param {boolean} [options.primaryIsLocal=false]
+   * @param {boolean} [options.fallbackIsLocal=false]
+   * @param {Object|null} [options.fallbackNotifier=null] - Object with onRouteComplete(result) method
    */
   constructor(primary, fallback, logger, options = {}) {
     this.primary = primary;
@@ -23,32 +27,79 @@ class ProviderChain {
     this.logger = logger || console;
     this.primaryIsLocal = options.primaryIsLocal || false;
     this.fallbackIsLocal = options.fallbackIsLocal || false;
+    // Public property — can also be assigned post-construction:
+    //   llmProvider.fallbackNotifier = fallbackNotifier;
+    this.fallbackNotifier = options.fallbackNotifier || null;
   }
 
   /**
    * Send a chat request, falling back on 429 rate-limit errors.
    *
+   * Attaches `_routing` metadata to every result:
+   *   { isFallback, primaryIsLocal, fallbackIsLocal, player }
+   *
    * @param {Object} params - Same shape as any provider's chat() method
-   * @returns {Promise<{content: string|null, toolCalls: Array|null}>}
+   * @returns {Promise<{content: string|null, toolCalls: Array|null, _routing: Object}>}
    */
   async chat(params) {
-    // forceLocal: skip cloud providers, use only local
+    // forceLocal: skip cloud providers, use only local.
+    // Treated as intentional routing, not a fallback (isFallback: false).
     if (params.forceLocal) {
       if (this.primaryIsLocal) {
-        return this.primary.chat(params);
+        const result = await this.primary.chat(params);
+        result._routing = {
+          isFallback: false,
+          primaryIsLocal: this.primaryIsLocal,
+          fallbackIsLocal: this.fallbackIsLocal,
+          player: 'primary',
+        };
+        if (this.fallbackNotifier) {
+          try { this.fallbackNotifier.onRouteComplete(result); } catch (e) { /* silent */ }
+        }
+        return result;
       }
       if (this.fallback && this.fallbackIsLocal) {
-        return this.fallback.chat(params);
+        const result = await this.fallback.chat(params);
+        result._routing = {
+          isFallback: false,
+          primaryIsLocal: this.primaryIsLocal,
+          fallbackIsLocal: this.fallbackIsLocal,
+          player: 'fallback',
+        };
+        if (this.fallbackNotifier) {
+          try { this.fallbackNotifier.onRouteComplete(result); } catch (e) { /* silent */ }
+        }
+        return result;
       }
       throw new Error('forceLocal requested but no local provider available');
     }
 
     try {
-      return await this.primary.chat(params);
+      const result = await this.primary.chat(params);
+      result._routing = {
+        isFallback: false,
+        primaryIsLocal: this.primaryIsLocal,
+        fallbackIsLocal: this.fallbackIsLocal,
+        player: 'primary',
+      };
+      if (this.fallbackNotifier) {
+        try { this.fallbackNotifier.onRouteComplete(result); } catch (e) { /* silent */ }
+      }
+      return result;
     } catch (err) {
       if (this.fallback && this._isRateLimitError(err)) {
         this.logger.warn(`[ProviderChain] Primary provider 429, falling back: ${err.message}`);
-        return this.fallback.chat(params);
+        const result = await this.fallback.chat(params);
+        result._routing = {
+          isFallback: true,
+          primaryIsLocal: this.primaryIsLocal,
+          fallbackIsLocal: this.fallbackIsLocal,
+          player: 'fallback',
+        };
+        if (this.fallbackNotifier) {
+          try { this.fallbackNotifier.onRouteComplete(result); } catch (e) { /* silent */ }
+        }
+        return result;
       }
       throw err;
     }

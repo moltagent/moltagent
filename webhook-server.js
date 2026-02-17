@@ -238,6 +238,15 @@ try {
   AudioConverter = null;
 }
 
+// V3: LLM Fallback Notifier
+let FallbackNotifier;
+try {
+  FallbackNotifier = require('./src/lib/llm/fallback-notifier');
+} catch {
+  console.warn('[WARN] FallbackNotifier not available');
+  FallbackNotifier = null;
+}
+
 // Session V2: Speaches STT/TTS + VoiceManager
 let SpeachesClient, VoiceManager;
 try {
@@ -674,6 +683,7 @@ async function initialize() {
         speachesClient,
         fileClient: ncFilesClient,
         audioConverter: audioConverter,
+        ncRequestManager: ncRequestManager,
         config: appConfig.voice,
       });
       // Start in 'listen' mode so voice works before first heartbeat reads Cockpit
@@ -1023,6 +1033,17 @@ async function initialize() {
           fallbackIsLocal: !!ollamaProvider
         });
         console.log('[INIT] Primary LLM: Claude → Ollama fallback (Ollama not default)');
+      }
+
+      // V3: Wire FallbackNotifier to ProviderChain
+      if (FallbackNotifier && talkQueue && defaultTalkToken) {
+        const fallbackNotifier = new FallbackNotifier({
+          talkSendQueue: talkQueue,
+          primaryRoomToken: defaultTalkToken,
+          debounceMinutes: 15
+        });
+        llmProvider.fallbackNotifier = fallbackNotifier;
+        console.log('[INIT] FallbackNotifier ready (wired to ProviderChain)');
       }
 
       // Build ToolRegistry with all available clients

@@ -505,6 +505,14 @@ class AgentLoop {
         + 'It may contain filler words, hesitations, or informal phrasing.\n'
         + 'Interpret the intent generously. If unclear, confirm briefly before acting.\n\n'
         + 'Keep your response concise and conversational.';
+
+      if (options.voiceReplyEnabled) {
+        prompt += '\n\n## Voice Reply Output\n\n'
+          + 'Your response will be synthesized as spoken audio.\n'
+          + 'Keep it concise: aim for 2-3 sentences.\n'
+          + 'Avoid markdown, URLs, code blocks, and special formatting.\n'
+          + 'Write naturally as if speaking aloud.';
+      }
     }
 
     return prompt;

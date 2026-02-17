@@ -271,9 +271,11 @@ class MessageProcessor {
         response = result.response;
       } else if (this.agentLoop) {
         // Session 14: AgentLoop handles all natural language via tool-calling LLM
+        const voiceReplyEnabled = extracted._isVoice && this.voiceManager && this.voiceManager.mode === 'full';
         response = await this.agentLoop.process(extracted.content, extracted.token, {
           messageId: extracted.messageId,
-          inputType: extracted._isVoice ? 'voice' : 'text'
+          inputType: extracted._isVoice ? 'voice' : 'text',
+          voiceReplyEnabled
         });
         result = { intent: 'agent_loop', provider: 'agent' };
         response = response || 'Sorry, I encountered an error processing your message.';
@@ -297,6 +299,22 @@ class MessageProcessor {
           history
         });
         response = result.response || 'Sorry, I encountered an error processing your message.';
+      }
+
+      // V3: Voice reply — synthesize + share audio in Talk when mode is 'full'
+      // Done BEFORE transcript prefix so TTS gets the clean LLM response
+      if (extracted._isVoice && this.voiceManager && this.voiceManager.mode === 'full' && response) {
+        try {
+          const voiceResult = await this.voiceManager.replyWithVoice(extracted.token, response);
+          if (voiceResult.success) {
+            console.log(`[Message] Voice reply sent: ${voiceResult.filename} (${voiceResult.size} bytes)`);
+          } else {
+            console.warn(`[Message] Voice reply skipped: ${voiceResult.reason}`);
+          }
+        } catch (err) {
+          console.warn(`[Message] Voice reply failed: ${err.message}`);
+        }
+        // Text reply always sent regardless — voice is additive
       }
 
       // Session 37: Prepend transcript indicator for voice messages
