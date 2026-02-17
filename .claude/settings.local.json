@@ -150,7 +150,15 @@
       "Bash(__NEW_LINE_0d609491311d51f9__ curl -v -u \"moltagent:$NC_PASS\" -X POST \"https://nx89136.your-storageshare.de/remote.php/dav/calendars/moltagent/personal/\" -H \"Content-Type: application/xml\" -d '<?xml version=\"\"1.0\"\" encoding=\"\"UTF-8\"\"?>\n<cs:share xmlns:cs=\"\"http://calendarserver.org/ns/\"\" xmlns:d=\"\"DAV:\"\">\n  <cs:set>\n    <d:href>principal:principals/users/Funana</d:href>\n    <cs:summary>MoltAgent Personal Calendar</cs:summary>\n    <cs:read/>\n  </cs:set>\n</cs:share>')",
       "Bash(pip3 list:*)",
       "Bash(pip3 install:*)",
-      "Bash(apt list:*)"
+      "Bash(apt list:*)",
+      "WebFetch(domain:help.nextcloud.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:gist.github.com)",
+      "Bash(dpkg -l:*)",
+      "Bash(ffmpeg:*)",
+      "Bash(pm2 restart:*)",
+      "Bash(npx pm2 list)",
+      "Bash(overloaded, then qwen3:8b timed out\"\\) instead of generic messages\n- ErrorHandler: classify \"timed out\" as TIMEOUT \\(was falling through\n  to INTERNAL\\); classify \"overloaded\" as RATE_LIMITED; improve\n  user-facing messages for TIMEOUT and INTERNAL categories\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }
