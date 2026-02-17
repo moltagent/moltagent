@@ -134,6 +134,10 @@ class MessageProcessor {
     /** @type {Object|null} - NCStatusIndicator (sets Molti's NC user status) */
     this.statusIndicator = deps.statusIndicator || null;
 
+    // Local Intelligence: MicroPipeline for local-only message processing
+    /** @type {Object|null} - MicroPipeline instance */
+    this.microPipeline = deps.microPipeline || null;
+
     // Session V2: VoiceManager for mode-aware voice orchestration
     /** @type {Object|null} - VoiceManager instance */
     this.voiceManager = deps.voiceManager || null;
@@ -269,6 +273,14 @@ class MessageProcessor {
           messageId: extracted.messageId
         });
         response = result.response;
+      } else if (this.microPipeline && this._shouldUseMicroPipeline()) {
+        // Local Intelligence: MicroPipeline handles local-only messages with focused calls
+        response = await this.microPipeline.process(extracted.content, {
+          userName: extracted.user,
+          roomToken: extracted.token,
+          warmMemory: ''
+        });
+        result = { intent: 'micro_pipeline', provider: 'local' };
       } else if (this.agentLoop) {
         // Session 14: AgentLoop handles all natural language via tool-calling LLM
         const voiceReplyEnabled = extracted._isVoice && this.voiceManager && this.voiceManager.mode === 'full';
@@ -587,6 +599,25 @@ class MessageProcessor {
     // Cap at 200 messages per room
     const ctx = this.roomContext.get(token);
     if (ctx.length > 200) ctx.splice(0, ctx.length - 200);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Local Intelligence: MicroPipeline Routing
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Determine if the MicroPipeline should handle this message.
+   * True when the system is running in all-local mode (no cloud providers
+   * active) — the MicroPipeline decomposes work into small calls that
+   * local models can handle reliably.
+   *
+   * @returns {boolean}
+   * @private
+   */
+  _shouldUseMicroPipeline() {
+    // Check if the AgentLoop's ProviderChain has a local primary
+    if (this.agentLoop?.llmProvider?.primaryIsLocal) return true;
+    return false;
   }
 
   // ---------------------------------------------------------------------------

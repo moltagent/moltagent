@@ -95,7 +95,8 @@ function createServerComponents(deps) {
     whisperClient,
     audioConverter,
     voiceManager,
-    botNames
+    botNames,
+    microPipeline
   } = deps;
 
   // Create command handler first (used by message processor)
@@ -124,7 +125,8 @@ function createServerComponents(deps) {
     audioConverter,
     voiceManager,
     ncRequestManager,
-    botNames
+    botNames,
+    microPipeline
   });
 
   // Create webhook handler (uses message processor)

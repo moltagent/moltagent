@@ -333,6 +333,19 @@ try {
   AgentLoop = null;
 }
 
+// Local Intelligence: ModelScout + MicroPipeline + DeferralQueue
+let ModelScout, MicroPipeline, DeferralQueue;
+try {
+  ({ ModelScout } = require('./src/lib/providers/model-scout'));
+  MicroPipeline = require('./src/lib/agent/micro-pipeline');
+  DeferralQueue = require('./src/lib/agent/deferral-queue');
+} catch (err) {
+  console.warn(`[WARN] Local Intelligence modules not available: ${err.message}`);
+  ModelScout = null;
+  MicroPipeline = null;
+  DeferralQueue = null;
+}
+
 // Configuration (NO secrets - only non-sensitive config)
 const CONFIG = {
   port: parseInt(process.env.PORT) || appConfig.server.port,
@@ -417,6 +430,8 @@ let whisperClient = null; // Session 37: WhisperClient for STT transcription
 let audioConverter = null; // Session 37: AudioConverter for audio format conversion
 let voiceManager = null; // Session V2: VoiceManager for mode-aware voice orchestration
 let infraMonitor = null; // Session 38: InfraMonitor for service health probing
+let microPipeline = null; // Local Intelligence: MicroPipeline for local-only mode
+let deferralQueue = null; // Local Intelligence: DeferralQueue for deferred complex tasks
 
 // Simple console audit logger fallback
 async function consoleAuditLog(event, data) {
@@ -1183,6 +1198,61 @@ async function initialize() {
     }
   }
 
+  // 7g. Local Intelligence: ModelScout + MicroPipeline + DeferralQueue
+  if (ModelScout) {
+    try {
+      const modelScout = new ModelScout({
+        ollamaEndpoint: CONFIG.ollama.url,
+        logger: console
+      });
+
+      modelScout.discover().then(() => {
+        const localRoster = modelScout.generateLocalRoster();
+        if (localRoster && llmRouter) {
+          llmRouter.router.setLocalRoster(localRoster);
+          console.log(`[INIT] Local roster: ${modelScout.getSummary()}`);
+        }
+      }).catch(err => {
+        console.warn(`[INIT] ModelScout discovery failed: ${err.message}`);
+      });
+    } catch (err) {
+      console.warn(`[INIT] ModelScout failed: ${err.message}`);
+    }
+  }
+
+  if (DeferralQueue && ncFilesClient && llmRouter) {
+    try {
+      deferralQueue = new DeferralQueue({
+        ncFilesClient,
+        llmRouter: llmRouter.router,
+        logger: console
+      });
+      deferralQueue.load().catch(err =>
+        console.warn(`[INIT] DeferralQueue load failed: ${err.message}`)
+      );
+      console.log('[INIT] DeferralQueue ready');
+    } catch (err) {
+      console.warn(`[INIT] DeferralQueue failed: ${err.message}`);
+    }
+  }
+
+  if (MicroPipeline && llmRouter) {
+    try {
+      microPipeline = new MicroPipeline({
+        llmRouter: llmRouter.router,
+        memorySearcher,
+        deckClient: deckClient2,
+        calendarClient: caldavClient,
+        talkSendQueue: talkQueue,
+        deferralQueue,
+        logger: console
+      });
+      console.log('[INIT] MicroPipeline ready');
+    } catch (err) {
+      console.warn(`[INIT] MicroPipeline failed: ${err.message}`);
+    }
+  }
+
   // 8. Initialize Message Router (if available)
   if (MessageRouter) {
     console.log('[INIT] Setting up Message Router...');
@@ -1279,6 +1349,7 @@ async function initialize() {
     whisperClient: whisperClient,
     audioConverter: audioConverter,
     voiceManager: voiceManager,
+    microPipeline: microPipeline,
     botNames: botNames,
     sendTalkReply: sendTalkReply,
     auditLog: auditLogger ? auditLogger.log.bind(auditLogger) : consoleAuditLog,
@@ -1420,6 +1491,8 @@ async function initialize() {
         infraMonitor,
         voiceManager,
         warmMemory,
+        deferralQueue,
+        agentLoop,
         ncFlow: ncFlowActivityPoller || ncFlowWebhookReceiver ? {
           activityPoller: ncFlowActivityPoller,
           webhookReceiver: ncFlowWebhookReceiver,

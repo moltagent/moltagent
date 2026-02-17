@@ -117,6 +117,12 @@ class LegacyLLMRouter {
   get router() {
     return this._router;
   }
+
+  // Local Intelligence: ModelScout integration proxies
+  setLocalRoster(roster) { return this._router.setLocalRoster(roster); }
+  getLocalRoster() { return this._router.getLocalRoster(); }
+  hasCloudPlayers() { return this._router.hasCloudPlayers(); }
+  async isCloudAvailable() { return this._router.isCloudAvailable(); }
 }
 
 module.exports = LegacyLLMRouter;

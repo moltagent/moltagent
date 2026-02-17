@@ -149,6 +149,10 @@ class HeartbeatManager {
     // Warm Memory (optional, for M2 micro-consolidation)
     this.warmMemory = config.warmMemory || null;
 
+    // DeferralQueue + AgentLoop (optional, for Local Intelligence deferred task processing)
+    this.deferralQueue = config.deferralQueue || null;
+    this.agentLoop = config.agentLoop || null;
+
     // Heartbeat state
     this.state = {
       isRunning: false,
@@ -616,6 +620,20 @@ class HeartbeatManager {
       console.error('[Heartbeat] Fatal error:', err.message);
       this.state.consecutiveFailures++;
       results.errors.push({ component: 'heartbeat', error: err.message });
+    }
+
+    // Local Intelligence: Process deferred tasks when cloud is available
+    if (this.deferralQueue) {
+      try {
+        const deferralResult = await this.deferralQueue.processNext(this.agentLoop, 2);
+        if (deferralResult.processed > 0) {
+          results.deferral = deferralResult;
+          console.log(`[Heartbeat] DeferralQueue: processed ${deferralResult.processed} task(s)`);
+        }
+      } catch (err) {
+        console.warn(`[Heartbeat] DeferralQueue error: ${err.message}`);
+        results.errors.push({ component: 'deferralQueue', error: err.message });
+      }
     }
 
     // M2 Future: Micro-consolidation of warm memory from active session context

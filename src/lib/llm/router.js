@@ -911,6 +911,64 @@ class LLMRouter {
   getPreset() {
     return this._activePreset || null;
   }
+
+  // ---------------------------------------------------------------------------
+  // Local Intelligence: ModelScout integration
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Store a local model roster (model-name → job map) from ModelScout.
+   * Informational storage — MicroPipeline reads this to decide which model
+   * to pass to Ollama for each micro-call. Future versions will use this
+   * for per-job model selection within Ollama.
+   * @param {Object} roster - { quick: ['model1'], thinking: ['model2'], ... }
+   */
+  setLocalRoster(roster) {
+    this._localRoster = roster || null;
+    if (roster) {
+      const jobs = Object.keys(roster);
+      console.log(`[LLMRouter] Local roster set: ${jobs.length} jobs mapped`);
+    }
+  }
+
+  /**
+   * Get the stored local model roster, or null if not set.
+   * @returns {Object|null}
+   */
+  getLocalRoster() {
+    return this._localRoster || null;
+  }
+
+  /**
+   * Check if any registered provider is a cloud (non-local) provider.
+   * @returns {boolean}
+   */
+  hasCloudPlayers() {
+    for (const [, provider] of this.providers) {
+      if (provider.type !== 'local') return true;
+    }
+    return false;
+  }
+
+  /**
+   * Ping the first cloud provider to check if it's reachable.
+   * Returns false if no cloud providers exist or if the ping fails.
+   * @returns {Promise<boolean>}
+   */
+  async isCloudAvailable() {
+    const cloudId = this._resolveCloudPrimary();
+    if (!cloudId) return false;
+
+    const provider = this.providers.get(cloudId);
+    if (!provider) return false;
+
+    try {
+      const result = await provider.testConnection();
+      return !!(result && result.connected);
+    } catch {
+      return false;
+    }
+  }
 }
 
 LLMRouter.JOBS = JOBS;

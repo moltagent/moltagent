@@ -427,6 +427,38 @@ function createMockNCSearchClient(overrides = {}) {
   };
 }
 
+// ModelScout Mock
+function createMockModelScout(overrides = {}) {
+  return {
+    discover: overrides.discover || (async () => overrides.discovered || []),
+    generateLocalRoster: overrides.generateLocalRoster || (() => overrides.roster || null),
+    getSummary: overrides.getSummary || (() => 'Mock fleet summary'),
+    hasModel: overrides.hasModel || (() => false),
+    _discovered: overrides.discovered || null,
+    _roster: overrides.roster || null
+  };
+}
+
+// MicroPipeline Mock
+function createMockMicroPipeline(overrides = {}) {
+  return {
+    process: overrides.process || (async (message) => overrides.response || 'Mock micro-pipeline response'),
+    getStats: overrides.getStats || (() => ({ processed: 0, byIntent: {}, deferred: 0, errors: 0 }))
+  };
+}
+
+// DeferralQueue Mock
+function createMockDeferralQueue(overrides = {}) {
+  const tasks = [];
+  return {
+    enqueue: overrides.enqueue || (async (task) => { tasks.push(task); }),
+    processNext: overrides.processNext || (async () => ({ processed: 0, skipped: 0, errors: [] })),
+    load: overrides.load || (async () => {}),
+    getStatus: overrides.getStatus || (() => ({ total: tasks.length, queued: tasks.length, processing: 0, done: 0, failed: 0, stats: { enqueued: tasks.length, processed: 0, failed: 0 } })),
+    _queue: tasks
+  };
+}
+
 module.exports = {
   createMockAuditLog,
   createMockCredentialBroker,
@@ -451,5 +483,8 @@ module.exports = {
   createMockInfraMonitor,
   createMockNCFilesClient,
   createMockWarmMemory,
-  createMockNCSearchClient
+  createMockNCSearchClient,
+  createMockModelScout,
+  createMockMicroPipeline,
+  createMockDeferralQueue
 };

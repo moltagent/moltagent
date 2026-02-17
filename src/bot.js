@@ -107,6 +107,19 @@ try {
   WarmMemory = null;
 }
 
+// Local Intelligence: ModelScout + MicroPipeline + DeferralQueue
+let ModelScout, MicroPipeline, DeferralQueue;
+try {
+  ({ ModelScout } = require('./lib/providers/model-scout'));
+  MicroPipeline = require('./lib/agent/micro-pipeline');
+  DeferralQueue = require('./lib/agent/deferral-queue');
+} catch (err) {
+  console.warn(`[WARN] Local Intelligence modules not available: ${err.message}`);
+  ModelScout = null;
+  MicroPipeline = null;
+  DeferralQueue = null;
+}
+
 // Session 37: Voice Pipeline
 let WhisperClient, AudioConverter;
 try {
@@ -608,6 +621,45 @@ async function main() {
     }
   }
 
+  // Local Intelligence: ModelScout + MicroPipeline + DeferralQueue
+  let deferralQueue = null;
+  if (ModelScout) {
+    try {
+      const modelScout = new ModelScout({
+        ollamaEndpoint: CONFIG.ollama.url,
+        logger: console
+      });
+
+      modelScout.discover().then(() => {
+        const localRoster = modelScout.generateLocalRoster();
+        if (localRoster && llmRouter) {
+          llmRouter.router.setLocalRoster(localRoster);
+          console.log(`[INIT] Local roster (bot): ${modelScout.getSummary()}`);
+        }
+      }).catch(err => {
+        console.warn(`[INIT] ModelScout discovery failed (bot): ${err.message}`);
+      });
+    } catch (err) {
+      console.warn(`[INIT] ModelScout failed (bot): ${err.message}`);
+    }
+  }
+
+  if (DeferralQueue && ncFilesClient && llmRouter) {
+    try {
+      deferralQueue = new DeferralQueue({
+        ncFilesClient,
+        llmRouter: llmRouter.router,
+        logger: console
+      });
+      deferralQueue.load().catch(err =>
+        console.warn(`[INIT] DeferralQueue load failed (bot): ${err.message}`)
+      );
+      console.log('[INIT] DeferralQueue ready (bot)');
+    } catch (err) {
+      console.warn(`[INIT] DeferralQueue failed (bot): ${err.message}`);
+    }
+  }
+
   // Initialize Heartbeat Manager with credential broker
   console.log('[INIT] Setting up Heartbeat Manager...');
   const heartbeat = new HeartbeatManager({
@@ -635,6 +687,7 @@ async function main() {
     cockpitManager,
     meetingPreparer,
     botEnroller: botEnrollerInstance,
+    deferralQueue,
     ncFlow: { activityPoller, webhookReceiver, systemTags }
   });
 
