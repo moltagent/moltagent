@@ -925,8 +925,7 @@ async function initialize() {
             const page = await sessionPersister.persistSession(session);
             if (page) {
               console.log(`[SessionPersister] Saved session summary: ${page}`);
-              // Invalidate memory searcher cache after wiki write
-              if (memorySearcher) memorySearcher.invalidateCache();
+              // NC Unified Search manages its own index — no cache to invalidate
 
               // M1: Consolidate warm memory from session summary
               if (warmMemory && sessionPersister.lastSummary) {
@@ -955,14 +954,17 @@ async function initialize() {
     }
   }
 
-  // 7b9. Initialize MemorySearcher (Session 29b)
-  if (MemorySearcher && collectivesClient && appConfig.memorySearch?.enabled !== false) {
+  // 7b9. Initialize MemorySearcher (M2: NC Unified Search)
+  if (MemorySearcher && ncSearchClient) {
     try {
       memorySearcher = new MemorySearcher({
-        wikiClient: collectivesClient,
-        config: appConfig.memorySearch || {}
+        ncSearchClient,
+        logger: console
       });
-      console.log('[INIT] MemorySearcher ready');
+      memorySearcher.discoverProviders().catch(err =>
+        console.warn(`[MemorySearcher] Provider discovery failed: ${err.message}`)
+      );
+      console.log('[INIT] MemorySearcher ready (NC Unified Search)');
     } catch (err) {
       console.warn(`[INIT] MemorySearcher failed: ${err.message}`);
     }

@@ -54,12 +54,18 @@ class NCSearchClient {
    * @param {string} providerId
    * @param {string} term
    * @param {number} [limit=5]
+   * @param {Object} [options]
+   * @param {string} [options.since] - ISO date string to filter results from
+   * @param {string} [options.until] - ISO date string to filter results until
    * @returns {Promise<Array<{title: string, subline: string, resourceUrl: string}>>}
    */
-  async searchProvider(providerId, term, limit = 5) {
+  async searchProvider(providerId, term, limit = 5, options = {}) {
     const encodedTerm = encodeURIComponent(term);
+    let url = `/ocs/v2.php/search/providers/${encodeURIComponent(providerId)}/search?term=${encodedTerm}&limit=${limit}`;
+    if (options.since) url += `&since=${encodeURIComponent(options.since)}`;
+    if (options.until) url += `&until=${encodeURIComponent(options.until)}`;
     const response = await this.nc.request(
-      `/ocs/v2.php/search/providers/${encodeURIComponent(providerId)}/search?term=${encodedTerm}&limit=${limit}`,
+      url,
       {
         method: 'GET',
         headers: { 'OCS-APIRequest': 'true' },

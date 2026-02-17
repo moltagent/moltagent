@@ -91,6 +91,14 @@ try {
   NCFilesClient = null;
 }
 
+let NCSearchClient;
+try {
+  ({ NCSearchClient } = require('./lib/integrations/nc-search-client'));
+} catch {
+  console.warn('[WARN] NCSearchClient not available (bot)');
+  NCSearchClient = null;
+}
+
 let WarmMemory;
 try {
   WarmMemory = require('./lib/integrations/warm-memory');
@@ -498,7 +506,7 @@ async function main() {
             const page = await persister.persistSession(session);
             if (page) {
               console.log(`[SessionPersister] Saved session summary: ${page}`);
-              if (memorySearcher) memorySearcher.invalidateCache();
+              // NC Unified Search manages its own index — no cache to invalidate
 
               // M1: Consolidate warm memory from session summary
               if (warmMemory && persister.lastSummary) {
@@ -540,14 +548,25 @@ async function main() {
     console.log('[INIT] SessionManager ready (bot, cleanup timer started)');
   }
 
-  // Initialize MemorySearcher (Session 29b)
-  if (MemorySearcher && collectivesClient && appConfig.memorySearch?.enabled !== false) {
+  // Initialize MemorySearcher (M2: NC Unified Search)
+  let ncSearchClient = null;
+  if (NCSearchClient && ncRequestManager) {
+    try {
+      ncSearchClient = new NCSearchClient(ncRequestManager);
+    } catch (err) {
+      console.warn(`[INIT] NCSearchClient (bot) failed: ${err.message}`);
+    }
+  }
+  if (MemorySearcher && ncSearchClient) {
     try {
       memorySearcher = new MemorySearcher({
-        wikiClient: collectivesClient,
-        config: appConfig.memorySearch || {}
+        ncSearchClient,
+        logger: console
       });
-      console.log('[INIT] MemorySearcher ready (bot)');
+      memorySearcher.discoverProviders().catch(err =>
+        console.warn(`[MemorySearcher] Provider discovery failed (bot): ${err.message}`)
+      );
+      console.log('[INIT] MemorySearcher ready (bot, NC Unified Search)');
     } catch (err) {
       console.warn(`[INIT] MemorySearcher (bot) failed: ${err.message}`);
     }

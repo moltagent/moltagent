@@ -1976,7 +1976,7 @@ class ToolRegistry {
 
     this.register({
       name: 'memory_search',
-      description: 'Search your knowledge wiki and past session transcripts for relevant information. Use when you need to recall past decisions, facts about people, project details, or previous conversations.',
+      description: 'Search across your knowledge wiki, Talk conversations, files, tasks, and calendar. Use to recall past decisions, people, project details, conversations, or events. Supports time filtering with since/until.',
       parameters: {
         type: 'object',
         properties: {
@@ -1986,8 +1986,16 @@ class ToolRegistry {
           },
           scope: {
             type: 'string',
-            description: 'Limit search to a specific knowledge category',
-            enum: ['all', 'people', 'projects', 'sessions', 'policies']
+            description: 'Limit search to a specific source',
+            enum: ['all', 'wiki', 'people', 'projects', 'sessions', 'policies', 'conversations', 'files', 'tasks', 'calendar']
+          },
+          since: {
+            type: 'string',
+            description: 'Only return results from after this date (ISO format, e.g., "2026-01-01")'
+          },
+          until: {
+            type: 'string',
+            description: 'Only return results from before this date (ISO format, e.g., "2026-02-01")'
           }
         },
         required: ['query']
@@ -1995,17 +2003,25 @@ class ToolRegistry {
       handler: async (args) => {
         const results = await searcher.search(
           args.query,
-          { scope: args.scope || 'all', maxResults: 5 }
+          {
+            scope: args.scope || 'all',
+            maxResults: 5,
+            since: args.since,
+            until: args.until
+          }
         );
 
         if (results.length === 0) {
           return 'No matching memories found.';
         }
 
-        // Format results for the LLM
-        const formatted = results.map(r =>
-          `**${r.page}** (relevance: ${(r.score * 100).toFixed(0)}%)\n${r.snippet}`
-        ).join('\n\n');
+        // Format results for the LLM with source labels
+        const formatted = results.map(r => {
+          const parts = [`**${r.title}** [${r.source}]`];
+          if (r.excerpt) parts.push(r.excerpt);
+          if (r.link) parts.push(`Link: ${r.link}`);
+          return parts.join('\n');
+        }).join('\n\n');
 
         return formatted;
       }

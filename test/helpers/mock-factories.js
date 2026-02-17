@@ -403,6 +403,30 @@ function createMockWarmMemory(overrides = {}) {
   };
 }
 
+// NCSearchClient Mock (for MemorySearcher / Unified Search tests)
+function createMockNCSearchClient(overrides = {}) {
+  const defaultProviders = [
+    { id: 'collectives_pages', name: 'Collectives Pages' },
+    { id: 'collectives_pages_content', name: 'Collectives Page Content' },
+    { id: 'talk-message', name: 'Talk Messages' },
+    { id: 'files', name: 'Files' },
+    { id: 'deck', name: 'Deck' },
+    { id: 'calendar', name: 'Calendar' },
+  ];
+  return {
+    getProviders: overrides.getProviders || (async () => overrides.providers || defaultProviders),
+    searchProvider: overrides.searchProvider || (async (providerId, term, limit, options) => {
+      if (overrides.searchResults && overrides.searchResults[providerId]) {
+        return overrides.searchResults[providerId];
+      }
+      return [];
+    }),
+    search: overrides.search || (async (term, providerIds, limit) => []),
+    _providersCache: null,
+    _providersCacheExpiry: 0
+  };
+}
+
 module.exports = {
   createMockAuditLog,
   createMockCredentialBroker,
@@ -426,5 +450,6 @@ module.exports = {
   createMockBotEnroller,
   createMockInfraMonitor,
   createMockNCFilesClient,
-  createMockWarmMemory
+  createMockWarmMemory,
+  createMockNCSearchClient
 };
