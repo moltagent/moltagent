@@ -1,0 +1,73 @@
+skill_id: brave-search-pro
+display_name: "Brave Search Pro"
+description: "Add Brave Search API as a search provider. Independent 30B+ page index, privacy-first. Free tier includes $5/month credit."
+version: "1.0.0"
+
+requires:
+  credentials:
+    - label: brave-api-key
+      description: "Brave Search API key from https://brave.com/search/api/"
+  tools:
+    - curl
+    - jq
+
+security:
+  allowed_domains:
+    - api.search.brave.com
+  max_calls_per_hour: 100
+
+parameters:
+  - id: brave_api_key_label
+    type: text
+    required: true
+    default_value: "brave-api-key"
+    description: "Nextcloud Passwords label for Brave Search API key"
+    validation_pattern: "^[a-zA-Z0-9_-]+$"
+
+  - id: max_results
+    type: number
+    required: false
+    default_value: "5"
+    description: "Maximum results per query (1-20)"
+    validation_pattern: "^([1-9]|1[0-9]|20)$"
+
+  - id: freshness
+    type: select
+    required: false
+    default_value: "none"
+    description: "Time filter for results"
+    options:
+      - none
+      - pd
+      - pw
+      - pm
+      - py
+
+skill_template: |
+  # Brave Search Pro
+  Search the web using Brave's independent index.
+
+  ## Usage
+  Query: {{query}}
+
+  ## Execution
+  ```bash
+  # Retrieve API key from Nextcloud Passwords
+  API_KEY=$(curl -s -u "$NC_USER:$NC_PASS" \
+    "$NC_URL/apps/passwords/api/1.0/password/list" \
+    -H "Content-Type: application/json" | \
+    jq -r '.[] | select(.label=="{{ brave_api_key_label }}") | .password')
+
+  # Search Brave
+  curl -s "https://api.search.brave.com/res/v1/web/search?q={{query}}&count={{max_results}}&freshness={{freshness}}" \
+    -H "Accept: application/json" \
+    -H "Accept-Encoding: gzip" \
+    -H "X-Subscription-Token: $API_KEY"
+  ```
+
+  ## Response Format
+  Return results as:
+  - **Title**: from `web.results[].title`
+  - **URL**: from `web.results[].url`
+  - **Snippet**: from `web.results[].description`
+  - **Source**: "brave"

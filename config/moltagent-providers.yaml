@@ -46,3 +46,17 @@ fallbackChain:
 budgets:
   daily: {}
   monthly: {}
+
+# Search provider configuration
+search:
+  default_provider: searxng
+  fallback_provider: null
+  european_only: false
+  searxng:
+    url: http://localhost:8080
+    engines_default: [duckduckgo, brave, stract, mojeek, wikipedia, stackoverflow]
+    engines_eu: [stract, qwant, mojeek, metager, wikipedia]
+    timeout_ms: 5000
+    format: json
+  max_results: 10
+  cache_ttl_minutes: 60

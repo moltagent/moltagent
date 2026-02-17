@@ -1,0 +1,65 @@
+skill_id: perplexity-research
+display_name: "Perplexity Research"
+description: "Add Perplexity Sonar for deep research queries with inline citations. ~$0.005/query (Sonar), ~$0.02/query (Sonar Pro)."
+version: "1.0.0"
+
+requires:
+  credentials:
+    - label: perplexity-api-key
+      description: "Perplexity API key from https://docs.perplexity.ai/"
+  tools:
+    - curl
+    - jq
+
+security:
+  allowed_domains:
+    - api.perplexity.ai
+  max_calls_per_hour: 60
+
+parameters:
+  - id: pplx_api_key_label
+    type: text
+    required: true
+    default_value: "perplexity-api-key"
+    description: "Nextcloud Passwords label for Perplexity API key"
+    validation_pattern: "^[a-zA-Z0-9_-]+$"
+
+  - id: model
+    type: select
+    required: false
+    default_value: "sonar"
+    description: "Perplexity model to use"
+    options:
+      - sonar
+      - sonar-pro
+
+skill_template: |
+  # Perplexity Research
+  Deep research with citations using Perplexity Sonar.
+
+  ## Usage
+  Query: {{query}}
+
+  ## Execution
+  ```bash
+  # Retrieve API key from Nextcloud Passwords
+  API_KEY=$(curl -s -u "$NC_USER:$NC_PASS" \
+    "$NC_URL/apps/passwords/api/1.0/password/list" \
+    -H "Content-Type: application/json" | \
+    jq -r '.[] | select(.label=="{{ pplx_api_key_label }}") | .password')
+
+  # Query Perplexity Sonar
+  curl -s "https://api.perplexity.ai/chat/completions" \
+    -H "Authorization: Bearer $API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "model": "{{ model }}",
+      "messages": [{"role": "user", "content": "{{query}}"}]
+    }'
+  ```
+
+  ## Response Format
+  Return results as:
+  - **Answer**: from `choices[0].message.content`
+  - **Citations**: from `citations[]`
+  - **Source**: "perplexity"

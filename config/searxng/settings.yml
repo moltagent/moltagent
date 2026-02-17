@@ -1,0 +1,84 @@
+# MoltAgent Enhanced SearXNG Configuration
+# Overrides default settings with sovereign-first engine selection
+# Deploy: mount this as /etc/searxng/settings.yml in the SearXNG container
+
+use_default_settings: true
+
+general:
+  instance_name: "Moltagent Search"
+  debug: false
+  enable_metrics: false
+
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  secret_key: ""  # Set via SEARXNG_SECRET env var
+  image_proxy: false
+
+search:
+  safe_search: 0
+  autocomplete: "stract"
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+outgoing:
+  request_timeout: 5.0
+  useragent_suffix: "moltagent"
+
+# Engine overrides — independent-index engines weighted higher
+engines:
+
+  # Independent indexes (sovereign-friendly)
+  - name: stract
+    disabled: false
+    weight: 1.4
+
+  - name: mojeek
+    disabled: false
+    weight: 1.2
+
+  - name: brave
+    disabled: false
+    weight: 1.3
+
+  - name: duckduckgo
+    disabled: false
+    weight: 1.2
+
+  # Knowledge sources
+  - name: wikipedia
+    disabled: false
+    weight: 1.0
+
+  - name: wikidata
+    disabled: false
+    weight: 0.8
+
+  # Developer sources
+  - name: stackoverflow
+    disabled: false
+    weight: 1.0
+
+  - name: github
+    disabled: false
+    weight: 0.9
+
+  # Academic
+  - name: arxiv
+    disabled: false
+    weight: 1.0
+
+  # Big-tech trackers — disabled
+  - name: google
+    disabled: true
+
+  - name: bing
+    disabled: true
+
+  - name: yandex
+    disabled: true
+
+  - name: baidu
+    disabled: true

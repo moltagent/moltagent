@@ -1,0 +1,77 @@
+skill_id: exa-semantic
+display_name: "Exa Semantic Search"
+description: "Add Exa neural search for meaning-based web discovery. Finds pages by meaning rather than keywords. $2.50/1K queries."
+version: "1.0.0"
+
+requires:
+  credentials:
+    - label: exa-api-key
+      description: "Exa API key from https://exa.ai/"
+  tools:
+    - curl
+    - jq
+
+security:
+  allowed_domains:
+    - api.exa.ai
+  max_calls_per_hour: 100
+
+parameters:
+  - id: exa_api_key_label
+    type: text
+    required: true
+    default_value: "exa-api-key"
+    description: "Nextcloud Passwords label for Exa API key"
+    validation_pattern: "^[a-zA-Z0-9_-]+$"
+
+  - id: num_results
+    type: number
+    required: false
+    default_value: "5"
+    description: "Number of results (1-10)"
+    validation_pattern: "^([1-9]|10)$"
+
+  - id: search_type
+    type: select
+    required: false
+    default_value: "auto"
+    description: "Search strategy"
+    options:
+      - auto
+      - neural
+      - keyword
+
+skill_template: |
+  # Exa Semantic Search
+  Neural search that finds pages by meaning, not just keywords.
+
+  ## Usage
+  Query: {{query}}
+
+  ## Execution
+  ```bash
+  # Retrieve API key from Nextcloud Passwords
+  API_KEY=$(curl -s -u "$NC_USER:$NC_PASS" \
+    "$NC_URL/apps/passwords/api/1.0/password/list" \
+    -H "Content-Type: application/json" | \
+    jq -r '.[] | select(.label=="{{ exa_api_key_label }}") | .password')
+
+  # Search Exa
+  curl -s "https://api.exa.ai/search" \
+    -H "x-api-key: $API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "query": "{{query}}",
+      "numResults": {{num_results}},
+      "type": "{{ search_type }}",
+      "contents": {"text": {"maxCharacters": 500}}
+    }'
+  ```
+
+  ## Response Format
+  Return results as:
+  - **Title**: from `results[].title`
+  - **URL**: from `results[].url`
+  - **Snippet**: from `results[].text`
+  - **Score**: from `results[].score`
+  - **Source**: "exa"

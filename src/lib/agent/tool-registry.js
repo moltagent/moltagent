@@ -26,10 +26,11 @@ class ToolRegistry {
    * @param {import('../integrations/web-reader').WebReader} [options.webReader]
    * @param {import('../integrations/contacts-client')} [options.contactsClient]
    * @param {import('../integrations/memory-searcher')} [options.memorySearcher]
+   * @param {Object} [options.searchAdapters] - Map of commercial search adapters { brave, perplexity, exa }
    * @param {Object} [options.logger]
    */
-  constructor({ deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, logger }) {
-    this.clients = { deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher };
+  constructor({ deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, logger }) {
+    this.clients = { deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters };
     this.logger = logger || console;
 
     /** @type {Map<string, {name: string, description: string, parameters: Object, handler: Function}>} */
@@ -1801,23 +1802,92 @@ class ToolRegistry {
   _registerWebTools() {
     const searxng = this.clients.searxngClient;
     const webReader = this.clients.webReader;
+    const searchAdapters = this.clients.searchAdapters; // { brave, perplexity, exa } — may be undefined
 
     if (searxng) {
       this.register({
         name: 'web_search',
-        description: 'Search the web via SearXNG. Returns titles, URLs, and snippets.',
+        description: 'Search the web via SearXNG (default) or commercial providers. Use provider="multi" to query all available sources in parallel with deduplication.',
         parameters: {
           type: 'object',
           properties: {
             query: { type: 'string', description: 'Search query' },
             limit: { type: 'number', description: 'Max results (default: 5)' },
-            engines: { type: 'string', description: 'Comma-separated engines (e.g. "google,duckduckgo")' },
+            engines: { type: 'string', description: 'Comma-separated engines (e.g. "duckduckgo,stract")' },
             categories: { type: 'string', description: 'Category filter (general, news, science, it, etc.)' },
-            time_range: { type: 'string', description: 'Time filter (day, week, month, year)' }
+            time_range: { type: 'string', description: 'Time filter (day, week, month, year)' },
+            provider: {
+              type: 'string',
+              description: 'Search provider: "searxng" (default sovereign), "brave", "perplexity", "exa", "multi" (all available in parallel)',
+              enum: ['searxng', 'brave', 'perplexity', 'exa', 'multi']
+            }
           },
           required: ['query']
         },
         handler: async (args) => {
+          const provider = args.provider || 'searxng';
+
+          // --- Commercial provider shortcut ---
+          if (provider !== 'searxng' && provider !== 'multi' && searchAdapters?.[provider]) {
+            const adapter = searchAdapters[provider];
+            const results = await adapter.search(args.query, { maxResults: args.limit || 5 });
+            if (results.length === 0) {
+              return `No results found for "${args.query}" via ${provider}.`;
+            }
+            const lines = [`Found ${results.length} result(s) for "${args.query}" via ${provider}:\n`];
+            for (const r of results) {
+              lines.push(`**${r.title}**\n${r.url}\n${r.snippet || ''}\n`);
+            }
+            return lines.join('\n');
+          }
+
+          // --- Unconfigured provider ---
+          if (provider !== 'searxng' && provider !== 'multi') {
+            const available = ['searxng'];
+            if (searchAdapters) available.push(...Object.keys(searchAdapters));
+            available.push('multi');
+            return `Provider "${provider}" is not configured. Available: ${available.join(', ')}.`;
+          }
+
+          // --- Multi-source search ---
+          if (provider === 'multi') {
+            const { multiSourceSearch } = require('../integrations/search-provider-adapters');
+
+            // Build SearXNG as a provider-compatible wrapper
+            const searxngWrapper = {
+              source: 'searxng',
+              search: async (q, opts) => {
+                const res = await searxng.search(q, { limit: opts?.maxResults });
+                return res.results.map(r => ({
+                  title: r.title,
+                  url: r.url,
+                  snippet: r.content,
+                  source: 'searxng',
+                  score: r.score || 0.5
+                }));
+              }
+            };
+
+            const providers = [searxngWrapper];
+            if (searchAdapters) {
+              for (const adapter of Object.values(searchAdapters)) {
+                providers.push(adapter);
+              }
+            }
+
+            const merged = await multiSourceSearch(providers, args.query, args.limit || 10);
+            if (merged.length === 0) {
+              return `No results found for "${args.query}" across all providers.`;
+            }
+            const lines = [`Found ${merged.length} result(s) for "${args.query}" (multi-source):\n`];
+            for (const r of merged) {
+              const srcTag = r.sources?.length > 1 ? ` [${r.sources.join(', ')}]` : ` [${r.source}]`;
+              lines.push(`**${r.title}**${srcTag}\n${r.url}\n${r.snippet || ''}\n`);
+            }
+            return lines.join('\n');
+          }
+
+          // --- Default: SearXNG only ---
           const results = await searxng.search(args.query, {
             limit: args.limit,
             engines: args.engines,

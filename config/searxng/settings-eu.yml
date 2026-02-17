@@ -1,0 +1,87 @@
+# MoltAgent SearXNG Configuration — EU-Only Sovereign Variant
+# Uses exclusively EU-hosted / EU-jurisdiction search engines
+# Deploy: mount this as /etc/searxng/settings.yml for EU-only deployments
+
+use_default_settings: true
+
+general:
+  instance_name: "Moltagent Search (EU)"
+  debug: false
+  enable_metrics: false
+
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  secret_key: ""  # Set via SEARXNG_SECRET env var
+  image_proxy: false
+
+search:
+  safe_search: 0
+  autocomplete: "stract"
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+outgoing:
+  request_timeout: 5.0
+  useragent_suffix: "moltagent-eu"
+
+# Engine overrides — EU-only engines
+engines:
+
+  # EU-based independent indexes
+  - name: stract
+    disabled: false
+    weight: 1.5
+
+  - name: qwant
+    disabled: false
+    weight: 1.3
+
+  - name: mojeek
+    disabled: false
+    weight: 1.2
+
+  - name: metager
+    disabled: false
+    weight: 1.0
+
+  # Knowledge sources (Wikimedia Foundation — global non-profit)
+  - name: wikipedia
+    disabled: false
+    weight: 1.0
+
+  - name: wikidata
+    disabled: false
+    weight: 0.8
+
+  # Academic
+  - name: arxiv
+    disabled: false
+    weight: 1.0
+
+  # Non-EU engines — disabled
+  - name: duckduckgo
+    disabled: true
+
+  - name: brave
+    disabled: true
+
+  - name: google
+    disabled: true
+
+  - name: bing
+    disabled: true
+
+  - name: yandex
+    disabled: true
+
+  - name: baidu
+    disabled: true
+
+  - name: stackoverflow
+    disabled: true
+
+  - name: github
+    disabled: true

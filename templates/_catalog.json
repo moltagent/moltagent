@@ -1,0 +1,31 @@
+{
+  "templates": [
+    {
+      "skill_id": "brave-search-pro",
+      "display_name": "Brave Search Pro",
+      "category": "search",
+      "file": "search/brave-search-pro.yaml",
+      "description": "Add Brave Search API (independent 30B+ page index, privacy-first)",
+      "difficulty": "easy",
+      "cost": "$5/1K queries, $5/month free credit"
+    },
+    {
+      "skill_id": "perplexity-research",
+      "display_name": "Perplexity Research",
+      "category": "search",
+      "file": "search/perplexity-research.yaml",
+      "description": "Add Perplexity Sonar for deep research with citations",
+      "difficulty": "easy",
+      "cost": "~$0.005/query (Sonar), ~$0.02 (Sonar Pro)"
+    },
+    {
+      "skill_id": "exa-semantic",
+      "display_name": "Exa Semantic Search",
+      "category": "search",
+      "file": "search/exa-semantic.yaml",
+      "description": "Add Exa neural search for meaning-based web discovery",
+      "difficulty": "easy",
+      "cost": "$2.50/1K queries"
+    }
+  ]
+}
