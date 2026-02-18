@@ -729,7 +729,8 @@ class NCRequestManager {
   }
 
   /**
-   * Get a Nextcloud user's email address via OCS API.
+   * Get a Nextcloud user's email address via CalDAV principal PROPFIND.
+   * Uses calendar-user-address-set — works without admin rights.
    * Results are cached with a 10-minute TTL.
    *
    * @param {string} userId - Nextcloud user ID
@@ -746,12 +747,27 @@ class NCRequestManager {
     }
 
     try {
-      const response = await this.request(`/ocs/v2.php/cloud/users/${encodeURIComponent(userId)}`, {
-        method: 'GET',
-        headers: { 'OCS-APIRequest': 'true', 'Accept': 'application/json' }
-      });
+      const body = '<?xml version="1.0"?>' +
+        '<d:propfind xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">' +
+        '<d:prop><cal:calendar-user-address-set/></d:prop>' +
+        '</d:propfind>';
 
-      const email = response.body?.ocs?.data?.email || null;
+      const response = await this.request(
+        `/remote.php/dav/principals/users/${encodeURIComponent(userId)}/`,
+        {
+          method: 'PROPFIND',
+          headers: {
+            'Content-Type': 'application/xml; charset=utf-8',
+            'Depth': '0'
+          },
+          body
+        }
+      );
+
+      // Parse mailto: href from calendar-user-address-set
+      const responseBody = typeof response.body === 'string' ? response.body : JSON.stringify(response.body);
+      const mailtoMatch = /mailto:([^<\s]+)/i.exec(responseBody);
+      const email = mailtoMatch ? mailtoMatch[1] : null;
 
       // Cache for 10 minutes
       this._userEmailCache.set(userId, { email, expiry: Date.now() + 600000 });

@@ -1063,16 +1063,24 @@ class ToolRegistry {
         if (args.attendees && args.attendees.length > 0) {
           eventData.attendees = [...args.attendees];
 
-          // Auto-add requesting user as ATTENDEE so the event appears in their calendar
+          // Auto-add requesting user as ATTENDEE so the event appears in their calendar.
+          // If they're already in the list (e.g. their NC email matches an explicit attendee),
+          // upgrade their PARTSTAT to ACCEPTED (they requested the event).
           const reqUser = this.getRequestContext().user;
           if (reqUser && ncMgr) {
             try {
               const userEmail = await ncMgr.getUserEmail(reqUser);
               if (userEmail) {
-                const alreadyAdded = eventData.attendees.some(
+                const existingIdx = eventData.attendees.findIndex(
                   a => (typeof a === 'string' ? a : a.email).toLowerCase() === userEmail.toLowerCase()
                 );
-                if (!alreadyAdded) {
+                if (existingIdx >= 0) {
+                  // Already listed — upgrade to ACCEPTED since they requested it
+                  const existing = eventData.attendees[existingIdx];
+                  eventData.attendees[existingIdx] = typeof existing === 'string'
+                    ? { email: existing, name: reqUser, status: 'ACCEPTED' }
+                    : { ...existing, status: 'ACCEPTED' };
+                } else {
                   eventData.attendees.push({ email: userEmail, name: reqUser, status: 'ACCEPTED' });
                 }
               }
@@ -1185,16 +1193,22 @@ class ToolRegistry {
         if (args.attendees !== undefined) {
           updates.attendees = [...args.attendees];
 
-          // Auto-add requesting user as ATTENDEE when attendees are being set
+          // Auto-add requesting user as ATTENDEE when attendees are being set.
+          // If already listed, upgrade PARTSTAT to ACCEPTED.
           const reqUser = this.getRequestContext().user;
           if (reqUser && ncMgr) {
             try {
               const userEmail = await ncMgr.getUserEmail(reqUser);
               if (userEmail) {
-                const alreadyAdded = updates.attendees.some(
+                const existingIdx = updates.attendees.findIndex(
                   a => (typeof a === 'string' ? a : a.email).toLowerCase() === userEmail.toLowerCase()
                 );
-                if (!alreadyAdded) {
+                if (existingIdx >= 0) {
+                  const existing = updates.attendees[existingIdx];
+                  updates.attendees[existingIdx] = typeof existing === 'string'
+                    ? { email: existing, name: reqUser, status: 'ACCEPTED' }
+                    : { ...existing, status: 'ACCEPTED' };
+                } else {
                   updates.attendees.push({ email: userEmail, name: reqUser, status: 'ACCEPTED' });
                 }
               }
