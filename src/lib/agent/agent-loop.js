@@ -46,6 +46,7 @@ class AgentLoop {
     this.secretsGuard = options.secretsGuard || null;
     this.promptGuard = options.promptGuard || null;
     this.llmProvider = options.llmProvider;
+    this.statusIndicator = options.statusIndicator || null;
     this.config = options.config || {};
     this.logger = options.logger || console;
     this.maxIterations = this.config.maxIterations || 8;
@@ -186,6 +187,11 @@ class AgentLoop {
         const iterationToolsCalled = [];
         for (const toolCall of response.toolCalls) {
           this.logger.info(`[AgentLoop] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.arguments)})`);
+
+          // Update NC user status to reflect the tool being used
+          if (this.statusIndicator) {
+            this.statusIndicator.setToolStatus(toolCall.name).catch(() => {});
+          }
 
           const callId = toolCall.id || `call_${iteration}_${toolCall.name}`;
 

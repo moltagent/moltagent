@@ -73,6 +73,24 @@ const STATE_MAP = {
   shutdown:  { statusType: 'offline', icon: null,         message: null }
 };
 
+/**
+ * Tool-specific status messages, keyed by tool name prefix.
+ * Matched against the beginning of tool names (e.g. 'deck_create_card' matches 'deck_').
+ * @type {Object.<string, {icon: string, message: string}>}
+ */
+const TOOL_STATUS_MAP = {
+  'memory_':    { icon: '\u{1F50D}', message: 'Searching memory...' },
+  'web_search': { icon: '\u{1F310}', message: 'Searching web...' },
+  'web_read':   { icon: '\u{1F310}', message: 'Reading web page...' },
+  'calendar_':  { icon: '\u{1F4C5}', message: 'Checking calendar...' },
+  'deck_':      { icon: '\u{1F4CB}', message: 'Working on tasks...' },
+  'wiki_':      { icon: '\u{1F4DD}', message: 'Writing to wiki...' },
+  'mail_':      { icon: '\u{1F4E7}', message: 'Handling email...' },
+  'contacts_':  { icon: '\u{1F464}', message: 'Checking contacts...' },
+  'file_':      { icon: '\u{1F4C1}', message: 'Working with files...' },
+  'workflow_':  { icon: '\u2699\uFE0F', message: 'Running workflow...' },
+};
+
 // -----------------------------------------------------------------------------
 // NCStatusIndicator Class
 // -----------------------------------------------------------------------------
@@ -108,6 +126,12 @@ class NCStatusIndicator {
      * @type {string|null}
      */
     this.currentStatus = null;
+
+    /** @type {number} Timestamp of last tool status update (for debounce) */
+    this._lastToolUpdate = 0;
+
+    /** @type {number} Minimum interval between tool status updates (ms) */
+    this._minToolInterval = 2000;
   }
 
   // ---------------------------------------------------------------------------
@@ -175,6 +199,52 @@ class NCStatusIndicator {
    */
   getCurrentStatus() {
     return this.currentStatus;
+  }
+
+  /**
+   * Update the NC user status message to reflect a specific tool being used.
+   * Matches toolName against TOOL_STATUS_MAP prefixes. Debounced to avoid
+   * excessive API calls during rapid tool sequences.
+   *
+   * Best-effort: never throws.
+   *
+   * @param {string} toolName - The tool name (e.g. 'deck_create_card')
+   * @returns {Promise<void>}
+   */
+  async setToolStatus(toolName) {
+    if (!this.enabled || !toolName) return;
+
+    // Match tool name against prefix keys
+    let match = null;
+    for (const prefix of Object.keys(TOOL_STATUS_MAP)) {
+      if (toolName.startsWith(prefix)) {
+        match = TOOL_STATUS_MAP[prefix];
+        break;
+      }
+    }
+    if (!match) return;
+
+    // Debounce: skip if <2s since last tool status update
+    const now = Date.now();
+    if (now - this._lastToolUpdate < this._minToolInterval) return;
+
+    try {
+      this._lastToolUpdate = now;
+      await this._setCustomMessage(match.icon, match.message);
+    } catch (err) {
+      console.warn(`[StatusIndicator] Tool status failed for ${toolName}:`, err.message);
+    }
+  }
+
+  /**
+   * Convenience method to set status to 'ready' with force bypass.
+   * Also resets the tool debounce timer so the next tool update fires immediately.
+   *
+   * @returns {Promise<void>}
+   */
+  async setReady() {
+    this._lastToolUpdate = 0;
+    await this.setStatus('ready', { force: true });
   }
 
   // ---------------------------------------------------------------------------

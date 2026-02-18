@@ -197,6 +197,66 @@ asyncTest('setStatus() skips API calls when disabled', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tool Status Tests
+// ---------------------------------------------------------------------------
+
+console.log('\n--- Tool Status Tests ---\n');
+
+// Test 6: setToolStatus('deck_create_card') updates status with deck icon+message
+asyncTest('setToolStatus("deck_create_card") updates NC status with deck icon+message', async () => {
+  const { mock, calls } = createMockNCRequestManager();
+  const indicator = new NCStatusIndicator({ ncRequestManager: mock, config: {} });
+
+  await indicator.setToolStatus('deck_create_card');
+
+  assert.strictEqual(calls.length, 1, 'Should make 1 API call (custom message only)');
+  assert.ok(calls[0].url.includes('/user_status/message/custom'), 'Should call custom message endpoint');
+  const body = JSON.parse(calls[0].options.body);
+  assert.strictEqual(body.message, 'Working on tasks...', 'Should set deck tool message');
+  assert.strictEqual(body.statusIcon, '\u{1F4CB}', 'Should set clipboard icon');
+});
+
+// Test 7: Debounce — rapid calls within 2s → only first fires
+asyncTest('setToolStatus debounces rapid calls within 2s', async () => {
+  const { mock, calls } = createMockNCRequestManager();
+  const indicator = new NCStatusIndicator({ ncRequestManager: mock, config: {} });
+
+  await indicator.setToolStatus('deck_list_cards');
+  await indicator.setToolStatus('deck_move_card');
+  await indicator.setToolStatus('deck_create_card');
+
+  assert.strictEqual(calls.length, 1, 'Only first call within 2s window should fire');
+});
+
+// Test 8: setToolStatus with unknown tool name → no API call
+asyncTest('setToolStatus with unknown tool name makes no API call', async () => {
+  const { mock, calls } = createMockNCRequestManager();
+  const indicator = new NCStatusIndicator({ ncRequestManager: mock, config: {} });
+
+  await indicator.setToolStatus('unknown_tool');
+
+  assert.strictEqual(calls.length, 0, 'Should not make any API calls for unknown tools');
+});
+
+// Test 9: setReady() always fires (bypasses debounce) and resets timer
+asyncTest('setReady() fires with force and resets debounce timer', async () => {
+  const { mock, calls } = createMockNCRequestManager();
+  const indicator = new NCStatusIndicator({ ncRequestManager: mock, config: {} });
+
+  // Set a tool status first
+  await indicator.setToolStatus('deck_create_card');
+  const callsAfterTool = calls.length;
+
+  // setReady should fire even though debounce is active
+  await indicator.setReady();
+  assert.ok(calls.length > callsAfterTool, 'setReady should fire API calls');
+
+  // After setReady, the debounce timer should be reset, so next tool status fires
+  await indicator.setToolStatus('calendar_list');
+  assert.ok(calls.length > callsAfterTool + 2, 'Tool status after setReady should fire (debounce reset)');
+});
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

@@ -265,6 +265,23 @@ class MessageProcessor {
     // Set status to thinking before processing
     await this.statusIndicator?.setStatus('thinking');
 
+    // Signal typing indicator in Talk
+    if (extracted.token && this.ncRequestManager) {
+      try {
+        await this.ncRequestManager.request(
+          `/ocs/v2.php/apps/spreed/api/v1/chat/${extracted.token}/typing`,
+          {
+            method: 'POST',
+            headers: { 'OCS-APIRequest': 'true', 'Content-Type': 'application/json' },
+            body: { typing: true },
+            skipCache: true
+          }
+        );
+      } catch (err) {
+        // Non-critical — don't block processing if typing indicator fails
+      }
+    }
+
     try {
       let response;
       let result;

@@ -1210,6 +1210,7 @@ async function initialize() {
         secretsGuard,
         promptGuard,
         llmProvider,
+        statusIndicator: ncStatusIndicator,
         config: { soulPath: path.join(__dirname, 'config', 'SOUL.md'), timezone: appConfig.timezone }
       });
       console.log('[INIT] AgentLoop ready (tool-calling agent active)');

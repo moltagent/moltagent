@@ -34,8 +34,24 @@ class TalkSendQueue {
    * @returns {Promise<boolean>} true if sent successfully
    */
   enqueue(token, message, replyTo = null) {
+    // Strip <think> reasoning tags from LLM responses
+    let sanitized = message;
+    if (typeof sanitized === 'string') {
+      // Handle incomplete think blocks (model timed out mid-reasoning)
+      if (sanitized.startsWith('<think>') && !sanitized.includes('</think>')) {
+        sanitized = '';
+      } else {
+        sanitized = sanitized.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+      }
+    }
+
+    // Don't send empty messages
+    if (!sanitized) {
+      return Promise.resolve(true);
+    }
+
     return new Promise((resolve, reject) => {
-      this.queue.push({ token, message, replyTo, resolve, reject });
+      this.queue.push({ token, message: sanitized, replyTo, resolve, reject });
       if (this.queue.length > this.metrics.maxDepth) {
         this.metrics.maxDepth = this.queue.length;
       }
