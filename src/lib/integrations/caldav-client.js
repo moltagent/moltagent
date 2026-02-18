@@ -425,7 +425,8 @@ class CalDAVClient {
    * Update an existing event
    */
   async updateEvent(calendarId, uid, updates, etag = null) {
-    // First, get the current event
+    // Always fetch fresh to get current ETag + state (caller's ETag may be stale
+    // from a REPORT query — RSVP replies can change the event between fetch and write)
     const current = await this.getEvent(calendarId, uid);
     if (!current) {
       throw new Error(`Event not found: ${uid}`);
@@ -440,19 +441,38 @@ class CalDAVClient {
     };
 
     const ics = this._buildICS(updated);
+    const freshEtag = current.etag;
 
     const headers = {
       'Content-Type': 'text/calendar; charset=utf-8'
     };
-    if (etag) {
-      headers['If-Match'] = `"${etag}"`;
+    if (freshEtag) {
+      headers['If-Match'] = this._formatETag(freshEtag);
     }
 
-    const response = await this._request(
+    let response = await this._request(
       'PUT',
       `/remote.php/dav/calendars/${this.username}/${calendarId}/${uid}.ics`,
       { body: ics, headers }
     );
+
+    // Retry once on 412 Precondition Failed (ETag race from RSVP reply)
+    if (response.status === 412) {
+      const retry = await this.getEvent(calendarId, uid);
+      if (retry) {
+        const retryUpdated = { ...retry, ...updates, uid, modified: new Date() };
+        const retryIcs = this._buildICS(retryUpdated);
+        const retryHeaders = { 'Content-Type': 'text/calendar; charset=utf-8' };
+        if (retry.etag) {
+          retryHeaders['If-Match'] = this._formatETag(retry.etag);
+        }
+        response = await this._request(
+          'PUT',
+          `/remote.php/dav/calendars/${this.username}/${calendarId}/${uid}.ics`,
+          { body: retryIcs, headers: retryHeaders }
+        );
+      }
+    }
 
     if (response.status !== 204 && response.status !== 200) {
       throw new Error(`Failed to update event: ${response.status}`);
@@ -471,16 +491,45 @@ class CalDAVClient {
    * Delete an event
    */
   async deleteEvent(calendarId, uid, etag = null) {
-    const headers = {};
-    if (etag) {
-      headers['If-Match'] = `"${etag}"`;
+    // Always fetch fresh ETag before DELETE (caller's ETag may be stale)
+    let freshEtag = etag;
+    try {
+      const current = await this.getEvent(calendarId, uid);
+      if (current && current.etag) {
+        freshEtag = current.etag;
+      }
+    } catch {
+      // Use caller's ETag as fallback
     }
 
-    const response = await this._request(
+    const headers = {};
+    if (freshEtag) {
+      headers['If-Match'] = this._formatETag(freshEtag);
+    }
+
+    let response = await this._request(
       'DELETE',
       `/remote.php/dav/calendars/${this.username}/${calendarId}/${uid}.ics`,
       { headers }
     );
+
+    // Retry once on 412 (ETag race from RSVP reply)
+    if (response.status === 412) {
+      try {
+        const retry = await this.getEvent(calendarId, uid);
+        const retryHeaders = {};
+        if (retry && retry.etag) {
+          retryHeaders['If-Match'] = this._formatETag(retry.etag);
+        }
+        response = await this._request(
+          'DELETE',
+          `/remote.php/dav/calendars/${this.username}/${calendarId}/${uid}.ics`,
+          { headers: retryHeaders }
+        );
+      } catch {
+        // Retry failed, throw original error below
+      }
+    }
 
     if (response.status !== 204 && response.status !== 200) {
       throw new Error(`Failed to delete event: ${response.status}`);
@@ -1034,6 +1083,16 @@ class CalDAVClient {
       .replace(/;/g, '\\;')
       .replace(/,/g, '\\,')
       .replace(/\n/g, '\\n');
+  }
+
+  /**
+   * Format an ETag value for use in If-Match headers.
+   * Ensures proper quoting regardless of whether input has quotes or not.
+   */
+  _formatETag(etag) {
+    if (!etag) return null;
+    const stripped = etag.replace(/^"+|"+$/g, '');
+    return `"${stripped}"`;
   }
 
   /**
