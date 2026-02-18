@@ -38,14 +38,14 @@ function createMockDeckClient(cards = {}) {
       title: boardId === 1 ? 'MoltAgent Tasks' : 'Marketing',
       owner: { uid: boardId === 1 ? 'moltagent' : 'funana' },
       stacks: [
-        { title: 'Inbox', cards: [{ id: 10 }] },
-        { title: 'Done', cards: [] }
+        { id: 301, title: 'Inbox', cards: [{ id: 10 }] },
+        { id: 302, title: 'Done', cards: [] }
       ],
       labels: [{ title: 'urgent' }, { title: 'blocked' }]
     }),
     getStacks: async (boardId) => [
-      { title: 'Inbox', cards: [{ id: 10, title: 'Task X', duedate: '2020-01-01' }] },
-      { title: 'Done', cards: [{ id: 11, title: 'Finished', duedate: null }] }
+      { id: 301, title: 'Inbox', cards: [{ id: 10, title: 'Task X', duedate: '2020-01-01' }] },
+      { id: 302, title: 'Done', cards: [{ id: 11, title: 'Finished', duedate: null }] }
     ],
     createStack: async (boardId, title, order) => ({ id: 50, title }),
     getCard: async (cardId, stackName) => ({
@@ -1527,6 +1527,116 @@ test('getCloudWorkflowToolDefinitions returns fewer tools than getToolDefinition
 
   assert.ok(workflowTools.length < allTools.length,
     `Workflow tools (${workflowTools.length}) should be fewer than all tools (${allTools.length})`);
+});
+
+// ============================================================
+// Tests - Board-targeted card creation + Stack ID exposure
+// ============================================================
+
+asyncTest('deck_create_card with board param resolves target board and stack', async () => {
+  let requestMethod, requestPath, requestBody;
+  const deck = createMockDeckClient();
+  deck._request = async (method, path, body) => {
+    requestMethod = method;
+    requestPath = path;
+    requestBody = body;
+    return { id: 88, title: body?.title || 'Test' };
+  };
+
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+  const result = await registry.execute('deck_create_card', {
+    title: 'Test EP',
+    board: 'Marketing'
+  });
+
+  assert.ok(result.success);
+  assert.ok(result.result.includes('Test EP'));
+  assert.ok(result.result.includes('#88'));
+  assert.ok(result.result.includes('Marketing'));
+  assert.ok(result.result.includes('Inbox'));
+  assert.strictEqual(requestMethod, 'POST');
+  assert.ok(requestPath.includes('/boards/2/stacks/301/cards'), `Expected board 2, stack 301 in path: ${requestPath}`);
+  assert.strictEqual(requestBody.title, 'Test EP');
+});
+
+asyncTest('deck_create_card without board uses default (regression)', async () => {
+  let createdStack, createdCard;
+  const deck = createMockDeckClient();
+  deck.createCard = async (stack, card) => {
+    createdStack = stack;
+    createdCard = card;
+    return { id: 99, ...card };
+  };
+
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+  const result = await registry.execute('deck_create_card', { title: 'Default board task' });
+
+  assert.ok(result.success);
+  assert.strictEqual(createdStack, 'inbox');
+  assert.strictEqual(createdCard.title, 'Default board task');
+  assert.ok(result.result.includes('#99'));
+  assert.ok(!result.result.includes('on board'), 'Should not mention board for default');
+});
+
+asyncTest('deck_create_card with invalid board returns error', async () => {
+  const registry = new ToolRegistry({
+    deckClient: createMockDeckClient(),
+    logger: silentLogger
+  });
+
+  const result = await registry.execute('deck_create_card', {
+    title: 'Orphan card',
+    board: 'NonExistentBoard'
+  });
+
+  assert.ok(result.success);
+  assert.ok(result.result.includes('No board found'));
+  assert.ok(result.result.includes('NonExistentBoard'));
+});
+
+asyncTest('deck_create_card with board but non-existent stack lists available stacks', async () => {
+  const deck = createMockDeckClient();
+  deck.getStacks = async () => [
+    { id: 401, title: 'Backlog', cards: [] },
+    { id: 402, title: 'Sprint', cards: [] }
+  ];
+
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+  const result = await registry.execute('deck_create_card', {
+    title: 'Test card',
+    board: 'Marketing',
+    stack: 'Inbox'
+  });
+
+  assert.ok(result.success);
+  assert.ok(result.result.includes('No stack "Inbox"'), `Expected stack not found message: ${result.result}`);
+  assert.ok(result.result.includes('Backlog'), 'Should list available stack Backlog');
+  assert.ok(result.result.includes('Sprint'), 'Should list available stack Sprint');
+  assert.ok(result.result.includes('ID: 401'), 'Should include stack IDs');
+});
+
+asyncTest('deck_list_stacks output includes stack IDs', async () => {
+  const registry = new ToolRegistry({
+    deckClient: createMockDeckClient(),
+    logger: silentLogger
+  });
+
+  const result = await registry.execute('deck_list_stacks', { board: 'MoltAgent' });
+  assert.ok(result.success);
+  assert.ok(result.result.includes('ID: 301'), `Expected stack ID 301 in: ${result.result}`);
+  assert.ok(result.result.includes('ID: 302'), `Expected stack ID 302 in: ${result.result}`);
+});
+
+asyncTest('deck_get_board output includes stack IDs', async () => {
+  const registry = new ToolRegistry({
+    deckClient: createMockDeckClient(),
+    logger: silentLogger
+  });
+
+  const result = await registry.execute('deck_get_board', { board: 'Molt' });
+  assert.ok(result.success);
+  assert.ok(result.result.includes('ID: 301'), `Expected stack ID 301 in: ${result.result}`);
+  assert.ok(result.result.includes('ID: 302'), `Expected stack ID 302 in: ${result.result}`);
 });
 
 // ============================================================

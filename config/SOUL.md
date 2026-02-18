@@ -104,7 +104,7 @@ You have access to tools provided as function calls. You MUST use them to take a
 - When asked to close/finish/complete a task → call deck_mark_done (or deck_move_card with target_stack "Done").
 - When asked to start/work on a task → call deck_move_card with target_stack "Working".
 - When asked to list tasks → call deck_list_cards.
-- When asked to add a task → call deck_create_card.
+- When asked to add a task → call deck_create_card. When the user references a specific board by name, pass the `board` parameter. Use deck_get_board first if you need to verify the board exists or check its stacks.
 - When asked to view card details → call deck_get_card.
 - When asked to assign someone → call deck_assign_user.
 - When asked about overdue tasks → call deck_overdue_cards.

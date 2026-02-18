@@ -431,7 +431,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_create_card',
-      description: 'Create a new card (task) on the board. Cards are created in the Inbox stack by default.',
+      description: 'Create a new card (task) on a board. Cards are created in the Inbox stack by default. Use the board parameter to target a specific board.',
       parameters: {
         type: 'object',
         properties: {
@@ -441,11 +441,38 @@ class ToolRegistry {
             type: 'string',
             description: 'Stack to create in (default: Inbox)',
             enum: ['Inbox', 'Queued', 'Working', 'Done']
+          },
+          board: {
+            type: 'string',
+            description: 'Target board name or ID (default: your task board). Use when the user specifies a board.'
           }
         },
         required: ['title']
       },
       handler: async (args) => {
+        // Board-targeted creation
+        if (args.board) {
+          const board = await this._resolveBoard(deck, args.board);
+          if (!board) return `No board found matching "${args.board}".`;
+
+          const stacks = await deck.getStacks(board.id);
+          const targetStackName = args.stack || 'Inbox';
+          const stack = (stacks || []).find(s => s.title.toLowerCase() === targetStackName.toLowerCase());
+
+          if (!stack) {
+            const available = (stacks || []).map(s => `"${s.title}" (ID: ${s.id})`).join(', ');
+            return `No stack "${targetStackName}" on board "${board.title}". Available stacks: ${available}`;
+          }
+
+          const card = await deck._request('POST',
+            `/index.php/apps/deck/api/v1.0/boards/${board.id}/stacks/${stack.id}/cards`,
+            { title: args.title, description: args.description || '', type: 'plain', order: 0 }
+          );
+
+          return `Created "${args.title}" (card #${card.id}) in "${stack.title}" on board "${board.title}".`;
+        }
+
+        // Default board creation
         const stackKey = this._stackKey(args.stack || 'Inbox');
         const card = await deck.createCard(stackKey, {
           title: args.title,
@@ -488,7 +515,7 @@ class ToolRegistry {
         if (!board) return `No board found matching "${args.board}".`;
 
         const full = await deck.getBoard(board.id);
-        const stacks = (full.stacks || []).map(s => `  - ${s.title} (${(s.cards || []).length} cards)`).join('\n');
+        const stacks = (full.stacks || []).map(s => `  - ${s.title} (ID: ${s.id}, ${(s.cards || []).length} cards)`).join('\n');
         const labels = (full.labels || []).map(l => l.title).join(', ');
         const owned = full.owner?.uid === deck.username || full.owner === deck.username;
 
@@ -539,7 +566,7 @@ class ToolRegistry {
         if (!stacks || stacks.length === 0) return `Board "${board.title}" has no stacks.`;
 
         return stacks.map(s =>
-          `- "${s.title}" (${(s.cards || []).length} cards)`
+          `- "${s.title}" (ID: ${s.id}, ${(s.cards || []).length} cards)`
         ).join('\n');
       }
     });
