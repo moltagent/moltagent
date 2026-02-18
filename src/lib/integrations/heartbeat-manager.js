@@ -153,6 +153,17 @@ class HeartbeatManager {
     this.deferralQueue = config.deferralQueue || null;
     this.agentLoop = config.agentLoop || null;
 
+    // Collectives + NC Files (optional, for LearningLog sync to wiki)
+    this.collectivesClient = config.collectivesClient || null;
+    this.ncFilesClient = config.ncFilesClient || null;
+    this._lastLearningLogHash = null;
+
+    // DailyBriefing (optional, for daily digest poster)
+    this.dailyBriefing = config.dailyBriefing || null;
+    this.talkSendQueue = config.talkSendQueue || null;
+    this.primaryRoomToken = config.primaryRoomToken || null;
+    this._lastDigestDate = null;
+
     // Heartbeat state
     this.state = {
       isRunning: false,
@@ -574,6 +585,63 @@ class HeartbeatManager {
         } catch (err) {
           console.error('[Heartbeat] Freshness check error:', err.message);
           results.errors.push({ component: 'freshness', error: err.message });
+        }
+      }
+
+      // Sync LearningLog to Collectives wiki (every pulse, hash-gated)
+      if (this.collectivesClient && this.ncFilesClient) {
+        try {
+          const logFile = await this.ncFilesClient.readFile('Memory/LearningLog.md');
+          if (logFile && logFile.content) {
+            const hash = this._simpleHash(logFile.content);
+            if (hash !== this._lastLearningLogHash) {
+              await this.collectivesClient.writePageContent('Meta/Learning Log/Readme.md', logFile.content);
+              this._lastLearningLogHash = hash;
+              console.log('[Heartbeat] Synced LearningLog to Collectives');
+            }
+          }
+        } catch (err) {
+          // Silent on 404 (file doesn't exist yet) — warn on anything else
+          if (!err.message?.includes('404')) {
+            console.warn(`[Heartbeat] LearningLog sync failed: ${err.message}`);
+          }
+        }
+      }
+
+      // Daily Digest poster: post morning summary to Talk at configured time
+      if (this._cockpitDailyDigest && this._cockpitDailyDigest !== 'off' &&
+          this.dailyBriefing && this.talkSendQueue && this.primaryRoomToken) {
+        try {
+          const today = this._todayDate();
+          if (this._lastDigestDate !== today) {
+            const targetHour = parseInt(this._cockpitDailyDigest.split(':')[0], 10);
+            const now = new Date();
+            const currentHour = parseInt(now.toLocaleTimeString('en-GB', {
+              hour: '2-digit', hour12: false,
+              timeZone: this.settings.timezone
+            }), 10);
+
+            if (currentHour === targetHour) {
+              // Build briefing (temporarily clear date lock, restore in finally)
+              const savedDate = this.dailyBriefing.lastBriefingDate;
+              let briefing;
+              try {
+                this.dailyBriefing.lastBriefingDate = null;
+                briefing = await this.dailyBriefing.checkAndBuild();
+              } finally {
+                this.dailyBriefing.lastBriefingDate = savedDate;
+              }
+
+              if (briefing) {
+                const talkMessage = this._formatDigestForTalk(briefing);
+                await this.talkSendQueue.enqueue(this.primaryRoomToken, talkMessage);
+                this._lastDigestDate = today;
+                console.log('[Heartbeat] Daily digest posted to Talk');
+              }
+            }
+          }
+        } catch (err) {
+          console.warn(`[Heartbeat] Daily digest failed: ${err.message}`);
         }
       }
 
@@ -1183,6 +1251,74 @@ class HeartbeatManager {
     }
 
     return context;
+  }
+
+  /**
+   * Simple string hash for change detection (djb2 variant).
+   * @private
+   * @param {string} str
+   * @returns {number}
+   */
+  _simpleHash(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash) + str.charCodeAt(i);
+      hash |= 0;
+    }
+    return hash;
+  }
+
+  /**
+   * Get today's date string in the configured timezone (YYYY-MM-DD).
+   * @private
+   * @returns {string}
+   */
+  _todayDate() {
+    const now = new Date();
+    try {
+      return now.toLocaleDateString('sv-SE', { timeZone: this.settings.timezone });
+    } catch {
+      return now.toISOString().split('T')[0];
+    }
+  }
+
+  /**
+   * Format a DailyBriefing XML block into a readable Talk message.
+   * @private
+   * @param {string} briefing - The <daily_briefing> block from DailyBriefing.checkAndBuild()
+   * @returns {string}
+   */
+  _formatDigestForTalk(briefing) {
+    // Strip the XML tags and LLM instructions, keep data lines.
+    // Keep top-level bullets ("- Calendar:") AND indented sub-lines ("  09:00 -- Meeting")
+    const allLines = briefing
+      .replace(/<\/?daily_briefing>/g, '')
+      .split('\n');
+
+    const lines = [];
+    let inDataSection = false;
+    for (const raw of allLines) {
+      const trimmed = raw.trim();
+      if (trimmed.startsWith('- ')) {
+        inDataSection = true;
+        lines.push(trimmed);
+      } else if (inDataSection && raw.startsWith('  ') && trimmed.length > 0) {
+        // Indented sub-line (e.g. calendar event times)
+        lines.push('  ' + trimmed);
+      } else if (trimmed === '') {
+        inDataSection = false;
+      }
+    }
+
+    let message = 'Good morning! Here\'s your daily briefing:\n\n';
+    for (const line of lines) {
+      message += line + '\n';
+    }
+    if (lines.length === 0) {
+      message += '- All clear today\n';
+    }
+    message += '\nLet me know if you need anything!';
+    return message;
   }
 }
 

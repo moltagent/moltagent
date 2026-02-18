@@ -1534,6 +1534,11 @@ async function initialize() {
         warmMemory,
         deferralQueue,
         agentLoop,
+        collectivesClient,
+        ncFilesClient,
+        dailyBriefing,
+        talkSendQueue: talkQueue,
+        primaryRoomToken: defaultTalkToken,
         ncFlow: ncFlowActivityPoller || ncFlowWebhookReceiver ? {
           activityPoller: ncFlowActivityPoller,
           webhookReceiver: ncFlowWebhookReceiver,
