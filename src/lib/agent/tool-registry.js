@@ -139,6 +139,83 @@ class ToolRegistry {
   }
 
   /**
+   * Get a focused tool subset for a domain-specific intent.
+   * Returns 3-8 tools optimized for local models (Qwen 8B).
+   * Every subset includes memory_search as a universal context helper.
+   *
+   * @param {string} intent - Domain intent: deck, calendar, email, wiki, file, search
+   * @returns {Array<{type: 'function', function: {name: string, description: string, parameters: Object}}>}
+   */
+  getToolSubset(intent) {
+    const SUBSETS = {
+      deck: [
+        'deck_create_card',
+        'deck_update_card',
+        'deck_list_cards',
+        'deck_get_board',
+        'deck_list_stacks',
+        'deck_move_card',
+        'deck_assign_user',
+        'memory_search'
+      ],
+      calendar: [
+        'calendar_list_events',
+        'calendar_create_event',
+        'calendar_check_conflicts',
+        'memory_search'
+      ],
+      email: [
+        'mail_send',
+        'contacts_search',
+        'memory_search'
+      ],
+      wiki: [
+        'wiki_read',
+        'wiki_write',
+        'wiki_search',
+        'wiki_list',
+        'memory_search'
+      ],
+      file: [
+        'file_read',
+        'file_write',
+        'file_list',
+        'file_mkdir',
+        'memory_search'
+      ],
+      search: [
+        'memory_search',
+        'unified_search',
+        'wiki_search',
+        'contacts_search'
+      ]
+    };
+
+    const toolNames = SUBSETS[intent];
+    if (!toolNames) return [];
+
+    return Array.from(this.tools.values())
+      .filter(t => toolNames.includes(t.name))
+      .map(t => ({
+        type: 'function',
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters
+        }
+      }));
+  }
+
+  /**
+   * Check if a domain intent has a valid tool subset.
+   * @param {string} intent
+   * @returns {boolean}
+   */
+  hasDomainTools(intent) {
+    return this.getToolSubset(intent).length > 0;
+  }
+
+  /**
    * Execute a tool call by name.
    * @param {string} name
    * @param {Object} args

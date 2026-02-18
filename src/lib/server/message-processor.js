@@ -40,6 +40,9 @@
 
 const { createErrorHandler } = require('../errors/error-handler');
 
+/** Domain intents that can be handled locally with focused tool subsets. */
+const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search']);
+
 // -----------------------------------------------------------------------------
 // Types
 // -----------------------------------------------------------------------------
@@ -137,6 +140,11 @@ class MessageProcessor {
     // Local Intelligence: MicroPipeline for local-only message processing
     /** @type {Object|null} - MicroPipeline instance */
     this.microPipeline = deps.microPipeline || null;
+
+    // Wire domain tool-calling capabilities into MicroPipeline from AgentLoop
+    if (this.microPipeline && this.agentLoop) {
+      this._wireMicroPipelineDomainTools();
+    }
 
     // M1: WarmMemory for post-response consolidation
     /** @type {Object|null} - WarmMemory instance */
@@ -303,12 +311,38 @@ class MessageProcessor {
         });
         result = { intent: 'micro_pipeline', provider: 'local' };
       } else if (this.microPipeline && this.agentLoop && this._isSmartMixMode()) {
-        // Smart-mix: classify with MicroPipeline, route greeting/chitchat locally, rest to cloud
-        const { useLocal, intent } = await this._smartMixClassify(extracted.content);
-        console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? 'local' : 'cloud'}`);
+        // Smart-mix: three-path routing (local text / local tools / cloud)
+        const { useLocal, useDomainTools, intent } = await this._smartMixClassify(extracted.content);
+        console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}`);
 
-        if (useLocal) {
-          // Greeting/chitchat — MicroPipeline handles locally (fast, no cloud)
+        if (useLocal && useDomainTools) {
+          // Path 2: Domain-specific — local tool-calling with focused subset
+          if (this.agentLoop.llmProvider?.clearLocalSkip) {
+            this.agentLoop.llmProvider.clearLocalSkip();
+          }
+          try {
+            response = await this.microPipeline.process(extracted.content, {
+              userName: extracted.user,
+              roomToken: extracted.token,
+              warmMemory: ''
+            });
+            result = { intent: `smart_mix_domain:${intent}`, provider: 'local-tools' };
+          } catch (domainErr) {
+            // Domain escalation: local tool-calling failed → fall back to cloud
+            console.warn(`[Message] Domain ${intent} escalated to cloud: ${domainErr.message}`);
+            if (this.agentLoop.llmProvider?.skipLocalForConversation) {
+              this.agentLoop.llmProvider.skipLocalForConversation();
+            }
+            response = await this.agentLoop.process(extracted.content, extracted.token, {
+              messageId: extracted.messageId,
+              inputType: extracted._isVoice ? 'voice' : 'text',
+              user: extracted.user
+            });
+            result = { intent: `smart_mix_escalated:${intent}`, provider: 'agent' };
+            response = response || 'Sorry, I encountered an error processing your message.';
+          }
+        } else if (useLocal) {
+          // Path 1: Greeting/chitchat — MicroPipeline handles locally (fast, no cloud)
           if (this.agentLoop.llmProvider?.clearLocalSkip) {
             this.agentLoop.llmProvider.clearLocalSkip();
           }
@@ -319,7 +353,7 @@ class MessageProcessor {
           });
           result = { intent: `smart_mix_local:${intent}`, provider: 'local' };
         } else {
-          // Question/task/complex — skip local, go straight to cloud via AgentLoop
+          // Path 3: Question/task/complex — skip local, go straight to cloud via AgentLoop
           if (this.agentLoop.llmProvider?.skipLocalForConversation) {
             this.agentLoop.llmProvider.skipLocalForConversation();
           }
@@ -681,6 +715,34 @@ class MessageProcessor {
   // ---------------------------------------------------------------------------
 
   /**
+   * Wire domain tool-calling capabilities into MicroPipeline.
+   * Extracts the OllamaToolsProvider from RouterChatBridge and passes
+   * it along with the ToolRegistry so MicroPipeline can do focused
+   * local tool-calling for domain-specific intents.
+   * @private
+   */
+  _wireMicroPipelineDomainTools() {
+    const toolRegistry = this.agentLoop.toolRegistry;
+    if (toolRegistry && !this.microPipeline.toolRegistry) {
+      this.microPipeline.toolRegistry = toolRegistry;
+      console.log('[Message] Wired ToolRegistry into MicroPipeline for domain tool-calling');
+    }
+
+    // Extract local OllamaToolsProvider from the RouterChatBridge
+    const bridge = this.agentLoop.llmProvider;
+    if (bridge?.chatProviders && !this.microPipeline.ollamaToolsProvider) {
+      for (const [id, provider] of bridge.chatProviders) {
+        // OllamaToolsProvider has endpoint + model fields and a chat() method
+        if (provider.endpoint && provider.model && typeof provider.chat === 'function') {
+          this.microPipeline.ollamaToolsProvider = provider;
+          console.log(`[Message] Wired OllamaToolsProvider (${id}: ${provider.model}) into MicroPipeline`);
+          break;
+        }
+      }
+    }
+  }
+
+  /**
    * Determine if the MicroPipeline should handle this message.
    * True when the system is running in all-local mode (no cloud providers
    * active) — the MicroPipeline decomposes work into small calls that
@@ -715,20 +777,36 @@ class MessageProcessor {
 
   /**
    * Classify message intent via MicroPipeline for smart-mix routing.
-   * Only greeting/chitchat are handled locally; everything else goes to cloud.
+   *
+   * Three-path routing:
+   * - greeting/chitchat → local (no tools, text-only)
+   * - domain-specific (deck/calendar/email/wiki/file/search) → local (focused tool subset)
+   * - question/task/complex → cloud (full AgentLoop)
+   *
    * @param {string} message
-   * @returns {Promise<{useLocal: boolean, intent: string}>}
+   * @returns {Promise<{useLocal: boolean, useDomainTools: boolean, intent: string}>}
    * @private
    */
   async _smartMixClassify(message) {
     try {
       const classification = await this.microPipeline._classify(message);
       const intent = classification.intent || 'unknown';
-      const useLocal = (intent === 'greeting' || intent === 'chitchat');
-      return { useLocal, intent };
+
+      // Path 1: greeting/chitchat → local, no tools
+      if (intent === 'greeting' || intent === 'chitchat') {
+        return { useLocal: true, useDomainTools: false, intent };
+      }
+
+      // Path 2: domain-specific → local, focused tools
+      if (DOMAIN_INTENTS.has(intent)) {
+        return { useLocal: true, useDomainTools: true, intent };
+      }
+
+      // Path 3: everything else → cloud
+      return { useLocal: false, useDomainTools: false, intent };
     } catch (err) {
       console.warn(`[Message] Smart-mix classification failed: ${err.message}`);
-      return { useLocal: false, intent: 'error' };
+      return { useLocal: false, useDomainTools: false, intent: 'error' };
     }
   }
 

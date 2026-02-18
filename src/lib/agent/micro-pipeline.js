@@ -21,7 +21,57 @@ const INTENTS = Object.freeze({
   TASK: 'task',
   COMMAND: 'command',
   COMPLEX: 'complex',
-  CHITCHAT: 'chitchat'
+  CHITCHAT: 'chitchat',
+  // Domain-specific intents (local tool-calling via focused subsets)
+  DECK: 'deck',
+  CALENDAR: 'calendar',
+  EMAIL: 'email',
+  WIKI: 'wiki',
+  FILE: 'file',
+  SEARCH: 'search'
+});
+
+// Domain-specific regex patterns for fast-path classification (no LLM needed)
+const DOMAIN_PATTERNS = {
+  deck: /\b(card|task|board|stack|kanban|deck|todo|to-do|to do|assign|due date|overdue)\b/i,
+  calendar: /\b(calendar|event|meeting|appointment|schedule|book|reschedule|invite|agenda)\b/i,
+  email: /\b(email|e-mail|mail|send .{0,20}(message|note|mail)|inbox|draft)\b/i,
+  wiki: /\b(wiki|wiki page|knowledge base|write .{0,20}(page|article)|read .{0,20}(page|article))\b/i,
+  file: /\b(file|folder|upload|download|directory|move .{0,20}file|copy .{0,20}file|share .{0,20}(file|folder))\b/i,
+  search: /\b(search|find|look up|look for|what do (you|we) know about|who is|what is .{0,30}\?)\b/i
+};
+
+// Domain-specific system prompts — minimal context for focused tool-calling.
+// Each prompt gives the model just enough context for its domain.
+const DOMAIN_PROMPTS = Object.freeze({
+  deck: `You are a task management assistant. Help the user manage their tasks and cards on the Deck board.
+Use the available tools to create, update, list, or organize cards. Be concise in your responses.
+When creating cards, extract a clear title from the user's request. Default to the "Inbox" stack if no stack is specified.
+Always confirm what you did after executing a tool.`,
+
+  calendar: `You are a calendar assistant. Help the user manage events and check their schedule.
+Use the available tools to list, create, or check events. Be concise.
+When creating events, extract the title, date, and time from the user's request. Ask for missing required fields.
+Always confirm what you did after executing a tool.`,
+
+  email: `You are an email assistant. Help the user send emails.
+Use the available tools to draft and send emails. Be concise.
+When sending email, extract the recipient, subject, and body from the user's request. Ask for missing required fields.
+Always confirm what you did after executing a tool.`,
+
+  wiki: `You are a knowledge management assistant. Help the user read, write, and search wiki pages.
+Use the available tools to interact with the wiki. Be concise.
+When writing pages, use clear formatting. When searching, summarize the results.
+Always confirm what you did after executing a tool.`,
+
+  file: `You are a file management assistant. Help the user manage files and folders.
+Use the available tools for file operations. Be concise.
+Always confirm what you did after executing a tool.`,
+
+  search: `You are a search assistant. Help the user find information.
+Use memory_search to find information from the knowledge base and notes.
+Use unified_search for broader searches across the system.
+Summarize results concisely and highlight the most relevant findings.`
 });
 
 const GREETING_TEMPLATES = [
@@ -39,6 +89,8 @@ class MicroPipeline {
    * @param {Object} [config.calendarClient] - CalDAV client instance
    * @param {Object} [config.talkSendQueue] - TalkSendQueue for notifications
    * @param {Object} [config.deferralQueue] - DeferralQueue for complex tasks
+   * @param {Object} [config.toolRegistry] - ToolRegistry for focused tool subsets
+   * @param {Object} [config.ollamaToolsProvider] - OllamaToolsProvider for local tool-calling
    * @param {Object} [config.logger] - Logger (default: console)
    */
   constructor(config = {}) {
@@ -48,6 +100,8 @@ class MicroPipeline {
     this.calendarClient = config.calendarClient || null;
     this.talkSendQueue = config.talkSendQueue || null;
     this.deferralQueue = config.deferralQueue || null;
+    this.toolRegistry = config.toolRegistry || null;
+    this.ollamaToolsProvider = config.ollamaToolsProvider || null;
     this.logger = config.logger || console;
 
     this.stats = {
@@ -84,12 +138,22 @@ class MicroPipeline {
           return await this._handleTask(message, classification, context);
         case INTENTS.COMPLEX:
           return await this._handleComplex(message, classification, context);
+        // Domain-specific intents → local tool-calling with focused subsets
+        case INTENTS.DECK:
+        case INTENTS.CALENDAR:
+        case INTENTS.EMAIL:
+        case INTENTS.WIKI:
+        case INTENTS.FILE:
+        case INTENTS.SEARCH:
+          return await this._handleDomainTask(message, intent, context);
         case INTENTS.COMMAND:
         case INTENTS.CHITCHAT:
         default:
           return await this._handleChat(message, context);
       }
     } catch (err) {
+      // Domain escalation errors must propagate to MessageProcessor for cloud fallback
+      if (err.code === 'DOMAIN_ESCALATE') throw err;
       this.stats.errors++;
       this.logger.error(`[MicroPipeline] Error: ${err.message}`);
       return 'I had trouble processing that. Could you rephrase or simplify your request?';
@@ -111,6 +175,12 @@ class MicroPipeline {
   /**
    * Classify user intent with a tiny, focused LLM call.
    * Falls back to regex heuristics if the LLM call fails.
+   *
+   * Three-tier classification:
+   * 1. Regex fast-path (greeting, chitchat, domain-specific)
+   * 2. LLM classification with domain awareness
+   * 3. Heuristic fallback
+   *
    * @param {string} message
    * @returns {Promise<Object>} { intent, topics?, names? }
    */
@@ -126,14 +196,28 @@ class MicroPipeline {
       return { intent: INTENTS.CHITCHAT };
     }
 
+    // Fast-path: domain-specific detection via regex
+    // Check for multi-domain (mentions 2+ domains) → complex
+    const domainHits = this._detectDomains(message);
+    if (domainHits.length === 1) {
+      return { intent: INTENTS[domainHits[0].toUpperCase()] || INTENTS.TASK };
+    }
+    if (domainHits.length > 1) {
+      return { intent: INTENTS.COMPLEX };
+    }
+
     try {
       const classifyPrompt = `Classify this user message into exactly ONE category. Reply with ONLY the category name, nothing else.
 
 Categories:
-- question (asking for information, "what is", "how do", "when", "where", "who")
-- task (requesting an action: "create", "add", "send", "schedule", "set up", "move")
-- complex (multi-part request, analysis, research, comparison, planning)
-- chitchat (casual conversation, opinions, small talk)
+- deck (task/card/board management: create card, list tasks, move card, assign, due date)
+- calendar (events/meetings: schedule, book, check calendar, reschedule)
+- email (sending/reading email: send mail, check inbox, draft)
+- wiki (wiki/knowledge pages: write page, search wiki, read article)
+- file (file operations: list files, create folder, upload, share file)
+- search (information lookup: search for, find, what do you know about)
+- chitchat (casual conversation, opinions, small talk, greetings)
+- complex (multi-part request, analysis, research, comparison, writing, planning)
 
 Message: "${message.substring(0, 200)}"
 
@@ -147,10 +231,18 @@ Category:`;
 
       const raw = (result.result || '').trim().toLowerCase().replace(/[^a-z]/g, '');
 
-      if (raw.includes('question')) return { intent: INTENTS.QUESTION };
-      if (raw.includes('task')) return { intent: INTENTS.TASK };
+      // Check domain intents first (most specific)
+      if (raw.includes('deck')) return { intent: INTENTS.DECK };
+      if (raw.includes('calendar')) return { intent: INTENTS.CALENDAR };
+      if (raw.includes('email')) return { intent: INTENTS.EMAIL };
+      if (raw.includes('wiki')) return { intent: INTENTS.WIKI };
+      if (raw.includes('file')) return { intent: INTENTS.FILE };
+      if (raw.includes('search')) return { intent: INTENTS.SEARCH };
       if (raw.includes('complex')) return { intent: INTENTS.COMPLEX };
       if (raw.includes('chitchat')) return { intent: INTENTS.CHITCHAT };
+      // Legacy intents as fallback
+      if (raw.includes('question')) return { intent: INTENTS.QUESTION };
+      if (raw.includes('task')) return { intent: INTENTS.TASK };
 
       // Fallback heuristic
       return { intent: this._heuristicClassify(message) };
@@ -161,12 +253,45 @@ Category:`;
   }
 
   /**
+   * Detect which domains a message touches via regex.
+   * Returns array of domain names (e.g. ['deck'], ['calendar', 'email']).
+   * If 'search' co-occurs with a specific domain (e.g. "search the wiki"),
+   * the specific domain wins — 'search' is only standalone intent.
+   * @param {string} message
+   * @returns {string[]}
+   */
+  _detectDomains(message) {
+    const hits = [];
+    for (const [domain, pattern] of Object.entries(DOMAIN_PATTERNS)) {
+      if (pattern.test(message)) {
+        hits.push(domain);
+      }
+    }
+    // "search the wiki" / "find the file" → specific domain, not search
+    if (hits.length > 1 && hits.includes('search')) {
+      const specific = hits.filter(d => d !== 'search');
+      if (specific.length === 1) return specific;
+    }
+    return hits;
+  }
+
+  /**
    * Regex-based fallback classification.
    * @param {string} message
    * @returns {string} Intent name
    */
   _heuristicClassify(message) {
     const lower = message.toLowerCase();
+
+    // Check domain patterns first
+    const domainHits = this._detectDomains(message);
+    if (domainHits.length === 1) {
+      return INTENTS[domainHits[0].toUpperCase()] || INTENTS.TASK;
+    }
+    if (domainHits.length > 1) {
+      return INTENTS.COMPLEX;
+    }
+
     if (/^(what|how|when|where|who|why|is |are |do |does |can |could |should |would )/i.test(lower)) {
       return INTENTS.QUESTION;
     }
@@ -381,6 +506,113 @@ Sub-questions:`;
     if (parts.length === 0) return 'I had difficulty processing the parts of your request. Could you try simplifying it?';
 
     return parts.join('\n\n');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Domain-Specific Tool-Calling (Local Intelligence v2)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Handle domain-specific tasks with focused local tool-calling.
+   *
+   * Uses OllamaToolsProvider.chat() with a small tool subset (3-8 tools)
+   * and a minimal system prompt. Falls back to cloud AgentLoop on failure.
+   *
+   * @param {string} message - User message
+   * @param {string} intent - Domain intent (deck, calendar, email, wiki, file, search)
+   * @param {Object} context - { userName, roomToken, warmMemory }
+   * @returns {Promise<string>} Response text
+   */
+  async _handleDomainTask(message, intent, context) {
+    // Guard: need both toolRegistry and ollamaToolsProvider for tool-calling
+    if (!this.toolRegistry || !this.ollamaToolsProvider) {
+      this.logger.warn(`[MicroPipeline] Domain task "${intent}" but no toolRegistry/ollamaToolsProvider — falling back`);
+      return this._handleChat(message, context);
+    }
+
+    const tools = this.toolRegistry.getToolSubset(intent);
+    if (!tools || tools.length === 0) {
+      this.logger.warn(`[MicroPipeline] No tools for intent "${intent}" — falling back`);
+      return this._handleChat(message, context);
+    }
+
+    const systemPrompt = DOMAIN_PROMPTS[intent] || DOMAIN_PROMPTS.search;
+    const userPrompt = context.warmMemory
+      ? `Context: ${context.warmMemory.substring(0, 300)}\n\nUser (${context.userName || 'unknown'}): ${message}`
+      : `User (${context.userName || 'unknown'}): ${message}`;
+
+    this.logger.info(`[MicroPipeline] Domain task: ${intent} (${tools.length} tools) → local tool-calling`);
+
+    try {
+      // Set request context on tool registry so tools know who's calling
+      if (this.toolRegistry.setRequestContext) {
+        this.toolRegistry.setRequestContext({ user: context.userName || 'moltagent' });
+      }
+
+      // Bounded tool-calling loop (max 3 iterations):
+      // 1. LLM decides which tool(s) to call
+      // 2. Execute tool calls (validated against subset)
+      // 3. Feed results back for final response or next iteration
+      const MAX_ITERATIONS = 3;
+      const allowedNames = new Set(tools.map(t => t.function.name));
+      const messages = [{ role: 'user', content: userPrompt }];
+
+      for (let i = 0; i < MAX_ITERATIONS; i++) {
+        const llmResult = await this.ollamaToolsProvider.chat({
+          system: systemPrompt,
+          messages,
+          tools
+        });
+
+        // If no tool calls, we have the final response
+        if (!llmResult.toolCalls || llmResult.toolCalls.length === 0) {
+          return llmResult.content || 'Done.';
+        }
+
+        // Execute tool calls and collect results
+        const assistantMsg = {
+          role: 'assistant',
+          content: llmResult.content || '',
+          tool_calls: llmResult.toolCalls.map(tc => ({
+            function: {
+              name: tc.name,
+              arguments: tc.arguments
+            }
+          }))
+        };
+        messages.push(assistantMsg);
+
+        for (const toolCall of llmResult.toolCalls) {
+          // Validate tool name against focused subset (prevent hallucinated tool calls)
+          if (!allowedNames.has(toolCall.name)) {
+            messages.push({ role: 'tool', content: `Error: Unknown tool "${toolCall.name}"` });
+            continue;
+          }
+          const toolResult = await this.toolRegistry.execute(toolCall.name, toolCall.arguments);
+          messages.push({
+            role: 'tool',
+            content: toolResult.success
+              ? (toolResult.result || 'OK')
+              : `Error: ${toolResult.error}`
+          });
+        }
+        // Loop continues — LLM gets tool results and either calls more tools or responds
+      }
+
+      // If we exhaust iterations, synthesize from last messages
+      const lastToolResult = messages.filter(m => m.role === 'tool').pop();
+      return lastToolResult?.content || 'I completed the operation.';
+
+    } catch (err) {
+      this.logger.warn(`[MicroPipeline] Domain tool-calling failed (${intent}): ${err.message}`);
+      this.stats.errors++;
+
+      // Escalation signal — let MessageProcessor know this should go to cloud
+      const escalationErr = new Error(`Domain escalation: ${err.message}`);
+      escalationErr.code = 'DOMAIN_ESCALATE';
+      escalationErr.intent = intent;
+      throw escalationErr;
+    }
   }
 
   /**

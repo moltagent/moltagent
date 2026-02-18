@@ -184,9 +184,48 @@ asyncTest('process() routes question intent to search+synthesize handler', async
   ]);
 
   const pipeline = new MicroPipeline({ llmRouter: router, memorySearcher: searcher, logger: silentLogger });
-  const result = await pipeline.process('What time is the meeting tomorrow?', {});
+  // Use a question that doesn't match any domain pattern
+  const result = await pipeline.process('How does the deployment process work?', {});
 
   assert.strictEqual(result, 'Answer from LLM');
+});
+
+// -- Test 12: _classify() detects domain-specific intents via regex --
+asyncTest('_classify() detects deck intent from task keywords', async () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  const result = await pipeline._classify('Create a card for the new feature');
+  assert.strictEqual(result.intent, 'deck');
+});
+
+asyncTest('_classify() detects calendar intent from meeting keywords', async () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  const result = await pipeline._classify('What time is the meeting tomorrow?');
+  assert.strictEqual(result.intent, 'calendar');
+});
+
+asyncTest('_classify() detects multi-domain as complex', async () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  const result = await pipeline._classify('Create a task for the meeting notes and send an email about it');
+  assert.strictEqual(result.intent, 'complex');
+});
+
+// -- Test 13: _handleDomainTask() falls back to chat without toolRegistry --
+asyncTest('_handleDomainTask() falls back to chat when no toolRegistry', async () => {
+  const router = createMockRouter({ result: 'Fallback response', provider: 'mock', tokens: 20 });
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
+  const result = await pipeline._handleDomainTask('Create a card', 'deck', {});
+  assert.strictEqual(result, 'Fallback response');
+});
+
+// -- Test 14: _detectDomains() returns correct domain hits --
+asyncTest('_detectDomains() returns correct domain hits', async () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  assert.deepStrictEqual(pipeline._detectDomains('create a card'), ['deck']);
+  assert.deepStrictEqual(pipeline._detectDomains('schedule a meeting'), ['calendar']);
+  assert.deepStrictEqual(pipeline._detectDomains('send an email'), ['email']);
+  assert.deepStrictEqual(pipeline._detectDomains('search the wiki'), ['wiki']); // search dedup: wiki wins
+  assert.deepStrictEqual(pipeline._detectDomains('find the file'), ['file']); // search dedup: file wins
+  assert.deepStrictEqual(pipeline._detectDomains('hello there'), []);
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 100);
