@@ -123,6 +123,21 @@ test('_parseResponse parses multiple tool calls', () => {
   assert.strictEqual(result.toolCalls[1].name, 'tool_b');
 });
 
+// --- Tool timeout ---
+console.log('\n--- Tool Timeout ---\n');
+
+test('constructor defaults toolTimeout to 60000', () => {
+  const provider = new OllamaToolsProvider({}, silentLogger);
+  assert.strictEqual(provider.toolTimeout, 60000);
+});
+
+test('constructor uses provided toolTimeout', () => {
+  const provider = new OllamaToolsProvider({
+    toolTimeout: 45000
+  }, silentLogger);
+  assert.strictEqual(provider.toolTimeout, 45000);
+});
+
 // ============================================================
 // Summary
 // ============================================================

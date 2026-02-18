@@ -1082,7 +1082,8 @@ async function initialize() {
         ollamaProvider = new OllamaToolsProvider({
           endpoint: ollamaConfig.endpoint || CONFIG.ollama.url,
           model: ollamaConfig.model || CONFIG.ollama.model,
-          timeout: CONFIG.ollama.timeout
+          timeout: CONFIG.ollama.timeout,
+          toolTimeout: CONFIG.ollama.toolTimeout
         });
         console.log(`[INIT] OllamaToolsProvider ready (${ollamaConfig.endpoint || CONFIG.ollama.url}, ${ollamaConfig.model || CONFIG.ollama.model})`);
       }

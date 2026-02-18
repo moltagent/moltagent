@@ -12,13 +12,15 @@ class OllamaToolsProvider {
    * @param {Object} config
    * @param {string} config.endpoint - Ollama API URL (e.g., http://localhost:11434)
    * @param {string} config.model - Model name (e.g., qwen3:8b)
-   * @param {number} [config.timeout=300000]
+   * @param {number} [config.timeout=300000] - Default timeout for simple requests
+   * @param {number} [config.toolTimeout=60000] - Timeout when tools are present (tool-heavy prompts)
    * @param {Object} [logger]
    */
   constructor(config, logger) {
     this.endpoint = (config.endpoint || 'http://localhost:11434').replace(/\/$/, '');
     this.model = config.model || 'qwen3:8b';
     this.timeout = config.timeout || 300000;
+    this.toolTimeout = config.toolTimeout || 60000;
     this.logger = logger || console;
   }
 
@@ -79,8 +81,12 @@ class OllamaToolsProvider {
       body.tools = tools;
     }
 
+    // Use shorter timeout for tool-heavy prompts — if qwen3:8b on CPU hasn't
+    // responded in 60s with 55 tools, it won't. Keep 300s for simple requests.
+    const effectiveTimeout = (tools && tools.length > 0) ? this.toolTimeout : this.timeout;
+
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
 
     try {
       const response = await fetch(`${this.endpoint}/api/chat`, {
@@ -103,7 +109,7 @@ class OllamaToolsProvider {
     } catch (err) {
       clearTimeout(timeoutId);
       if (err.name === 'AbortError') {
-        throw new Error(`Ollama request timed out after ${this.timeout}ms`);
+        throw new Error(`Ollama request timed out after ${effectiveTimeout}ms`);
       }
       throw err;
     }

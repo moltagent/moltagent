@@ -357,6 +357,171 @@ const silentLogger = { info: () => {}, warn: () => {} };
     assert.strictEqual(result.content, 'ok');
   });
 
+  // --- Conversation Circuit Breaker ---
+  console.log('\n--- Conversation Circuit Breaker ---\n');
+
+  await asyncTest('TC-BRIDGE-CONVCB-001: skips provider that timed out earlier in conversation', async () => {
+    const router = createMockRouter({
+      buildProviderChain: () => ({
+        chain: [
+          { id: 'ollama-local', provider: { type: 'local' } },
+          { id: 'anthropic-claude', provider: { type: 'remote' } }
+        ],
+        skipped: []
+      })
+    });
+
+    let ollamaCallCount = 0;
+    const ollamaProvider = createMockChatProvider({
+      chat: async () => {
+        ollamaCallCount++;
+        throw new Error('Ollama request timed out after 60000ms');
+      }
+    });
+
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['ollama-local', ollamaProvider],
+        ['anthropic-claude', createMockChatProvider({ content: 'Claude response' })]
+      ]),
+      logger: silentLogger
+    });
+
+    // First call: Ollama times out, falls back to Claude
+    const result1 = await bridge.chat({ system: 'test', messages: [], tools: [] });
+    assert.strictEqual(result1.content, 'Claude response');
+    assert.strictEqual(ollamaCallCount, 1, 'Ollama should be called once');
+
+    // Second call: Ollama should be SKIPPED (conversation circuit breaker)
+    const result2 = await bridge.chat({ system: 'test', messages: [], tools: [] });
+    assert.strictEqual(result2.content, 'Claude response');
+    assert.strictEqual(ollamaCallCount, 1, 'Ollama should NOT be called again');
+    assert.strictEqual(result2._routing.provider, 'anthropic-claude');
+  });
+
+  await asyncTest('TC-BRIDGE-CONVCB-002: resetConversation clears conversation failures', async () => {
+    const router = createMockRouter({
+      buildProviderChain: () => ({
+        chain: [
+          { id: 'ollama-local', provider: { type: 'local' } },
+          { id: 'anthropic-claude', provider: { type: 'remote' } }
+        ],
+        skipped: []
+      })
+    });
+
+    let ollamaCallCount = 0;
+    const ollamaProvider = createMockChatProvider({
+      chat: async () => {
+        ollamaCallCount++;
+        if (ollamaCallCount === 1) {
+          throw new Error('Ollama request timed out after 60000ms');
+        }
+        return { content: 'Ollama response', toolCalls: null };
+      }
+    });
+
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['ollama-local', ollamaProvider],
+        ['anthropic-claude', createMockChatProvider({ content: 'Claude response' })]
+      ]),
+      logger: silentLogger
+    });
+
+    // First call: Ollama times out
+    await bridge.chat({ system: 'test', messages: [], tools: [] });
+    assert.strictEqual(ollamaCallCount, 1);
+
+    // Reset conversation — new user message
+    bridge.resetConversation();
+
+    // Third call: Ollama should be tried again
+    const result = await bridge.chat({ system: 'test', messages: [], tools: [] });
+    assert.strictEqual(ollamaCallCount, 2, 'Ollama should be retried after reset');
+    assert.strictEqual(result.content, 'Ollama response');
+  });
+
+  await asyncTest('TC-BRIDGE-CONVCB-003: non-timeout errors do NOT trigger conversation skip', async () => {
+    const router = createMockRouter({
+      buildProviderChain: () => ({
+        chain: [
+          { id: 'ollama-local', provider: { type: 'local' } },
+          { id: 'anthropic-claude', provider: { type: 'remote' } }
+        ],
+        skipped: []
+      })
+    });
+
+    let ollamaCallCount = 0;
+    const ollamaProvider = createMockChatProvider({
+      chat: async () => {
+        ollamaCallCount++;
+        if (ollamaCallCount === 1) {
+          throw new Error('Ollama error 500: internal server error');
+        }
+        return { content: 'Ollama recovered', toolCalls: null };
+      }
+    });
+
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['ollama-local', ollamaProvider],
+        ['anthropic-claude', createMockChatProvider({ content: 'Claude response' })]
+      ]),
+      logger: silentLogger
+    });
+
+    // First call: Ollama 500 error (not a timeout), falls back to Claude
+    await bridge.chat({ system: 'test', messages: [], tools: [] });
+    assert.strictEqual(ollamaCallCount, 1);
+
+    // Second call: Ollama should still be tried (not a timeout failure)
+    const result = await bridge.chat({ system: 'test', messages: [], tools: [] });
+    assert.strictEqual(ollamaCallCount, 2, 'Ollama should be retried after non-timeout error');
+    assert.strictEqual(result.content, 'Ollama recovered');
+  });
+
+  await asyncTest('TC-BRIDGE-CONVCB-004: conversation skip shows in error chain when all exhausted', async () => {
+    const router = createMockRouter({
+      buildProviderChain: () => ({
+        chain: [
+          { id: 'ollama-local', provider: { type: 'local' } }
+        ],
+        skipped: []
+      })
+    });
+
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['ollama-local', createMockChatProvider({
+          chat: async () => { throw new Error('Ollama request timed out after 60000ms'); }
+        })]
+      ]),
+      logger: silentLogger
+    });
+
+    // First call: Ollama times out
+    try {
+      await bridge.chat({ system: 'test', messages: [], tools: [] });
+    } catch (_e) { /* expected — only provider */ }
+
+    // Second call: Ollama skipped, no providers left → should throw
+    try {
+      await bridge.chat({ system: 'test', messages: [], tools: [] });
+      assert.fail('Should have thrown');
+    } catch (err) {
+      assert.ok(err.message.includes('All providers exhausted'));
+      assert.ok(err._errorChain.primary.includes('timed out in conversation') ||
+                err._errorChain.fallback.includes('timed out in conversation'),
+                'Error chain should mention conversation timeout');
+    }
+  });
+
   // --- _routing Shape ---
   console.log('\n--- _routing Shape ---\n');
 

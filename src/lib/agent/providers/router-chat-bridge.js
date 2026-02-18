@@ -35,6 +35,21 @@ class RouterChatBridge {
 
     // Public property — assigned post-construction (same pattern as ProviderChain)
     this.fallbackNotifier = null;
+
+    // Conversation-level circuit breaker: providers that timed out in THIS conversation
+    // are skipped for all subsequent iterations. Prevents 4× 5-minute waits when
+    // Ollama can't handle a tool-heavy AgentLoop prompt.
+    // Call resetConversation() at the start of each new user conversation.
+    this._conversationFailures = new Set();
+  }
+
+  /**
+   * Reset conversation-level failure tracking.
+   * Call at the start of each new user conversation so previously-failed
+   * providers get a fresh chance.
+   */
+  resetConversation() {
+    this._conversationFailures.clear();
   }
 
   /**
@@ -55,13 +70,22 @@ class RouterChatBridge {
     // 1. Get chain from router
     const { chain, skipped } = this.router.buildProviderChain(job, { forceLocal });
 
-    // 2. Filter to providers with registered chat implementations
-    const candidates = chain.filter(entry => this.chatProviders.has(entry.id));
+    // 2. Filter to providers with registered chat implementations,
+    //    and skip providers that already timed out in this conversation
+    const candidates = chain.filter(entry => {
+      if (!this.chatProviders.has(entry.id)) return false;
+      if (this._conversationFailures.has(entry.id)) {
+        this.logger.info(`[RouterChatBridge] Skipping ${entry.id} — timed out earlier in this conversation`);
+        return false;
+      }
+      return true;
+    });
 
     if (candidates.length === 0) {
       const allSkipped = [
         ...skipped.map(s => `${s.id}: ${s.reason}`),
-        ...chain.filter(e => !this.chatProviders.has(e.id)).map(e => `${e.id}: no chat provider`)
+        ...chain.filter(e => !this.chatProviders.has(e.id)).map(e => `${e.id}: no chat provider`),
+        ...chain.filter(e => this._conversationFailures.has(e.id)).map(e => `${e.id}: timed out in conversation`)
       ];
       const err = new Error(
         `All providers exhausted for job ${job}. ` +
@@ -140,7 +164,16 @@ class RouterChatBridge {
           error: err
         });
 
-        this.logger.warn(`[RouterChatBridge] ${providerId} failed: ${err.message}, trying next...`);
+        // Conversation-level circuit breaker: if this was a timeout,
+        // skip this provider for the rest of the conversation.
+        // Prevents 4× 5-minute waits in multi-iteration AgentLoop.
+        const msg = (err.message || '').toLowerCase();
+        if (msg.includes('timed out') || msg.includes('timeout') || msg.includes('aborted')) {
+          this._conversationFailures.add(providerId);
+          this.logger.warn(`[RouterChatBridge] ${providerId} timed out — skipping for rest of conversation`);
+        } else {
+          this.logger.warn(`[RouterChatBridge] ${providerId} failed: ${err.message}, trying next...`);
+        }
         continue;
       }
     }

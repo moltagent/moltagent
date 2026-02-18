@@ -221,7 +221,8 @@ const config = {
   ollama: {
     url: envStr('OLLAMA_URL', 'http://138.201.246.236:11434'),
     model: envStr('OLLAMA_MODEL', 'qwen3:8b'),
-    timeout: envInt('OLLAMA_TIMEOUT', 300000)
+    timeout: envInt('OLLAMA_TIMEOUT', 300000),
+    toolTimeout: envInt('OLLAMA_TOOL_TIMEOUT', 60000)
   },
 
   // -------------------------------------------------------------------------

@@ -66,6 +66,12 @@ class AgentLoop {
   async process(message, roomToken, options = {}) {
     const startTime = Date.now();
 
+    // Reset conversation-level circuit breaker so each new user message
+    // gives previously-failed providers a fresh chance
+    if (this.llmProvider.resetConversation) {
+      this.llmProvider.resetConversation();
+    }
+
     // Propagate requesting user identity to tool handlers
     if (options.user && this.toolRegistry.setRequestContext) {
       this.toolRegistry.setRequestContext({ user: options.user });
@@ -332,6 +338,11 @@ class AgentLoop {
     const startTime = Date.now();
     const iterLimit = maxIterations || this.maxIterations;
     this.logger.info(`[AgentLoop] Workflow task: board=${boardId} card=${cardId} maxIter=${iterLimit}`);
+
+    // Reset conversation-level circuit breaker — each workflow task is standalone
+    if (this.llmProvider.resetConversation) {
+      this.llmProvider.resetConversation();
+    }
 
     // Workflow tasks always use lean prompt — regardless of provider.
     // The card context in systemAddition has everything needed.
