@@ -318,12 +318,13 @@ try {
   DailyBriefing = null;
 }
 
-let AgentLoop, ToolRegistry, OllamaToolsProvider, SecretsGuard, ToolGuard, PromptGuard, SystemTagsClient, ProviderChain;
+let AgentLoop, ToolRegistry, OllamaToolsProvider, SecretsGuard, ToolGuard, PromptGuard, SystemTagsClient, ProviderChain, RouterChatBridge;
 try {
   ({ AgentLoop } = require('./src/lib/agent/agent-loop'));
   ({ ToolRegistry } = require('./src/lib/agent/tool-registry'));
   ({ OllamaToolsProvider } = require('./src/lib/agent/providers/ollama-tools'));
   ({ ProviderChain } = require('./src/lib/agent/providers/provider-chain'));
+  ({ RouterChatBridge } = require('./src/lib/agent/providers/router-chat-bridge'));
   ({ SecretsGuard } = require('./src/security/guards/secrets-guard'));
   ({ ToolGuard } = require('./src/security/guards/tool-guard'));
   ({ PromptGuard } = require('./src/security/guards/prompt-guard'));
@@ -1072,7 +1073,7 @@ async function initialize() {
       const ollamaConfig = providersConfig.providers?.ollama || {};
       const claudeConfig = providersConfig.providers?.claude || {};
 
-      // Build both providers
+      // Build both chat providers (needed by both RouterChatBridge and ProviderChain fallback)
       const { ClaudeToolsProvider } = require('./src/lib/agent/providers/claude-tools');
       const getCredential = credentialBroker.createGetter();
 
@@ -1094,31 +1095,58 @@ async function initialize() {
       });
       console.log(`[INIT] ClaudeToolsProvider ready (${claudeConfig.model || 'claude-opus-4-6'})`);
 
-      // Select primary provider based on routing.default in providers.json
-      // Wrap with ProviderChain for automatic 429 fallback
-      const defaultProvider = providersConfig.routing?.default || 'ollama';
-      let llmProvider;
-      if (defaultProvider === 'claude') {
-        llmProvider = new ProviderChain(claudeProvider, ollamaProvider, console, {
-          primaryIsLocal: false,
-          fallbackIsLocal: !!ollamaProvider
-        });
-        console.log(`[INIT] Primary LLM: Claude → Ollama fallback (per routing.default)`);
-      } else if (defaultProvider === 'ollama' && ollamaProvider) {
-        llmProvider = new ProviderChain(ollamaProvider, claudeProvider, console, {
-          primaryIsLocal: true,
-          fallbackIsLocal: false
-        });
-        console.log(`[INIT] Primary LLM: Ollama → Claude fallback (per routing.default)`);
-      } else {
-        llmProvider = new ProviderChain(claudeProvider, ollamaProvider, console, {
-          primaryIsLocal: false,
-          fallbackIsLocal: !!ollamaProvider
-        });
-        console.log('[INIT] Primary LLM: Claude → Ollama fallback (Ollama not default)');
+      // --- Primary path: RouterChatBridge (LLMRouter v3 routing) ---
+      let llmProvider = null;
+
+      if (RouterChatBridge && llmRouter) {
+        try {
+          // Build chatProviders map: routerProviderId → chatProvider
+          const chatProviders = new Map();
+          if (ollamaProvider) chatProviders.set('ollama-local', ollamaProvider);
+          chatProviders.set('anthropic-claude', claudeProvider);
+
+          // Activate smart-mix preset on LLMRouter v3
+          llmRouter.router.setPreset('smart-mix');
+          console.log('[INIT] LLMRouter preset activated: smart-mix');
+
+          llmProvider = new RouterChatBridge({
+            router: llmRouter.router,
+            chatProviders,
+            logger: console,
+            defaultJob: 'tools'
+          });
+          console.log('[INIT] RouterChatBridge active — routing through LLMRouter v3');
+        } catch (bridgeErr) {
+          console.warn(`[INIT] RouterChatBridge failed, falling back to ProviderChain: ${bridgeErr.message}`);
+          llmProvider = null;
+        }
       }
 
-      // V3: Wire FallbackNotifier to ProviderChain
+      // --- Fallback path: ProviderChain (dead-code fallback) ---
+      if (!llmProvider) {
+        const defaultProvider = providersConfig.routing?.default || 'ollama';
+        if (defaultProvider === 'claude') {
+          llmProvider = new ProviderChain(claudeProvider, ollamaProvider, console, {
+            primaryIsLocal: false,
+            fallbackIsLocal: !!ollamaProvider
+          });
+          console.log(`[INIT] Primary LLM: Claude → Ollama fallback (ProviderChain, per routing.default)`);
+        } else if (defaultProvider === 'ollama' && ollamaProvider) {
+          llmProvider = new ProviderChain(ollamaProvider, claudeProvider, console, {
+            primaryIsLocal: true,
+            fallbackIsLocal: false
+          });
+          console.log(`[INIT] Primary LLM: Ollama → Claude fallback (ProviderChain, per routing.default)`);
+        } else {
+          llmProvider = new ProviderChain(claudeProvider, ollamaProvider, console, {
+            primaryIsLocal: false,
+            fallbackIsLocal: !!ollamaProvider
+          });
+          console.log('[INIT] Primary LLM: Claude → Ollama fallback (ProviderChain, Ollama not default)');
+        }
+      }
+
+      // Wire FallbackNotifier (works with both RouterChatBridge and ProviderChain)
       if (FallbackNotifier && talkQueue && defaultTalkToken) {
         const fallbackNotifier = new FallbackNotifier({
           talkSendQueue: talkQueue,
@@ -1126,7 +1154,7 @@ async function initialize() {
           debounceMinutes: 15
         });
         llmProvider.fallbackNotifier = fallbackNotifier;
-        console.log('[INIT] FallbackNotifier ready (wired to ProviderChain)');
+        console.log(`[INIT] FallbackNotifier ready (wired to ${llmProvider.constructor.name})`);
       }
 
       // Build ToolRegistry with all available clients

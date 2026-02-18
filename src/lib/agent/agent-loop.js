@@ -136,7 +136,8 @@ class AgentLoop {
         response = await this.llmProvider.chat({
           system: systemPrompt,
           messages,
-          tools
+          tools,
+          job: tools.length > 0 ? 'tools' : 'quick'
         });
       } catch (llmErr) {
         // Friendly message on rate limit / overload instead of surfacing raw error
@@ -280,7 +281,8 @@ class AgentLoop {
           const finalResponse = await this.llmProvider.chat({
             system: systemPrompt,
             messages,
-            tools: []
+            tools: [],
+            job: 'quick'
           });
           if (finalResponse.content) {
             lastResponse = finalResponse.content;
@@ -369,7 +371,8 @@ class AgentLoop {
           system: systemPrompt,
           messages,
           tools,
-          forceLocal
+          forceLocal,
+          job: tools.length > 0 ? 'tools' : 'quick'
         });
       } catch (llmErr) {
         if (this._isRateLimitError(llmErr)) {

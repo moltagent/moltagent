@@ -913,6 +913,153 @@ class LLMRouter {
   }
 
   // ---------------------------------------------------------------------------
+  // Public routing API for RouterChatBridge
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Build a provider chain with health checks, without executing a generate() call.
+   * Exposes the router's chain-building + filtering logic for external callers
+   * (e.g. RouterChatBridge) that handle their own execution.
+   *
+   * @param {string} job - Job classification (quick, tools, thinking, etc.)
+   * @param {Object} [context={}]
+   * @param {boolean} [context.forceLocal=false] - Restrict to local providers
+   * @param {string} [context.opType] - Operation type for budget checks
+   * @returns {{ chain: Array<{id: string, provider: Object}>, skipped: Array<{id: string, reason: string}> }}
+   */
+  buildProviderChain(job, context = {}) {
+    const validJob = VALID_JOBS.has(job) ? job : JOBS.QUICK;
+
+    // Check proactive budget → forceLocal
+    const opType = context.opType || 'reactive';
+    let forceLocal = !!context.forceLocal;
+    if (opType === 'proactive' && this.budget.isProactiveBudgetExhausted()) {
+      forceLocal = true;
+    }
+
+    // Build raw chain from roster or legacy
+    let rawChain;
+    if (this._roster) {
+      rawChain = this._buildRosterChain(validJob, { forceLocal });
+    } else {
+      // Legacy mode: map job → role
+      const role = this._jobToRole(validJob);
+      rawChain = this._buildChain(role);
+      if (forceLocal) {
+        rawChain = rawChain.filter(id => {
+          const p = this.providers.get(id);
+          return p && p.type === 'local';
+        });
+      }
+    }
+
+    // Filter through health checks
+    const chain = [];
+    const skipped = [];
+
+    for (const providerId of rawChain) {
+      const provider = this.providers.get(providerId);
+      if (!provider) {
+        skipped.push({ id: providerId, reason: 'provider not found' });
+        continue;
+      }
+
+      // Circuit breaker
+      const circuitCheck = this.circuitBreaker.canRequest(providerId);
+      if (!circuitCheck.allowed) {
+        skipped.push({ id: providerId, reason: `circuit open (${circuitCheck.state})` });
+        continue;
+      }
+
+      // Backoff
+      const backoffCheck = this.backoff.shouldWait(providerId);
+      if (backoffCheck.shouldWait) {
+        skipped.push({ id: providerId, reason: `in backoff until ${new Date(backoffCheck.nextRetry).toISOString()}` });
+        continue;
+      }
+
+      // Rate limits (estimate with a moderate token count)
+      const estimatedTokens = 1000;
+      const rateLimitCheck = this.rateLimits.canRequest(providerId, estimatedTokens);
+      if (!rateLimitCheck.allowed) {
+        skipped.push({ id: providerId, reason: rateLimitCheck.reason });
+        continue;
+      }
+
+      // Budget
+      const estimatedCost = provider.estimateCost ? provider.estimateCost(300, 700) : 0;
+      const budgetCheck = this.budget.canSpend(providerId, estimatedCost);
+      if (!budgetCheck.allowed) {
+        skipped.push({ id: providerId, reason: budgetCheck.reason });
+        continue;
+      }
+
+      chain.push({ id: providerId, provider });
+    }
+
+    return { chain, skipped };
+  }
+
+  /**
+   * Record outcome of an external call back into router subsystems.
+   * Used by RouterChatBridge after executing a chat() call.
+   *
+   * @param {string} providerId - The router provider ID
+   * @param {Object} outcome
+   * @param {boolean} outcome.success - Whether the call succeeded
+   * @param {Error} [outcome.error] - Error if failed
+   * @param {number} [outcome.cost] - Cost in USD
+   * @param {number} [outcome.tokens] - Total tokens used
+   * @param {number} [outcome.inputTokens] - Input tokens
+   * @param {number} [outcome.outputTokens] - Output tokens
+   * @param {Object} [outcome.headers] - Response headers (for rate limit tracking)
+   * @param {string} [outcome.opType] - 'proactive' | 'reactive'
+   */
+  recordOutcome(providerId, outcome = {}) {
+    if (outcome.success) {
+      this.backoff.reset(providerId);
+      this.rateLimits.clearRetryAfter(providerId);
+      this.circuitBreaker.recordSuccess(providerId);
+
+      if (outcome.headers) {
+        this.rateLimits.updateFromResponse(providerId, outcome.headers);
+      }
+
+      if (outcome.cost) {
+        this.budget.recordSpend(providerId, outcome.cost, outcome.tokens);
+        if (outcome.opType === 'proactive') {
+          this.budget.recordProactiveSpend(outcome.cost, outcome.tokens);
+        }
+      }
+
+      // Track stats
+      this.stats.successfulCalls++;
+      this.stats.byProvider[providerId] = (this.stats.byProvider[providerId] || 0) + 1;
+    } else {
+      const error = outcome.error || new Error('unknown');
+      this.circuitBreaker.recordFailure(providerId, error);
+
+      if (this._isRateLimitError(error)) {
+        const backoffResult = this.backoff.handleRateLimit(providerId, error);
+        this.rateLimits.markRateLimited(providerId, backoffResult.delayMs / 1000);
+      }
+    }
+  }
+
+  /**
+   * Map a job name to a legacy role.
+   * Used by buildProviderChain when in legacy mode (no roster).
+   * @private
+   * @param {string} job
+   * @returns {string}
+   */
+  _jobToRole(job) {
+    if (job === JOBS.CREDENTIALS) return 'sovereign';
+    if (job === JOBS.QUICK || job === JOBS.TOOLS) return 'value';
+    return 'premium'; // thinking, writing, research, coding
+  }
+
+  // ---------------------------------------------------------------------------
   // Local Intelligence: ModelScout integration
   // ---------------------------------------------------------------------------
 

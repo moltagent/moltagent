@@ -9,43 +9,47 @@ providers:
     endpoint: http://138.201.246.236:11434
     model: qwen3:8b
 
-  # Value tier - uncomment and configure as needed
-  # deepseek:
-  #   adapter: deepseek
-  #   credentialName: deepseek-api-key
-  #   model: deepseek-chat
+  # Premium tier - Claude API
+  anthropic-claude:
+    adapter: anthropic
+    credentialName: claude-api-key
+    model: claude-opus-4-6
+    costModel:
+      type: per_token
+      inputPer1M: 15.00
+      outputPer1M: 75.00
 
-  # mistral:
-  #   adapter: mistral
-  #   credentialName: mistral-api-key
-  #   model: mistral-small-latest
-
-  # Premium tier - uncomment and configure as needed
-  # claude:
-  #   adapter: anthropic
-  #   credentialName: claude-api-key
-  #   model: claude-sonnet-4-20250514
-
-  # gpt4:
-  #   adapter: openai
-  #   credentialName: openai-api-key
-  #   model: gpt-4o
+  # Value tier - DeepSeek
+  deepseek:
+    adapter: deepseek
+    credentialName: deepseek-api-key
+    model: deepseek-chat
+    costModel:
+      type: per_token
+      inputPer1M: 0.14
+      outputPer1M: 0.28
 
 # Role assignments (providers tried in order listed)
 roles:
   sovereign: [ollama-local]
   free: [ollama-local]
-  value: [ollama-local]
-  premium: [ollama-local]
+  value: [deepseek, ollama-local]
+  premium: [anthropic-claude, deepseek, ollama-local]
 
 # Fallback chains
 fallbackChain:
   ollama-local: []
+  anthropic-claude: [deepseek, ollama-local]
+  deepseek: [ollama-local]
 
-# Daily budget limits in USD
+# Budget limits in USD
 budgets:
-  daily: {}
-  monthly: {}
+  daily:
+    anthropic-claude: 2.00
+    deepseek: 1.00
+  monthly:
+    anthropic-claude: 50.00
+    deepseek: 20.00
 
 # Search provider configuration
 search:
