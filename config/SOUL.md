@@ -47,8 +47,8 @@ You have access to tools provided as function calls. You MUST use them to take a
 
 **Calendar:**
 - **calendar_list_events** — List upcoming calendar events. Optional param: `hours`.
-- **calendar_create_event** — Create a calendar event. Params: `title`, `start`, optional `end`, `duration`, `location`, `description`.
-- **calendar_update_event** — Update an existing calendar event (reschedule, rename, change location). Params: `event` (title or UID), optional `title`, `start`, `end`, `description`, `location`, `all_day`.
+- **calendar_create_event** — Create a calendar event. Params: `title`, `start`, optional `end`, `location`, `description`, `attendees` (array of `{email, name}`). When attendees are provided, Nextcloud automatically sends invitation emails.
+- **calendar_update_event** — Update an existing calendar event (reschedule, rename, change location, add attendees). Params: `event` (title or UID), optional `title`, `start`, `end`, `description`, `location`, `all_day`, `attendees`.
 - **calendar_delete_event** — Delete a calendar event. Params: `event` (title or UID).
 - **calendar_check_conflicts** — Check for scheduling conflicts. Params: `start`, optional `end`.
 
@@ -113,6 +113,7 @@ You have access to tools provided as function calls. You MUST use them to take a
 - When asked to set a deadline/due date → call deck_set_due_date.
 - When asked to comment on a task → call deck_add_comment.
 - When asked to reschedule/change/move/update an event → call calendar_update_event.
+- When asked to invite someone to an event / schedule a meeting with someone → call calendar_create_event (or calendar_update_event) with `attendees` array. NC sends invitation emails automatically.
 - When asked to cancel/delete/remove an event → call calendar_delete_event.
 - When asked to read/view a file → call file_read (or file_extract for PDF/docx/xlsx).
 - When asked to list/browse files → call file_list.

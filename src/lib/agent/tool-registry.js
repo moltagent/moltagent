@@ -1000,7 +1000,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_create_event',
-      description: 'Create a new calendar event.',
+      description: 'Create a new calendar event. When attendees are provided, Nextcloud automatically sends invitation emails to them.',
       parameters: {
         type: 'object',
         properties: {
@@ -1008,7 +1008,19 @@ class ToolRegistry {
           start: { type: 'string', description: 'Start datetime as ISO 8601 string' },
           end: { type: 'string', description: 'End datetime as ISO 8601 string (default: 1 hour after start)' },
           description: { type: 'string', description: 'Event description (optional)' },
-          location: { type: 'string', description: 'Location (optional)' }
+          location: { type: 'string', description: 'Location (optional)' },
+          attendees: {
+            type: 'array',
+            description: 'Attendees to invite. NC sends invitation emails automatically.',
+            items: {
+              type: 'object',
+              properties: {
+                email: { type: 'string', description: 'Attendee email address' },
+                name: { type: 'string', description: 'Attendee display name (optional)' }
+              },
+              required: ['email']
+            }
+          }
         },
         required: ['title', 'start']
       },
@@ -1018,15 +1030,27 @@ class ToolRegistry {
           ? new Date(args.end)
           : new Date(startDate.getTime() + 60 * 60 * 1000);
 
-        const event = await cal.createEvent({
+        const eventData = {
           summary: args.title,
           start: startDate,
           end: endDate,
           description: args.description || '',
           location: args.location || ''
-        });
+        };
 
-        return `Created "${args.title}" on ${startDate.toLocaleDateString()} at ${startDate.toLocaleTimeString()}.${event?.uid ? ` Event ID: ${event.uid}` : ''}`;
+        if (args.attendees && args.attendees.length > 0) {
+          eventData.attendees = args.attendees;
+        }
+
+        const event = await cal.createEvent(eventData);
+
+        let msg = `Created "${args.title}" on ${startDate.toLocaleDateString()} at ${startDate.toLocaleTimeString()}.`;
+        if (event?.uid) msg += ` Event ID: ${event.uid}`;
+        if (args.attendees && args.attendees.length > 0) {
+          const names = args.attendees.map(a => a.name || a.email).join(', ');
+          msg += ` Invitations sent to: ${names}.`;
+        }
+        return msg;
       }
     });
 
@@ -1060,7 +1084,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_update_event',
-      description: 'Update an existing calendar event. Use to reschedule, rename, change duration, or modify any event property.',
+      description: 'Update an existing calendar event. Use to reschedule, rename, change duration, add attendees, or modify any event property.',
       parameters: {
         type: 'object',
         properties: {
@@ -1070,7 +1094,19 @@ class ToolRegistry {
           end: { type: 'string', description: 'New end datetime as ISO 8601 string' },
           description: { type: 'string', description: 'New description' },
           location: { type: 'string', description: 'New location' },
-          all_day: { type: 'boolean', description: 'Set as all-day event' }
+          all_day: { type: 'boolean', description: 'Set as all-day event' },
+          attendees: {
+            type: 'array',
+            description: 'Attendees to add/set. NC sends invitation emails automatically.',
+            items: {
+              type: 'object',
+              properties: {
+                email: { type: 'string', description: 'Attendee email address' },
+                name: { type: 'string', description: 'Attendee display name (optional)' }
+              },
+              required: ['email']
+            }
+          }
         },
         required: ['event']
       },
@@ -1094,6 +1130,7 @@ class ToolRegistry {
             updates.end = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
           }
         }
+        if (args.attendees !== undefined) updates.attendees = args.attendees;
 
         await cal.updateEvent(foundCalendar, foundEvent.uid, updates, foundEvent.etag);
 
@@ -1105,6 +1142,10 @@ class ToolRegistry {
         if (args.location !== undefined) changedFields.push(`location: ${args.location || '(removed)'}`);
         if (args.description !== undefined) changedFields.push('description updated');
         if (args.all_day !== undefined) changedFields.push(`all-day: ${args.all_day}`);
+        if (args.attendees && args.attendees.length > 0) {
+          const names = args.attendees.map(a => a.name || a.email).join(', ');
+          changedFields.push(`attendees: ${names}`);
+        }
 
         return `Updated "${originalTitle}"${changedFields.length ? '. Changes: ' + changedFields.join(', ') : ''}.`;
       }

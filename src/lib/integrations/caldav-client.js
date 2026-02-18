@@ -932,7 +932,7 @@ class CalDAVClient {
       for (const attendee of event.attendees) {
         const email = typeof attendee === 'string' ? attendee : attendee.email;
         const name = typeof attendee === 'object' ? attendee.name : null;
-        const status = typeof attendee === 'object' ? attendee.status : 'NEEDS-ACTION';
+        const status = (typeof attendee === 'object' ? attendee.status : null) || 'NEEDS-ACTION';
 
         let line = 'ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT';
         line += `;PARTSTAT=${status}`;
