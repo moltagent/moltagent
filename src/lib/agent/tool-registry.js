@@ -2289,6 +2289,7 @@ class ToolRegistry {
   _registerWorkflowDeckTools() {
     const nc = this.clients.ncRequestManager;
     if (!nc) return;
+    const deck = this.clients.deckClient;
 
     this.register({
       name: 'workflow_deck_move_card',
@@ -2333,32 +2334,67 @@ class ToolRegistry {
 
     this.register({
       name: 'workflow_deck_create_card',
-      description: 'Create a card on any board using raw numeric board and stack IDs. Use this in workflow processing to spawn cards across boards.',
+      description: 'Create a card on any board. Provide board_id and either stack (name) or stack_id. Stack names are resolved against the target board to avoid cross-board ID mismatches.',
       parameters: {
         type: 'object',
         properties: {
           board_id: { type: 'number', description: 'Numeric board ID' },
-          stack_id: { type: 'number', description: 'Numeric stack ID' },
+          stack_id: { type: 'number', description: 'Numeric stack ID (validated against board)' },
+          stack: { type: 'string', description: 'Stack name (e.g. "Inbox") — preferred over stack_id' },
           title: { type: 'string', description: 'Card title' },
           description: { type: 'string', description: 'Card description (optional)' }
         },
-        required: ['board_id', 'stack_id', 'title']
+        required: ['board_id', 'title']
       },
       handler: async (args) => {
-        const response = await nc.request(
-          `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${args.stack_id}/cards`,
-          {
-            method: 'POST',
-            body: {
-              title: args.title,
-              type: 'plain',
-              order: 0,
-              description: args.description || ''
-            }
+        // Resolve the target stack from the board's actual stacks
+        let stacks;
+        try {
+          stacks = deck
+            ? await deck.getStacks(args.board_id)
+            : (await nc.request(`/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks`, { method: 'GET' })).body;
+        } catch (err) {
+          return `Board ${args.board_id} not found or inaccessible: ${err.message}`;
+        }
+
+        if (!stacks || stacks.length === 0) {
+          return `Board ${args.board_id} has no stacks.`;
+        }
+
+        let targetStack;
+        if (args.stack) {
+          // Resolve by name (case-insensitive)
+          targetStack = stacks.find(s => s.title.toLowerCase() === args.stack.toLowerCase());
+          if (!targetStack) {
+            const available = stacks.map(s => `"${s.title}" (ID: ${s.id})`).join(', ');
+            return `No stack "${args.stack}" on board ${args.board_id}. Available: ${available}`;
           }
-        );
-        const card = response.body || response;
-        return `Created card "${args.title}" (ID: ${card.id || 'unknown'}) in board ${args.board_id}, stack ${args.stack_id}.`;
+        } else if (args.stack_id) {
+          // Validate numeric ID belongs to this board
+          targetStack = stacks.find(s => s.id === args.stack_id);
+          if (!targetStack) {
+            const available = stacks.map(s => `"${s.title}" (ID: ${s.id})`).join(', ');
+            return `Stack ID ${args.stack_id} not found on board ${args.board_id}. Available: ${available}`;
+          }
+        } else {
+          // Default to first stack (usually "Inbox")
+          targetStack = stacks[0];
+        }
+
+        const createFn = deck
+          ? () => deck._request('POST',
+              `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${targetStack.id}/cards`,
+              { title: args.title, description: args.description || '', type: 'plain', order: 0 })
+          : async () => {
+              const resp = await nc.request(
+                `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${targetStack.id}/cards`,
+                { method: 'POST', body: { title: args.title, type: 'plain', order: 0, description: args.description || '' } }
+              );
+              return resp.body || resp;
+            };
+
+        const card = await createFn();
+        return `Created "${args.title}" (card #${card.id}) in "${targetStack.title}" (stack ${targetStack.id}) on board ${args.board_id}.`;
       }
     });
 
@@ -2378,12 +2414,12 @@ class ToolRegistry {
         required: ['card_id', 'board_id', 'stack_id']
       },
       handler: async (args) => {
+        const apiPath = `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${args.stack_id}/cards/${args.card_id}`;
+
         // Fetch current card to preserve unchanged fields
-        const current = await nc.request(
-          `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${args.stack_id}/cards/${args.card_id}`,
-          { method: 'GET' }
-        );
-        const cardData = current.body || current;
+        const cardData = deck
+          ? await deck._request('GET', apiPath)
+          : (await nc.request(apiPath, { method: 'GET' })).body || {};
 
         const updates = {
           title: args.title || cardData.title,
@@ -2393,10 +2429,11 @@ class ToolRegistry {
           duedate: args.duedate !== undefined ? args.duedate : (cardData.duedate || null)
         };
 
-        await nc.request(
-          `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${args.stack_id}/cards/${args.card_id}`,
-          { method: 'PUT', body: updates }
-        );
+        if (deck) {
+          await deck._request('PUT', apiPath, updates);
+        } else {
+          await nc.request(apiPath, { method: 'PUT', body: updates });
+        }
 
         const changes = [];
         if (args.title) changes.push(`title: "${args.title}"`);

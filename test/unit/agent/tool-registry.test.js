@@ -1640,6 +1640,76 @@ asyncTest('deck_get_board output includes stack IDs', async () => {
 });
 
 // ============================================================
+// Workflow Deck Tool Tests
+// ============================================================
+
+asyncTest('workflow_deck_create_card with stack name resolves from board', async () => {
+  const registry = new ToolRegistry({
+    deckClient: createMockDeckClient(),
+    ncRequestManager: createMockNCRequestManager(),
+    logger: silentLogger
+  });
+
+  const result = await registry.execute('workflow_deck_create_card', {
+    board_id: 131,
+    stack: 'Inbox',
+    title: 'Test workflow card'
+  });
+  assert.ok(result.success, `Expected success, got: ${result.error || result.result}`);
+  assert.ok(result.result.includes('Test workflow card'), `Expected title in result: ${result.result}`);
+  assert.ok(result.result.includes('Inbox'), `Expected stack name in result: ${result.result}`);
+});
+
+asyncTest('workflow_deck_create_card with invalid stack_id returns available stacks', async () => {
+  const registry = new ToolRegistry({
+    deckClient: createMockDeckClient(),
+    ncRequestManager: createMockNCRequestManager(),
+    logger: silentLogger
+  });
+
+  const result = await registry.execute('workflow_deck_create_card', {
+    board_id: 131,
+    stack_id: 9999,
+    title: 'Should fail'
+  });
+  assert.ok(result.success, 'Handler returns error message, not exception');
+  assert.ok(result.result.includes('not found'), `Expected "not found" in: ${result.result}`);
+  assert.ok(result.result.includes('ID: 301'), `Expected available stack IDs in: ${result.result}`);
+});
+
+asyncTest('workflow_deck_create_card with no stack defaults to first stack', async () => {
+  const registry = new ToolRegistry({
+    deckClient: createMockDeckClient(),
+    ncRequestManager: createMockNCRequestManager(),
+    logger: silentLogger
+  });
+
+  const result = await registry.execute('workflow_deck_create_card', {
+    board_id: 131,
+    title: 'Default stack card'
+  });
+  assert.ok(result.success, `Expected success, got: ${result.error || result.result}`);
+  assert.ok(result.result.includes('Inbox'), `Expected first stack (Inbox) in: ${result.result}`);
+});
+
+asyncTest('workflow_deck_create_card with valid stack_id validated against board', async () => {
+  const registry = new ToolRegistry({
+    deckClient: createMockDeckClient(),
+    ncRequestManager: createMockNCRequestManager(),
+    logger: silentLogger
+  });
+
+  const result = await registry.execute('workflow_deck_create_card', {
+    board_id: 131,
+    stack_id: 301,
+    title: 'Valid ID card'
+  });
+  assert.ok(result.success, `Expected success, got: ${result.error || result.result}`);
+  assert.ok(result.result.includes('Valid ID card'), `Expected title in result: ${result.result}`);
+  assert.ok(result.result.includes('stack 301'), `Expected validated stack ID in: ${result.result}`);
+});
+
+// ============================================================
 // Summary (setTimeout lets async tests finish before reporting)
 // ============================================================
 
