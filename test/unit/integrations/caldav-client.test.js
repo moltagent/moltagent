@@ -1105,10 +1105,10 @@ test('CalDAV constructor defaults to UTC', () => {
   assert.strictEqual(client.timezone, 'UTC');
 });
 
-// --- iTIP Compliance Tests ---
-console.log('\n--- iTIP Compliance Tests ---\n');
+// --- iTIP / Scheduling Compliance Tests ---
+console.log('\n--- iTIP / Scheduling Compliance Tests ---\n');
 
-test('TC-ITIP-001: _buildICS includes METHOD:REQUEST when attendees present', () => {
+test('TC-ITIP-001: _buildICS with attendees includes ORGANIZER and omits METHOD', () => {
   const mockNC = createCalDAVMockNC();
   const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
 
@@ -1122,11 +1122,14 @@ test('TC-ITIP-001: _buildICS includes METHOD:REQUEST when attendees present', ()
     ]
   });
 
-  assert.ok(ics.includes('METHOD:REQUEST'), 'ICS with attendees must include METHOD:REQUEST');
+  // METHOD:REQUEST must NOT be in stored objects — only in iTIP transport (outbox)
+  assert.ok(!ics.includes('METHOD:'), 'Stored ICS must NOT include METHOD (causes 415)');
+  // ORGANIZER is required for NC to auto-send invitations
   assert.ok(ics.includes('ORGANIZER'), 'ICS with attendees must include ORGANIZER');
+  assert.ok(ics.includes('ATTENDEE'), 'ICS must include ATTENDEE lines');
 });
 
-test('TC-ITIP-002: _buildICS does NOT include METHOD:REQUEST when no attendees', () => {
+test('TC-ITIP-002: _buildICS without attendees has no ORGANIZER or METHOD', () => {
   const mockNC = createCalDAVMockNC();
   const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
 
@@ -1137,7 +1140,8 @@ test('TC-ITIP-002: _buildICS does NOT include METHOD:REQUEST when no attendees',
     end: new Date('2025-03-01T15:00:00Z')
   });
 
-  assert.ok(!ics.includes('METHOD:REQUEST'), 'ICS without attendees must NOT include METHOD:REQUEST');
+  assert.ok(!ics.includes('METHOD:'), 'ICS without attendees must NOT include METHOD');
+  assert.ok(!ics.includes('ORGANIZER'), 'ICS without attendees should not have ORGANIZER');
 });
 
 test('TC-ITIP-003: _buildICS preserves explicit ORGANIZER when attendees present', () => {
@@ -1155,7 +1159,6 @@ test('TC-ITIP-003: _buildICS preserves explicit ORGANIZER when attendees present
     ]
   });
 
-  assert.ok(ics.includes('METHOD:REQUEST'), 'Should have METHOD:REQUEST');
   assert.ok(ics.includes('boss@example.com'), 'Should use explicit organizer');
   // Should NOT have a second auto-generated ORGANIZER
   const organizerCount = (ics.match(/ORGANIZER/g) || []).length;

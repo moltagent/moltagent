@@ -389,22 +389,15 @@ class CalDAVClient {
       modified: new Date()
     });
 
-    const createHeaders = {
-      'Content-Type': 'text/calendar; charset=utf-8',
-      'If-None-Match': '*'
-    };
-
-    // iTIP: tell NC to handle scheduling (send invitation emails) when attendees present
-    if (event.attendees && event.attendees.length > 0) {
-      createHeaders['Schedule-Agent'] = 'SERVER';
-    }
-
     const response = await this._request(
       'PUT',
       `/remote.php/dav/calendars/${this.username}/${calendarId}/${uid}.ics`,
       {
         body: ics,
-        headers: createHeaders
+        headers: {
+          'Content-Type': 'text/calendar; charset=utf-8',
+          'If-None-Match': '*'
+        }
       }
     );
 
@@ -453,11 +446,6 @@ class CalDAVClient {
     };
     if (etag) {
       headers['If-Match'] = `"${etag}"`;
-    }
-
-    // iTIP: tell NC to handle scheduling when attendees present
-    if (updated.attendees && updated.attendees.length > 0) {
-      headers['Schedule-Agent'] = 'SERVER';
     }
 
     const response = await this._request(
@@ -886,15 +874,14 @@ class CalDAVClient {
       'BEGIN:VCALENDAR',
       'VERSION:2.0',
       'PRODID:-//MoltAgent//CalDAV Client//EN',
-      'CALSCALE:GREGORIAN'
+      'CALSCALE:GREGORIAN',
+      'BEGIN:VEVENT'
     ];
 
-    // iTIP: METHOD:REQUEST tells NC Calendar this is an invitation, not plain storage
-    if (hasAttendees) {
-      lines.push('METHOD:REQUEST');
-    }
-
-    lines.push('BEGIN:VEVENT');
+    // Note: METHOD:REQUEST is NOT added here — it belongs in iTIP transport
+    // messages (scheduling outbox), not in stored calendar objects. Sabre/dav
+    // rejects PUT with METHOD in the body (415). NC auto-detects scheduling
+    // when ORGANIZER + ATTENDEE properties are present.
 
     // UID
     lines.push(`UID:${event.uid}`);
