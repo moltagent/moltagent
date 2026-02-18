@@ -41,15 +41,67 @@ class RouterChatBridge {
     // Ollama can't handle a tool-heavy AgentLoop prompt.
     // Call resetConversation() at the start of each new user conversation.
     this._conversationFailures = new Set();
+
+    // Smart-mix pre-skip: when MicroPipeline classifies a message as non-local,
+    // skipLocalForConversation() sets this flag and pre-populates _conversationFailures
+    // with local providers. resetConversation() re-applies the skip so AgentLoop's
+    // internal reset doesn't undo it.
+    this._preSkipLocal = false;
   }
 
   /**
    * Reset conversation-level failure tracking.
    * Call at the start of each new user conversation so previously-failed
    * providers get a fresh chance.
+   *
+   * When `_preSkipLocal` is true (set by skipLocalForConversation), the reset
+   * re-applies the local skip so AgentLoop's resetConversation() doesn't undo it.
    */
   resetConversation() {
     this._conversationFailures.clear();
+    if (this._preSkipLocal) {
+      this._applyLocalSkip();
+    }
+  }
+
+  /**
+   * Pre-skip all local providers for this conversation.
+   * Called by MessageProcessor when MicroPipeline classifies a message
+   * as too complex for local handling (question/task/complex).
+   * The skip persists across AgentLoop's resetConversation() calls.
+   */
+  skipLocalForConversation() {
+    this._preSkipLocal = true;
+    this._applyLocalSkip();
+    this.logger.info('[RouterChatBridge] Pre-skipping local providers for conversation');
+  }
+
+  /**
+   * Clear the pre-skip flag and local skip entries.
+   * Called when MicroPipeline will handle the message locally (greeting/chitchat).
+   */
+  clearLocalSkip() {
+    this._preSkipLocal = false;
+    // Remove only local providers from conversation failures (keep real timeouts)
+    for (const id of [...this._conversationFailures]) {
+      const provider = this.router.providers.get(id);
+      if (provider && provider.type === 'local') {
+        this._conversationFailures.delete(id);
+      }
+    }
+  }
+
+  /**
+   * Add all local providers to _conversationFailures.
+   * @private
+   */
+  _applyLocalSkip() {
+    for (const [id] of this.chatProviders) {
+      const provider = this.router.providers.get(id);
+      if (provider && provider.type === 'local') {
+        this._conversationFailures.add(id);
+      }
+    }
   }
 
   /**

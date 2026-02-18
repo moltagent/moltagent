@@ -517,6 +517,148 @@ asyncTest('TC-PROC-005: process() responds to addressed messages in group rooms'
   assert.ok(result.response.includes('Here you go!'));
 });
 
+// --- Smart-Mix Mode Tests ---
+console.log('\n--- Smart-Mix Mode Tests ---\n');
+
+test('TC-SMIX-001: _isSmartMixMode() false when no microPipeline', () => {
+  // _isSmartMixMode() checks agentLoop.llmProvider — when there is no agentLoop
+  // the smart-mix path cannot activate. A processor with no agentLoop (and no
+  // microPipeline) must return false.
+  const processor = createProcessor();
+  // No agentLoop, no microPipeline — _isSmartMixMode must return false
+  assert.strictEqual(processor._isSmartMixMode(), false);
+});
+
+test('TC-SMIX-002: _isSmartMixMode() false when ProviderChain (no resetConversation)', () => {
+  const processor = createProcessor({
+    microPipeline: {
+      process: async () => 'local response'
+    },
+    agentLoop: {
+      llmProvider: {
+        primaryIsLocal: true
+        // No resetConversation — simulates ProviderChain, not RouterChatBridge
+      },
+      process: async () => 'agent response'
+    }
+  });
+  assert.strictEqual(processor._isSmartMixMode(), false);
+});
+
+test('TC-SMIX-003: _isSmartMixMode() true when RouterChatBridge with >1 providers', () => {
+  const processor = createProcessor({
+    microPipeline: {
+      process: async () => 'local response'
+    },
+    agentLoop: {
+      llmProvider: {
+        resetConversation: function () {},
+        chatProviders: new Map([['local', {}], ['cloud', {}]])
+      },
+      process: async () => 'agent response'
+    }
+  });
+  assert.strictEqual(processor._isSmartMixMode(), true);
+});
+
+asyncTest('TC-SMIX-004: Greeting routed to MicroPipeline, AgentLoop not called', async () => {
+  let agentLoopCalled = false;
+
+  const processor = createProcessor({
+    microPipeline: {
+      _classify: async () => ({ intent: 'greeting' }),
+      process: async () => 'Hello!'
+    },
+    agentLoop: {
+      llmProvider: {
+        resetConversation: function () {},
+        clearLocalSkip: function () {},
+        chatProviders: new Map([['local', {}], ['cloud', {}]])
+      },
+      process: async () => {
+        agentLoopCalled = true;
+        throw new Error('AgentLoop should not be called for greeting');
+      }
+    }
+  });
+
+  const data = createActivityStreamsData('Hi there');
+  const result = await processor.process(data);
+
+  assert.ok(result.response.includes('Hello!'), 'Response should contain MicroPipeline output');
+  assert.strictEqual(agentLoopCalled, false, 'AgentLoop.process should NOT be called');
+});
+
+asyncTest('TC-SMIX-005: Task routed to AgentLoop with skipLocal', async () => {
+  let skipLocalCalled = false;
+
+  const processor = createProcessor({
+    microPipeline: {
+      _classify: async () => ({ intent: 'task' }),
+      process: async () => { throw new Error('MicroPipeline.process should not be called for task'); }
+    },
+    agentLoop: {
+      llmProvider: {
+        resetConversation: function () {},
+        skipLocalForConversation: function () { skipLocalCalled = true; },
+        chatProviders: new Map([['local', {}], ['cloud', {}]])
+      },
+      process: async () => 'Task done'
+    }
+  });
+
+  const data = createActivityStreamsData('Create a new board');
+  const result = await processor.process(data);
+
+  assert.ok(result.response.includes('Task done'), 'Response should contain AgentLoop output');
+  assert.strictEqual(skipLocalCalled, true, 'skipLocalForConversation should be called');
+});
+
+asyncTest('TC-SMIX-006: Classification error falls through to AgentLoop without skip', async () => {
+  let skipLocalCalled = false;
+
+  const processor = createProcessor({
+    microPipeline: {
+      _classify: async () => { throw new Error('classify failed'); },
+      process: async () => { throw new Error('MicroPipeline.process should not be called on classify error'); }
+    },
+    agentLoop: {
+      llmProvider: {
+        resetConversation: function () {},
+        skipLocalForConversation: function () { skipLocalCalled = true; },
+        chatProviders: new Map([['local', {}], ['cloud', {}]])
+      },
+      process: async () => 'Fallback response'
+    }
+  });
+
+  const data = createActivityStreamsData('Something complex');
+  const result = await processor.process(data);
+
+  assert.ok(result.response.includes('Fallback response'), 'Response should contain AgentLoop fallback output');
+  assert.strictEqual(skipLocalCalled, true, 'skipLocalForConversation should be called on classification error');
+});
+
+asyncTest('TC-SMIX-007: All-local mode still uses existing MicroPipeline path (regression)', async () => {
+  const processor = createProcessor({
+    microPipeline: {
+      process: async () => 'Local pipeline response'
+    },
+    agentLoop: {
+      llmProvider: {
+        primaryIsLocal: true
+        // No resetConversation — this is ProviderChain, not RouterChatBridge
+      },
+      process: async () => { throw new Error('AgentLoop should not be called in all-local mode'); }
+    }
+  });
+
+  const data = createActivityStreamsData('Hello');
+  const result = await processor.process(data);
+
+  assert.ok(result.response.includes('Local pipeline response'), 'Response should come from MicroPipeline in all-local mode');
+});
+
 // --- Existing Behavior Tests ---
 console.log('\n--- Existing Behavior Tests ---\n');
 

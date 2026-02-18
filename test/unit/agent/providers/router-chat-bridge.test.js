@@ -522,6 +522,178 @@ const silentLogger = { info: () => {}, warn: () => {} };
     }
   });
 
+  // --- Smart-Mix Local Skip ---
+  console.log('\n--- Smart-Mix Local Skip ---\n');
+
+  test('TC-BRIDGE-SKIP-001: skipLocalForConversation adds local providers to failures', () => {
+    const router = createMockRouter();
+    router.providers = new Map([
+      ['ollama-local', { type: 'local' }],
+      ['anthropic-claude', { type: 'remote' }]
+    ]);
+
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['ollama-local', createMockChatProvider()],
+        ['anthropic-claude', createMockChatProvider()]
+      ]),
+      logger: silentLogger
+    });
+
+    bridge.skipLocalForConversation();
+
+    assert.ok(bridge._conversationFailures.has('ollama-local'),
+      'ollama-local (local) should be in _conversationFailures');
+    assert.ok(!bridge._conversationFailures.has('anthropic-claude'),
+      'anthropic-claude (remote) should NOT be in _conversationFailures');
+  });
+
+  test('TC-BRIDGE-SKIP-002: skipLocalForConversation does NOT add cloud providers', () => {
+    const router = createMockRouter();
+    router.providers = new Map([
+      ['ollama-local', { type: 'local' }],
+      ['anthropic-claude', { type: 'remote' }]
+    ]);
+
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['ollama-local', createMockChatProvider()],
+        ['anthropic-claude', createMockChatProvider()]
+      ]),
+      logger: silentLogger
+    });
+
+    bridge.skipLocalForConversation();
+
+    assert.ok(!bridge._conversationFailures.has('anthropic-claude'),
+      'anthropic-claude (remote) should NOT be in _conversationFailures after skipLocalForConversation');
+  });
+
+  test('TC-BRIDGE-SKIP-003: resetConversation re-applies skip when _preSkipLocal is true', () => {
+    const router = createMockRouter();
+    router.providers = new Map([
+      ['ollama-local', { type: 'local' }],
+      ['anthropic-claude', { type: 'remote' }]
+    ]);
+
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['ollama-local', createMockChatProvider()],
+        ['anthropic-claude', createMockChatProvider()]
+      ]),
+      logger: silentLogger
+    });
+
+    // skipLocalForConversation sets _preSkipLocal = true
+    bridge.skipLocalForConversation();
+    assert.ok(bridge._preSkipLocal, '_preSkipLocal should be true');
+
+    // resetConversation should re-apply the local skip
+    bridge.resetConversation();
+
+    assert.ok(bridge._conversationFailures.has('ollama-local'),
+      'ollama-local should remain in _conversationFailures after resetConversation when _preSkipLocal is true');
+  });
+
+  test('TC-BRIDGE-SKIP-004: resetConversation fully clears when _preSkipLocal is false', () => {
+    const router = createMockRouter();
+    router.providers = new Map([
+      ['ollama-local', { type: 'local' }],
+      ['anthropic-claude', { type: 'remote' }]
+    ]);
+
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['ollama-local', createMockChatProvider()],
+        ['anthropic-claude', createMockChatProvider()]
+      ]),
+      logger: silentLogger
+    });
+
+    // Manually add ollama to failures without setting _preSkipLocal
+    bridge._conversationFailures.add('ollama-local');
+    assert.ok(!bridge._preSkipLocal, '_preSkipLocal should be false');
+
+    bridge.resetConversation();
+
+    assert.strictEqual(bridge._conversationFailures.size, 0,
+      '_conversationFailures should be empty after resetConversation when _preSkipLocal is false');
+  });
+
+  test('TC-BRIDGE-SKIP-005: clearLocalSkip resets the flag and removes local from failures', () => {
+    const router = createMockRouter();
+    router.providers = new Map([
+      ['ollama-local', { type: 'local' }],
+      ['anthropic-claude', { type: 'remote' }]
+    ]);
+
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['ollama-local', createMockChatProvider()],
+        ['anthropic-claude', createMockChatProvider()]
+      ]),
+      logger: silentLogger
+    });
+
+    bridge.skipLocalForConversation();
+    assert.ok(bridge._preSkipLocal, '_preSkipLocal should be true after skip');
+    assert.ok(bridge._conversationFailures.has('ollama-local'), 'ollama-local should be in failures after skip');
+
+    bridge.clearLocalSkip();
+
+    assert.strictEqual(bridge._preSkipLocal, false,
+      '_preSkipLocal should be false after clearLocalSkip');
+    assert.ok(!bridge._conversationFailures.has('ollama-local'),
+      'ollama-local should NOT be in _conversationFailures after clearLocalSkip');
+  });
+
+  await asyncTest('TC-BRIDGE-SKIP-006: chat() skips pre-skipped local providers', async () => {
+    let ollamaCallCount = 0;
+    const router = createMockRouter({
+      buildProviderChain: () => ({
+        chain: [
+          { id: 'ollama-local', provider: { type: 'local' } },
+          { id: 'anthropic-claude', provider: { type: 'remote' } }
+        ],
+        skipped: []
+      })
+    });
+    router.providers = new Map([
+      ['ollama-local', { type: 'local' }],
+      ['anthropic-claude', { type: 'remote' }]
+    ]);
+
+    const ollamaProvider = createMockChatProvider({
+      chat: async () => {
+        ollamaCallCount++;
+        return { content: 'Ollama response', toolCalls: null };
+      }
+    });
+
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['ollama-local', ollamaProvider],
+        ['anthropic-claude', createMockChatProvider({ content: 'Claude response' })]
+      ]),
+      logger: silentLogger
+    });
+
+    // Pre-skip local providers (e.g. MicroPipeline classified as non-local)
+    bridge.skipLocalForConversation();
+
+    const result = await bridge.chat({ system: 'test', messages: [], tools: [] });
+
+    assert.strictEqual(ollamaCallCount, 0, 'ollama should never be called when pre-skipped');
+    assert.strictEqual(result.content, 'Claude response', 'result should come from Claude');
+    assert.strictEqual(result._routing.provider, 'anthropic-claude');
+  });
+
   // --- _routing Shape ---
   console.log('\n--- _routing Shape ---\n');
 

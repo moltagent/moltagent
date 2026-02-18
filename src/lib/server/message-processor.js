@@ -285,6 +285,46 @@ class MessageProcessor {
           warmMemory: ''
         });
         result = { intent: 'micro_pipeline', provider: 'local' };
+      } else if (this.microPipeline && this.agentLoop && this._isSmartMixMode()) {
+        // Smart-mix: classify with MicroPipeline, route greeting/chitchat locally, rest to cloud
+        const { useLocal, intent } = await this._smartMixClassify(extracted.content);
+        console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? 'local' : 'cloud'}`);
+
+        if (useLocal) {
+          // Greeting/chitchat — MicroPipeline handles locally (fast, no cloud)
+          if (this.agentLoop.llmProvider?.clearLocalSkip) {
+            this.agentLoop.llmProvider.clearLocalSkip();
+          }
+          response = await this.microPipeline.process(extracted.content, {
+            userName: extracted.user,
+            roomToken: extracted.token,
+            warmMemory: ''
+          });
+          result = { intent: `smart_mix_local:${intent}`, provider: 'local' };
+        } else {
+          // Question/task/complex — skip local, go straight to cloud via AgentLoop
+          if (this.agentLoop.llmProvider?.skipLocalForConversation) {
+            this.agentLoop.llmProvider.skipLocalForConversation();
+          }
+
+          const voiceReplyEnabled = extracted._isVoice && this.voiceManager && this.voiceManager.mode === 'full';
+          const agentOpts = {
+            messageId: extracted.messageId,
+            inputType: extracted._isVoice ? 'voice' : 'text',
+            voiceReplyEnabled,
+            user: extracted.user
+          };
+
+          // Bug 3 fix: Short confirmations shouldn't loop to max iterations
+          const trimmed = extracted.content.trim().toLowerCase();
+          if (trimmed.length <= 10 && /^(yes|no|ok|sure|yeah|nah|do it|go ahead|cancel|stop|yep|nope|y|n)$/.test(trimmed)) {
+            agentOpts.maxIterations = 2;
+          }
+
+          response = await this.agentLoop.process(extracted.content, extracted.token, agentOpts);
+          result = { intent: `smart_mix_cloud:${intent}`, provider: 'agent' };
+          response = response || 'Sorry, I encountered an error processing your message.';
+        }
       } else if (this.agentLoop) {
         // Session 14: AgentLoop handles all natural language via tool-calling LLM
         const voiceReplyEnabled = extracted._isVoice && this.voiceManager && this.voiceManager.mode === 'full';
@@ -636,6 +676,43 @@ class MessageProcessor {
     // Check if the AgentLoop's ProviderChain has a local primary
     if (this.agentLoop?.llmProvider?.primaryIsLocal) return true;
     return false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Smart-Mix Mode Detection + Classification
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Detect smart-mix mode: RouterChatBridge with both local and cloud providers.
+   * @returns {boolean}
+   * @private
+   */
+  _isSmartMixMode() {
+    const provider = this.agentLoop?.llmProvider;
+    if (!provider) return false;
+    // Must be RouterChatBridge (has resetConversation) with >1 provider
+    if (typeof provider.resetConversation !== 'function') return false;
+    if (!provider.chatProviders || provider.chatProviders.size <= 1) return false;
+    return true;
+  }
+
+  /**
+   * Classify message intent via MicroPipeline for smart-mix routing.
+   * Only greeting/chitchat are handled locally; everything else goes to cloud.
+   * @param {string} message
+   * @returns {Promise<{useLocal: boolean, intent: string}>}
+   * @private
+   */
+  async _smartMixClassify(message) {
+    try {
+      const classification = await this.microPipeline._classify(message);
+      const intent = classification.intent || 'unknown';
+      const useLocal = (intent === 'greeting' || intent === 'chitchat');
+      return { useLocal, intent };
+    } catch (err) {
+      console.warn(`[Message] Smart-mix classification failed: ${err.message}`);
+      return { useLocal: false, intent: 'error' };
+    }
   }
 
   // ---------------------------------------------------------------------------

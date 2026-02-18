@@ -157,6 +157,8 @@ class HeartbeatManager {
     this.collectivesClient = config.collectivesClient || null;
     this.ncFilesClient = config.ncFilesClient || null;
     this._lastLearningLogHash = null;
+    this._lastStatsHash = null;
+    this._lastFreshnessResult = null;
 
     // DailyBriefing (optional, for daily digest poster)
     this.dailyBriefing = config.dailyBriefing || null;
@@ -582,6 +584,9 @@ class HeartbeatManager {
       if (level >= 2 && this.hbFreshnessChecker) {
         try {
           results.freshness = await this.hbFreshnessChecker.maybeCheck();
+          if (results.freshness) {
+            this._lastFreshnessResult = results.freshness;
+          }
         } catch (err) {
           console.error('[Heartbeat] Freshness check error:', err.message);
           results.errors.push({ component: 'freshness', error: err.message });
@@ -604,6 +609,17 @@ class HeartbeatManager {
           // Silent on 404 (file doesn't exist yet) — warn on anything else
           if (!err.message?.includes('404')) {
             console.warn(`[Heartbeat] LearningLog sync failed: ${err.message}`);
+          }
+        }
+      }
+
+      // Knowledge Stats: auto-update Meta/Knowledge Stats wiki page (hash-gated)
+      if (this.collectivesClient) {
+        try {
+          await this._updateKnowledgeStats();
+        } catch (err) {
+          if (!err.message?.includes('404')) {
+            console.warn(`[Heartbeat] Knowledge stats update failed: ${err.message}`);
           }
         }
       }
@@ -1251,6 +1267,89 @@ class HeartbeatManager {
     }
 
     return context;
+  }
+
+  /**
+   * Update the "Meta/Knowledge Stats" wiki page with page counts by section.
+   * Only writes when stats have changed (hash-gated, excludes timestamp).
+   * @private
+   */
+  async _updateKnowledgeStats() {
+    const collectiveId = await this.collectivesClient.resolveCollective();
+    const pages = await this.collectivesClient.listPages(collectiveId);
+    if (!Array.isArray(pages)) return;
+
+    // Count pages by section from filePath
+    const META_OR_ROOT = new Set(['Meta', '']);
+    const sectionCounts = {};
+    let contentPages = 0;
+    let totalPages = 0;
+
+    for (const page of pages) {
+      totalPages++;
+      // filePath is like "People" or "Projects" or "Meta" or "" (root)
+      const section = (page.filePath || '').split('/')[0] || '(root)';
+      sectionCounts[section] = (sectionCounts[section] || 0) + 1;
+      if (!META_OR_ROOT.has(section) && section !== '(root)') {
+        contentPages++;
+      }
+    }
+
+    const stats = { totalPages, contentPages, sectionCounts };
+
+    // Hash comparison excluding timestamp
+    const statsHash = this._simpleHash(JSON.stringify(stats));
+    if (statsHash === this._lastStatsHash) return;
+
+    // Format and write
+    const markdown = this._formatKnowledgeStats(stats);
+    await this.collectivesClient.writePageContent('Meta/Knowledge Stats/Readme.md', markdown);
+    this._lastStatsHash = statsHash;
+    console.log('[Heartbeat] Updated Knowledge Stats wiki page');
+  }
+
+  /**
+   * Format knowledge stats into a markdown page.
+   * @private
+   * @param {Object} stats - { totalPages, contentPages, sectionCounts }
+   * @returns {string} Markdown content
+   */
+  _formatKnowledgeStats(stats) {
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    let md = `# Knowledge Stats\n\n`;
+    md += `*Auto-updated by Heartbeat — ${now} UTC*\n\n`;
+
+    // Overview
+    md += `## Overview\n\n`;
+    md += `| Metric | Count |\n`;
+    md += `|--------|-------|\n`;
+    md += `| Total pages | ${stats.totalPages} |\n`;
+    md += `| Content pages | ${stats.contentPages} |\n`;
+    md += `| Sections | ${Object.keys(stats.sectionCounts).length} |\n\n`;
+
+    // Pages by section
+    md += `## Pages by Section\n\n`;
+    md += `| Section | Pages |\n`;
+    md += `|---------|-------|\n`;
+    const sorted = Object.entries(stats.sectionCounts)
+      .sort((a, b) => b[1] - a[1]);
+    for (const [section, count] of sorted) {
+      md += `| ${section} | ${count} |\n`;
+    }
+
+    // Freshness health (if available)
+    if (this._lastFreshnessResult && this._lastFreshnessResult.checked !== false) {
+      md += `\n## Freshness Health\n\n`;
+      md += `| Metric | Value |\n`;
+      md += `|--------|-------|\n`;
+      md += `| Pages checked | ${this._lastFreshnessResult.checked || 0} |\n`;
+      md += `| Flagged stale | ${this._lastFreshnessResult.flagged || 0} |\n`;
+      if (this._lastFreshnessResult.updated) {
+        md += `| Updated | ${this._lastFreshnessResult.updated} |\n`;
+      }
+    }
+
+    return md;
   }
 
   /**
