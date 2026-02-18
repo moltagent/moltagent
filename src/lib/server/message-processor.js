@@ -291,7 +291,8 @@ class MessageProcessor {
         const agentOpts = {
           messageId: extracted.messageId,
           inputType: extracted._isVoice ? 'voice' : 'text',
-          voiceReplyEnabled
+          voiceReplyEnabled,
+          user: extracted.user
         };
 
         // Bug 3 fix: Short confirmations shouldn't loop to max iterations

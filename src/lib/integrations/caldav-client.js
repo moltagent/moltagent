@@ -389,15 +389,22 @@ class CalDAVClient {
       modified: new Date()
     });
 
+    const createHeaders = {
+      'Content-Type': 'text/calendar; charset=utf-8',
+      'If-None-Match': '*'
+    };
+
+    // iTIP: tell NC to handle scheduling (send invitation emails) when attendees present
+    if (event.attendees && event.attendees.length > 0) {
+      createHeaders['Schedule-Agent'] = 'SERVER';
+    }
+
     const response = await this._request(
       'PUT',
       `/remote.php/dav/calendars/${this.username}/${calendarId}/${uid}.ics`,
       {
         body: ics,
-        headers: {
-          'Content-Type': 'text/calendar; charset=utf-8',
-          'If-None-Match': '*'
-        }
+        headers: createHeaders
       }
     );
 
@@ -446,6 +453,11 @@ class CalDAVClient {
     };
     if (etag) {
       headers['If-Match'] = `"${etag}"`;
+    }
+
+    // iTIP: tell NC to handle scheduling when attendees present
+    if (updated.attendees && updated.attendees.length > 0) {
+      headers['Schedule-Agent'] = 'SERVER';
     }
 
     const response = await this._request(
@@ -868,13 +880,21 @@ class CalDAVClient {
    * Build ICS data from an event object
    */
   _buildICS(event) {
+    const hasAttendees = event.attendees && event.attendees.length > 0;
+
     const lines = [
       'BEGIN:VCALENDAR',
       'VERSION:2.0',
       'PRODID:-//MoltAgent//CalDAV Client//EN',
-      'CALSCALE:GREGORIAN',
-      'BEGIN:VEVENT'
+      'CALSCALE:GREGORIAN'
     ];
+
+    // iTIP: METHOD:REQUEST tells NC Calendar this is an invitation, not plain storage
+    if (hasAttendees) {
+      lines.push('METHOD:REQUEST');
+    }
+
+    lines.push('BEGIN:VEVENT');
 
     // UID
     lines.push(`UID:${event.uid}`);
@@ -921,24 +941,29 @@ class CalDAVClient {
     // Sequence
     lines.push(`SEQUENCE:${event.sequence || 0}`);
 
-    // Organizer
+    // Organizer — auto-set when attendees present (required for iTIP)
     if (event.organizer) {
-      const cn = event.organizer.name ? `;CN=${event.organizer.name}` : '';
-      lines.push(`ORGANIZER${cn}:mailto:${event.organizer.email}`);
+      const cn = event.organizer.name ? `;CN=${this._sanitizeICSParam(event.organizer.name)}` : '';
+      lines.push(`ORGANIZER${cn}:mailto:${this._sanitizeICSEmail(event.organizer.email)}`);
+    } else if (hasAttendees) {
+      // Auto-set organizer to Moltagent's identity so NC can send invitations
+      const orgEmail = this._organizerEmail || `${this.username}@moltagent`;
+      const orgName = this._organizerName || this.username;
+      lines.push(`ORGANIZER;CN=${this._sanitizeICSParam(orgName)}:mailto:${this._sanitizeICSEmail(orgEmail)}`);
     }
 
     // Attendees
     if (event.attendees && event.attendees.length > 0) {
       for (const attendee of event.attendees) {
-        const email = typeof attendee === 'string' ? attendee : attendee.email;
+        const email = this._sanitizeICSEmail(typeof attendee === 'string' ? attendee : attendee.email);
         const name = typeof attendee === 'object' ? attendee.name : null;
         const status = (typeof attendee === 'object' ? attendee.status : null) || 'NEEDS-ACTION';
 
         let line = 'ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT';
-        line += `;PARTSTAT=${status}`;
+        line += `;PARTSTAT=${this._sanitizeICSParam(status)}`;
         line += ';RSVP=TRUE';
         if (name) {
-          line += `;CN=${name}`;
+          line += `;CN=${this._sanitizeICSParam(name)}`;
         }
         line += `:mailto:${email}`;
         lines.push(line);
@@ -1022,6 +1047,24 @@ class CalDAVClient {
       .replace(/;/g, '\\;')
       .replace(/,/g, '\\,')
       .replace(/\n/g, '\\n');
+  }
+
+  /**
+   * Sanitize a value for use in ICS parameter positions (CN, PARTSTAT, etc.).
+   * Strips characters that could inject new properties or lines.
+   */
+  _sanitizeICSParam(str) {
+    if (!str) return '';
+    return str.replace(/[\r\n;:]/g, '');
+  }
+
+  /**
+   * Sanitize an email address for ICS mailto: fields.
+   * Strips characters that could inject new lines or properties.
+   */
+  _sanitizeICSEmail(str) {
+    if (!str) return '';
+    return str.replace(/[\r\n\s;]/g, '');
   }
 
   /**

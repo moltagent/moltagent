@@ -729,6 +729,41 @@ class NCRequestManager {
   }
 
   /**
+   * Get a Nextcloud user's email address via OCS API.
+   * Results are cached with a 10-minute TTL.
+   *
+   * @param {string} userId - Nextcloud user ID
+   * @returns {Promise<string|null>} The user's email address, or null if not found
+   */
+  async getUserEmail(userId) {
+    if (!userId) return null;
+
+    // Check cache
+    if (!this._userEmailCache) this._userEmailCache = new Map();
+    const cached = this._userEmailCache.get(userId);
+    if (cached && Date.now() < cached.expiry) {
+      return cached.email;
+    }
+
+    try {
+      const response = await this.request(`/ocs/v2.php/cloud/users/${encodeURIComponent(userId)}`, {
+        method: 'GET',
+        headers: { 'OCS-APIRequest': 'true', 'Accept': 'application/json' }
+      });
+
+      const email = response.body?.ocs?.data?.email || null;
+
+      // Cache for 10 minutes
+      this._userEmailCache.set(userId, { email, expiry: Date.now() + 600000 });
+
+      return email;
+    } catch (err) {
+      console.warn(`[NCRequestManager] getUserEmail(${userId}) failed: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Invalidate cache for a specific URL or pattern
    * @param {string} pattern - URL or pattern to match
    */

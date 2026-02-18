@@ -36,7 +36,28 @@ class ToolRegistry {
     /** @type {Map<string, {name: string, description: string, parameters: Object, handler: Function}>} */
     this.tools = new Map();
 
+    /** Per-request context (user identity, etc.) — set by AgentLoop at start of each request */
+    this._requestContext = {};
+
     this._registerDefaultTools();
+  }
+
+  /**
+   * Set per-request context (e.g. requesting user identity).
+   * Called by AgentLoop at the start of each process() call.
+   * @param {Object} ctx
+   * @param {string} [ctx.user] - Nextcloud username of the requesting user
+   */
+  setRequestContext(ctx) {
+    this._requestContext = ctx || {};
+  }
+
+  /**
+   * Get per-request context.
+   * @returns {Object} Current request context
+   */
+  getRequestContext() {
+    return this._requestContext;
   }
 
   /**
@@ -966,6 +987,7 @@ class ToolRegistry {
   _registerCalendarTools() {
     const cal = this.clients.calDAVClient;
     if (!cal) return;
+    const ncMgr = this.clients.ncRequestManager;
 
     this.register({
       name: 'calendar_list_events',
@@ -1039,7 +1061,37 @@ class ToolRegistry {
         };
 
         if (args.attendees && args.attendees.length > 0) {
-          eventData.attendees = args.attendees;
+          eventData.attendees = [...args.attendees];
+
+          // Auto-add requesting user as ATTENDEE so the event appears in their calendar
+          const reqUser = this.getRequestContext().user;
+          if (reqUser && ncMgr) {
+            try {
+              const userEmail = await ncMgr.getUserEmail(reqUser);
+              if (userEmail) {
+                const alreadyAdded = eventData.attendees.some(
+                  a => (typeof a === 'string' ? a : a.email).toLowerCase() === userEmail.toLowerCase()
+                );
+                if (!alreadyAdded) {
+                  eventData.attendees.push({ email: userEmail, name: reqUser, status: 'ACCEPTED' });
+                }
+              }
+            } catch (err) {
+              this.logger.warn(`[ToolRegistry] Could not resolve email for ${reqUser}: ${err.message}`);
+            }
+          }
+
+          // Set organizer to Moltagent's NC identity so NC can send invitations
+          if (ncMgr) {
+            try {
+              const orgEmail = await ncMgr.getUserEmail(ncMgr.ncUser);
+              if (orgEmail) {
+                eventData.organizer = { email: orgEmail, name: ncMgr.ncUser };
+              }
+            } catch (err) {
+              this.logger.warn(`[ToolRegistry] Could not resolve organizer email: ${err.message}`);
+            }
+          }
         }
 
         const event = await cal.createEvent(eventData);
@@ -1130,7 +1182,39 @@ class ToolRegistry {
             updates.end = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
           }
         }
-        if (args.attendees !== undefined) updates.attendees = args.attendees;
+        if (args.attendees !== undefined) {
+          updates.attendees = [...args.attendees];
+
+          // Auto-add requesting user as ATTENDEE when attendees are being set
+          const reqUser = this.getRequestContext().user;
+          if (reqUser && ncMgr) {
+            try {
+              const userEmail = await ncMgr.getUserEmail(reqUser);
+              if (userEmail) {
+                const alreadyAdded = updates.attendees.some(
+                  a => (typeof a === 'string' ? a : a.email).toLowerCase() === userEmail.toLowerCase()
+                );
+                if (!alreadyAdded) {
+                  updates.attendees.push({ email: userEmail, name: reqUser, status: 'ACCEPTED' });
+                }
+              }
+            } catch (err) {
+              this.logger.warn(`[ToolRegistry] Could not resolve email for ${reqUser}: ${err.message}`);
+            }
+          }
+
+          // Set organizer to Moltagent's NC identity
+          if (ncMgr && !foundEvent.organizer) {
+            try {
+              const orgEmail = await ncMgr.getUserEmail(ncMgr.ncUser);
+              if (orgEmail) {
+                updates.organizer = { email: orgEmail, name: ncMgr.ncUser };
+              }
+            } catch (err) {
+              this.logger.warn(`[ToolRegistry] Could not resolve organizer email: ${err.message}`);
+            }
+          }
+        }
 
         await cal.updateEvent(foundCalendar, foundEvent.uid, updates, foundEvent.etag);
 

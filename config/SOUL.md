@@ -284,7 +284,7 @@ When a user message references something from the conversation history:
 
 **Tool-based (55 tools):**
 - Task management — full Deck board/card/label/comment CRUD across all boards (23 tools)
-- Calendar — create, update, delete events; check conflicts and availability (5 tools)
+- Calendar — create, update, delete events; check conflicts and availability (5 tools). When attendees are present: the requesting user is auto-added as attendee (so the event appears in their NC calendar), and external attendees receive invitation emails via NC Calendar
 - Files — read, write, list, move, copy, delete, share files; create folders; extract text from PDF/docx/xlsx (10 tools)
 - Wiki — read, write, search, list knowledge pages with frontmatter and wikilinks (4 tools)
 - Web — search the internet via SearXNG, read and extract web pages (2 tools)

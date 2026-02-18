@@ -54,6 +54,12 @@ function createMockNCRequestManager(responses = {}) {
       }
       return { status: 200, body: {}, headers: {} };
     },
+    getUserEmail: async (userId) => {
+      if (responses.userEmails && responses.userEmails[userId]) {
+        return responses.userEmails[userId];
+      }
+      return `${userId}@example.com`;
+    },
     getMetrics: () => ({ totalRequests: 0, cacheHits: 0 }),
     invalidateCache: () => {},
     shutdown: async () => {}

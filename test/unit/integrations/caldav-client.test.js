@@ -1105,6 +1105,81 @@ test('CalDAV constructor defaults to UTC', () => {
   assert.strictEqual(client.timezone, 'UTC');
 });
 
+// --- iTIP Compliance Tests ---
+console.log('\n--- iTIP Compliance Tests ---\n');
+
+test('TC-ITIP-001: _buildICS includes METHOD:REQUEST when attendees present', () => {
+  const mockNC = createCalDAVMockNC();
+  const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
+
+  const ics = client._buildICS({
+    uid: 'itip-test-001',
+    summary: 'Team Sync',
+    start: new Date('2025-03-01T10:00:00Z'),
+    end: new Date('2025-03-01T11:00:00Z'),
+    attendees: [
+      { email: 'alice@example.com', name: 'Alice' }
+    ]
+  });
+
+  assert.ok(ics.includes('METHOD:REQUEST'), 'ICS with attendees must include METHOD:REQUEST');
+  assert.ok(ics.includes('ORGANIZER'), 'ICS with attendees must include ORGANIZER');
+});
+
+test('TC-ITIP-002: _buildICS does NOT include METHOD:REQUEST when no attendees', () => {
+  const mockNC = createCalDAVMockNC();
+  const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
+
+  const ics = client._buildICS({
+    uid: 'itip-test-002',
+    summary: 'Solo Focus Time',
+    start: new Date('2025-03-01T14:00:00Z'),
+    end: new Date('2025-03-01T15:00:00Z')
+  });
+
+  assert.ok(!ics.includes('METHOD:REQUEST'), 'ICS without attendees must NOT include METHOD:REQUEST');
+});
+
+test('TC-ITIP-003: _buildICS preserves explicit ORGANIZER when attendees present', () => {
+  const mockNC = createCalDAVMockNC();
+  const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
+
+  const ics = client._buildICS({
+    uid: 'itip-test-003',
+    summary: 'Organized Meeting',
+    start: new Date('2025-03-01T10:00:00Z'),
+    end: new Date('2025-03-01T11:00:00Z'),
+    organizer: { email: 'boss@example.com', name: 'Boss' },
+    attendees: [
+      { email: 'alice@example.com', name: 'Alice' }
+    ]
+  });
+
+  assert.ok(ics.includes('METHOD:REQUEST'), 'Should have METHOD:REQUEST');
+  assert.ok(ics.includes('boss@example.com'), 'Should use explicit organizer');
+  // Should NOT have a second auto-generated ORGANIZER
+  const organizerCount = (ics.match(/ORGANIZER/g) || []).length;
+  assert.strictEqual(organizerCount, 1, 'Should have exactly one ORGANIZER line');
+});
+
+test('TC-ITIP-004: _buildICS auto-sets ORGANIZER when attendees present but no organizer given', () => {
+  const mockNC = createCalDAVMockNC();
+  const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
+
+  const ics = client._buildICS({
+    uid: 'itip-test-004',
+    summary: 'Auto-Org Meeting',
+    start: new Date('2025-03-01T10:00:00Z'),
+    end: new Date('2025-03-01T11:00:00Z'),
+    attendees: [
+      { email: 'bob@example.com', name: 'Bob' }
+    ]
+  });
+
+  assert.ok(ics.includes('ORGANIZER'), 'Should auto-set ORGANIZER when attendees present');
+  assert.ok(ics.includes('CN=testuser'), 'Auto-ORGANIZER should use username as CN');
+});
+
 // --- Summary ---
 setTimeout(() => {
   summary();

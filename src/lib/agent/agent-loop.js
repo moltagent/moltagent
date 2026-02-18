@@ -66,6 +66,11 @@ class AgentLoop {
   async process(message, roomToken, options = {}) {
     const startTime = Date.now();
 
+    // Propagate requesting user identity to tool handlers
+    if (options.user && this.toolRegistry.setRequestContext) {
+      this.toolRegistry.setRequestContext({ user: options.user });
+    }
+
     // 1. Load context
     let history = [];
     if (this.conversationContext) {
