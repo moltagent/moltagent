@@ -235,6 +235,15 @@ try {
   InfraMonitor = null;
 }
 
+// Self-Heal Daemon Client
+let SelfHealClient;
+try {
+  SelfHealClient = require('./src/lib/clients/self-heal-client');
+} catch {
+  console.warn('[WARN] SelfHealClient not available');
+  SelfHealClient = null;
+}
+
 // Session 37: Voice Pipeline
 let WhisperClient, AudioConverter;
 try {
@@ -431,6 +440,7 @@ let whisperClient = null; // Session 37: WhisperClient for STT transcription
 let audioConverter = null; // Session 37: AudioConverter for audio format conversion
 let voiceManager = null; // Session V2: VoiceManager for mode-aware voice orchestration
 let infraMonitor = null; // Session 38: InfraMonitor for service health probing
+let selfHealClient = null; // Self-heal daemon client for remote service restarts
 let microPipeline = null; // Local Intelligence: MicroPipeline for local-only mode
 let deferralQueue = null; // Local Intelligence: DeferralQueue for deferred complex tasks
 let intentRouter = null; // IntentRouter: LLM-powered intent classification
@@ -1397,6 +1407,17 @@ async function initialize() {
     botNames = ['Molti', 'moltagent', 'molti'];
   }
 
+  // Create SelfHealClient (heald daemon on Ollama VM)
+  if (SelfHealClient && appConfig.infra?.heald?.url && credentialBroker) {
+    selfHealClient = new SelfHealClient({
+      url: appConfig.infra.heald.url,
+      tokenCredential: appConfig.infra.heald.tokenCredential,
+      timeoutMs: appConfig.infra.heald.timeoutMs,
+      credentialBroker
+    });
+    console.log(`[INIT] SelfHealClient ready → ${appConfig.infra.heald.url}`);
+  }
+
   serverComponents = createServerComponents({
     signatureVerifier: signatureVerifier,
     messageRouter: messageRouter,
@@ -1419,6 +1440,8 @@ async function initialize() {
     auditLog: auditLogger ? auditLogger.log.bind(auditLogger) : consoleAuditLog,
     botUsername: CONFIG.nc.username,
     allowedBackends: CONFIG.security.allowedBackends,
+    selfHealClient,
+    adminUser: appConfig.cockpit?.adminUser || '',
     onTokenDiscovered: (token) => {
       // Save token for email monitor notifications (use first room we see)
       if (token && !defaultTalkToken) {
@@ -1523,7 +1546,8 @@ async function initialize() {
           checkInterval: appConfig.infra?.checkInterval || 3,
           probeTimeoutMs: appConfig.infra?.probeTimeoutMs || 8000,
           selfHealEnabled: appConfig.infra?.selfHealEnabled !== false,
-          notifyOnFailure: appConfig.infra?.notifyOnFailure !== false
+          notifyOnFailure: appConfig.infra?.notifyOnFailure !== false,
+          selfHealClient
         });
         console.log(`[INIT] InfraMonitor ready (${infraMonitor.probes.length} probes, interval=${infraMonitor.checkInterval})`);
       }

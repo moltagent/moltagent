@@ -831,6 +831,87 @@ test('_formatHealthStatus() includes request stats with infra data', () => {
   assert.ok(result.includes('Last session: 100 requests, 98 succeeded (98%)'), 'Should include request stats in infra format');
 });
 
+// --- Style directive tests ---
+
+test('buildStyleDirective() returns empty string when no config cached', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const directive = cm.buildStyleDirective();
+
+  assert.strictEqual(directive, '', 'Should return empty string when no config cached');
+});
+
+test('buildStyleDirective() returns empty string when no style configured', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+  cm.cachedConfig = {
+    persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
+    guardrails: [],
+    mode: { name: 'Full Auto', description: 'Maximum initiative.' },
+    system: {}
+  };
+
+  const directive = cm.buildStyleDirective();
+
+  assert.strictEqual(directive, '', 'Should return empty string when no style');
+});
+
+test('buildStyleDirective() includes style name and description', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  cm.cachedConfig = {
+    style: { name: 'Concise Executive', description: 'Short, answer-first.' },
+    persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
+    guardrails: [],
+    mode: { name: 'Full Auto', description: 'Maximum initiative.' },
+    system: { searchProvider: 'searxng', llmTier: 'balanced' }
+  };
+
+  const directive = cm.buildStyleDirective();
+
+  assert.ok(directive.includes('Concise Executive'), 'Should include style name');
+  assert.ok(directive.includes('Short, answer-first'), 'Should include style description');
+});
+
+test('buildStyleDirective() includes imperative framing', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  cm.cachedConfig = {
+    style: { name: 'Warm Teacher', description: 'Patient and encouraging.' },
+    persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'detailed', formality: 'casual' },
+    guardrails: [],
+    system: {}
+  };
+
+  const directive = cm.buildStyleDirective();
+
+  assert.ok(directive.includes('MUST'), 'Should include imperative MUST');
+  assert.ok(directive.includes('not optional'), 'Should include non-optionality');
+  assert.ok(directive.includes('Before writing'), 'Should include self-check instruction');
+  assert.ok(directive.includes('Warm Teacher'), 'Should reference the style by name in self-check');
+});
+
+test('buildStyleDirective() includes persona voice traits', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  cm.cachedConfig = {
+    style: { name: 'Concise Executive', description: 'Short, answer-first.' },
+    persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
+    guardrails: [],
+    system: {}
+  };
+
+  const directive = cm.buildStyleDirective();
+
+  assert.ok(directive.includes('concise'), 'Should include verbosity');
+  assert.ok(directive.includes('balanced'), 'Should include formality');
+  assert.ok(directive.includes('light'), 'Should include humor');
+});
+
 // --- Overlay tests ---
 
 test('buildSystemPromptOverlay() returns empty string when no config cached', () => {
@@ -842,7 +923,7 @@ test('buildSystemPromptOverlay() returns empty string when no config cached', ()
   assert.strictEqual(overlay, '', 'Should return empty string when no config cached');
 });
 
-test('buildSystemPromptOverlay() includes style name and description', () => {
+test('buildSystemPromptOverlay() does NOT include style (style is in directive)', () => {
   const deck = createMockDeckClient();
   const cm = new CockpitManager({ deckClient: deck });
 
@@ -856,8 +937,8 @@ test('buildSystemPromptOverlay() includes style name and description', () => {
 
   const overlay = cm.buildSystemPromptOverlay();
 
-  assert.ok(overlay.includes('Concise Executive'), 'Should include style name');
-  assert.ok(overlay.includes('Short, answer-first'), 'Should include style description');
+  assert.ok(!overlay.includes('Communication Style'), 'Style should NOT be in overlay (moved to directive)');
+  assert.ok(!overlay.includes('Short, answer-first'), 'Style description should NOT be in overlay');
 });
 
 test('buildSystemPromptOverlay() includes all guardrails', () => {

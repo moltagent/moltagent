@@ -536,7 +536,21 @@ class AgentLoop {
     }).format(now);
     const dateHeader = `Today is ${dateStr}. Current time: ${timeStr} (24h format, ${tz}). Use this for all date-related queries.\n\n`;
 
-    let prompt = dateHeader + (this.soul || '');
+    // Style directive goes FIRST — before identity, tools, everything.
+    // Positional authority matters: LLMs weight early instructions more heavily.
+    let stylePrefix = '';
+    if (this.cockpitManager) {
+      try {
+        const directive = this.cockpitManager.buildStyleDirective();
+        if (directive) {
+          stylePrefix = directive + '\n\n';
+        }
+      } catch (err) {
+        this.logger.warn('[AgentLoop] Style directive failed:', err.message);
+      }
+    }
+
+    let prompt = stylePrefix + dateHeader + (this.soul || '');
 
     if (memoryContext) {
       prompt += `\n\n${memoryContext}`;

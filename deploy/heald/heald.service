@@ -1,0 +1,19 @@
+[Unit]
+Description=MoltAgent Self-Heal Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/heald/heald.py
+Restart=always
+RestartSec=5
+User=root
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

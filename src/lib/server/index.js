@@ -64,6 +64,8 @@ const HealthHandler = require('./health-handler');
  * @property {Object} [whisperClient] - WhisperClient instance (Session 37: STT transcription)
  * @property {Object} [audioConverter] - AudioConverter instance (Session 37: audio format conversion)
  * @property {string[]} [botNames] - Names the bot responds to (Session 37: address detection)
+ * @property {Object} [selfHealClient] - SelfHealClient instance for /restart command
+ * @property {string} [adminUser] - Admin username for privileged commands
  */
 
 // -----------------------------------------------------------------------------
@@ -98,7 +100,9 @@ function createServerComponents(deps) {
     botNames,
     microPipeline,
     intentRouter,
-    warmMemory
+    warmMemory,
+    selfHealClient,
+    adminUser
   } = deps;
 
   // Create command handler first (used by message processor)
@@ -107,7 +111,9 @@ function createServerComponents(deps) {
     messageRouter,
     llmRouter,
     auditLog,
-    allowedBackends
+    allowedBackends,
+    selfHealClient,
+    adminUser: adminUser || ''
   });
 
   // Create message processor (uses command handler)

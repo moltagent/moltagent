@@ -42,6 +42,8 @@
  * @property {Object} [llmRouter] - LLMRouter instance
  * @property {Function} auditLog - Audit logging function
  * @property {string[]} allowedBackends - List of allowed webhook backends
+ * @property {Object} [selfHealClient] - SelfHealClient instance
+ * @property {string} [adminUser] - Admin username for privileged commands
  */
 
 /**
@@ -88,6 +90,12 @@ class CommandHandler {
 
     /** @type {string[]} */
     this.allowedBackends = deps.allowedBackends || [];
+
+    /** @type {Object|null} */
+    this.selfHealClient = deps.selfHealClient || null;
+
+    /** @type {string} */
+    this.adminUser = deps.adminUser || '';
   }
 
   // ---------------------------------------------------------------------------
@@ -119,6 +127,10 @@ class CommandHandler {
         response = this._handleStats();
         break;
 
+      case '/restart':
+        response = await this._handleRestart(args, context);
+        break;
+
       default:
         response = `Unknown command: ${command}\nType /help for available commands.`;
         await this.auditLog('command', { command, user: context.user, args: args.substring(0, 50) });
@@ -144,6 +156,7 @@ class CommandHandler {
     return `**MoltAgent Commands:**
 - /status - Show server status
 - /stats - Show verification statistics
+- /restart <service> - Restart a remote service (admin only: voice, ai)
 - /help - Show this help
 
 **Natural Language:**
@@ -192,9 +205,57 @@ Just send a message to chat with the AI!`;
 - Failure reasons: ${JSON.stringify(stats.failureReasons)}`;
   }
 
+  /**
+   * Handle /restart command — admin-only remote service restart.
+   *
+   * @param {string} args - Service name (voice, whisper, ai, ollama)
+   * @param {CommandContext} context
+   * @returns {Promise<string>}
+   * @private
+   */
+  async _handleRestart(args, context) {
+    if (!this._isAdmin(context.user)) {
+      return 'This command requires admin access.';
+    }
+    if (!this.selfHealClient) {
+      return 'Self-heal daemon is not configured.';
+    }
+
+    const serviceMap = {
+      voice: 'whisper-server',
+      whisper: 'whisper-server',
+      ai: 'ollama',
+      ollama: 'ollama'
+    };
+
+    const target = args.trim().toLowerCase();
+    const systemdName = serviceMap[target];
+
+    if (!systemdName) {
+      return `Unknown service: "${target}"\nAvailable: voice (whisper-server), ai (ollama)`;
+    }
+
+    try {
+      const result = await this.selfHealClient.restart(systemdName);
+      return `Restarted ${systemdName}. ${result.message || ''}`.trim();
+    } catch (err) {
+      return `Failed to restart ${systemdName}: ${err.message}`;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Private Helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Check if user is the configured admin.
+   * @param {string} user
+   * @returns {boolean}
+   * @private
+   */
+  _isAdmin(user) {
+    return this.adminUser && user === this.adminUser;
+  }
 
   /**
    * Parse command and arguments from message

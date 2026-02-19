@@ -526,6 +526,11 @@ const config = {
     probeTimeoutMs: envInt('INFRA_PROBE_TIMEOUT', 8000),       // Per-probe timeout
     selfHealEnabled: envBool('INFRA_SELF_HEAL', true),
     notifyOnFailure: envBool('INFRA_NOTIFY_ON_FAILURE', true),
+    heald: {
+      url: envStr('HEALD_URL', 'http://138.201.246.236:7867'),
+      tokenCredential: envStr('HEALD_TOKEN_CREDENTIAL', 'heald-token'),
+      timeoutMs: envInt('HEALD_TIMEOUT', 15000),
+    },
   },
 
   // -------------------------------------------------------------------------

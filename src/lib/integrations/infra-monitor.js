@@ -41,6 +41,7 @@ class InfraMonitor {
     this.ollamaModel = config.ollamaModel || 'qwen3:8b';
     this.notifyUser = config.notifyUser || null;
     this.auditLog = config.auditLog || (async () => {});
+    this.selfHealClient = config.selfHealClient || null;
 
     this.probes = [];         // [{id, name, url, selfHeal?, probeFn}]
     this.state = new Map();   // id -> {status, lastCheck, consecutiveFailures}
@@ -226,17 +227,19 @@ class InfraMonitor {
     // Detect transitions
     const transitions = this._detectTransitions(services);
 
-    // Self-heal
+    // Self-heal: transition-based (ollama model reload on first failure)
     for (const transition of transitions) {
       if (transition.to === 'down' && this.selfHealEnabled) {
         const probe = this.probes.find(p => p.id === transition.service);
+
+        // Existing: Ollama model reload (ping-based, quick)
         if (probe && probe.selfHeal === 'ollama_reload') {
           const healStart = Date.now();
           try {
             await this._selfHealOllama(this.ollamaModel);
-            selfHealAttempts.push({ service: transition.service, success: true, durationMs: Date.now() - healStart });
+            selfHealAttempts.push({ service: transition.service, method: 'ollama_reload', success: true, durationMs: Date.now() - healStart });
           } catch (err) {
-            selfHealAttempts.push({ service: transition.service, success: false, durationMs: Date.now() - healStart, error: err.message });
+            selfHealAttempts.push({ service: transition.service, method: 'ollama_reload', success: false, durationMs: Date.now() - healStart, error: err.message });
           }
         }
       }
@@ -257,6 +260,37 @@ class InfraMonitor {
         lastCheck: timestamp,
         consecutiveFailures: result.ok ? 0 : (prev.consecutiveFailures + 1)
       });
+    }
+
+    // Self-heal: remote restart via heald (after 2+ consecutive failures)
+    if (this.selfHealClient && this.selfHealEnabled) {
+      const serviceMap = { ollama: 'ollama', whisper: 'whisper-server' };
+      for (const probe of this.probes) {
+        const state = this.state.get(probe.id);
+        const systemdName = serviceMap[probe.id];
+        if (state && state.status === 'down' && state.consecutiveFailures >= 2 && systemdName) {
+          const healStart = Date.now();
+          try {
+            await this.selfHealClient.restart(systemdName);
+            selfHealAttempts.push({
+              service: probe.id,
+              method: 'remote_restart',
+              success: true,
+              durationMs: Date.now() - healStart
+            });
+            console.log(`[InfraMonitor] Remote restart of ${systemdName} succeeded`);
+          } catch (err) {
+            selfHealAttempts.push({
+              service: probe.id,
+              method: 'remote_restart',
+              success: false,
+              durationMs: Date.now() - healStart,
+              error: err.message
+            });
+            console.warn(`[InfraMonitor] Remote restart of ${systemdName} failed: ${err.message}`);
+          }
+        }
+      }
     }
 
     this._hasRunBefore = true;

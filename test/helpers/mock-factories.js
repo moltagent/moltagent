@@ -290,9 +290,13 @@ function createMockCockpitManager(responses = {}) {
     getPersona: async () => responses.getPersona || config.persona,
     getSystemSettings: async () => responses.getSystemSettings || config.system,
     updateStatus: async (statusData) => responses.updateStatus || undefined,
+    buildStyleDirective: () => {
+      if (responses.buildStyleDirective !== undefined) return responses.buildStyleDirective;
+      return '## Communication Style: Concise Executive\n\nEvery response you write MUST reflect this style. This is not optional.\n\nShort, answer-first.\n\nBefore writing any response, check: does this sound like "Concise Executive"? If it sounds like a generic assistant, rewrite it.';
+    },
     buildSystemPromptOverlay: () => {
       if (responses.buildSystemPromptOverlay !== undefined) return responses.buildSystemPromptOverlay;
-      return '## Active Configuration (from Cockpit)\n\n### Communication Style: Concise Executive\nShort, answer-first.';
+      return '## Active Configuration (from Cockpit)\n\n### Persona\n- Name: Molti';
     },
     boardId: responses.boardId || 99,
     cachedConfig: config,

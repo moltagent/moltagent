@@ -779,8 +779,54 @@ class CockpitManager {
   // ===========================================================================
 
   /**
+   * Build a strong behavioral style directive for the TOP of the system prompt.
+   * This must be positioned before the agent's identity and tools so it has
+   * maximum positional authority over the LLM's output behavior.
+   *
+   * Returns empty string if no style is configured.
+   *
+   * @returns {string} Imperative style directive text
+   */
+  buildStyleDirective() {
+    if (!this.cachedConfig || !this.cachedConfig.style) {
+      return '';
+    }
+
+    const { style, persona } = this.cachedConfig;
+    const parts = [];
+
+    parts.push(`## Communication Style: ${style.name}`);
+    parts.push('');
+    parts.push('Every response you write MUST reflect this style. This is not optional.');
+    parts.push('');
+    parts.push(style.description);
+    parts.push('');
+
+    // Reinforce with persona voice dimensions if available
+    if (persona) {
+      const voiceTraits = [];
+      if (persona.verbosity) voiceTraits.push(`Verbosity: ${persona.verbosity}`);
+      if (persona.formality) voiceTraits.push(`Formality: ${persona.formality}`);
+      if (persona.humor) voiceTraits.push(`Humor: ${persona.humor}`);
+      if (persona.emoji) voiceTraits.push(`Emoji use: ${persona.emoji}`);
+      if (voiceTraits.length > 0) {
+        parts.push(`Voice: ${voiceTraits.join('. ')}.`);
+        parts.push('');
+      }
+    }
+
+    parts.push(`Before writing any response, check: does this sound like "${style.name}"? If it sounds like a generic assistant, rewrite it.`);
+
+    return parts.join('\n');
+  }
+
+  /**
    * Compile the cached cockpit config into a text block for system prompt injection.
    * Pure synchronous function -- uses this.cachedConfig (no I/O).
+   *
+   * Note: Communication style is NOT included here — it is emitted separately
+   * by buildStyleDirective() and injected at the top of the system prompt
+   * for maximum positional authority.
    *
    * Returns empty string if no config is cached yet.
    *
@@ -796,13 +842,6 @@ class CockpitManager {
 
     parts.push('## Active Configuration (from Cockpit)');
     parts.push('');
-
-    // Communication Style
-    if (c.style) {
-      parts.push(`### Communication Style: ${c.style.name}`);
-      parts.push(c.style.description);
-      parts.push('');
-    }
 
     // Persona
     if (c.persona) {
