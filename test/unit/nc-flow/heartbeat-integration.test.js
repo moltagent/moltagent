@@ -171,58 +171,58 @@ test('HB-FLOW-006: enqueueExternalEvent ignores events without type', () => {
 
 console.log('\n--- _processFlowEvents ---\n');
 
-test('HB-PROC-001: Returns { processed: 0 } on empty queue', () => {
+asyncTest('HB-PROC-001: Returns { processed: 0 } on empty queue', async () => {
   const hb = createTestHeartbeat();
-  const result = hb._processFlowEvents();
+  const result = await hb._processFlowEvents();
   assert.strictEqual(result.processed, 0);
   assert.strictEqual(result.byType, undefined);
 });
 
-test('HB-PROC-002: Drains queue completely', () => {
+asyncTest('HB-PROC-002: Drains queue completely', async () => {
   const hb = createTestHeartbeat();
   hb.enqueueExternalEvent(makeFlowEvent('file_created', 1));
   hb.enqueueExternalEvent(makeFlowEvent('file_changed', 2));
-  const result = hb._processFlowEvents();
+  const result = await hb._processFlowEvents();
   assert.strictEqual(result.processed, 2);
   assert.strictEqual(hb.externalEventQueue.length, 0);
 });
 
-test('HB-PROC-003: Returns correct byType summary', () => {
+asyncTest('HB-PROC-003: Returns correct byType summary', async () => {
   const hb = createTestHeartbeat();
   hb.enqueueExternalEvent(makeFlowEvent('file_created', 1));
   hb.enqueueExternalEvent(makeFlowEvent('file_created', 2));
   hb.enqueueExternalEvent(makeFlowEvent('file_changed', 3));
   hb.enqueueExternalEvent(makeFlowEvent('deck_card_created', 4));
-  const result = hb._processFlowEvents();
+  const result = await hb._processFlowEvents();
   assert.strictEqual(result.byType.file_created, 2);
   assert.strictEqual(result.byType.file_changed, 1);
   assert.strictEqual(result.byType.deck_card_created, 1);
 });
 
-test('HB-PROC-004: Updates flowEventsProcessedToday counter', () => {
+asyncTest('HB-PROC-004: Updates flowEventsProcessedToday counter', async () => {
   const hb = createTestHeartbeat();
   hb.enqueueExternalEvent(makeFlowEvent('file_created', 1));
   hb.enqueueExternalEvent(makeFlowEvent('file_changed', 2));
-  hb._processFlowEvents();
+  await hb._processFlowEvents();
   assert.strictEqual(hb.state.flowEventsProcessedToday, 2);
 
   // Process more events — counter accumulates
   hb.enqueueExternalEvent(makeFlowEvent('file_deleted', 3));
-  hb._processFlowEvents();
+  await hb._processFlowEvents();
   assert.strictEqual(hb.state.flowEventsProcessedToday, 3);
 });
 
-test('HB-PROC-005: Updates lastFlowProcess timestamp', () => {
+asyncTest('HB-PROC-005: Updates lastFlowProcess timestamp', async () => {
   const hb = createTestHeartbeat();
   assert.strictEqual(hb.state.lastFlowProcess, null);
   hb.enqueueExternalEvent(makeFlowEvent('file_created', 1));
-  hb._processFlowEvents();
+  await hb._processFlowEvents();
   assert.ok(hb.state.lastFlowProcess instanceof Date);
 });
 
-test('HB-PROC-006: Does not update lastFlowProcess on empty queue', () => {
+asyncTest('HB-PROC-006: Does not update lastFlowProcess on empty queue', async () => {
   const hb = createTestHeartbeat();
-  hb._processFlowEvents();
+  await hb._processFlowEvents();
   assert.strictEqual(hb.state.lastFlowProcess, null);
 });
 
@@ -292,11 +292,11 @@ test('HB-STATUS-003: getStatus includes flowQueueLength', () => {
   assert.strictEqual(status.flowQueueLength, 1);
 });
 
-test('HB-STATUS-004: getStatus reflects accurate counters after processing', () => {
+asyncTest('HB-STATUS-004: getStatus reflects accurate counters after processing', async () => {
   const hb = createTestHeartbeat();
   hb.enqueueExternalEvent(makeFlowEvent('file_created', 1));
   hb.enqueueExternalEvent(makeFlowEvent('file_changed', 2));
-  hb._processFlowEvents();
+  await hb._processFlowEvents();
 
   const status = hb.getStatus();
   assert.strictEqual(status.flowEventsProcessedToday, 2);
@@ -393,30 +393,30 @@ test('HB-WIRE-003: Events from both sources accumulate in same queue', () => {
 
 console.log('\n--- Stress Tests ---\n');
 
-test('HB-STRESS-001: Multiple rapid enqueues do not corrupt state', () => {
+asyncTest('HB-STRESS-001: Multiple rapid enqueues do not corrupt state', async () => {
   const hb = createTestHeartbeat();
   for (let i = 0; i < 200; i++) {
     hb.enqueueExternalEvent(makeFlowEvent('file_changed', i));
   }
   assert.strictEqual(hb.externalEventQueue.length, 200);
 
-  const result = hb._processFlowEvents();
+  const result = await hb._processFlowEvents();
   assert.strictEqual(result.processed, 200);
   assert.strictEqual(result.byType.file_changed, 200);
   assert.strictEqual(hb.externalEventQueue.length, 0);
   assert.strictEqual(hb.state.flowEventsProcessedToday, 200);
 });
 
-test('HB-STRESS-002: Enqueue after process works correctly', () => {
+asyncTest('HB-STRESS-002: Enqueue after process works correctly', async () => {
   const hb = createTestHeartbeat();
   hb.enqueueExternalEvent(makeFlowEvent('file_created', 1));
-  hb._processFlowEvents();
+  await hb._processFlowEvents();
   assert.strictEqual(hb.externalEventQueue.length, 0);
 
   hb.enqueueExternalEvent(makeFlowEvent('file_changed', 2));
   assert.strictEqual(hb.externalEventQueue.length, 1);
 
-  const result = hb._processFlowEvents();
+  const result = await hb._processFlowEvents();
   assert.strictEqual(result.processed, 1);
   assert.strictEqual(hb.state.flowEventsProcessedToday, 2);
 });
@@ -427,10 +427,10 @@ test('HB-STRESS-002: Enqueue after process works correctly', () => {
 
 console.log('\n--- resetDailyCounters ---\n');
 
-test('HB-RESET-001: resetDailyCounters resets flowEventsProcessedToday', () => {
+asyncTest('HB-RESET-001: resetDailyCounters resets flowEventsProcessedToday', async () => {
   const hb = createTestHeartbeat();
   hb.enqueueExternalEvent(makeFlowEvent('file_created', 1));
-  hb._processFlowEvents();
+  await hb._processFlowEvents();
   assert.strictEqual(hb.state.flowEventsProcessedToday, 1);
 
   hb.resetDailyCounters();

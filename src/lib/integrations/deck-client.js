@@ -15,6 +15,53 @@ const appConfig = require('../config');
 /**
  * Custom error class for Deck API errors
  */
+/**
+ * Prefixes used by MoltAgent bot comments.
+ * Used to distinguish bot comments from human comments in scanners.
+ * @type {string[]}
+ */
+const BOT_PREFIXES = ['[STATUS]', '[PROGRESS]', '[DONE]', '[QUESTION]', '[ERROR]', '[BLOCKED]', '[REVIEW]', '[FOLLOWUP]', '[MENTION]'];
+
+/**
+ * Check if the bot has already responded to the most recent human comment.
+ * Uses comment IDs for ordering (higher ID = newer), so works regardless of
+ * array sort order.
+ *
+ * @param {Array} comments - Comments array (any order)
+ * @param {string} botUsername - Bot username (case-insensitive)
+ * @returns {boolean} true if the bot posted a response after the latest human comment
+ */
+function hasNewerBotResponse(comments, botUsername) {
+  if (!comments || comments.length === 0) return false;
+  const botUser = botUsername.toLowerCase();
+
+  let latestHumanId = -1;
+  let latestBotId = -1;
+
+  for (const comment of comments) {
+    const msg = comment.message || '';
+    const isBot = BOT_PREFIXES.some(p => msg.startsWith(p)) ||
+                  (comment.actorId || '').toLowerCase() === botUser;
+    const id = comment.id || 0;
+
+    if (isBot) {
+      if (id > latestBotId) latestBotId = id;
+    } else {
+      if (id > latestHumanId) latestHumanId = id;
+    }
+  }
+
+  // No human comments → nothing to respond to (treated as already responded)
+  if (latestHumanId === -1) return true;
+  // No bot comments → hasn't responded yet
+  if (latestBotId === -1) return false;
+  // Bot responded after the latest human comment
+  return latestBotId > latestHumanId;
+}
+
+/**
+ * Custom error class for Deck API errors
+ */
 class DeckApiError extends Error {
   constructor(message, statusCode = 0, response = null) {
     super(message);
@@ -868,14 +915,14 @@ class DeckClient {
       try {
         const comments = await this.getComments(card.id);
 
-        // Look for human comments (not prefixed with our tags)
-        const botPrefixes = ['[STATUS]', '[PROGRESS]', '[DONE]', '[QUESTION]', '[ERROR]', '[BLOCKED]', '[REVIEW]', '[FOLLOWUP]', '[MENTION]'];
+        // Skip if bot already responded to the latest human comment
+        if (hasNewerBotResponse(comments, this.username)) {
+          continue;
+        }
 
         const humanComments = comments.filter(comment => {
           const message = comment.message || '';
-          // Check if comment is from a different user or lacks bot prefix
-          const isBot = botPrefixes.some(prefix => message.startsWith(prefix));
-          return !isBot;
+          return !BOT_PREFIXES.some(prefix => message.startsWith(prefix));
         });
 
         if (humanComments.length > 0) {
@@ -910,7 +957,6 @@ class DeckClient {
    */
   async scanAllStacksForComments(stackNames = ['inbox', 'queued', 'working', 'review']) {
     const cardsWithComments = [];
-    const botPrefixes = ['[STATUS]', '[PROGRESS]', '[DONE]', '[QUESTION]', '[ERROR]', '[BLOCKED]', '[REVIEW]', '[FOLLOWUP]', '[MENTION]'];
 
     for (const stackName of stackNames) {
       try {
@@ -931,10 +977,15 @@ class DeckClient {
           try {
             const comments = await this.getComments(card.id);
 
+            // Skip if bot already responded to the latest human comment
+            if (hasNewerBotResponse(comments, this.username)) {
+              continue;
+            }
+
             // Filter for human comments (not bot-prefixed)
             const humanComments = comments.filter(comment => {
               const message = comment.message || '';
-              return !botPrefixes.some(prefix => message.startsWith(prefix));
+              return !BOT_PREFIXES.some(prefix => message.startsWith(prefix));
             });
 
             if (humanComments.length > 0) {
@@ -1075,7 +1126,7 @@ class DeckClient {
    */
   async failTask(cardId, currentStack, errorMessage, moveToInbox = true) {
     try {
-      await this.addComment(cardId, errorMessage, 'ERROR');
+      await this.addComment(cardId, `Could not complete task: ${errorMessage}`, 'BLOCKED');
     } catch (e) {
       console.warn(`[Deck] Could not add comment: ${e.message}`);
     }
@@ -1247,3 +1298,5 @@ class DeckClient {
 }
 
 module.exports = DeckClient;
+module.exports.BOT_PREFIXES = BOT_PREFIXES;
+module.exports.hasNewerBotResponse = hasNewerBotResponse;

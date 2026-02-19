@@ -68,8 +68,9 @@ function stubHeartbeatMethods(hb) {
   hb._processAssignedCards = async () => ({ processed: 0 });
   hb._checkCalendar = async () => ({ upcoming: [] });
   hb._checkKnowledgeBoard = async () => ({ pending: 0 });
-  hb._processFlowEvents = () => ({ processed: 0 });
+  hb._processFlowEvents = async () => ({ processed: 0, mentionsHandled: 0 });
   hb._isQuietHours = () => false;
+  hb._isWithinWorkingHours = () => true;
 }
 
 // ============================================================

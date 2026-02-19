@@ -929,13 +929,15 @@ asyncTest('TC-TASK-006: Block task moves to inbox with question', async () => {
   assert.strictEqual(commentType, 'QUESTION');
 });
 
-asyncTest('TC-TASK-007: Fail task adds error comment', async () => {
+asyncTest('TC-TASK-007: Fail task adds blocked comment and moves to inbox', async () => {
   let commentType = null;
+  let commentMessage = null;
   let movedTo = null;
 
   const mockNC = createDeckMockNC({
     'POST:/ocs/v2.php/apps/deck/api/v1.0/cards/1001/comments': (path, options) => {
       commentType = options.body.message.match(/\[(\w+)\]/)?.[1];
+      commentMessage = options.body.message;
       return { status: 200, body: {}, headers: {} };
     },
     'PUT:/index.php/apps/deck/cards/1001/reorder': (path, options) => {
@@ -947,7 +949,8 @@ asyncTest('TC-TASK-007: Fail task adds error comment', async () => {
 
   await client.failTask(1001, 'working', 'Error occurred');
 
-  assert.strictEqual(commentType, 'ERROR');
+  assert.strictEqual(commentType, 'BLOCKED');
+  assert.ok(commentMessage.includes('Could not complete task'));
   assert.strictEqual(movedTo, 101); // moves back to inbox
 });
 
@@ -1249,6 +1252,71 @@ asyncTest('TC-SCAN-001: Scan assigned cards returns filtered results', async () 
   assert.strictEqual(assigned.length, 1);
   assert.strictEqual(assigned[0].id, 1001);
   assert.strictEqual(assigned[0].stack, 'inbox');
+});
+
+// ============================================================
+// hasNewerBotResponse utility tests
+// ============================================================
+
+const { hasNewerBotResponse, BOT_PREFIXES } = require('../../../src/lib/integrations/deck-client');
+
+test('TC-DEDUP-001: hasNewerBotResponse returns true when bot comment has higher ID', () => {
+  const comments = [
+    { id: 100, message: 'Please fix the typo', actorId: 'Funana' },
+    { id: 101, message: '[FOLLOWUP] Done', actorId: 'Moltagent' },
+  ];
+  assert.strictEqual(hasNewerBotResponse(comments, 'moltagent'), true);
+});
+
+test('TC-DEDUP-002: hasNewerBotResponse returns false when human comment has higher ID', () => {
+  const comments = [
+    { id: 100, message: 'Please fix the typo', actorId: 'Funana' },
+    { id: 101, message: '[FOLLOWUP] Done', actorId: 'Moltagent' },
+    { id: 102, message: 'Actually, one more thing...', actorId: 'Funana' },
+  ];
+  assert.strictEqual(hasNewerBotResponse(comments, 'moltagent'), false);
+});
+
+test('TC-DEDUP-003: hasNewerBotResponse returns false on empty comments', () => {
+  assert.strictEqual(hasNewerBotResponse([], 'moltagent'), false);
+  assert.strictEqual(hasNewerBotResponse(null, 'moltagent'), false);
+});
+
+test('TC-DEDUP-004: hasNewerBotResponse detects bot by actorId even without prefix', () => {
+  const comments = [
+    { id: 50, message: 'Hello', actorId: 'Funana' },
+    { id: 51, message: 'No prefix here', actorId: 'moltagent' },
+  ];
+  assert.strictEqual(hasNewerBotResponse(comments, 'moltagent'), true);
+});
+
+test('TC-DEDUP-005: hasNewerBotResponse is case-insensitive for bot username', () => {
+  const comments = [
+    { id: 10, message: 'Check this', actorId: 'funana' },
+    { id: 11, message: '[STATUS] Updated', actorId: 'Moltagent' },
+  ];
+  assert.strictEqual(hasNewerBotResponse(comments, 'moltagent'), true);
+});
+
+test('TC-DEDUP-007: hasNewerBotResponse returns true when only bot comments exist', () => {
+  const comments = [
+    { id: 1, message: '[STATUS] Started', actorId: 'moltagent' },
+  ];
+  assert.strictEqual(hasNewerBotResponse(comments, 'moltagent'), true);
+});
+
+test('TC-DEDUP-008: hasNewerBotResponse returns false when only human comments exist', () => {
+  const comments = [
+    { id: 1, message: 'Need help', actorId: 'Funana' },
+  ];
+  assert.strictEqual(hasNewerBotResponse(comments, 'moltagent'), false);
+});
+
+test('TC-DEDUP-006: BOT_PREFIXES includes all expected prefixes', () => {
+  const expected = ['[STATUS]', '[PROGRESS]', '[DONE]', '[QUESTION]', '[ERROR]', '[BLOCKED]', '[REVIEW]', '[FOLLOWUP]', '[MENTION]'];
+  for (const prefix of expected) {
+    assert.ok(BOT_PREFIXES.includes(prefix), `Missing prefix: ${prefix}`);
+  }
 });
 
 // --- Summary ---

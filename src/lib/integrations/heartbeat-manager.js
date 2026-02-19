@@ -378,8 +378,35 @@ class HeartbeatManager {
         }
       }
 
-      // Check quiet hours and working hours
-      if (this._isQuietHours() || !this._isWithinWorkingHours()) {
+      // @Mention handling runs regardless of quiet hours — a user tapping
+      // Molti on the shoulder shouldn't have to wait until morning.
+      try {
+        results.flow = await this._processFlowEvents();
+      } catch (err) {
+        console.warn('[Heartbeat] NC Flow processing error:', err.message);
+        results.errors.push({ component: 'flow', error: err.message });
+      }
+
+      // Read cockpit working hours before the quiet hours gate so the
+      // user's configured schedule is authoritative from the first pulse.
+      if (this.cockpitManager && !this._cockpitWorkingHours) {
+        try {
+          const cockpitConfig = await this.cockpitManager.readConfig();
+          if (cockpitConfig?.system?.workingHours) {
+            this._cockpitWorkingHours = cockpitConfig.system.workingHours;
+          }
+        } catch {
+          // Non-fatal — quiet hours fallback still works
+        }
+      }
+
+      // Check quiet hours and working hours.
+      // Cockpit working hours override hardcoded quiet hours when set.
+      const cockpitHoursSet = !!this._cockpitWorkingHours;
+      const outsideActiveHours = cockpitHoursSet
+        ? !this._isWithinWorkingHours()   // cockpit is authoritative
+        : this._isQuietHours();           // fallback to config quiet hours
+      if (outsideActiveHours) {
         console.log('[Heartbeat] Outside active hours - minimal processing');
         this.state.lastRun = new Date();
         // Restore status to ready even during quiet hours (prevents status going stale)
@@ -485,15 +512,7 @@ class HeartbeatManager {
         }
       }
 
-      // Level >= 2: NC Flow events (informational, no LLM cost)
-      if (level >= 2) {
-        try {
-          results.flow = await this._processFlowEvents();
-        } catch (err) {
-          console.error('[Heartbeat] NC Flow processing error:', err.message);
-          results.errors.push({ component: 'flow', error: err.message });
-        }
-      }
+      // NC Flow events already processed above (before quiet hours gate)
 
       // Cockpit: Read config and update status cards (all levels)
       if (this.cockpitManager) {
@@ -916,7 +935,7 @@ class HeartbeatManager {
     const commentEvents = events.filter(e => e.type === 'deck_comment_added');
     for (const event of commentEvents) {
       try {
-        const result = await this.deckProcessor.processMention(event);
+        const result = await this.deckProcessor.processMention(event, { agentLoop: this.agentLoop });
         if (result.handled) {
           mentionsHandled++;
         }
@@ -1076,7 +1095,10 @@ class HeartbeatManager {
    */
   _isWithinWorkingHours() {
     const parsed = this._parseWorkingHours(this._cockpitWorkingHours);
-    if (!parsed) return true; // fail-open
+    if (!parsed) return true; // fail-open: no cockpit config → always on
+
+    // "00:00-00:00" means 24h availability
+    if (parsed.start === parsed.end) return true;
 
     const tz = this.settings.timezone || 'UTC';
     let hour;

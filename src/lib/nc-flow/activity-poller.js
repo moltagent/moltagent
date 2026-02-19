@@ -81,6 +81,9 @@ const DECK_TYPE_MAP = {
   'deck_card_update': 'deck_card_updated',
   'deck_card_move': 'deck_card_moved',
   'deck_comment_create': 'deck_comment_added',
+  'deck_comment': 'deck_comment_added',           // NC 31 actual type
+  'deck_card_description': 'deck_card_updated',    // card description edits
+  'deck': 'deck_card_updated',                     // generic deck activity
 };
 
 /**
@@ -184,9 +187,13 @@ class ActivityPoller extends EventEmitter {
     this.metrics.totalPolls++;
 
     try {
+      // On initial poll (no cursor), fetch most recent activities (desc) to
+      // fast-forward the cursor near the current time. Subsequent polls use
+      // asc with since cursor for incremental new-event detection.
+      const isInitial = !this.lastActivityId;
       const params = new URLSearchParams({
         limit: String(this.config.maxEventsPerPoll || 50),
-        sort: 'asc'   // Oldest first — important for cursor tracking
+        sort: isInitial ? 'desc' : 'asc'
       });
 
       if (this.lastActivityId) {
@@ -208,15 +215,12 @@ class ActivityPoller extends EventEmitter {
         }
       );
 
-      // Parse response
-      let data;
-      if (typeof response.json === 'function') {
-        data = await response.json();
-      } else {
-        data = response;
-      }
-
+      // NCRequestManager returns { status, headers, body, fromCache }
+      // body is already parsed JSON when content-type is application/json
+      const data = response.body || response;
       const activities = data?.ocs?.data || [];
+
+      this.logger.info(`[ActivityPoller] Poll #${this.metrics.totalPolls}: ${activities.length} activities (since: ${this.lastActivityId || 'initial'})`);
 
       if (activities.length === 0) {
         this.polling = false;
@@ -231,8 +235,8 @@ class ActivityPoller extends EventEmitter {
           this.lastActivityId = activity.activity_id;
         }
 
-        // Skip own events if configured
-        if (this.config.ignoreOwnEvents && activity.user === this.nc.config?.nextcloud?.user) {
+        // Skip own events if configured (case-insensitive — NC may capitalize)
+        if (this.config.ignoreOwnEvents && activity.user?.toLowerCase() === this.nc.ncUser?.toLowerCase()) {
           this.metrics.skippedOwn++;
           continue;
         }
@@ -252,6 +256,7 @@ class ActivityPoller extends EventEmitter {
 
         this.emit('event', event);
         this.metrics.emittedEvents++;
+        this.logger.info(`[ActivityPoller] Emitted: ${event.type} by ${event.user} (${event.objectType}:${event.objectId})`);
       }
     } catch (err) {
       this.metrics.errors++;

@@ -710,7 +710,7 @@ Please address the user's ${classification.type}. Be concise and helpful.
       };
 
     } catch (error) {
-      await this.deck.addComment(card.id, `Error processing follow-up: ${error.message}`, 'ERROR');
+      console.error(`[DeckProcessor] Follow-up failed for card ${card.id}: ${error.message}`);
       throw error;
     }
   }
@@ -918,9 +918,10 @@ Please address the user's ${classification.type}. Be concise and helpful.
    * @param {Object} event.data - Event metadata (activityId, subject, etc.)
    * @returns {Promise<Object>} Result: { handled, reason, cardId? }
    */
-  async processMention(event) {
+  async processMention(event, options = {}) {
     const cardId = parseInt(event.objectId, 10);
     if (!cardId || isNaN(cardId)) {
+      console.log(`[DeckProcessor] @mention: invalid card ID from event`);
       return { handled: false, reason: 'invalid_card_id' };
     }
 
@@ -931,10 +932,13 @@ Please address the user's ${classification.type}. Be concise and helpful.
       return { handled: false, reason: 'own_comment' };
     }
 
+    console.log(`[DeckProcessor] @mention: checking card #${cardId} (event from ${event.user})`);
+
     try {
       // Fetch comments for the card
       const comments = await this.deck.getComments(cardId);
       if (!comments || comments.length === 0) {
+        console.log(`[DeckProcessor] @mention: no comments on card #${cardId}`);
         return { handled: false, reason: 'no_comments' };
       }
 
@@ -947,6 +951,7 @@ Please address the user's ${classification.type}. Be concise and helpful.
       });
 
       if (!mentionComment) {
+        console.log(`[DeckProcessor] @mention: no @${myUsername} mention found in ${comments.length} comments on card #${cardId}`);
         return { handled: false, reason: 'no_mention_found' };
       }
 
@@ -958,6 +963,7 @@ Please address the user's ${classification.type}. Be concise and helpful.
       );
 
       if (alreadyResponded) {
+        console.log(`[DeckProcessor] @mention: already responded to mention on card #${cardId}`);
         return { handled: false, reason: 'already_responded' };
       }
 
@@ -969,12 +975,46 @@ Please address the user's ${classification.type}. Be concise and helpful.
 
       console.log(`[DeckProcessor] @mention detected on card #${cardId} "${cardContext.title}" by ${event.user}`);
 
-      // Generate response
-      const response = await this._generateMentionResponse(
-        cardContext,
-        mentionComment.message,
-        event.user
-      );
+      // Build card context for the prompt
+      const commentsBlock = cardContext.recentComments.length > 0
+        ? cardContext.recentComments.map(c =>
+            `  ${c.author}: ${c.message}`
+          ).join('\n')
+        : '(no previous comments)';
+
+      const contextBlock = [
+        `**Card:** "${cardContext.title}" (Board: ${cardContext.boardTitle}, Stack: ${cardContext.stackTitle})`,
+        cardContext.description ? `**Description:** ${cardContext.description.substring(0, 500)}` : '',
+        cardContext.assignedUsers.length > 0 ? `**Assigned to:** ${cardContext.assignedUsers.join(', ')}` : '',
+        cardContext.duedate ? `**Due:** ${cardContext.duedate}` : '',
+        `\n**Recent comments:**\n${commentsBlock}`,
+      ].filter(Boolean).join('\n');
+
+      const mentionPrompt = `You were @mentioned in a Deck card comment. Respond helpfully and concisely.
+You are ASSISTING on this card — you are NOT the owner. Do NOT move, reassign, or close the card.
+
+${contextBlock}
+
+**${event.user} says:** ${mentionComment.message}
+
+Respond directly to ${event.user}'s request. Use your tools to fulfill the request if possible.`;
+
+      // Route through AgentLoop (with tools) if available, else text-only LLM
+      let response;
+      const agentLoop = options.agentLoop;
+      if (agentLoop) {
+        console.log(`[DeckProcessor] Routing @mention through AgentLoop (with tools)`);
+        response = await agentLoop.process(mentionPrompt, null, {
+          user: event.user,
+          maxIterations: 5
+        });
+      } else {
+        response = await this._generateMentionResponse(
+          cardContext,
+          mentionComment.message,
+          event.user
+        );
+      }
 
       // Post response as [MENTION]-prefixed comment for consistency with bot prefix detection
       await this.deck.addComment(cardId, response, 'MENTION', { prefix: true });

@@ -49,12 +49,15 @@ const silentLogger = {
 function createMockNC(activities = []) {
   const calls = [];
   return {
-    config: { nextcloud: { user: 'moltagent' } },
+    ncUser: 'moltagent',
     request: async (path, options) => {
       calls.push({ path, options });
       return {
-        ocs: {
-          data: activities,
+        status: 200,
+        body: {
+          ocs: {
+            data: activities,
+          },
         },
       };
     },
@@ -165,7 +168,8 @@ asyncTest('AP-POLL-002: Calls Activity API with correct URL and headers', async 
   const poller = new ActivityPoller(defaultConfig(), nc, silentLogger);
   await poller.pollNow();
   assert.ok(nc._calls[0].path.includes('/ocs/v2.php/apps/activity/api/v2/activity'));
-  assert.ok(nc._calls[0].path.includes('sort=asc'));
+  // Initial poll uses desc to fast-forward cursor; subsequent use asc
+  assert.ok(nc._calls[0].path.includes('sort=desc'));
   assert.ok(nc._calls[0].path.includes('limit='));
 });
 
