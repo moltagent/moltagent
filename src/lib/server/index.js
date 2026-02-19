@@ -97,6 +97,7 @@ function createServerComponents(deps) {
     voiceManager,
     botNames,
     microPipeline,
+    intentRouter,
     warmMemory
   } = deps;
 
@@ -128,6 +129,7 @@ function createServerComponents(deps) {
     ncRequestManager,
     botNames,
     microPipeline,
+    intentRouter,
     warmMemory
   });
 

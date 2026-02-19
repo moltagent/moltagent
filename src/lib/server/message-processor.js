@@ -146,6 +146,10 @@ class MessageProcessor {
       this._wireMicroPipelineDomainTools();
     }
 
+    // IntentRouter: LLM-powered intent classification with conversation context
+    /** @type {Object|null} - IntentRouter instance */
+    this.intentRouter = deps.intentRouter || null;
+
     // M1: WarmMemory for post-response consolidation
     /** @type {Object|null} - WarmMemory instance */
     this.warmMemory = deps.warmMemory || null;
@@ -312,7 +316,7 @@ class MessageProcessor {
         result = { intent: 'micro_pipeline', provider: 'local' };
       } else if (this.microPipeline && this.agentLoop && this._isSmartMixMode()) {
         // Smart-mix: three-path routing (local text / local tools / cloud)
-        const { useLocal, useDomainTools, intent } = await this._smartMixClassify(extracted.content);
+        const { useLocal, useDomainTools, intent } = await this._smartMixClassify(extracted.content, session);
         console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}`);
 
         if (useLocal && useDomainTools) {
@@ -324,7 +328,8 @@ class MessageProcessor {
             response = await this.microPipeline.process(extracted.content, {
               userName: extracted.user,
               roomToken: extracted.token,
-              warmMemory: ''
+              warmMemory: '',
+              intent  // Skip re-classification inside MicroPipeline
             });
             result = { intent: `smart_mix_domain:${intent}`, provider: 'local-tools' };
           } catch (domainErr) {
@@ -349,7 +354,8 @@ class MessageProcessor {
           response = await this.microPipeline.process(extracted.content, {
             userName: extracted.user,
             roomToken: extracted.token,
-            warmMemory: ''
+            warmMemory: '',
+            intent  // Skip re-classification inside MicroPipeline
           });
           result = { intent: `smart_mix_local:${intent}`, provider: 'local' };
         } else {
@@ -776,34 +782,58 @@ class MessageProcessor {
   }
 
   /**
-   * Classify message intent via MicroPipeline for smart-mix routing.
+   * Classify message intent for smart-mix routing.
+   *
+   * Uses IntentRouter (LLM with conversation context) when available,
+   * falls back to MicroPipeline regex classification.
    *
    * Three-path routing:
    * - greeting/chitchat → local (no tools, text-only)
    * - domain-specific (deck/calendar/email/wiki/file/search) → local (focused tool subset)
-   * - question/task/complex → cloud (full AgentLoop)
+   * - confirmation/selection/complex → cloud (full AgentLoop)
    *
    * @param {string} message
+   * @param {Object} [session] - SessionManager session for conversation context
    * @returns {Promise<{useLocal: boolean, useDomainTools: boolean, intent: string}>}
    * @private
    */
-  async _smartMixClassify(message) {
+  async _smartMixClassify(message, session) {
     try {
-      const classification = await this.microPipeline._classify(message);
-      const intent = classification.intent || 'unknown';
+      // Get recent conversation context from session (last 2 exchanges)
+      const recentContext = (session?.context || [])
+        .filter(c => c.role === 'user' || c.role === 'assistant')
+        .slice(-4);
 
-      // Path 1: greeting/chitchat → local, no tools
+      // Use IntentRouter if available, fall back to MicroPipeline regex
+      let classification;
+      if (this.intentRouter) {
+        classification = await this.intentRouter.classify(message, recentContext);
+      } else {
+        const fallback = await this.microPipeline._classifyFallback(message);
+        // Map fallback domain intents to IntentRouter format
+        if (DOMAIN_INTENTS.has(fallback.intent)) {
+          classification = { intent: 'domain', domain: fallback.intent, needsHistory: false };
+        } else {
+          classification = { intent: fallback.intent, domain: null, needsHistory: false };
+        }
+      }
+
+      const { intent, domain } = classification;
+
+      // Greeting/chitchat → local, no tools
       if (intent === 'greeting' || intent === 'chitchat') {
         return { useLocal: true, useDomainTools: false, intent };
       }
-
-      // Path 2: domain-specific → local, focused tools
-      if (DOMAIN_INTENTS.has(intent)) {
-        return { useLocal: true, useDomainTools: true, intent };
+      // Confirmation/selection → cloud (needs full history)
+      if (intent === 'confirmation' || intent === 'selection') {
+        return { useLocal: false, useDomainTools: false, intent };
       }
-
-      // Path 3: everything else → cloud
-      return { useLocal: false, useDomainTools: false, intent };
+      // Domain → local with focused tools
+      if (intent === 'domain' && domain && DOMAIN_INTENTS.has(domain)) {
+        return { useLocal: true, useDomainTools: true, intent: domain };
+      }
+      // Complex / fallback → cloud
+      return { useLocal: false, useDomainTools: false, intent: intent === 'domain' ? (domain || 'complex') : intent };
     } catch (err) {
       console.warn(`[Message] Smart-mix classification failed: ${err.message}`);
       return { useLocal: false, useDomainTools: false, intent: 'error' };

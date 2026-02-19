@@ -223,7 +223,8 @@ const config = {
     model: envStr('OLLAMA_MODEL', 'qwen3:8b'),
     timeout: envInt('OLLAMA_TIMEOUT', 300000),
     toolTimeout: envInt('OLLAMA_TOOL_TIMEOUT', 60000),
-    domainToolTimeout: envInt('OLLAMA_DOMAIN_TOOL_TIMEOUT', 90000)
+    domainToolTimeout: envInt('OLLAMA_DOMAIN_TOOL_TIMEOUT', 90000),
+    classifyTimeout: envInt('OLLAMA_CLASSIFY_TIMEOUT', 10000)
   },
 
   // -------------------------------------------------------------------------

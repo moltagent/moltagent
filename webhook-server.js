@@ -433,6 +433,7 @@ let voiceManager = null; // Session V2: VoiceManager for mode-aware voice orches
 let infraMonitor = null; // Session 38: InfraMonitor for service health probing
 let microPipeline = null; // Local Intelligence: MicroPipeline for local-only mode
 let deferralQueue = null; // Local Intelligence: DeferralQueue for deferred complex tasks
+let intentRouter = null; // IntentRouter: LLM-powered intent classification
 
 // Simple console audit logger fallback
 async function consoleAuditLog(event, data) {
@@ -1088,6 +1089,14 @@ async function initialize() {
         console.log(`[INIT] OllamaToolsProvider ready (${ollamaConfig.endpoint || CONFIG.ollama.url}, ${ollamaConfig.model || CONFIG.ollama.model})`);
       }
 
+      // IntentRouter: LLM-powered intent classification with conversation context
+      const IntentRouter = require('./src/lib/agent/intent-router');
+      intentRouter = ollamaProvider ? new IntentRouter({
+        provider: ollamaProvider,
+        config: { classifyTimeout: appConfig.ollama.classifyTimeout }
+      }) : null;
+      if (intentRouter) console.log(`[INIT] IntentRouter ready (${appConfig.ollama.classifyTimeout}ms timeout)`);
+
       const claudeProvider = new ClaudeToolsProvider({
         model: claudeConfig.model || 'claude-opus-4-6',
         maxTokens: 1024,
@@ -1393,6 +1402,7 @@ async function initialize() {
     audioConverter: audioConverter,
     voiceManager: voiceManager,
     microPipeline: microPipeline,
+    intentRouter: intentRouter,
     warmMemory: warmMemory,
     botNames: botNames,
     sendTalkReply: sendTalkReply,

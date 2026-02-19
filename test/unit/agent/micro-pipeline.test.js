@@ -36,10 +36,10 @@ function createMockDeferralQueue() {
   };
 }
 
-// -- Test 1: _classify() returns greeting for hello --
-asyncTest('_classify() returns greeting intent for hello messages', async () => {
+// -- Test 1: _classifyFallback() returns greeting for hello --
+asyncTest('_classifyFallback() returns greeting intent for hello messages', async () => {
   const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
-  const result = await pipeline._classify('Hello!');
+  const result = await pipeline._classifyFallback('Hello!');
   assert.strictEqual(result.intent, 'greeting');
 });
 
@@ -190,22 +190,22 @@ asyncTest('process() routes question intent to search+synthesize handler', async
   assert.strictEqual(result, 'Answer from LLM');
 });
 
-// -- Test 12: _classify() detects domain-specific intents via regex --
-asyncTest('_classify() detects deck intent from task keywords', async () => {
+// -- Test 12: _classifyFallback() detects domain-specific intents via regex --
+asyncTest('_classifyFallback() detects deck intent from task keywords', async () => {
   const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
-  const result = await pipeline._classify('Create a card for the new feature');
+  const result = await pipeline._classifyFallback('Create a card for the new feature');
   assert.strictEqual(result.intent, 'deck');
 });
 
-asyncTest('_classify() detects calendar intent from meeting keywords', async () => {
+asyncTest('_classifyFallback() detects calendar intent from meeting keywords', async () => {
   const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
-  const result = await pipeline._classify('What time is the meeting tomorrow?');
+  const result = await pipeline._classifyFallback('What time is the meeting tomorrow?');
   assert.strictEqual(result.intent, 'calendar');
 });
 
-asyncTest('_classify() detects multi-domain as complex', async () => {
+asyncTest('_classifyFallback() detects multi-domain as complex', async () => {
   const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
-  const result = await pipeline._classify('Create a task for the meeting notes and send an email about it');
+  const result = await pipeline._classifyFallback('Create a task for the meeting notes and send an email about it');
   assert.strictEqual(result.intent, 'complex');
 });
 
@@ -228,31 +228,50 @@ asyncTest('_detectDomains() returns correct domain hits', async () => {
   assert.deepStrictEqual(pipeline._detectDomains('hello there'), []);
 });
 
-// -- Test 15: _classify() routes confirmations to complex (cloud) --
-asyncTest('_classify() routes confirmations to complex for cloud handling', async () => {
+// -- Test 15: _classifyFallback() routes short confirmations to chitchat (IntentRouter handles context) --
+asyncTest('_classifyFallback() routes short confirmations to chitchat (IntentRouter handles these)', async () => {
   const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
-  const confirmations = ['yes', 'no', 'ok', 'sure', 'yeah', 'do it', 'go ahead', 'cancel', 'please', 'correct', 'exactly'];
-  for (const word of confirmations) {
-    const result = await pipeline._classify(word);
-    assert.strictEqual(result.intent, 'complex', `Expected "${word}" → complex, got ${result.intent}`);
-  }
+  // Short single-word messages fall through to word-count heuristic → chitchat
+  // Confirmation/selection routing is now handled by IntentRouter with conversation context
+  const result = await pipeline._classifyFallback('yes');
+  assert.strictEqual(result.intent, 'chitchat', 'Short words should be chitchat in fallback (IntentRouter handles confirmations)');
 });
 
-asyncTest('_classify() does not treat confirmations inside longer messages as confirmation intent', async () => {
+asyncTest('_classifyFallback() does not treat confirmations inside longer messages as confirmation intent', async () => {
   const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
   // "yes" inside a longer message should NOT trigger confirmation fast-path
-  const result = await pipeline._classify('Yes I would like to create a card for the new feature');
+  const result = await pipeline._classifyFallback('Yes I would like to create a card for the new feature');
   assert.notStrictEqual(result.intent, 'complex', `Long message starting with "Yes" should not be classified as complex confirmation`);
 });
 
-// -- Test 16: _classify() routes numeric selections to complex (cloud) --
-asyncTest('_classify() routes numeric selections to complex for cloud handling', async () => {
+// -- Test 16: _classifyFallback() routes short numeric selections to chitchat (IntentRouter handles context) --
+asyncTest('_classifyFallback() routes short numeric selections to chitchat (IntentRouter handles these)', async () => {
   const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
-  const selections = ['2.', '1', '#3', ' 12 ', '#42.'];
-  for (const sel of selections) {
-    const result = await pipeline._classify(sel);
-    assert.strictEqual(result.intent, 'complex', `Expected "${sel}" → complex, got ${result.intent}`);
-  }
+  // Short numeric messages fall through to word-count heuristic → chitchat
+  // Selection routing is now handled by IntentRouter with conversation context
+  const result = await pipeline._classifyFallback('2.');
+  assert.strictEqual(result.intent, 'chitchat', 'Short numeric should be chitchat in fallback (IntentRouter handles selections)');
+});
+
+// -- Test 17: process() uses pre-classified intent from context (skips _classifyFallback) --
+asyncTest('process() uses context.intent and skips _classifyFallback', async () => {
+  let classifyCalled = false;
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  const origClassify = pipeline._classifyFallback.bind(pipeline);
+  pipeline._classifyFallback = async (msg) => { classifyCalled = true; return origClassify(msg); };
+
+  const result = await pipeline.process('Hello there!', { userName: 'Eve', intent: 'greeting' });
+  assert.ok(result.includes('Eve'), 'Should handle greeting with userName');
+  assert.strictEqual(classifyCalled, false, '_classifyFallback should NOT be called when context.intent is provided');
+});
+
+asyncTest('process() routes pre-classified deck intent to domain handler', async () => {
+  const router = createMockRouter({ result: 'Fallback chat', provider: 'mock', tokens: 20 });
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
+  // No toolRegistry → falls back to chat, but intent should be 'deck'
+  const result = await pipeline.process('do the thing', { intent: 'deck' });
+  assert.ok(typeof result === 'string');
+  assert.strictEqual(pipeline.getStats().byIntent.deck, 1);
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 100);

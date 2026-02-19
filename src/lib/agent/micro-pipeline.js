@@ -15,14 +15,6 @@
 
 const GREETING_PATTERNS = /^(hi|hello|hey|good\s*(morning|afternoon|evening)|howdy|yo|sup|what'?s\s*up)\b/i;
 
-// Confirmations/negations MUST go to cloud AgentLoop — MicroPipeline has no
-// conversation history, so it can never know what "yes" or "do it" refers to.
-const CONFIRMATION_PATTERN = /^\s*(yes|no|ok|okay|sure|yeah|yep|yup|nah|nope|do it|go ahead|cancel|stop|please|correct|right|exactly|absolutely|definitely|alright|affirmative|negative|confirmed|deny|approve|reject|proceed|continue|skip|fine|got it|understood|ack)\s*[.!?]?\s*$/i;
-
-// Numeric selections ("2.", "#3", "1") are contextual references to a prior
-// numbered list — only AgentLoop with conversation history can resolve them.
-const SELECTION_PATTERN = /^\s*#?\d{1,3}\.?\s*$/;
-
 const INTENTS = Object.freeze({
   GREETING: 'greeting',
   QUESTION: 'question',
@@ -110,8 +102,10 @@ class MicroPipeline {
     this.stats.processed++;
 
     try {
-      // Stage 1: Classify intent
-      const classification = await this._classify(message);
+      // Use pre-classified intent if provided (from IntentRouter via MessageProcessor)
+      const classification = context.intent
+        ? { intent: context.intent }
+        : await this._classifyFallback(message);
       const intent = classification.intent || INTENTS.CHITCHAT;
 
       this.stats.byIntent[intent] = (this.stats.byIntent[intent] || 0) + 1;
@@ -161,28 +155,17 @@ class MicroPipeline {
   // ---------------------------------------------------------------------------
 
   /**
-   * Classify user intent with a tiny, focused LLM call.
-   * Falls back to regex heuristics if the LLM call fails.
-   *
-   * Three-tier classification:
-   * 1. Regex fast-path (greeting, chitchat, domain-specific)
-   * 2. LLM classification with domain awareness
-   * 3. Heuristic fallback
+   * Fallback classifier — regex heuristics + LLM.
+   * Used when no pre-classified intent is provided via context.intent
+   * (i.e. direct callers without IntentRouter).
    *
    * @param {string} message
    * @returns {Promise<Object>} { intent, topics?, names? }
    */
-  async _classify(message) {
+  async _classifyFallback(message) {
     // Fast-path: greeting detection via regex (no LLM needed)
     if (GREETING_PATTERNS.test(message.trim())) {
       return { intent: INTENTS.GREETING };
-    }
-
-    // Fast-path: confirmations/negations → complex (forces cloud AgentLoop).
-    // MicroPipeline has no conversation history — only AgentLoop knows
-    // what "yes" or "do it" refers to.
-    if (CONFIRMATION_PATTERN.test(message) || SELECTION_PATTERN.test(message)) {
-      return { intent: INTENTS.COMPLEX };
     }
 
     // Fast-path: short messages (< 5 words) are likely chitchat
