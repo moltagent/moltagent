@@ -1115,7 +1115,9 @@ class CockpitManager {
         for (const label of card.labels) {
           if (!label.title) continue;
           // Match ⚙★ (current) or ⭐ Active (legacy)
-          if (label.title === '\u2699\ufe0f\u2605' || label.title.includes('Active')) {
+          // Normalize: strip variation selector U+FE0F so ⚙★ and ⚙️★ both match
+          const t = label.title.replace(/\ufe0f/g, '');
+          if (t === '\u2699\u2605' || label.title.includes('Active')) {
             return card;
           }
         }
@@ -1140,23 +1142,26 @@ class CockpitManager {
     for (const label of card.labels) {
       if (!label.title) continue;
 
+      // Normalize: strip variation selector U+FE0F so ⚙1 and ⚙️1 both match
+      const t = label.title.replace(/\ufe0f/g, '');
+
       // ⚙4 (current) or Custom (legacy)
-      if (label.title === '\u2699\ufe0f4' || label.title.includes('Custom')) {
+      if (t === '\u26994' || label.title.includes('Custom')) {
         // Strip documentation below --- separator
         const raw = card.description || '';
         const value = raw.split('---')[0].trim();
         return { value, source: 'custom' };
       }
       // ⚙1 (current) or Off (A3) or Option 1 (original)
-      if (label.title === '\u2699\ufe0f1' || label.title.includes('Off') || label.title.includes('Option 1')) {
+      if (t === '\u26991' || label.title.includes('Off') || label.title.includes('Option 1')) {
         return { value: valueMap?.off || '', source: 'off' };
       }
       // ⚙2 (current) or Moderate (A3) or Option 2 (original)
-      if (label.title === '\u2699\ufe0f2' || label.title.includes('Moderate') || label.title.includes('Option 2')) {
+      if (t === '\u26992' || label.title.includes('Moderate') || label.title.includes('Option 2')) {
         return { value: valueMap?.moderate || '', source: 'moderate' };
       }
       // ⚙3 (current) or On (A3) or Option 3 (original)
-      if (label.title === '\u2699\ufe0f3' || label.title.includes('On') || label.title.includes('Option 3')) {
+      if (t === '\u26993' || label.title.includes('On') || label.title.includes('Option 3')) {
         return { value: valueMap?.on || '', source: 'on' };
       }
     }
