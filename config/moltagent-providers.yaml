@@ -9,7 +9,7 @@ providers:
     endpoint: http://138.201.246.236:11434
     model: qwen3:8b
 
-  # Premium tier - Claude API
+  # Premium tier - Claude Opus (deep reasoning, complex writing)
   anthropic-claude:
     adapter: anthropic
     credentialName: claude-api-key
@@ -18,6 +18,16 @@ providers:
       type: per_token
       inputPer1M: 15.00
       outputPer1M: 75.00
+
+  # Workhorse tier - Claude Sonnet (tools, coding, research at lower cost)
+  claude-sonnet:
+    adapter: anthropic
+    credentialName: claude-api-key
+    model: claude-sonnet-4-5-20250929
+    costModel:
+      type: per_token
+      inputPer1M: 3.00
+      outputPer1M: 15.00
 
   # Value tier - DeepSeek
   deepseek:
@@ -33,22 +43,25 @@ providers:
 roles:
   sovereign: [ollama-local]
   free: [ollama-local]
-  value: [deepseek, ollama-local]
-  premium: [anthropic-claude, deepseek, ollama-local]
+  value: [claude-sonnet, deepseek, ollama-local]
+  premium: [anthropic-claude, claude-sonnet, deepseek, ollama-local]
 
 # Fallback chains
 fallbackChain:
   ollama-local: []
-  anthropic-claude: [deepseek, ollama-local]
+  anthropic-claude: [claude-sonnet, deepseek, ollama-local]
+  claude-sonnet: [deepseek, ollama-local]
   deepseek: [ollama-local]
 
 # Budget limits in USD
 budgets:
   daily:
     anthropic-claude: 2.00
+    claude-sonnet: 3.00
     deepseek: 1.00
   monthly:
     anthropic-claude: 50.00
+    claude-sonnet: 30.00
     deepseek: 20.00
 
 # Search provider configuration

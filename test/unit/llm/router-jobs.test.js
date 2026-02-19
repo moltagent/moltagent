@@ -409,6 +409,164 @@ test('TC-JOB-STATS-001: getStats shows roster mode after setPreset', () => {
   assert.ok(Array.isArray(stats.roster['quick']));
 });
 
+// --- 3-Tier Smart-Mix Routing ---
+console.log('\n--- 3-Tier Smart-Mix Routing ---\n');
+
+function createRouterWith3Tiers() {
+  const router = new LLMRouter({
+    roles: {
+      sovereign: ['ollama-local'],
+      free: ['ollama-local'],
+      value: ['workhorse-cloud', 'ollama-local'],
+      premium: ['heavy-cloud', 'workhorse-cloud', 'ollama-local']
+    }
+  });
+  router.providers.set('ollama-local', createMockProvider({ id: 'ollama-local', type: 'local' }));
+  // Heavy cloud: expensive (like Opus)
+  const heavyProvider = createMockProvider({ id: 'heavy-cloud', type: 'api' });
+  heavyProvider.costModel = { type: 'per_token', inputPer1M: 15.00, outputPer1M: 75.00 };
+  router.providers.set('heavy-cloud', heavyProvider);
+  // Workhorse cloud: cheaper (like Sonnet)
+  const workhorseProvider = createMockProvider({ id: 'workhorse-cloud', type: 'api' });
+  workhorseProvider.costModel = { type: 'per_token', inputPer1M: 3.00, outputPer1M: 15.00 };
+  router.providers.set('workhorse-cloud', workhorseProvider);
+  return router;
+}
+
+test('TC-JOB-3TIER-001: _classifyCloudProviders sorts by cost', () => {
+  const router = createRouterWith3Tiers();
+  const { heavy, workhorse, rest } = router._classifyCloudProviders(['heavy-cloud', 'workhorse-cloud']);
+  assert.strictEqual(heavy, 'heavy-cloud', 'Most expensive should be heavy');
+  assert.strictEqual(workhorse, 'workhorse-cloud', 'Cheaper should be workhorse');
+  assert.deepStrictEqual(rest, [], 'No remaining providers with 2 clouds');
+});
+
+test('TC-JOB-3TIER-002: _classifyCloudProviders with 1 provider returns same for both', () => {
+  const router = createRouterWith3Tiers();
+  const { heavy, workhorse, rest } = router._classifyCloudProviders(['heavy-cloud']);
+  assert.strictEqual(heavy, 'heavy-cloud');
+  assert.strictEqual(workhorse, 'heavy-cloud');
+  assert.deepStrictEqual(rest, []);
+});
+
+test('TC-JOB-3TIER-003: _classifyCloudProviders with 0 providers returns nulls', () => {
+  const router = createRouterWith3Tiers();
+  const { heavy, workhorse, rest } = router._classifyCloudProviders([]);
+  assert.strictEqual(heavy, null);
+  assert.strictEqual(workhorse, null);
+  assert.deepStrictEqual(rest, []);
+});
+
+test('TC-JOB-3TIER-004: smart-mix quick/tools → local first, workhorse fallback', () => {
+  const router = createRouterWith3Tiers();
+  const roster = router._resolvePreset('smart-mix');
+
+  assert.strictEqual(roster['quick'][0], 'ollama-local', 'quick should start local');
+  assert.strictEqual(roster['quick'][1], 'workhorse-cloud', 'quick fallback should be workhorse');
+  assert.ok(!roster['quick'].includes('heavy-cloud'), 'quick should not include heavy');
+
+  assert.strictEqual(roster['tools'][0], 'ollama-local', 'tools should start local');
+  assert.strictEqual(roster['tools'][1], 'workhorse-cloud', 'tools fallback should be workhorse');
+});
+
+test('TC-JOB-3TIER-005: smart-mix thinking/writing → heavy first, workhorse, local', () => {
+  const router = createRouterWith3Tiers();
+  const roster = router._resolvePreset('smart-mix');
+
+  assert.strictEqual(roster['thinking'][0], 'heavy-cloud', 'thinking should start with heavy');
+  assert.strictEqual(roster['thinking'][1], 'workhorse-cloud', 'thinking fallback should be workhorse');
+  assert.strictEqual(roster['thinking'][2], 'ollama-local', 'thinking last should be local');
+
+  assert.strictEqual(roster['writing'][0], 'heavy-cloud', 'writing should start with heavy');
+  assert.strictEqual(roster['writing'][1], 'workhorse-cloud', 'writing fallback should be workhorse');
+});
+
+test('TC-JOB-3TIER-006: smart-mix research/coding → workhorse first, heavy, local', () => {
+  const router = createRouterWith3Tiers();
+  const roster = router._resolvePreset('smart-mix');
+
+  assert.strictEqual(roster['research'][0], 'workhorse-cloud', 'research should start with workhorse');
+  assert.strictEqual(roster['research'][1], 'heavy-cloud', 'research fallback should be heavy');
+  assert.strictEqual(roster['research'][2], 'ollama-local', 'research last should be local');
+
+  assert.strictEqual(roster['coding'][0], 'workhorse-cloud', 'coding should start with workhorse');
+  assert.strictEqual(roster['coding'][1], 'heavy-cloud', 'coding fallback should be heavy');
+});
+
+test('TC-JOB-3TIER-006b: smart-mix with 3+ clouds includes rest as fallback', () => {
+  const router = createRouterWith3Tiers();
+  // Add a third cheap cloud provider (like deepseek)
+  const cheapProvider = createMockProvider({ id: 'value-cloud', type: 'api' });
+  cheapProvider.costModel = { type: 'per_token', inputPer1M: 0.14, outputPer1M: 0.28 };
+  router.providers.set('value-cloud', cheapProvider);
+
+  const { heavy, workhorse, rest } = router._classifyCloudProviders(['heavy-cloud', 'workhorse-cloud', 'value-cloud']);
+  assert.strictEqual(heavy, 'heavy-cloud');
+  assert.strictEqual(workhorse, 'workhorse-cloud');
+  assert.deepStrictEqual(rest, ['value-cloud']);
+
+  const roster = router._resolvePreset('smart-mix');
+
+  // thinking: heavy → workhorse → value-cloud → local
+  assert.strictEqual(roster['thinking'][0], 'heavy-cloud');
+  assert.strictEqual(roster['thinking'][1], 'workhorse-cloud');
+  assert.strictEqual(roster['thinking'][2], 'value-cloud');
+  assert.strictEqual(roster['thinking'][3], 'ollama-local');
+
+  // research: workhorse → heavy → value-cloud → local
+  assert.strictEqual(roster['research'][0], 'workhorse-cloud');
+  assert.strictEqual(roster['research'][1], 'heavy-cloud');
+  assert.strictEqual(roster['research'][2], 'value-cloud');
+
+  // quick: local → workhorse → value-cloud (no heavy)
+  assert.strictEqual(roster['quick'][0], 'ollama-local');
+  assert.strictEqual(roster['quick'][1], 'workhorse-cloud');
+  assert.strictEqual(roster['quick'][2], 'value-cloud');
+  assert.ok(!roster['quick'].includes('heavy-cloud'), 'quick should not include heavy');
+});
+
+test('TC-JOB-3TIER-007: smart-mix with 1 cloud is backward-compatible', () => {
+  // Original test setup: only 1 cloud provider
+  const router = createRouterWithProviders();
+  const roster = router._resolvePreset('smart-mix');
+
+  // quick/tools: local first, cloud fallback (same as before)
+  assert.strictEqual(roster['quick'][0], 'ollama-local');
+  assert.strictEqual(roster['quick'][1], 'cloud-1');
+
+  // thinking/writing: cloud first, local fallback (same as before)
+  assert.strictEqual(roster['thinking'][0], 'cloud-1');
+  assert.strictEqual(roster['writing'][0], 'cloud-1');
+
+  // research/coding: cloud first, local fallback (same as before)
+  assert.strictEqual(roster['research'][0], 'cloud-1');
+  assert.strictEqual(roster['coding'][0], 'cloud-1');
+});
+
+asyncTest('TC-JOB-3TIER-008: route quick in 3-tier smart-mix uses local', async () => {
+  const router = createRouterWith3Tiers();
+  router.setPreset('smart-mix');
+
+  const result = await router.route({ job: 'quick', task: 'chat', content: 'Hello' });
+  assert.strictEqual(result.provider, 'ollama-local');
+});
+
+asyncTest('TC-JOB-3TIER-009: route thinking in 3-tier smart-mix uses heavy cloud', async () => {
+  const router = createRouterWith3Tiers();
+  router.setPreset('smart-mix');
+
+  const result = await router.route({ job: 'thinking', task: 'analyze', content: 'Think deeply' });
+  assert.strictEqual(result.provider, 'heavy-cloud');
+});
+
+asyncTest('TC-JOB-3TIER-010: route research in 3-tier smart-mix uses workhorse cloud', async () => {
+  const router = createRouterWith3Tiers();
+  router.setPreset('smart-mix');
+
+  const result = await router.route({ job: 'research', task: 'research', content: 'Search this' });
+  assert.strictEqual(result.provider, 'workhorse-cloud');
+});
+
 // Summary
 setTimeout(() => {
   summary();

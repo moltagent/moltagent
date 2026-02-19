@@ -567,11 +567,22 @@ class LLMRouter {
         roster[job] = [...localIds];
       }
     } else if (presetName === 'smart-mix') {
+      // 3-tier routing: heavy (most expensive cloud) for depth,
+      // workhorse (cheaper cloud) for volume, local as fallback.
+      // With 1 cloud provider, heavy === workhorse (backward-compatible).
+      // Additional cloud providers (3+) become late-chain fallbacks before local.
+      const { heavy, workhorse, rest } = this._classifyCloudProviders(cloudIds);
+
       for (const job of VALID_JOBS) {
         if (job === JOBS.QUICK || job === JOBS.TOOLS) {
-          roster[job] = [...localIds, ...cloudIds];
-        } else {
-          roster[job] = [...cloudIds, ...localIds];
+          // Volume work: local first, workhorse cloud as fallback
+          roster[job] = [...new Set([...localIds, workhorse, ...rest].filter(Boolean))];
+        } else if (job === JOBS.THINKING || job === JOBS.WRITING) {
+          // Deep work: heavy cloud first, workhorse fallback, rest, local last
+          roster[job] = [...new Set([heavy, workhorse, ...rest, ...localIds].filter(Boolean))];
+        } else if (job === JOBS.RESEARCH || job === JOBS.CODING) {
+          // Skilled work: workhorse cloud first, heavy fallback, rest, local last
+          roster[job] = [...new Set([workhorse, heavy, ...rest, ...localIds].filter(Boolean))];
         }
       }
     } else if (presetName === 'cloud-first') {
@@ -584,6 +595,28 @@ class LLMRouter {
     roster[JOBS.CREDENTIALS] = [...localIds];
 
     return roster;
+  }
+
+  /**
+   * Classify cloud providers into heavy (most expensive, for depth),
+   * workhorse (cheaper, for volume), and rest (additional fallbacks).
+   * With only one cloud provider, both roles point to the same ID.
+   * @private
+   * @param {string[]} cloudIds
+   * @returns {{ heavy: string|null, workhorse: string|null, rest: string[] }}
+   */
+  _classifyCloudProviders(cloudIds) {
+    if (cloudIds.length === 0) return { heavy: null, workhorse: null, rest: [] };
+    if (cloudIds.length === 1) return { heavy: cloudIds[0], workhorse: cloudIds[0], rest: [] };
+
+    // Sort by output cost descending — most expensive = heavy
+    const sorted = [...cloudIds].sort((a, b) => {
+      const costA = this.providers.get(a)?.costModel?.outputPer1M || 0;
+      const costB = this.providers.get(b)?.costModel?.outputPer1M || 0;
+      return costB - costA;
+    });
+
+    return { heavy: sorted[0], workhorse: sorted[1], rest: sorted.slice(2) };
   }
 
   /**
