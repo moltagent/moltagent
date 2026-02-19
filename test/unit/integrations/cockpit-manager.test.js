@@ -218,7 +218,7 @@ test('module exports CockpitManager and constants', () => {
   assert.strictEqual(typeof CockpitError, 'function');
   assert.strictEqual(BOARD_TITLE, 'Moltagent Cockpit');
   assert.ok(Array.isArray(LABEL_DEFS));
-  assert.strictEqual(LABEL_DEFS.length, 10);
+  assert.strictEqual(LABEL_DEFS.length, 11);
   assert.ok(Array.isArray(STACK_DEFS));
   assert.strictEqual(STACK_DEFS.length, 6);
   assert.ok(DEFAULT_CARDS.styles);
@@ -240,8 +240,8 @@ test('CockpitError has correct properties', () => {
 
 // --- Constants validation ---
 
-test('LABEL_DEFS includes all 10 expected labels (⚙️ namespace)', () => {
-  assert.strictEqual(LABEL_DEFS.length, 10, 'Should have 10 labels');
+test('LABEL_DEFS includes all 11 expected labels', () => {
+  assert.strictEqual(LABEL_DEFS.length, 11, 'Should have 11 labels');
   const titles = LABEL_DEFS.map(l => l.title);
   assert.ok(titles.includes('⚙️1'), 'Should have ⚙️1');
   assert.ok(titles.includes('⚙️2'), 'Should have ⚙️2');
@@ -253,6 +253,7 @@ test('LABEL_DEFS includes all 10 expected labels (⚙️ namespace)', () => {
   assert.ok(titles.includes('⚙️8'), 'Should have ⚙️8');
   assert.ok(titles.includes('⚙️9'), 'Should have ⚙️9');
   assert.ok(titles.includes('⚙️★'), 'Should have ⚙️★');
+  assert.ok(titles.includes('⏸ PAUSED'), 'Should have ⏸ PAUSED');
 });
 
 test('STACK_DEFS has 6 stacks in correct order', () => {
@@ -362,7 +363,7 @@ asyncTest('bootstrap() creates 6 stacks in correct order', async () => {
   }
 });
 
-asyncTest('bootstrap() creates all 10 labels with correct colors', async () => {
+asyncTest('bootstrap() creates all 11 labels with correct colors', async () => {
   const deck = createMockDeckClient();
   const cm = new CockpitManager({ deckClient: deck });
 
@@ -371,7 +372,7 @@ asyncTest('bootstrap() creates all 10 labels with correct colors', async () => {
   const labelCreationCalls = deck._calls.filter(c =>
     c.method === '_request' && c.httpMethod === 'POST' && c.path.includes('/labels')
   );
-  assert.strictEqual(labelCreationCalls.length, 10, 'Should create 10 labels');
+  assert.strictEqual(labelCreationCalls.length, 11, 'Should create 11 labels');
 
   // Verify labels match LABEL_DEFS
   for (let i = 0; i < LABEL_DEFS.length; i++) {
@@ -546,6 +547,52 @@ asyncTest('getGuardrails() returns empty array if no guardrails', async () => {
 
   assert.ok(Array.isArray(result), 'Should return array');
   assert.strictEqual(result.length, 0, 'Should return empty array');
+});
+
+asyncTest('getGuardrails() excludes cards with PAUSED label', async () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const cards = [
+    { id: 321, title: 'Never delete files', description: 'Hard constraint.', labels: [] },
+    { id: 322, title: 'Confirm external comms', description: 'Requires HITL.', labels: [{ title: '⏸ PAUSED' }] },
+    { id: 323, title: 'Budget limits', description: 'Cost cap.', labels: [] }
+  ];
+
+  const result = await cm.getGuardrails(cards);
+
+  assert.strictEqual(result.length, 2, 'Should exclude paused card');
+  assert.strictEqual(result[0].title, 'Never delete files');
+  assert.strictEqual(result[1].title, 'Budget limits');
+});
+
+asyncTest('getGuardrails() handles PAUSED label with variation selector', async () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const cards = [
+    { id: 321, title: 'Active rule', description: 'Active.', labels: [] },
+    { id: 322, title: 'Paused rule', description: 'Paused.', labels: [{ title: '⏸\uFE0F PAUSED' }] }
+  ];
+
+  const result = await cm.getGuardrails(cards);
+
+  assert.strictEqual(result.length, 1, 'Should exclude card with variation selector PAUSED');
+  assert.strictEqual(result[0].title, 'Active rule');
+});
+
+asyncTest('getGuardrails() keeps cards with non-PAUSED labels', async () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const cards = [
+    { id: 321, title: 'Labeled rule', description: 'Has labels.', labels: [{ title: '⚙️1' }, { title: 'urgent' }] }
+  ];
+
+  const result = await cm.getGuardrails(cards);
+
+  assert.strictEqual(result.length, 1, 'Non-PAUSED labels should not filter');
+  assert.strictEqual(result[0].title, 'Labeled rule');
 });
 
 asyncTest('getActiveMode() returns starred mode card description', async () => {
@@ -1312,8 +1359,8 @@ asyncTest('_migrateLabels() migrates Gen1 (Option) labels to ⚙ namespace', asy
 
   const migrated = await cm._migrateLabels();
 
-  // 5 renames + 5 reserved label creates = 10
-  assert.strictEqual(migrated, 10, 'Should migrate 5 + create 5 reserved');
+  // 5 renames + 6 reserved label creates = 11
+  assert.strictEqual(migrated, 11, 'Should migrate 5 + create 6 reserved');
 
   const putCalls = deck._calls.filter(c =>
     c.method === '_request' && c.httpMethod === 'PUT' && c.path.includes('/labels/')
@@ -1323,7 +1370,7 @@ asyncTest('_migrateLabels() migrates Gen1 (Option) labels to ⚙ namespace', asy
   const postCalls = deck._calls.filter(c =>
     c.method === '_request' && c.httpMethod === 'POST' && c.path.includes('/labels')
   );
-  assert.strictEqual(postCalls.length, 5, 'Should have 5 POST calls for reserved labels');
+  assert.strictEqual(postCalls.length, 6, 'Should have 6 POST calls for reserved labels');
 
   // Verify titles updated in-memory
   assert.strictEqual(cm.labels['🔴 Option 1'].title, '⚙️1');
@@ -1353,8 +1400,8 @@ asyncTest('_migrateLabels() migrates Gen2 (Off/Moderate/On) labels to ⚙ namesp
 
   const migrated = await cm._migrateLabels();
 
-  // 5 renames + 5 reserved label creates = 10
-  assert.strictEqual(migrated, 10, 'Should migrate 5 + create 5 reserved');
+  // 5 renames + 6 reserved label creates = 11
+  assert.strictEqual(migrated, 11, 'Should migrate 5 + create 6 reserved');
 
   assert.strictEqual(cm.labels['🔴 Off'].title, '⚙️1');
   assert.strictEqual(cm.labels['🟡 Moderate'].title, '⚙️2');
@@ -1363,12 +1410,12 @@ asyncTest('_migrateLabels() migrates Gen2 (Off/Moderate/On) labels to ⚙ namesp
   assert.strictEqual(cm.labels['🔵 Custom'].title, '⚙️4');
 });
 
-asyncTest('_migrateLabels() is idempotent with all 10 ⚙ labels', async () => {
+asyncTest('_migrateLabels() is idempotent with all 11 labels', async () => {
   const deck = createMockDeckClient();
   const cm = new CockpitManager({ deckClient: deck });
   cm.boardId = 99;
 
-  // All 10 labels already present at Gen3
+  // All 11 labels already present at Gen3
   cm.labels = {
     '⚙️★': { id: 1, title: '⚙️★', color: 'ffd700' },
     '⚙️1': { id: 2, title: '⚙️1', color: 'e9322d' },
@@ -1379,12 +1426,13 @@ asyncTest('_migrateLabels() is idempotent with all 10 ⚙ labels', async () => {
     '⚙️6': { id: 7, title: '⚙️6', color: 'ff6f61' },
     '⚙️7': { id: 8, title: '⚙️7', color: '17a2b8' },
     '⚙️8': { id: 9, title: '⚙️8', color: '795548' },
-    '⚙️9': { id: 10, title: '⚙️9', color: '6c757d' }
+    '⚙️9': { id: 10, title: '⚙️9', color: '6c757d' },
+    '⏸ PAUSED': { id: 11, title: '⏸ PAUSED', color: '6b7280' }
   };
 
   const migrated = await cm._migrateLabels();
 
-  assert.strictEqual(migrated, 0, 'Should migrate 0 labels when all 10 exist');
+  assert.strictEqual(migrated, 0, 'Should migrate 0 labels when all 11 exist');
   assert.strictEqual(deck._calls.length, 0, 'Should make 0 API calls');
 });
 
@@ -1404,15 +1452,15 @@ asyncTest('_migrateLabels() creates reserved ⚙5-⚙9 labels when missing', asy
 
   const migrated = await cm._migrateLabels();
 
-  assert.strictEqual(migrated, 5, 'Should create 5 reserved labels');
+  assert.strictEqual(migrated, 6, 'Should create 6 reserved labels');
 
   const postCalls = deck._calls.filter(c =>
     c.method === '_request' && c.httpMethod === 'POST' && c.path.includes('/labels')
   );
-  assert.strictEqual(postCalls.length, 5, 'Should POST 5 new labels');
+  assert.strictEqual(postCalls.length, 6, 'Should POST 6 new labels');
 
   const createdTitles = postCalls.map(c => c.body.title).sort();
-  assert.deepStrictEqual(createdTitles, ['⚙️5', '⚙️6', '⚙️7', '⚙️8', '⚙️9']);
+  assert.deepStrictEqual(createdTitles, ['⏸ PAUSED', '⚙️5', '⚙️6', '⚙️7', '⚙️8', '⚙️9']);
 });
 
 asyncTest('_migrateLabels() skips reserved labels that already exist', async () => {
@@ -1420,7 +1468,7 @@ asyncTest('_migrateLabels() skips reserved labels that already exist', async () 
   const cm = new CockpitManager({ deckClient: deck });
   cm.boardId = 99;
 
-  // All 10 labels already present
+  // All 11 labels already present
   cm.labels = {
     '⚙️★': { id: 1, title: '⚙️★', color: 'ffd700' },
     '⚙️1': { id: 2, title: '⚙️1', color: 'e9322d' },
@@ -1431,12 +1479,13 @@ asyncTest('_migrateLabels() skips reserved labels that already exist', async () 
     '⚙️6': { id: 7, title: '⚙️6', color: 'ff6f61' },
     '⚙️7': { id: 8, title: '⚙️7', color: '17a2b8' },
     '⚙️8': { id: 9, title: '⚙️8', color: '795548' },
-    '⚙️9': { id: 10, title: '⚙️9', color: '6c757d' }
+    '⚙️9': { id: 10, title: '⚙️9', color: '6c757d' },
+    '⏸ PAUSED': { id: 11, title: '⏸ PAUSED', color: '6b7280' }
   };
 
   const migrated = await cm._migrateLabels();
 
-  assert.strictEqual(migrated, 0, 'Should migrate/create 0 when all 10 exist');
+  assert.strictEqual(migrated, 0, 'Should migrate/create 0 when all 11 exist');
   assert.strictEqual(deck._calls.length, 0, 'Should make 0 API calls');
 });
 

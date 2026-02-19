@@ -69,7 +69,8 @@ const LABEL_DEFS = [
   { title: '⚙️6', color: 'ff6f61' },   // reserved (coral)
   { title: '⚙️7', color: '17a2b8' },   // reserved (teal)
   { title: '⚙️8', color: '795548' },   // reserved (brown)
-  { title: '⚙️9', color: '6c757d' }    // reserved (slate)
+  { title: '⚙️9', color: '6c757d' },   // reserved (slate)
+  { title: '⏸ PAUSED', color: '6b7280' } // guardrail toggle — grey
 ];
 
 /**
@@ -562,7 +563,14 @@ class CockpitManager {
       guardrailCards = guardrailsStack?.cards || [];
     }
 
-    return guardrailCards.map(card => ({
+    const activeCards = guardrailCards.filter(card => {
+      const labels = card.labels || [];
+      return !labels.some(l =>
+        l.title?.replace(/\uFE0F/g, '').trim() === '⏸ PAUSED'
+      );
+    });
+
+    return activeCards.map(card => ({
       title: card.title,
       description: card.description || ''
     }));
