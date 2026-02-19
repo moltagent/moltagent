@@ -1105,6 +1105,15 @@ async function initialize() {
       });
       console.log(`[INIT] ClaudeToolsProvider ready (${claudeConfig.model || 'claude-opus-4-6'})`);
 
+      // Sonnet: workhorse cloud provider (same API key, cheaper model)
+      const sonnetProvider = new ClaudeToolsProvider({
+        model: 'claude-sonnet-4-5-20250929',
+        maxTokens: 1024,
+        timeout: 30000,
+        getApiKey: () => getCredential('claude-api-key')
+      });
+      console.log('[INIT] ClaudeToolsProvider ready (claude-sonnet-4-5-20250929)');
+
       // --- Primary path: RouterChatBridge (LLMRouter v3 routing) ---
       let llmProvider = null;
 
@@ -1114,6 +1123,7 @@ async function initialize() {
           const chatProviders = new Map();
           if (ollamaProvider) chatProviders.set('ollama-local', ollamaProvider);
           chatProviders.set('anthropic-claude', claudeProvider);
+          chatProviders.set('claude-sonnet', sonnetProvider);
 
           // Activate smart-mix preset on LLMRouter v3
           llmRouter.router.setPreset('smart-mix');
