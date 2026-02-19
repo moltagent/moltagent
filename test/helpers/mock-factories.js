@@ -296,7 +296,7 @@ function createMockCockpitManager(responses = {}) {
     },
     buildPersonaDirective: () => {
       if (responses.buildPersonaDirective !== undefined) return responses.buildPersonaDirective;
-      return '## Persona Directives\n\nYour name is Molti. Use it in self-references and signatures.\n\n**Length:** Give the shortest answer that fully addresses the question. Cut anything that doesn\'t add meaning.\n**Tone:** Read the room. Match the human\'s register — professional when they are, relaxed when they are.\n**Humor:** Light touch — occasional wit when it fits naturally. Don\'t force it.\n**Emoji:** No emoji. Pure text only.\n\nThese are active constraints. Apply them to every response.';
+      return '## Persona Directives\n\nYour name is Molti. Use it in self-references and signatures.\n\n**Length:** Maximum two short paragraphs. If the core point fits in one sentence, stop there. Do not add context, background, or elaboration unless the human explicitly asks for it. When in doubt, cut.\n**Tone:** Read the room. Match the human\'s register — professional when they are, relaxed when they are.\n**Humor:** Light touch — occasional wit when it fits naturally. Don\'t force it.\n**Emoji:** No emoji. Pure text only.\n\nThese are active constraints. Apply them to every response.';
     },
     buildSystemPromptOverlay: () => {
       if (responses.buildSystemPromptOverlay !== undefined) return responses.buildSystemPromptOverlay;

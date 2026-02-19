@@ -939,7 +939,7 @@ test('buildPersonaDirective() includes name and all dial values', () => {
   const directive = cm.buildPersonaDirective();
 
   assert.ok(directive.includes('Your name is Molti'), 'Should include name');
-  assert.ok(directive.includes('shortest answer'), 'Should include concise verbosity instruction');
+  assert.ok(directive.includes('Maximum two short paragraphs'), 'Should include concise verbosity instruction');
   assert.ok(directive.includes('conversational'), 'Should include casual formality instruction');
   assert.ok(directive.includes('Playful'), 'Should include playful humor instruction');
   assert.ok(directive.includes('emoji freely'), 'Should include generous emoji instruction');

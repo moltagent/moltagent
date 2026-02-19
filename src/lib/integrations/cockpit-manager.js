@@ -828,7 +828,7 @@ class CockpitManager {
     const { name, humor, emoji, verbosity, formality, language } = this.cachedConfig.persona;
 
     const verbosityMap = {
-      concise:  'Give the shortest answer that fully addresses the question. Cut anything that doesn\'t add meaning.',
+      concise:  'Maximum two short paragraphs. If the core point fits in one sentence, stop there. Do not add context, background, or elaboration unless the human explicitly asks for it. When in doubt, cut.',
       balanced: 'Match response length to the complexity of the question. Neither pad nor compress.',
       detailed: 'Be thorough. Provide context, reasoning, and relevant detail. Don\'t cut for brevity.'
     };
