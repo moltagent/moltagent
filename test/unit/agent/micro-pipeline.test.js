@@ -245,4 +245,14 @@ asyncTest('_classify() does not treat confirmations inside longer messages as co
   assert.notStrictEqual(result.intent, 'complex', `Long message starting with "Yes" should not be classified as complex confirmation`);
 });
 
+// -- Test 16: _classify() routes numeric selections to complex (cloud) --
+asyncTest('_classify() routes numeric selections to complex for cloud handling', async () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  const selections = ['2.', '1', '#3', ' 12 ', '#42.'];
+  for (const sel of selections) {
+    const result = await pipeline._classify(sel);
+    assert.strictEqual(result.intent, 'complex', `Expected "${sel}" → complex, got ${result.intent}`);
+  }
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 100);

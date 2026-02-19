@@ -19,6 +19,10 @@ const GREETING_PATTERNS = /^(hi|hello|hey|good\s*(morning|afternoon|evening)|how
 // conversation history, so it can never know what "yes" or "do it" refers to.
 const CONFIRMATION_PATTERN = /^\s*(yes|no|ok|okay|sure|yeah|yep|yup|nah|nope|do it|go ahead|cancel|stop|please|correct|right|exactly|absolutely|definitely|alright|affirmative|negative|confirmed|deny|approve|reject|proceed|continue|skip|fine|got it|understood|ack)\s*[.!?]?\s*$/i;
 
+// Numeric selections ("2.", "#3", "1") are contextual references to a prior
+// numbered list — only AgentLoop with conversation history can resolve them.
+const SELECTION_PATTERN = /^\s*#?\d{1,3}\.?\s*$/;
+
 const INTENTS = Object.freeze({
   GREETING: 'greeting',
   QUESTION: 'question',
@@ -177,7 +181,7 @@ class MicroPipeline {
     // Fast-path: confirmations/negations → complex (forces cloud AgentLoop).
     // MicroPipeline has no conversation history — only AgentLoop knows
     // what "yes" or "do it" refers to.
-    if (CONFIRMATION_PATTERN.test(message)) {
+    if (CONFIRMATION_PATTERN.test(message) || SELECTION_PATTERN.test(message)) {
       return { intent: INTENTS.COMPLEX };
     }
 
