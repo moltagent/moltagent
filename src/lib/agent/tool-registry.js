@@ -416,7 +416,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_list_cards',
-      description: 'List all cards on the task board, optionally filtered by stack name (Inbox, Queued, Working, Done, Review, Reference). Returns card titles, IDs, and which stack they are in.',
+      description: 'List all cards on the task board, grouped by stack. Omit the stack parameter to search all stacks (preferred default). Only pass stack to filter to a specific stack when the user asks for one.',
       parameters: {
         type: 'object',
         properties: {
@@ -442,18 +442,22 @@ class ToolRegistry {
           ).join('\n');
         }
 
-        // All stacks
+        // All stacks — grouped by stack for readability
         const allCards = await deck.getAllCards();
         const lines = [];
+        let totalCards = 0;
 
         for (const [key, cards] of Object.entries(allCards)) {
+          if (cards.length === 0) continue;
+          totalCards += cards.length;
           const displayName = this._stackDisplayName(key, deck);
+          lines.push(`**${displayName}** (${cards.length}):`);
           for (const c of cards) {
-            lines.push(`- [#${c.id}] "${c.title}" in ${displayName}${c.duedate ? ` (due: ${c.duedate})` : ''}`);
+            lines.push(`- [#${c.id}] "${c.title}"${c.duedate ? ` (due: ${c.duedate})` : ''}`);
           }
         }
 
-        if (lines.length === 0) {
+        if (totalCards === 0) {
           return 'The board is empty.';
         }
 
