@@ -804,30 +804,81 @@ class CockpitManager {
     parts.push(behavioralDescription);
     parts.push('');
 
-    // Reinforce with persona voice dimensions if available
-    if (persona) {
-      const voiceTraits = [];
-      if (persona.verbosity) voiceTraits.push(`Verbosity: ${persona.verbosity}`);
-      if (persona.formality) voiceTraits.push(`Formality: ${persona.formality}`);
-      if (persona.humor) voiceTraits.push(`Humor: ${persona.humor}`);
-      if (persona.emoji) voiceTraits.push(`Emoji use: ${persona.emoji}`);
-      if (voiceTraits.length > 0) {
-        parts.push(`Voice: ${voiceTraits.join('. ')}.`);
-        parts.push('');
-      }
-    }
-
     parts.push(`Before writing any response, check: does this sound like "${style.name}"? If it sounds like a generic assistant, rewrite it.`);
+    parts.push('');
+    parts.push('Style governs voice and approach. Persona directives (length, tone, humor, emoji) take precedence over style defaults when they conflict.');
 
     return parts.join('\n');
+  }
+
+  /**
+   * Build a composed behavioral directive from persona dial values.
+   * Positioned at #2 in the system prompt (after Style, before SOUL.md)
+   * so all dials have positional authority over the identity block.
+   *
+   * Returns empty string if no persona is configured.
+   *
+   * @returns {string} Imperative persona directive text
+   */
+  buildPersonaDirective() {
+    if (!this.cachedConfig || !this.cachedConfig.persona) {
+      return '';
+    }
+
+    const { name, humor, emoji, verbosity, formality, language } = this.cachedConfig.persona;
+
+    const verbosityMap = {
+      concise:  'Give the shortest answer that fully addresses the question. Cut anything that doesn\'t add meaning.',
+      balanced: 'Match response length to the complexity of the question. Neither pad nor compress.',
+      detailed: 'Be thorough. Provide context, reasoning, and relevant detail. Don\'t cut for brevity.'
+    };
+
+    const formalityMap = {
+      formal:   'Keep tone professional and precise. Client-facing register throughout.',
+      balanced: 'Read the room. Match the human\'s register — professional when they are, relaxed when they are.',
+      casual:   'Keep it conversational. Relaxed, direct, human. No corporate polish.'
+    };
+
+    const humorMap = {
+      none:    'No humor. Strictly professional.',
+      light:   'Light touch — occasional wit when it fits naturally. Don\'t force it.',
+      playful: 'Playful when the moment allows. Jokes, wordplay, lighter energy are welcome.'
+    };
+
+    const emojiMap = {
+      none:     'No emoji. Pure text only.',
+      minimal:  'Occasional emoji for emphasis or tone. Use sparingly.',
+      generous: 'Use emoji freely for tone and visual scanning.'
+    };
+
+    const lines = [
+      '## Persona Directives',
+      '',
+      `Your name is ${name || 'Molti'}. Use it in self-references and signatures.`,
+      '',
+      `**Length:** ${verbosityMap[verbosity] || verbosityMap.balanced}`,
+      `**Tone:** ${formalityMap[formality] || formalityMap.balanced}`,
+      `**Humor:** ${humorMap[humor] || humorMap.light}`,
+      `**Emoji:** ${emojiMap[emoji] || emojiMap.none}`
+    ];
+
+    if (language && language !== 'EN') {
+      lines.push(`**Language:** Respond in ${language} by default. Switch to match the human's language if they write in a different one.`);
+    }
+
+    lines.push('');
+    lines.push('These are active constraints. Apply them to every response.');
+
+    return lines.join('\n');
   }
 
   /**
    * Compile the cached cockpit config into a text block for system prompt injection.
    * Pure synchronous function -- uses this.cachedConfig (no I/O).
    *
-   * Note: Communication style is NOT included here — it is emitted separately
-   * by buildStyleDirective() and injected at the top of the system prompt
+   * Note: Communication style and persona directives are NOT included here —
+   * they are emitted separately by buildStyleDirective() and
+   * buildPersonaDirective() and injected at the top of the system prompt
    * for maximum positional authority.
    *
    * Returns empty string if no config is cached yet.
@@ -844,18 +895,6 @@ class CockpitManager {
 
     parts.push('## Active Configuration (from Cockpit)');
     parts.push('');
-
-    // Persona
-    if (c.persona) {
-      parts.push('### Persona');
-      parts.push(`- Name: ${c.persona.name}`);
-      parts.push(`- Humor: ${c.persona.humor}`);
-      parts.push(`- Emoji: ${c.persona.emoji}`);
-      parts.push(`- Language: ${c.persona.language}`);
-      parts.push(`- Verbosity: ${c.persona.verbosity}`);
-      parts.push(`- Formality: ${c.persona.formality}`);
-      parts.push('');
-    }
 
     // Guardrails
     if (c.guardrails && c.guardrails.length > 0) {

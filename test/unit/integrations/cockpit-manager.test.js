@@ -894,7 +894,7 @@ test('buildStyleDirective() includes imperative framing', () => {
   assert.ok(directive.includes('Warm Teacher'), 'Should reference the style by name in self-check');
 });
 
-test('buildStyleDirective() includes persona voice traits', () => {
+test('buildStyleDirective() includes style/persona hierarchy line', () => {
   const deck = createMockDeckClient();
   const cm = new CockpitManager({ deckClient: deck });
 
@@ -907,9 +907,67 @@ test('buildStyleDirective() includes persona voice traits', () => {
 
   const directive = cm.buildStyleDirective();
 
-  assert.ok(directive.includes('concise'), 'Should include verbosity');
-  assert.ok(directive.includes('balanced'), 'Should include formality');
-  assert.ok(directive.includes('light'), 'Should include humor');
+  assert.ok(directive.includes('Persona directives'), 'Should include hierarchy line');
+  assert.ok(directive.includes('take precedence'), 'Should state persona takes precedence');
+});
+
+test('buildPersonaDirective() returns empty string when no config cached', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const directive = cm.buildPersonaDirective();
+  assert.strictEqual(directive, '', 'Should return empty string when no config cached');
+});
+
+test('buildPersonaDirective() returns empty string when no persona', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+  cm.cachedConfig = { style: { name: 'Concise', description: 'Short.' } };
+
+  const directive = cm.buildPersonaDirective();
+  assert.strictEqual(directive, '', 'Should return empty string when no persona');
+});
+
+test('buildPersonaDirective() includes name and all dial values', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  cm.cachedConfig = {
+    persona: { name: 'Molti', humor: 'playful', emoji: 'generous', language: 'EN', verbosity: 'concise', formality: 'casual' }
+  };
+
+  const directive = cm.buildPersonaDirective();
+
+  assert.ok(directive.includes('Your name is Molti'), 'Should include name');
+  assert.ok(directive.includes('shortest answer'), 'Should include concise verbosity instruction');
+  assert.ok(directive.includes('conversational'), 'Should include casual formality instruction');
+  assert.ok(directive.includes('Playful'), 'Should include playful humor instruction');
+  assert.ok(directive.includes('emoji freely'), 'Should include generous emoji instruction');
+  assert.ok(directive.includes('active constraints'), 'Should include enforcement line');
+});
+
+test('buildPersonaDirective() includes language when not EN', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  cm.cachedConfig = {
+    persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'PT', verbosity: 'balanced', formality: 'balanced' }
+  };
+
+  const directive = cm.buildPersonaDirective();
+  assert.ok(directive.includes('Respond in PT'), 'Should include language directive for non-EN');
+});
+
+test('buildPersonaDirective() omits language line when EN', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  cm.cachedConfig = {
+    persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'balanced', formality: 'balanced' }
+  };
+
+  const directive = cm.buildPersonaDirective();
+  assert.ok(!directive.includes('**Language:**'), 'Should NOT include language line when EN');
 });
 
 // --- Overlay tests ---
@@ -980,7 +1038,7 @@ test('buildSystemPromptOverlay() includes mode name and description', () => {
   assert.ok(overlay.includes('Maximum initiative'), 'Should include mode description');
 });
 
-test('buildSystemPromptOverlay() includes persona settings', () => {
+test('buildSystemPromptOverlay() does NOT include persona (moved to directive)', () => {
   const deck = createMockDeckClient();
   const cm = new CockpitManager({ deckClient: deck });
 
@@ -994,9 +1052,8 @@ test('buildSystemPromptOverlay() includes persona settings', () => {
 
   const overlay = cm.buildSystemPromptOverlay();
 
-  assert.ok(overlay.includes('Molti'), 'Should include persona name');
-  assert.ok(overlay.includes('light'), 'Should include humor setting');
-  assert.ok(overlay.includes('concise'), 'Should include verbosity setting');
+  assert.ok(!overlay.includes('### Persona'), 'Persona section should NOT be in overlay');
+  assert.ok(!overlay.includes('- Humor:'), 'Persona humor should NOT be in overlay');
 });
 
 // --- _ensureMissingCards tests ---

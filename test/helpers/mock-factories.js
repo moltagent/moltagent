@@ -292,11 +292,15 @@ function createMockCockpitManager(responses = {}) {
     updateStatus: async (statusData) => responses.updateStatus || undefined,
     buildStyleDirective: () => {
       if (responses.buildStyleDirective !== undefined) return responses.buildStyleDirective;
-      return '## Communication Style: Concise Executive\n\nEvery response you write MUST reflect this style. This is not optional.\n\nShort, answer-first.\n\nBefore writing any response, check: does this sound like "Concise Executive"? If it sounds like a generic assistant, rewrite it.';
+      return '## Communication Style: Concise Executive\n\nEvery response you write MUST reflect this style. This is not optional.\n\nShort, answer-first.\n\nBefore writing any response, check: does this sound like "Concise Executive"? If it sounds like a generic assistant, rewrite it.\n\nStyle governs voice and approach. Persona directives (length, tone, humor, emoji) take precedence over style defaults when they conflict.';
+    },
+    buildPersonaDirective: () => {
+      if (responses.buildPersonaDirective !== undefined) return responses.buildPersonaDirective;
+      return '## Persona Directives\n\nYour name is Molti. Use it in self-references and signatures.\n\n**Length:** Give the shortest answer that fully addresses the question. Cut anything that doesn\'t add meaning.\n**Tone:** Read the room. Match the human\'s register — professional when they are, relaxed when they are.\n**Humor:** Light touch — occasional wit when it fits naturally. Don\'t force it.\n**Emoji:** No emoji. Pure text only.\n\nThese are active constraints. Apply them to every response.';
     },
     buildSystemPromptOverlay: () => {
       if (responses.buildSystemPromptOverlay !== undefined) return responses.buildSystemPromptOverlay;
-      return '## Active Configuration (from Cockpit)\n\n### Persona\n- Name: Molti';
+      return '## Active Configuration (from Cockpit)\n\n### Guardrails (MUST OBEY)\n1. **Never delete files without asking**: Always require explicit user confirmation.';
     },
     boardId: responses.boardId || 99,
     cachedConfig: config,

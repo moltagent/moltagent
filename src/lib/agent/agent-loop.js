@@ -537,8 +537,10 @@ class AgentLoop {
     const dateHeader = `Today is ${dateStr}. Current time: ${timeStr} (24h format, ${tz}). Use this for all date-related queries.\n\n`;
 
     // Style directive goes FIRST — before identity, tools, everything.
+    // Persona directive goes SECOND — constrains how the style is expressed.
     // Positional authority matters: LLMs weight early instructions more heavily.
     let stylePrefix = '';
+    let personaPrefix = '';
     if (this.cockpitManager) {
       try {
         const directive = this.cockpitManager.buildStyleDirective();
@@ -548,9 +550,17 @@ class AgentLoop {
       } catch (err) {
         this.logger.warn('[AgentLoop] Style directive failed:', err.message);
       }
+      try {
+        const personaDirective = this.cockpitManager.buildPersonaDirective();
+        if (personaDirective) {
+          personaPrefix = personaDirective + '\n\n';
+        }
+      } catch (err) {
+        this.logger.warn('[AgentLoop] Persona directive failed:', err.message);
+      }
     }
 
-    let prompt = stylePrefix + dateHeader + (this.soul || '');
+    let prompt = stylePrefix + personaPrefix + dateHeader + (this.soul || '');
 
     if (memoryContext) {
       prompt += `\n\n${memoryContext}`;
