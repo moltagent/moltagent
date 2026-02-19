@@ -166,10 +166,8 @@ function createSampleStacks() {
       id: 106, title: '\ud83d\udcca Status', order: 5,
       cards: [
         { id: 351, title: 'Health', description: 'OK', labels: [] },
-        { id: 352, title: 'Tasks This Week', description: 'Open: 0', labels: [] },
-        { id: 353, title: 'Costs This Month', description: 'Total: 0', labels: [] },
-        { id: 354, title: 'Knowledge', description: 'Wiki pages: 0', labels: [] },
-        { id: 355, title: 'Recent Actions', description: '(none yet)', labels: [] }
+        { id: 352, title: 'Costs', description: 'This month: \u20ac0.00', labels: [] },
+        { id: 353, title: 'Model Usage', description: 'This month: 0 requests', labels: [] }
       ]
     }
   ];
@@ -303,15 +301,12 @@ test('DEFAULT_CARDS has 9 system cards (including Budget Limits + Voice + Infras
   assert.ok(titles.some(t => t.includes('Infrastructure')), 'Should include Infrastructure card');
 });
 
-test('DEFAULT_CARDS has 6 status cards (including Costs)', () => {
-  assert.strictEqual(DEFAULT_CARDS.status.length, 6);
+test('DEFAULT_CARDS has 3 status cards: Health, Costs, Model Usage', () => {
+  assert.strictEqual(DEFAULT_CARDS.status.length, 3);
   const titles = DEFAULT_CARDS.status.map(c => c.title);
   assert.ok(titles.includes('Health'));
-  assert.ok(titles.includes('Tasks This Week'));
-  assert.ok(titles.includes('Costs This Month'));
-  assert.ok(titles.includes('Knowledge'));
-  assert.ok(titles.includes('Recent Actions'));
-  assert.ok(titles.some(t => t.includes('Costs')), 'Should include daily Costs card');
+  assert.ok(titles.includes('Costs'));
+  assert.ok(titles.includes('Model Usage'));
 });
 
 test('PERSONA_VALUE_MAP covers all option-based persona dimensions (off/moderate/on)', () => {
@@ -670,32 +665,7 @@ asyncTest('updateStatus() updates Health card description', async () => {
   assert.ok(putCalls.length > 0, 'Should call PUT to update card');
 });
 
-asyncTest('updateStatus() updates Tasks card description', async () => {
-  const deck = createMockDeckClient({
-    getStacks: createSampleStacks()
-  });
-  const cm = new CockpitManager({ deckClient: deck });
-  cm.boardId = 99;
-  cm.stacks = { status: 106 };
-  cm._initialized = true;
-
-  const taskData = {
-    open: 5,
-    inProgress: 2,
-    completed: 10,
-    overdue: 1
-  };
-
-  await cm.updateStatus({ tasks: taskData });
-
-  const putCalls = deck._calls.filter(c =>
-    c.method === '_request' && c.httpMethod === 'PUT' && c.path.includes('/cards/')
-  );
-
-  assert.ok(putCalls.length > 0, 'Should call PUT to update Tasks card');
-});
-
-asyncTest('updateStatus() updates Costs card description', async () => {
+asyncTest('updateStatus() updates Costs card with monthly data', async () => {
   const deck = createMockDeckClient({
     getStacks: createSampleStacks()
   });
@@ -705,8 +675,11 @@ asyncTest('updateStatus() updates Costs card description', async () => {
   cm._initialized = true;
 
   const costData = {
-    providers: { 'anthropic-claude': { dailyCost: 10.00, dailyCalls: 50 } },
-    proactive: { dailyCost: 8.00, dailyCalls: 20 }
+    providers: {
+      'anthropic-claude': { monthly: { cost: 12.50, calls: 100 } },
+      'ollama': { monthly: { cost: 0, calls: 500 } }
+    },
+    _providerTypes: { 'anthropic-claude': 'cloud', 'ollama': 'local' }
   };
 
   await cm.updateStatus({ costs: costData });
@@ -716,9 +689,13 @@ asyncTest('updateStatus() updates Costs card description', async () => {
   );
 
   assert.ok(putCalls.length > 0, 'Should call PUT to update Costs card');
+  const costsPut = putCalls.find(c => c.body?.title === 'Costs');
+  assert.ok(costsPut, 'Should update the Costs card');
+  assert.ok(costsPut.body.description.includes('12.50'), 'Should include monthly cost');
+  assert.ok(costsPut.body.description.includes('Local ratio: 83%'), 'Should include local ratio');
 });
 
-asyncTest('updateStatus() updates Recent Actions card', async () => {
+asyncTest('updateStatus() updates Model Usage card with router stats', async () => {
   const deck = createMockDeckClient({
     getStacks: createSampleStacks()
   });
@@ -727,18 +704,131 @@ asyncTest('updateStatus() updates Recent Actions card', async () => {
   cm.stacks = { status: 106 };
   cm._initialized = true;
 
-  const actions = [
-    { action: 'Tagged 5 files in /Projects', timestamp: '2026-02-09T10:00:00Z' },
-    { action: 'Sent daily digest', timestamp: '2026-02-09T08:00:00Z' }
-  ];
+  const routerStats = {
+    byProvider: { 'ollama': 80, 'anthropic-claude': 20 },
+    _providerTypes: { 'ollama': 'local', 'anthropic-claude': 'cloud' }
+  };
 
-  await cm.updateStatus({ recentActions: actions });
+  await cm.updateStatus({ routerStats });
 
   const putCalls = deck._calls.filter(c =>
     c.method === '_request' && c.httpMethod === 'PUT' && c.path.includes('/cards/')
   );
 
-  assert.ok(putCalls.length > 0, 'Should call PUT to update Recent Actions card');
+  assert.ok(putCalls.length > 0, 'Should call PUT to update Model Usage card');
+  const usagePut = putCalls.find(c => c.body?.title === 'Model Usage');
+  assert.ok(usagePut, 'Should update the Model Usage card');
+  assert.ok(usagePut.body.description.includes('100 requests'), 'Should include total requests');
+  assert.ok(usagePut.body.description.includes('ollama (local)'), 'Should label local providers');
+});
+
+// --- New formatter tests ---
+
+test('_formatCostStatus() returns default when no data', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const result = cm._formatCostStatus(null);
+  assert.ok(result.includes('This month: \u20ac0.00'));
+  assert.ok(result.includes('Local ratio: --'));
+});
+
+test('_formatCostStatus() calculates local ratio correctly', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const costs = {
+    providers: {
+      'ollama': { monthly: { cost: 0, calls: 87 } },
+      'anthropic-claude': { monthly: { cost: 5.00, calls: 13 } }
+    },
+    _providerTypes: { 'ollama': 'local', 'anthropic-claude': 'cloud' }
+  };
+
+  const result = cm._formatCostStatus(costs);
+  assert.ok(result.includes('This month: \u20ac5.00'), 'Should show monthly total');
+  assert.ok(result.includes('Cloud: 13 calls'), 'Should show cloud calls');
+  assert.ok(result.includes('Local: 87 calls'), 'Should show local calls');
+  assert.ok(result.includes('Local ratio: 87%'), 'Should show local ratio');
+});
+
+test('_formatModelUsage() returns default when no data', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const result = cm._formatModelUsage(null);
+  assert.ok(result.includes('This month: 0 requests'));
+  assert.ok(result.includes('No provider data yet.'));
+});
+
+test('_formatModelUsage() uses byProvider fallback when no budget data', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const stats = {
+    byProvider: { 'ollama': 80, 'anthropic-claude': 20 },
+    _providerTypes: { 'ollama': 'local', 'anthropic-claude': 'cloud' }
+  };
+
+  const result = cm._formatModelUsage(stats);
+  assert.ok(result.includes('This month: 100 requests'), 'Should total from byProvider');
+  assert.ok(result.includes('ollama (local): 80 (80%)'), 'Should show ollama with local label and percentage');
+  assert.ok(result.includes('anthropic-claude (cloud): 20 (20%)'), 'Should show claude with cloud label');
+});
+
+test('_formatModelUsage() prefers budget monthly data when available', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const stats = {
+    byProvider: { 'ollama': 10 },
+    budget: {
+      providers: {
+        'ollama': { monthly: { calls: 500, cost: 0 } },
+        'anthropic-claude': { monthly: { calls: 50, cost: 3.00 } }
+      }
+    },
+    _providerTypes: { 'ollama': 'local', 'anthropic-claude': 'cloud' }
+  };
+
+  const result = cm._formatModelUsage(stats);
+  assert.ok(result.includes('This month: 550 requests'), 'Should use budget monthly totals');
+  assert.ok(result.includes('ollama (local): 500'), 'Should show budget ollama count');
+});
+
+test('_formatHealthStatus() includes request stats when present', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const health = {
+    status: 'OK',
+    uptimeDays: 5,
+    uptimeHours: 12,
+    lastError: 'none',
+    requestStats: { total: 47, succeeded: 45, rate: 96 }
+  };
+
+  const result = cm._formatHealthStatus(health);
+  assert.ok(result.includes('Last session: 47 requests, 45 succeeded (96%)'), 'Should include request stats');
+});
+
+test('_formatHealthStatus() includes request stats with infra data', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const health = {
+    status: 'OK',
+    uptimeDays: 5,
+    infra: {
+      overall: 'ok',
+      services: { ollama: { ok: true, latencyMs: 45, status: 'up' } },
+      systemStats: { ramUsedPct: 50, diskUsedPct: 40, uptimeDays: 5 }
+    },
+    requestStats: { total: 100, succeeded: 98, rate: 98 }
+  };
+
+  const result = cm._formatHealthStatus(health);
+  assert.ok(result.includes('Last session: 100 requests, 98 succeeded (98%)'), 'Should include request stats in infra format');
 });
 
 // --- Overlay tests ---

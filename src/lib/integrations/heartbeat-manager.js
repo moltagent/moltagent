@@ -575,13 +575,38 @@ class HeartbeatManager {
             }
           }
 
+          // Enrich cost report with provider type info (local vs cloud)
+          const providerTypes = this._getProviderTypes();
+          let costs = null;
+          if (this.budgetEnforcer) {
+            costs = this.budgetEnforcer.getFullReport();
+            costs._providerTypes = providerTypes;
+          }
+
+          // Get router stats for Model Usage card
+          let routerStats = null;
+          if (this.llmRouter?.getStats) {
+            routerStats = this.llmRouter.getStats();
+            routerStats._providerTypes = providerTypes;
+            // Attach budget provider data for monthly call counts
+            if (costs?.providers) {
+              routerStats.budget = { providers: costs.providers };
+            }
+          }
+
+          // Enrich health with request success rate
+          const health = this._getCockpitHealthMetrics(results.infra);
+          if (this.llmRouter?.stats) {
+            const s = this.llmRouter.stats;
+            health.requestStats = {
+              total: s.totalCalls,
+              succeeded: s.successfulCalls,
+              rate: s.totalCalls > 0 ? Math.round((s.successfulCalls / s.totalCalls) * 100) : 100
+            };
+          }
+
           // Update status cards with current metrics
-          await this.cockpitManager.updateStatus({
-            health: this._getCockpitHealthMetrics(results.infra),
-            tasks: await this._getDeckTaskSummary(),
-            costs: this.budgetEnforcer ? this.budgetEnforcer.getFullReport() : null,
-            recentActions: this.state.recentActions || []
-          });
+          await this.cockpitManager.updateStatus({ health, costs, routerStats });
 
           results.cockpit = { read: true, updated: true };
         } catch (err) {
@@ -1131,24 +1156,22 @@ class HeartbeatManager {
   }
 
   /**
-   * Get Deck task summary, transformed for Cockpit display.
-   * Maps DeckClient stack counts to the format _formatTaskStatus expects.
+   * Get provider type mapping (local vs cloud) from the LLM router.
+   * Used to enrich cost and router stats for Cockpit display.
    * @private
-   * @returns {Promise<Object|null>} {open, inProgress, completed, overdue} or null
+   * @returns {Object} Map of providerId -> 'local' | 'cloud'
    */
-  async _getDeckTaskSummary() {
-    if (!this.deckClient) return null;
-    try {
-      const summary = await this.deckClient.getWorkloadSummary();
-      return {
-        open: (summary.inbox || 0) + (summary.queued || 0),
-        inProgress: summary.working || 0,
-        completed: summary.done || 0,
-        overdue: 0
-      };
-    } catch {
-      return null;
+  _getProviderTypes() {
+    if (!this.llmRouter?.providers) return {};
+    const types = {};
+    // providers may be a Map or plain object
+    const entries = this.llmRouter.providers instanceof Map
+      ? this.llmRouter.providers
+      : Object.entries(this.llmRouter.providers);
+    for (const [id, provider] of entries) {
+      types[id] = (typeof provider.isLocal === 'function' ? provider.isLocal() : provider.isLocal) ? 'local' : 'cloud';
     }
+    return types;
   }
 
   /**

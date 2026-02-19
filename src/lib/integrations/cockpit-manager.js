@@ -176,12 +176,9 @@ const DEFAULT_CARDS = {
     { title: '\ud83c\udfe5 Infrastructure', description: 'Services:\n- ollama: auto\n- whisper: auto\n- searxng: auto\n- nextcloud: auto\n\nNotify on failure: on\nAuto-heal: on\nCheck interval: 3\n\n---\n\nService health monitoring. The agent checks these endpoints\non every Nth heartbeat and reports status on the Health card.\nauto = use default URL. Replace with a custom URL if needed.', defaultLabel: '\u2699\ufe0f4' }
   ],
   status: [
-    { title: 'Health',           description: '\ud83d\udfe2 OK -- Uptime: 0d 0h -- Last error: none' },
-    { title: 'Tasks This Week',  description: 'Open: 0 -- In Progress: 0 -- Completed: 0 -- Overdue: 0' },
-    { title: 'Costs This Month', description: 'Total: \u20ac0.00 -- Claude: \u20ac0.00 (0 calls) -- Ollama: local' },
-    { title: 'Knowledge',        description: 'Wiki pages: 0 -- People: 0 -- Projects: 0 -- Research: 0' },
-    { title: 'Recent Actions',   description: '(none yet)' },
-    { title: '\ud83d\udcb0 Costs', description: 'Today: \u20ac0.00\nThis month: \u20ac0.00' }
+    { title: 'Health', description: '\ud83d\udfe2 OK -- Uptime: 0d 0h -- Last error: none' },
+    { title: 'Costs', description: 'This month: \u20ac0.00\nCloud: 0 calls\nLocal: 0 calls\nLocal ratio: --' },
+    { title: 'Model Usage', description: 'This month: 0 requests\nNo provider data yet.' }
   ]
 };
 
@@ -337,6 +334,9 @@ class CockpitManager {
 
         // Create any missing default cards (e.g. Budget Limits added after first bootstrap)
         await this._ensureMissingCards(stacks);
+
+        // Remove obsolete cards from status stack (e.g. Tasks This Week, Knowledge, Recent Actions)
+        await this._removeObsoleteCards(stacks);
       }
 
       this._initialized = true;
@@ -729,11 +729,9 @@ class CockpitManager {
    * Only updates existing cards (never creates or deletes in Status stack).
    *
    * @param {Object} statusData
-   * @param {Object} [statusData.health] - Health metrics
-   * @param {Object} [statusData.tasks] - Task metrics
-   * @param {Object} [statusData.costs] - Cost metrics from BudgetEnforcer
-   * @param {Object} [statusData.knowledge] - Knowledge metrics
-   * @param {Array}  [statusData.recentActions] - Recent proactive actions
+   * @param {Object} [statusData.health] - Health metrics (with optional requestStats)
+   * @param {Object} [statusData.costs] - Cost metrics from BudgetEnforcer (enriched with _providerTypes)
+   * @param {Object} [statusData.routerStats] - Router stats from llmRouter.getStats() (enriched with _providerTypes)
    * @returns {Promise<void>}
    */
   async updateStatus(statusData) {
@@ -750,14 +748,8 @@ class CockpitManager {
       // Update each known status card
       const updates = [
         { title: 'Health', formatter: this._formatHealthStatus.bind(this), data: statusData.health },
-        { title: 'Tasks This Week', formatter: this._formatTaskStatus.bind(this), data: statusData.tasks },
-        { title: 'Costs This Month', formatter: this._formatCostStatus.bind(this), data: statusData.costs },
-        { title: 'Knowledge', formatter: (data) => {
-          if (!data) return 'Wiki pages: 0 -- People: 0 -- Projects: 0 -- Research: 0';
-          return `Wiki pages: ${data.wikiPages || 0} -- People: ${data.people || 0} -- Projects: ${data.projects || 0} -- Research: ${data.research || 0}`;
-        }, data: statusData.knowledge },
-        { title: 'Recent Actions', formatter: this._formatRecentActions.bind(this), data: statusData.recentActions },
-        { title: '\ud83d\udcb0 Costs', formatter: this._formatDailyCostStatus.bind(this), data: statusData.costs }
+        { title: 'Costs', formatter: this._formatCostStatus.bind(this), data: statusData.costs },
+        { title: 'Model Usage', formatter: this._formatModelUsage.bind(this), data: statusData.routerStats }
       ];
 
       for (const update of updates) {
@@ -1134,6 +1126,12 @@ class CockpitManager {
       const uptimeDays = health.uptimeDays || infra.systemStats?.uptimeDays || 0;
       parts.push(`Uptime: ${uptimeDays}d`);
 
+      // Request success rate
+      if (health.requestStats) {
+        const rs = health.requestStats;
+        parts.push(`Last session: ${rs.total} requests, ${rs.succeeded} succeeded (${rs.rate}%)`);
+      }
+
       return parts.join('\n');
     }
 
@@ -1144,91 +1142,110 @@ class CockpitManager {
     const uptimeHours = health?.uptimeHours || 0;
     const lastError = health?.lastError || 'none';
 
-    return `${emoji} ${status} -- Uptime: ${uptimeDays}d ${uptimeHours}h -- Last error: ${lastError}`;
+    const parts = [`${emoji} ${status} -- Uptime: ${uptimeDays}d ${uptimeHours}h -- Last error: ${lastError}`];
+
+    // Request success rate
+    if (health?.requestStats) {
+      const rs = health.requestStats;
+      parts.push(`Last session: ${rs.total} requests, ${rs.succeeded} succeeded (${rs.rate}%)`);
+    }
+
+    return parts.join('\n');
   }
 
   /**
-   * Format task summary for the Tasks card.
+   * Format cost summary for the Costs card using monthly data with local/cloud breakdown.
    * @private
-   * @param {Object} tasks - Task metrics
-   * @returns {string} Formatted description
-   */
-  _formatTaskStatus(tasks) {
-    const open = tasks?.open || 0;
-    const inProgress = tasks?.inProgress || 0;
-    const completed = tasks?.completed || 0;
-    const overdue = tasks?.overdue || 0;
-
-    return `Open: ${open} -- In Progress: ${inProgress} -- Completed: ${completed} -- Overdue: ${overdue}`;
-  }
-
-  /**
-   * Format cost summary for the Costs card.
-   * @private
-   * @param {Object} costs - Cost metrics
+   * @param {Object} costs - Cost metrics from BudgetEnforcer.getFullReport(), enriched with _providerTypes
    * @returns {string} Formatted description
    */
   _formatCostStatus(costs) {
     if (!costs || !costs.providers) {
-      return 'Total: €0.00 -- Ollama: local';
+      return 'This month: \u20ac0.00\nCloud: 0 calls\nLocal: 0 calls\nLocal ratio: --';
     }
 
-    // Sum costs across all providers from BudgetEnforcer.getFullReport()
-    let totalCost = 0;
-    let claudeCost = 0;
-    let claudeCalls = 0;
+    let monthlyTotal = 0;
+    let cloudCalls = 0;
+    let localCalls = 0;
+    const cloudProviders = [];
+
     for (const [providerId, summary] of Object.entries(costs.providers)) {
-      const cost = summary?.daily?.cost || 0;
-      totalCost += cost;
-      if (providerId.includes('claude') || providerId.includes('anthropic')) {
-        claudeCost += cost;
-        claudeCalls += summary?.daily?.calls || 0;
+      const monthly = summary?.monthly || {};
+      monthlyTotal += monthly.cost || 0;
+      if (costs._providerTypes?.[providerId] === 'local') {
+        localCalls += monthly.calls || 0;
+      } else {
+        cloudCalls += monthly.calls || 0;
+        if ((monthly.calls || 0) > 0) {
+          cloudProviders.push(`${providerId}: ${monthly.calls}`);
+        }
       }
     }
 
-    const proactiveCost = costs.proactive?.dailyCost || 0;
-    const reactiveCost = totalCost - proactiveCost;
+    const totalCalls = cloudCalls + localCalls;
+    const localRatio = totalCalls > 0 ? Math.round((localCalls / totalCalls) * 100) : 0;
 
-    return `Total: €${totalCost.toFixed(2)} -- Claude: €${claudeCost.toFixed(2)} (${claudeCalls} calls) -- Ollama: local -- Proactive: €${proactiveCost.toFixed(2)} -- Reactive: €${reactiveCost.toFixed(2)}`;
+    const lines = [`This month: \u20ac${monthlyTotal.toFixed(2)}`];
+    lines.push(`Cloud: ${cloudCalls} calls${cloudProviders.length ? ' (' + cloudProviders.join(', ') + ')' : ''}`);
+    lines.push(`Local: ${localCalls} calls`);
+    lines.push(`Local ratio: ${totalCalls > 0 ? localRatio + '%' : '--'}`);
+
+    return lines.join('\n');
   }
 
   /**
-   * Format recent actions for the Recent Actions card.
+   * Format model usage breakdown for the Model Usage card.
+   * Shows per-provider request counts with local/cloud labels.
    * @private
-   * @param {Array} actions - Recent proactive actions (last 5)
+   * @param {Object} routerStats - Router stats enriched with _providerTypes and budget data
    * @returns {string} Formatted description
    */
-  _formatRecentActions(actions) {
-    if (!Array.isArray(actions) || actions.length === 0) {
-      return '(none yet)';
+  _formatModelUsage(routerStats) {
+    if (!routerStats || !routerStats.byProvider) {
+      return 'This month: 0 requests\nNo provider data yet.';
     }
 
-    return actions.map((action, index) => {
-      const timestamp = action.timestamp || 'unknown time';
-      const description = action.description || action.action || 'unknown action';
-      return `${index + 1}. [${timestamp}] ${description}`;
-    }).join('\n');
-  }
+    const budget = routerStats.budget;
+    const byProvider = routerStats.byProvider;
 
-  /**
-   * Format daily + monthly cost summary for the 💰 Costs status card.
-   * @private
-   * @param {Object} costs - BudgetEnforcer.getFullReport() output
-   * @returns {string} Formatted description
-   */
-  _formatDailyCostStatus(costs) {
-    if (!costs || !costs.providers) {
-      return 'Today: \u20ac0.00\nThis month: \u20ac0.00';
+    // Use budget monthly calls if available (survives restarts), else router stats
+    let totalMonthly = 0;
+    const providerLines = [];
+
+    if (budget?.providers) {
+      for (const [id, summary] of Object.entries(budget.providers)) {
+        const calls = summary?.monthly?.calls || 0;
+        if (calls > 0) {
+          totalMonthly += calls;
+          const isLocal = routerStats._providerTypes?.[id] === 'local';
+          const label = isLocal ? `${id} (local)` : `${id} (cloud)`;
+          providerLines.push({ label, calls, isLocal });
+        }
+      }
     }
 
-    let dailyTotal = 0;
-    let monthlyTotal = 0;
-    for (const summary of Object.values(costs.providers)) {
-      dailyTotal += summary?.daily?.cost || 0;
-      monthlyTotal += summary?.monthly?.cost || 0;
+    // Fallback to router session stats
+    if (totalMonthly === 0) {
+      for (const [id, calls] of Object.entries(byProvider)) {
+        if (calls > 0) {
+          totalMonthly += calls;
+          const isLocal = routerStats._providerTypes?.[id] === 'local';
+          const label = isLocal ? `${id} (local)` : `${id} (cloud)`;
+          providerLines.push({ label, calls, isLocal });
+        }
+      }
     }
 
-    return `Today: \u20ac${dailyTotal.toFixed(2)}\nThis month: \u20ac${monthlyTotal.toFixed(2)}`;
+    // Sort by calls desc
+    providerLines.sort((a, b) => b.calls - a.calls);
+
+    const lines = [`This month: ${totalMonthly} requests`];
+    for (const p of providerLines) {
+      const pct = totalMonthly > 0 ? Math.round((p.calls / totalMonthly) * 100) : 0;
+      lines.push(`${p.label}: ${p.calls} (${pct}%)`);
+    }
+
+    return lines.join('\n');
   }
 
   /**
@@ -1280,6 +1297,41 @@ class CockpitManager {
         }
 
         console.log(`[CockpitManager] Created missing card: "${cardDef.title}" in stack "${def.title}"`);
+      }
+    }
+  }
+
+  /**
+   * Remove obsolete cards from the status stack that are no longer in DEFAULT_CARDS.
+   * Called during initialize() after _ensureMissingCards() to clean up cards from
+   * previous releases (e.g. "Tasks This Week", "Knowledge", "Recent Actions", "💰 Costs").
+   *
+   * @private
+   * @param {Array<Object>} stacks - Fetched stacks with cards
+   * @returns {Promise<void>}
+   */
+  async _removeObsoleteCards(stacks) {
+    const statusStackId = this.stacks.status;
+    if (!statusStackId) return;
+
+    const stack = stacks.find(s => s.id === statusStackId);
+    if (!stack?.cards) return;
+
+    // Explicit list of known obsolete titles — user-added custom cards are preserved.
+    const OBSOLETE_STATUS_TITLES = new Set([
+      'Tasks This Week', 'Costs This Month', 'Knowledge',
+      'Recent Actions', '\ud83d\udcb0 Costs'
+    ]);
+
+    for (const card of stack.cards) {
+      if (OBSOLETE_STATUS_TITLES.has(card.title)) {
+        try {
+          const deletePath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${statusStackId}/cards/${card.id}`;
+          await this.deck._request('DELETE', deletePath);
+          console.log(`[CockpitManager] Removed obsolete status card: "${card.title}"`);
+        } catch (err) {
+          console.warn(`[CockpitManager] Failed to remove card "${card.title}": ${err.message}`);
+        }
       }
     }
   }

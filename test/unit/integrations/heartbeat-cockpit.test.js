@@ -82,7 +82,7 @@ console.log('\n=== Heartbeat-Cockpit Integration Tests ===\n');
 (async () => {
   await asyncTest('pulse() reads cockpit config when cockpitManager is present', async () => {
     let readConfigCalled = false;
-    let updateStatusCalled = false;
+    let updateStatusArg = null;
 
     const mockCockpit = createMockCockpitManager();
     mockCockpit.readConfig = async () => {
@@ -95,7 +95,7 @@ console.log('\n=== Heartbeat-Cockpit Integration Tests ===\n');
         system: { searchProvider: 'searxng', llmTier: 'balanced', dailyDigest: '08:00', autoTagFiles: true, initiativeLevel: 2, workingHours: '08:00-18:00' }
       };
     };
-    mockCockpit.updateStatus = async () => { updateStatusCalled = true; };
+    mockCockpit.updateStatus = async (arg) => { updateStatusArg = arg; };
 
     const config = createMockConfig({ cockpitManager: mockCockpit });
     const hb = new HeartbeatManager(config);
@@ -104,7 +104,10 @@ console.log('\n=== Heartbeat-Cockpit Integration Tests ===\n');
     const results = await hb.pulse();
 
     assert.strictEqual(readConfigCalled, true, 'readConfig should be called');
-    assert.strictEqual(updateStatusCalled, true, 'updateStatus should be called');
+    assert.ok(updateStatusArg, 'updateStatus should be called');
+    assert.ok(updateStatusArg.health, 'updateStatus should receive health');
+    assert.ok('costs' in updateStatusArg, 'updateStatus should receive costs key');
+    assert.ok('routerStats' in updateStatusArg, 'updateStatus should receive routerStats key');
     assert.ok(results.cockpit, 'results should include cockpit entry');
     assert.strictEqual(results.cockpit.read, true);
     assert.strictEqual(results.cockpit.updated, true);
