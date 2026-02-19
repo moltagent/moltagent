@@ -87,31 +87,42 @@ class OllamaToolsProvider {
     const effectiveTimeout = timeout || ((tools && tools.length > 0) ? this.toolTimeout : this.timeout);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
+
+    // Hard timeout via Promise.race — AbortController alone doesn't force-close
+    // the TCP connection promptly (Ollama can linger ~90s after abort signal).
+    let timerId;
+    const timeoutPromise = new Promise((_, reject) => {
+      timerId = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`Ollama request timed out after ${effectiveTimeout}ms`));
+      }, effectiveTimeout);
+    });
 
     try {
-      const response = await fetch(`${this.endpoint}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal
-      });
+      const fetchPromise = (async () => {
+        const response = await fetch(`${this.endpoint}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
 
-      clearTimeout(timeoutId);
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Ollama error ${response.status}: ${errText}`);
+        }
 
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Ollama error ${response.status}: ${errText}`);
-      }
+        const data = await response.json();
+        return this._parseResponse(data);
+      })();
 
-      const data = await response.json();
-      return this._parseResponse(data);
+      const result = await Promise.race([fetchPromise, timeoutPromise]);
+      clearTimeout(timerId);
+      return result;
 
     } catch (err) {
-      clearTimeout(timeoutId);
-      if (err.name === 'AbortError') {
-        throw new Error(`Ollama request timed out after ${effectiveTimeout}ms`);
-      }
+      clearTimeout(timerId);
+      controller.abort();
       throw err;
     }
   }
