@@ -416,19 +416,56 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_list_cards',
-      description: 'List all cards on the task board, grouped by stack. Omit the stack parameter to search all stacks (preferred default). Only pass stack to filter to a specific stack when the user asks for one.',
+      description: 'List all cards on a board, grouped by stack. Defaults to the task board. Use the board parameter to query other boards (e.g. "Cockpit", "Moltagent Cockpit"). Omit the stack parameter to search all stacks (preferred default).',
       parameters: {
         type: 'object',
         properties: {
           stack: {
             type: 'string',
-            description: 'Filter by stack name. If omitted, lists all cards from all stacks.',
-            enum: ['Inbox', 'Queued', 'Working', 'Done', 'Review', 'Reference']
+            description: 'Filter by stack name. If omitted, lists all cards from all stacks.'
+          },
+          board: {
+            type: 'string',
+            description: 'Board name (partial match) or board ID. If omitted, uses the task board.'
           }
         },
         required: []
       },
       handler: async (args) => {
+        // Non-default board: resolve board, fetch stacks, list cards
+        if (args.board) {
+          const board = await this._resolveBoard(deck, args.board);
+          if (!board) return `No board found matching "${args.board}".`;
+
+          const stacks = await deck.getStacks(board.id);
+          if (!stacks || stacks.length === 0) return `Board "${board.title}" has no stacks.`;
+
+          const lines = [];
+          let totalCards = 0;
+
+          for (const s of stacks) {
+            const cards = s.cards || [];
+            // Filter by stack name if specified
+            if (args.stack && s.title.toLowerCase() !== args.stack.toLowerCase()) continue;
+            if (cards.length === 0) continue;
+            totalCards += cards.length;
+            lines.push(`**${s.title}** (${cards.length}):`);
+            for (const c of cards) {
+              const labels = (c.labels || []).map(l => l.title).join(', ');
+              lines.push(`- [#${c.id}] "${c.title}"${labels ? ` [${labels}]` : ''}${c.duedate ? ` (due: ${c.duedate})` : ''}`);
+            }
+          }
+
+          if (totalCards === 0) {
+            return args.stack
+              ? `No cards in stack "${args.stack}" on board "${board.title}".`
+              : `Board "${board.title}" is empty.`;
+          }
+
+          return lines.join('\n');
+        }
+
+        // Default task board path (existing behavior)
         if (args.stack) {
           const key = this._stackKey(args.stack);
           const cards = await deck.getCardsInStack(key);

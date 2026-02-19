@@ -227,6 +227,66 @@ asyncTest('deck_list_cards returns empty message when no cards', async () => {
   assert.ok(result.result.includes('empty'));
 });
 
+asyncTest('deck_list_cards with board param queries non-task board', async () => {
+  const deck = createMockDeckClient({});
+  deck.listBoards = async () => [
+    { id: 1, title: 'MoltAgent Tasks', owner: { uid: 'moltagent' } },
+    { id: 14, title: 'Moltagent Cockpit', owner: { uid: 'moltagent' } }
+  ];
+  deck.getStacks = async (boardId) => {
+    if (boardId === 14) {
+      return [
+        { id: 100, title: '💡 Styles', cards: [
+          { id: 50, title: 'Professional', labels: [{ title: '⚙★' }] },
+          { id: 51, title: 'Casual', labels: [] }
+        ]},
+        { id: 101, title: '🎭 Persona', cards: [
+          { id: 60, title: 'Humor', labels: [{ title: '⚙2' }] }
+        ]}
+      ];
+    }
+    return [{ id: 301, title: 'Inbox', cards: [] }];
+  };
+
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_list_cards', { board: 'Cockpit' });
+  assert.ok(result.success, 'Should succeed');
+  assert.ok(result.result.includes('Professional'), 'Should include Cockpit card');
+  assert.ok(result.result.includes('Humor'), 'Should include Persona card');
+  assert.ok(result.result.includes('💡 Styles'), 'Should include stack name');
+  assert.ok(result.result.includes('⚙★'), 'Should include label');
+});
+
+asyncTest('deck_list_cards with board and stack filters to specific stack', async () => {
+  const deck = createMockDeckClient({});
+  deck.listBoards = async () => [
+    { id: 14, title: 'Moltagent Cockpit', owner: { uid: 'moltagent' } }
+  ];
+  deck.getStacks = async () => [
+    { id: 100, title: '💡 Styles', cards: [{ id: 50, title: 'Pro', labels: [] }] },
+    { id: 101, title: '🎭 Persona', cards: [{ id: 60, title: 'Humor', labels: [] }] }
+  ];
+
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_list_cards', { board: 'Cockpit', stack: '🎭 Persona' });
+  assert.ok(result.success);
+  assert.ok(result.result.includes('Humor'), 'Should include Persona cards');
+  assert.ok(!result.result.includes('Pro'), 'Should not include Styles cards');
+});
+
+asyncTest('deck_list_cards with unknown board returns error', async () => {
+  const registry = new ToolRegistry({
+    deckClient: createMockDeckClient({}),
+    logger: silentLogger
+  });
+
+  const result = await registry.execute('deck_list_cards', { board: 'NonExistent' });
+  assert.ok(result.success);
+  assert.ok(result.result.includes('No board found'));
+});
+
 asyncTest('deck_move_card finds card by partial title', async () => {
   let movedFrom, movedTo, movedId;
   const deck = createMockDeckClient({
