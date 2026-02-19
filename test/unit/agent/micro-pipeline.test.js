@@ -228,4 +228,21 @@ asyncTest('_detectDomains() returns correct domain hits', async () => {
   assert.deepStrictEqual(pipeline._detectDomains('hello there'), []);
 });
 
+// -- Test 15: _classify() routes confirmations to complex (cloud) --
+asyncTest('_classify() routes confirmations to complex for cloud handling', async () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  const confirmations = ['yes', 'no', 'ok', 'sure', 'yeah', 'do it', 'go ahead', 'cancel', 'please', 'correct', 'exactly'];
+  for (const word of confirmations) {
+    const result = await pipeline._classify(word);
+    assert.strictEqual(result.intent, 'complex', `Expected "${word}" → complex, got ${result.intent}`);
+  }
+});
+
+asyncTest('_classify() does not treat confirmations inside longer messages as confirmation intent', async () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  // "yes" inside a longer message should NOT trigger confirmation fast-path
+  const result = await pipeline._classify('Yes I would like to create a card for the new feature');
+  assert.notStrictEqual(result.intent, 'complex', `Long message starting with "Yes" should not be classified as complex confirmation`);
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 100);

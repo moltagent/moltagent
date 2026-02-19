@@ -15,6 +15,10 @@
 
 const GREETING_PATTERNS = /^(hi|hello|hey|good\s*(morning|afternoon|evening)|howdy|yo|sup|what'?s\s*up)\b/i;
 
+// Confirmations/negations MUST go to cloud AgentLoop — MicroPipeline has no
+// conversation history, so it can never know what "yes" or "do it" refers to.
+const CONFIRMATION_PATTERN = /^\s*(yes|no|ok|okay|sure|yeah|yep|yup|nah|nope|do it|go ahead|cancel|stop|please|correct|right|exactly|absolutely|definitely|alright|affirmative|negative|confirmed|deny|approve|reject|proceed|continue|skip|fine|got it|understood|ack)\s*[.!?]?\s*$/i;
+
 const INTENTS = Object.freeze({
   GREETING: 'greeting',
   QUESTION: 'question',
@@ -168,6 +172,13 @@ class MicroPipeline {
     // Fast-path: greeting detection via regex (no LLM needed)
     if (GREETING_PATTERNS.test(message.trim())) {
       return { intent: INTENTS.GREETING };
+    }
+
+    // Fast-path: confirmations/negations → complex (forces cloud AgentLoop).
+    // MicroPipeline has no conversation history — only AgentLoop knows
+    // what "yes" or "do it" refers to.
+    if (CONFIRMATION_PATTERN.test(message)) {
+      return { intent: INTENTS.COMPLEX };
     }
 
     // Fast-path: short messages (< 5 words) are likely chitchat
