@@ -596,12 +596,15 @@ class HeartbeatManager {
 
           // Enrich health with request success rate
           const health = this._getCockpitHealthMetrics(results.infra);
-          if (this.llmRouter?.stats) {
-            const s = this.llmRouter.stats;
+          // Use inner router stats if available (legacy wrapper exposes _router)
+          const routerStats_ = this.llmRouter?._router?.stats || this.llmRouter?.stats;
+          if (routerStats_ && routerStats_.totalCalls != null) {
+            const total = routerStats_.totalCalls;
+            const succeeded = routerStats_.successfulCalls || 0;
             health.requestStats = {
-              total: s.totalCalls,
-              succeeded: s.successfulCalls,
-              rate: s.totalCalls > 0 ? Math.round((s.successfulCalls / s.totalCalls) * 100) : 100
+              total,
+              succeeded,
+              rate: total > 0 ? Math.round((succeeded / total) * 100) : 100
             };
           }
 
