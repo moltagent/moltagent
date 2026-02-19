@@ -488,7 +488,7 @@ class HeartbeatManager {
       // Level >= 2: NC Flow events (informational, no LLM cost)
       if (level >= 2) {
         try {
-          results.flow = this._processFlowEvents();
+          results.flow = await this._processFlowEvents();
         } catch (err) {
           console.error('[Heartbeat] NC Flow processing error:', err.message);
           results.errors.push({ component: 'flow', error: err.message });
@@ -689,6 +689,7 @@ class HeartbeatManager {
         rsvpChanges: results.rsvp?.changes || 0,
         knowledgePending: results.knowledge?.pending || 0,
         flowEventsProcessed: results.flow?.processed || 0,
+        mentionsHandled: results.flow?.mentionsHandled || 0,
         botEnrolled: results.botEnroll?.enrolled || 0,
         infraChecked: results.infra ? 1 : 0,
         workflowBoards: results.workflow?.boardsProcessed || 0,
@@ -896,12 +897,12 @@ class HeartbeatManager {
    * @returns {Object} { processed: number, byType: Object }
    * @private
    */
-  _processFlowEvents() {
+  async _processFlowEvents() {
     // Atomic drain
     const events = this.externalEventQueue.splice(0, this.externalEventQueue.length);
 
     if (events.length === 0) {
-      return { processed: 0 };
+      return { processed: 0, mentionsHandled: 0 };
     }
 
     // Group by type for summary
@@ -910,17 +911,31 @@ class HeartbeatManager {
       byType[event.type] = (byType[event.type] || 0) + 1;
     }
 
+    // Route deck_comment_added events to @mention handler
+    let mentionsHandled = 0;
+    const commentEvents = events.filter(e => e.type === 'deck_comment_added');
+    for (const event of commentEvents) {
+      try {
+        const result = await this.deckProcessor.processMention(event);
+        if (result.handled) {
+          mentionsHandled++;
+        }
+      } catch (err) {
+        console.warn(`[Heartbeat] @mention processing error: ${err.message}`);
+      }
+    }
+
     // Summary logging
     const typeSummary = Object.entries(byType)
       .map(([type, count]) => `${type}:${count}`)
       .join(', ');
-    console.log(`[Heartbeat] Processed ${events.length} NC Flow events: ${typeSummary}`);
+    console.log(`[Heartbeat] Processed ${events.length} NC Flow events: ${typeSummary}${mentionsHandled > 0 ? ` (${mentionsHandled} mentions handled)` : ''}`);
 
     // Update daily counter
     this.state.flowEventsProcessedToday += events.length;
     this.state.lastFlowProcess = new Date();
 
-    return { processed: events.length, byType };
+    return { processed: events.length, byType, mentionsHandled };
   }
 
   /**

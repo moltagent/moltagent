@@ -119,6 +119,20 @@ class DeckTaskProcessor {
 
       // Process each card
       for (const card of inboxCards) {
+        // Skip cards assigned to someone else (not Moltagent)
+        const assignees = card.assignedUsers || [];
+        if (assignees.length > 0) {
+          const myUsername = (this.deck.username || 'moltagent').toLowerCase();
+          const assignedToMe = assignees.some(u =>
+            (u.participant?.uid || u.uid || '').toLowerCase() === myUsername
+          );
+          if (!assignedToMe) {
+            console.log(`[DeckProcessor] Skipping card assigned to others: "${card.title}"`);
+            results.skippedAssigned = (results.skippedAssigned || 0) + 1;
+            continue;
+          }
+        }
+
         // Skip cards with 'blocked' label (waiting for human)
         if (card.labels.includes('blocked')) {
           console.log(`[DeckProcessor] Skipping blocked card: ${card.title}`);
@@ -886,6 +900,201 @@ Please address the user's ${classification.type}. Be concise and helpful.
     }
 
     return { processed: false, action: 'no_action_taken' };
+  }
+
+  // ============================================================
+  // @MENTION HANDLING
+  // ============================================================
+
+  /**
+   * Process a deck_comment_added event to detect and respond to @mentions.
+   * Called from heartbeat when ActivityPoller detects a new comment from another user.
+   *
+   * Flow: event → fetch comments → check mentions → read card context → respond
+   *
+   * @param {Object} event - NCFlowEvent with type 'deck_comment_added'
+   * @param {string} event.objectId - Card ID (as string)
+   * @param {string} event.user - User who posted the comment
+   * @param {Object} event.data - Event metadata (activityId, subject, etc.)
+   * @returns {Promise<Object>} Result: { handled, reason, cardId? }
+   */
+  async processMention(event) {
+    const cardId = parseInt(event.objectId, 10);
+    if (!cardId || isNaN(cardId)) {
+      return { handled: false, reason: 'invalid_card_id' };
+    }
+
+    const myUsername = (this.deck.username || 'moltagent').toLowerCase();
+
+    // Ignore own comments
+    if ((event.user || '').toLowerCase() === myUsername) {
+      return { handled: false, reason: 'own_comment' };
+    }
+
+    try {
+      // Fetch comments for the card
+      const comments = await this.deck.getComments(cardId);
+      if (!comments || comments.length === 0) {
+        return { handled: false, reason: 'no_comments' };
+      }
+
+      // Find the latest comment from this user that mentions us
+      // Comments are returned newest-first by the API
+      const mentionComment = comments.find(c => {
+        if ((c.actorId || '').toLowerCase() !== (event.user || '').toLowerCase()) return false;
+        const mentions = c.mentions || [];
+        return mentions.some(m => (m.mentionId || '').toLowerCase() === myUsername);
+      });
+
+      if (!mentionComment) {
+        return { handled: false, reason: 'no_mention_found' };
+      }
+
+      // Check if we already responded to this mention (avoid re-processing)
+      const mentionIdx = comments.indexOf(mentionComment);
+      // Look for our response after this comment (earlier in the array = newer)
+      const alreadyResponded = comments.slice(0, mentionIdx).some(c =>
+        (c.actorId || '').toLowerCase() === myUsername
+      );
+
+      if (alreadyResponded) {
+        return { handled: false, reason: 'already_responded' };
+      }
+
+      // Read full card context
+      const cardContext = await this._getMentionCardContext(cardId);
+      if (!cardContext) {
+        return { handled: false, reason: 'card_not_found' };
+      }
+
+      console.log(`[DeckProcessor] @mention detected on card #${cardId} "${cardContext.title}" by ${event.user}`);
+
+      // Generate response
+      const response = await this._generateMentionResponse(
+        cardContext,
+        mentionComment.message,
+        event.user
+      );
+
+      // Post response as [MENTION]-prefixed comment for consistency with bot prefix detection
+      await this.deck.addComment(cardId, response, 'MENTION', { prefix: true });
+
+      await this.auditLog('deck_mention_handled', {
+        cardId,
+        title: cardContext.title,
+        mentionedBy: event.user,
+        commentId: mentionComment.id
+      });
+
+      console.log(`[DeckProcessor] Responded to @mention on card #${cardId}`);
+      return { handled: true, reason: 'responded', cardId };
+
+    } catch (error) {
+      console.error(`[DeckProcessor] @mention processing failed for card ${cardId}: ${error.message}`);
+      return { handled: false, reason: 'error', error: error.message };
+    }
+  }
+
+  /**
+   * Get full card context for @mention response generation.
+   * @private
+   * @param {number} cardId - Card ID
+   * @returns {Promise<Object|null>} Card context or null
+   */
+  async _getMentionCardContext(cardId) {
+    try {
+      // We need to find which board/stack this card is in
+      // Use the search-across-boards approach from tool-registry
+      const boards = await this.deck.listBoards();
+
+      for (const board of boards) {
+        try {
+          const stacks = await this.deck.getStacks(board.id);
+          for (const stack of stacks || []) {
+            const card = (stack.cards || []).find(c => c.id === cardId);
+            if (card) {
+              // Get comments for context
+              const comments = await this.deck.getComments(cardId);
+              const recentComments = comments.slice(0, 10).map(c => ({
+                author: c.actorId || 'unknown',
+                message: c.message || '',
+                date: c.creationDateTime || ''
+              }));
+
+              return {
+                id: card.id,
+                title: card.title,
+                description: card.description || '',
+                boardTitle: board.title,
+                stackTitle: stack.title,
+                assignedUsers: (card.assignedUsers || []).map(u =>
+                  u.participant?.uid || u.uid || 'unknown'
+                ),
+                duedate: card.duedate,
+                recentComments
+              };
+            }
+          }
+        } catch (e) {
+          // Board might not be accessible — skip
+          continue;
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.warn(`[DeckProcessor] Failed to get card context for #${cardId}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Generate a response to an @mention using LLM.
+   * @private
+   * @param {Object} cardContext - Full card context
+   * @param {string} mentionMessage - The comment that mentioned us
+   * @param {string} mentionedBy - Username who mentioned us
+   * @returns {Promise<string>} Response text
+   */
+  async _generateMentionResponse(cardContext, mentionMessage, mentionedBy) {
+    const commentsBlock = cardContext.recentComments.length > 0
+      ? cardContext.recentComments.map(c =>
+          `  ${c.author}: ${c.message}`
+        ).join('\n')
+      : '(no previous comments)';
+
+    const prompt = `You were @mentioned in a card comment. Respond helpfully and concisely.
+You are ASSISTING on this card — you are NOT the owner. Do NOT move, reassign, or close the card.
+
+**Card:** "${cardContext.title}" (Board: ${cardContext.boardTitle}, Stack: ${cardContext.stackTitle})
+${cardContext.description ? `**Description:** ${cardContext.description.substring(0, 500)}` : ''}
+${cardContext.assignedUsers.length > 0 ? `**Assigned to:** ${cardContext.assignedUsers.join(', ')}` : ''}
+${cardContext.duedate ? `**Due:** ${cardContext.duedate}` : ''}
+
+**Recent comments:**
+${commentsBlock}
+
+**${mentionedBy} says:** ${mentionMessage}
+
+Respond directly to ${mentionedBy}'s request. Be concise and helpful. If you can answer directly, do so. If you need to do research or take action, explain what you'll do.`;
+
+    try {
+      const result = await this.router.route({
+        job: JOBS.THINKING,
+        task: 'mention_response',
+        content: prompt,
+        requirements: {
+          role: 'value',
+          quality: 'good'
+        },
+        context: this.routeContext
+      });
+
+      return result.result || 'I received your mention but had trouble generating a response. Please try again.';
+    } catch (error) {
+      console.warn(`[DeckProcessor] Mention response generation failed: ${error.message}`);
+      return `I received your mention regarding "${cardContext.title}" but encountered an error generating a response. Please try again or reach out in Talk.`;
+    }
   }
 
   // ============================================================

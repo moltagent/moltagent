@@ -45,7 +45,7 @@ const DOMAIN_PATTERNS = {
 // Each prompt gives the model just enough context for its domain.
 // Minimal domain prompts — shorter = faster inference on 8B models.
 const DOMAIN_PROMPTS = Object.freeze({
-  deck: `Task board assistant. Use tools to manage cards. Be concise. Confirm actions.`,
+  deck: `Task board assistant. Use tools to manage cards. Be concise. Confirm actions. When the user asks you to create a task, assign it to the user by default using deck_assign_user after creating.`,
   calendar: `Calendar assistant. Use tools to list or create events. Be concise. Confirm actions.`,
   email: `Email assistant. Use tools to send email. Be concise. Confirm actions.`,
   wiki: `Wiki assistant. Use tools to read, write, or search pages. Be concise. Confirm actions.`,

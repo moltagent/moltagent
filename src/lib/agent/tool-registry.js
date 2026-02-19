@@ -152,10 +152,10 @@ class ToolRegistry {
     const SUBSETS = {
       deck: [
         'deck_create_card',
+        'deck_assign_user',
         'deck_list_cards',
         'deck_get_board',
-        'deck_list_stacks',
-        'memory_search'
+        'deck_list_stacks'
       ],
       calendar: [
         'calendar_list_events',

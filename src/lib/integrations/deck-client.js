@@ -83,6 +83,84 @@ class DeckClient {
       lastRefresh: 0
     };
     this._cacheMaxAge = 300000; // 5 minutes
+
+    // Board classification cache: boardId → 'moltagent-tasks' | 'cockpit' | 'personal' | 'project'
+    this._boardTypes = new Map();
+    this._boardTypesLastRefresh = 0;
+    this._boardTypesCacheMaxAge = 300000; // 5 minutes
+  }
+
+  // ============================================================
+  // BOARD CLASSIFICATION
+  // ============================================================
+
+  /**
+   * Board type constants
+   */
+  static get BOARD_TYPES() {
+    return {
+      MOLTAGENT_TASKS: 'moltagent-tasks',
+      COCKPIT: 'cockpit',
+      PERSONAL: 'personal',
+      PROJECT: 'project'
+    };
+  }
+
+  /**
+   * Classify a board by its title using config overrides + title matching.
+   * @param {Object} board - Board object with at least { id, title }
+   * @returns {string} Board type: 'moltagent-tasks' | 'cockpit' | 'personal' | 'project'
+   */
+  classifyBoard(board) {
+    const title = (board.title || '').toLowerCase().trim();
+    const cfg = appConfig.deck;
+
+    if (title === (cfg.taskBoardTitle || 'MoltAgent Tasks').toLowerCase().trim()) {
+      return DeckClient.BOARD_TYPES.MOLTAGENT_TASKS;
+    }
+    if (title === (cfg.cockpitBoardTitle || 'Moltagent Cockpit').toLowerCase().trim()) {
+      return DeckClient.BOARD_TYPES.COCKPIT;
+    }
+    if (title === (cfg.personalBoardTitle || 'Personal').toLowerCase().trim()) {
+      return DeckClient.BOARD_TYPES.PERSONAL;
+    }
+    return DeckClient.BOARD_TYPES.PROJECT;
+  }
+
+  /**
+   * Get classified board types for all accessible boards.
+   * Caches results for 5 minutes.
+   * @returns {Promise<Map<number, {id: number, title: string, type: string}>>} Map of boardId → board info with type
+   */
+  async getClassifiedBoards() {
+    if (this._boardTypes.size > 0 && Date.now() - this._boardTypesLastRefresh < this._boardTypesCacheMaxAge) {
+      return this._boardTypes;
+    }
+
+    const boards = await this.listBoards();
+    this._boardTypes.clear();
+
+    for (const board of boards) {
+      this._boardTypes.set(board.id, {
+        id: board.id,
+        title: board.title,
+        type: this.classifyBoard(board)
+      });
+    }
+
+    this._boardTypesLastRefresh = Date.now();
+    return this._boardTypes;
+  }
+
+  /**
+   * Get the board type for a specific board ID.
+   * @param {number} boardId - Board ID
+   * @returns {Promise<string>} Board type
+   */
+  async getBoardType(boardId) {
+    const classified = await this.getClassifiedBoards();
+    const entry = classified.get(boardId);
+    return entry ? entry.type : DeckClient.BOARD_TYPES.PROJECT;
   }
 
   // ============================================================
@@ -658,7 +736,8 @@ class DeckClient {
       createdAt: card.createdAt,
       lastModified: card.lastModified,
       urgent: (card.labels || []).some(l => l.title.toLowerCase() === 'urgent'),
-      owner: card.owner
+      owner: card.owner,
+      assignedUsers: card.assignedUsers || []
     }));
   }
 
@@ -790,7 +869,7 @@ class DeckClient {
         const comments = await this.getComments(card.id);
 
         // Look for human comments (not prefixed with our tags)
-        const botPrefixes = ['[STATUS]', '[PROGRESS]', '[DONE]', '[QUESTION]', '[ERROR]', '[BLOCKED]', '[REVIEW]', '[FOLLOWUP]'];
+        const botPrefixes = ['[STATUS]', '[PROGRESS]', '[DONE]', '[QUESTION]', '[ERROR]', '[BLOCKED]', '[REVIEW]', '[FOLLOWUP]', '[MENTION]'];
 
         const humanComments = comments.filter(comment => {
           const message = comment.message || '';
@@ -831,7 +910,7 @@ class DeckClient {
    */
   async scanAllStacksForComments(stackNames = ['inbox', 'queued', 'working', 'review']) {
     const cardsWithComments = [];
-    const botPrefixes = ['[STATUS]', '[PROGRESS]', '[DONE]', '[QUESTION]', '[ERROR]', '[BLOCKED]', '[REVIEW]', '[FOLLOWUP]'];
+    const botPrefixes = ['[STATUS]', '[PROGRESS]', '[DONE]', '[QUESTION]', '[ERROR]', '[BLOCKED]', '[REVIEW]', '[FOLLOWUP]', '[MENTION]'];
 
     for (const stackName of stackNames) {
       try {

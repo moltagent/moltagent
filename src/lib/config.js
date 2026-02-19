@@ -308,7 +308,10 @@ const config = {
   // -------------------------------------------------------------------------
   deck: {
     boardId: envInt('DECK_BOARD_ID', 8),
-    archiveAfterDays: envInt('DECK_ARCHIVE_AFTER_DAYS', 180)
+    archiveAfterDays: envInt('DECK_ARCHIVE_AFTER_DAYS', 180),
+    taskBoardTitle: envStr('DECK_TASK_BOARD', 'MoltAgent Tasks'),
+    cockpitBoardTitle: envStr('DECK_COCKPIT_BOARD', 'Moltagent Cockpit'),
+    personalBoardTitle: envStr('DECK_PERSONAL_BOARD', 'Personal')
   },
 
   // -------------------------------------------------------------------------
@@ -411,6 +414,7 @@ const config = {
         'file_created', 'file_changed', 'file_deleted', 'file_shared',
         'calendar_event_created', 'calendar_event_changed',
         'deck_card_created', 'deck_card_updated', 'deck_card_moved',
+        'deck_comment_added',
         'tag_assigned', 'tag_removed',
         'share_created'
       ])
