@@ -147,15 +147,14 @@ class ToolRegistry {
    * @returns {Array<{type: 'function', function: {name: string, description: string, parameters: Object}}>}
    */
   getToolSubset(intent) {
+    // Max 5 tools per subset — fewer tools = faster Qwen reasoning on CPU.
+    // Every subset includes memory_search as universal context helper.
     const SUBSETS = {
       deck: [
         'deck_create_card',
         'deck_update_card',
         'deck_list_cards',
-        'deck_get_board',
-        'deck_list_stacks',
         'deck_move_card',
-        'deck_assign_user',
         'memory_search'
       ],
       calendar: [
@@ -173,7 +172,6 @@ class ToolRegistry {
         'wiki_read',
         'wiki_write',
         'wiki_search',
-        'wiki_list',
         'memory_search'
       ],
       file: [

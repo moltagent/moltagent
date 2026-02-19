@@ -31,9 +31,10 @@ class OllamaToolsProvider {
    * @param {string} params.system - System prompt
    * @param {Array} params.messages - Conversation messages
    * @param {Array} params.tools - Tool definitions
+   * @param {number} [params.timeout] - Override timeout (ms). If not set, uses toolTimeout for tool requests, default timeout otherwise.
    * @returns {Promise<{content: string|null, toolCalls: Array|null}>}
    */
-  async chat({ system, messages, tools }) {
+  async chat({ system, messages, tools, timeout }) {
     const ollamaMessages = [];
 
     if (system) {
@@ -81,9 +82,9 @@ class OllamaToolsProvider {
       body.tools = tools;
     }
 
-    // Use shorter timeout for tool-heavy prompts — if qwen3:8b on CPU hasn't
-    // responded in 60s with 55 tools, it won't. Keep 300s for simple requests.
-    const effectiveTimeout = (tools && tools.length > 0) ? this.toolTimeout : this.timeout;
+    // Timeout priority: explicit override > toolTimeout (when tools present) > default
+    // Domain tool-calling uses 90s override; full AgentLoop uses 60s toolTimeout.
+    const effectiveTimeout = timeout || ((tools && tools.length > 0) ? this.toolTimeout : this.timeout);
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);

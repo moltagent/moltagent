@@ -102,6 +102,7 @@ class MicroPipeline {
     this.deferralQueue = config.deferralQueue || null;
     this.toolRegistry = config.toolRegistry || null;
     this.ollamaToolsProvider = config.ollamaToolsProvider || null;
+    this.domainToolTimeout = config.domainToolTimeout || 90000;
     this.logger = config.logger || console;
 
     this.stats = {
@@ -541,7 +542,7 @@ Sub-questions:`;
       ? `Context: ${context.warmMemory.substring(0, 300)}\n\nUser (${context.userName || 'unknown'}): ${message}`
       : `User (${context.userName || 'unknown'}): ${message}`;
 
-    this.logger.info(`[MicroPipeline] Domain task: ${intent} (${tools.length} tools) → local tool-calling`);
+    this.logger.info(`[MicroPipeline] Domain task: ${intent} (${tools.length} tools, ${this.domainToolTimeout}ms timeout) → local tool-calling`);
 
     try {
       // Set request context on tool registry so tools know who's calling
@@ -561,7 +562,8 @@ Sub-questions:`;
         const llmResult = await this.ollamaToolsProvider.chat({
           system: systemPrompt,
           messages,
-          tools
+          tools,
+          timeout: this.domainToolTimeout
         });
 
         // If no tool calls, we have the final response

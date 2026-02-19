@@ -1287,6 +1287,7 @@ async function initialize() {
         calendarClient: caldavClient,
         talkSendQueue: talkQueue,
         deferralQueue,
+        domainToolTimeout: appConfig.ollama.domainToolTimeout,
         logger: console
       });
       console.log('[INIT] MicroPipeline ready');
