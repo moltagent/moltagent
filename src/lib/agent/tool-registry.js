@@ -148,13 +148,13 @@ class ToolRegistry {
    */
   getToolSubset(intent) {
     // Max 5 tools per subset — fewer tools = faster Qwen reasoning on CPU.
-    // Every subset includes memory_search as universal context helper.
+    // If Qwen needs more tools, the task is complex enough for cloud.
     const SUBSETS = {
       deck: [
         'deck_create_card',
-        'deck_update_card',
         'deck_list_cards',
-        'deck_move_card',
+        'deck_get_board',
+        'deck_list_stacks',
         'memory_search'
       ],
       calendar: [
@@ -178,14 +178,12 @@ class ToolRegistry {
         'file_read',
         'file_write',
         'file_list',
-        'file_mkdir',
         'memory_search'
       ],
       search: [
         'memory_search',
-        'unified_search',
-        'wiki_search',
-        'contacts_search'
+        'contacts_search',
+        'web_search'
       ]
     };
 

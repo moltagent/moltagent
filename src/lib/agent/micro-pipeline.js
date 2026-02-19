@@ -43,35 +43,14 @@ const DOMAIN_PATTERNS = {
 
 // Domain-specific system prompts — minimal context for focused tool-calling.
 // Each prompt gives the model just enough context for its domain.
+// Minimal domain prompts — shorter = faster inference on 8B models.
 const DOMAIN_PROMPTS = Object.freeze({
-  deck: `You are a task management assistant. Help the user manage their tasks and cards on the Deck board.
-Use the available tools to create, update, list, or organize cards. Be concise in your responses.
-When creating cards, extract a clear title from the user's request. Default to the "Inbox" stack if no stack is specified.
-Always confirm what you did after executing a tool.`,
-
-  calendar: `You are a calendar assistant. Help the user manage events and check their schedule.
-Use the available tools to list, create, or check events. Be concise.
-When creating events, extract the title, date, and time from the user's request. Ask for missing required fields.
-Always confirm what you did after executing a tool.`,
-
-  email: `You are an email assistant. Help the user send emails.
-Use the available tools to draft and send emails. Be concise.
-When sending email, extract the recipient, subject, and body from the user's request. Ask for missing required fields.
-Always confirm what you did after executing a tool.`,
-
-  wiki: `You are a knowledge management assistant. Help the user read, write, and search wiki pages.
-Use the available tools to interact with the wiki. Be concise.
-When writing pages, use clear formatting. When searching, summarize the results.
-Always confirm what you did after executing a tool.`,
-
-  file: `You are a file management assistant. Help the user manage files and folders.
-Use the available tools for file operations. Be concise.
-Always confirm what you did after executing a tool.`,
-
-  search: `You are a search assistant. Help the user find information.
-Use memory_search to find information from the knowledge base and notes.
-Use unified_search for broader searches across the system.
-Summarize results concisely and highlight the most relevant findings.`
+  deck: `Task board assistant. Use tools to manage cards. Be concise. Confirm actions.`,
+  calendar: `Calendar assistant. Use tools to list or create events. Be concise. Confirm actions.`,
+  email: `Email assistant. Use tools to send email. Be concise. Confirm actions.`,
+  wiki: `Wiki assistant. Use tools to read, write, or search pages. Be concise. Confirm actions.`,
+  file: `File assistant. Use tools for file operations. Be concise. Confirm actions.`,
+  search: `Search assistant. Use tools to find information. Summarize results concisely.`
 });
 
 const GREETING_TEMPLATES = [
