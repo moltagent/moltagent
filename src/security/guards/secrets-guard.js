@@ -243,3 +243,4 @@ class SecretsGuard {
 // -----------------------------------------------------------------------------
 
 module.exports = SecretsGuard;
+module.exports.SecretsGuard = SecretsGuard;

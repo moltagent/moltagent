@@ -935,5 +935,6 @@ Where 0 = definitely safe, 100 = definitely malicious.`;
 // -----------------------------------------------------------------------------
 
 module.exports = PromptGuard;
+module.exports.PromptGuard = PromptGuard;
 module.exports.HEURISTIC_PATTERNS = HEURISTIC_PATTERNS;
 module.exports.CONTENT_THRESHOLDS = CONTENT_THRESHOLDS;

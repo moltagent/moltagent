@@ -45,6 +45,7 @@ class AgentLoop {
     this.toolGuard = options.toolGuard || null;
     this.secretsGuard = options.secretsGuard || null;
     this.promptGuard = options.promptGuard || null;
+    this.guardrailEnforcer = options.guardrailEnforcer || null;
     this.llmProvider = options.llmProvider;
     this.statusIndicator = options.statusIndicator || null;
     this.config = options.config || {};
@@ -207,23 +208,7 @@ class AgentLoop {
             continue;
           }
 
-          // Validate with ToolGuard
-          let toolResult;
-          if (this.toolGuard) {
-            const guardResult = this.toolGuard.evaluate(toolCall.name);
-            if (!guardResult.allowed) {
-              toolResult = {
-                success: false,
-                result: '',
-                error: `Tool call blocked by security policy: ${guardResult.reason}`
-              };
-              this.logger.warn(`[AgentLoop] ToolGuard blocked: ${toolCall.name} — ${guardResult.reason}`);
-            } else {
-              toolResult = await this.toolRegistry.execute(toolCall.name, toolCall.arguments);
-            }
-          } else {
-            toolResult = await this.toolRegistry.execute(toolCall.name, toolCall.arguments);
-          }
+          const toolResult = await this._executeWithGuards(toolCall, roomToken);
 
           // Track tool failures (don't count errors toward maxIterations)
           if (!toolResult.success) {
@@ -433,17 +418,7 @@ class AgentLoop {
             continue;
           }
 
-          let toolResult;
-          if (this.toolGuard) {
-            const guardResult = this.toolGuard.evaluate(toolCall.name);
-            if (!guardResult.allowed) {
-              toolResult = { success: false, result: '', error: `Blocked: ${guardResult.reason}` };
-            } else {
-              toolResult = await this.toolRegistry.execute(toolCall.name, toolCall.arguments);
-            }
-          } else {
-            toolResult = await this.toolRegistry.execute(toolCall.name, toolCall.arguments);
-          }
+          const toolResult = await this._executeWithGuards(toolCall, null);
 
           if (!toolResult.success) {
             toolFailureCounts[toolCall.name] = (toolFailureCounts[toolCall.name] || 0) + 1;
@@ -495,6 +470,37 @@ class AgentLoop {
     this.logger.info(`[AgentLoop] Workflow complete in ${elapsed}ms, ${iteration} iteration(s)`);
 
     return lastResponse;
+  }
+
+  /**
+   * Execute a tool call with ToolGuard (hardcoded security) and GuardrailEnforcer
+   * (dynamic Cockpit guardrails with HITL confirmation) checks.
+   *
+   * @param {Object} toolCall - { name, arguments }
+   * @param {string|null} roomToken - Talk room token (null for workflow)
+   * @returns {Promise<{success: boolean, result: string, error?: string}>}
+   * @private
+   */
+  async _executeWithGuards(toolCall, roomToken) {
+    // ToolGuard: hardcoded security policy
+    if (this.toolGuard) {
+      const guardResult = this.toolGuard.evaluate(toolCall.name);
+      if (!guardResult.allowed) {
+        this.logger.warn(`[AgentLoop] ToolGuard blocked: ${toolCall.name} — ${guardResult.reason}`);
+        return { success: false, result: '', error: `Tool call blocked by security policy: ${guardResult.reason}` };
+      }
+    }
+
+    // GuardrailEnforcer: dynamic Cockpit guardrails with HITL confirmation
+    if (this.guardrailEnforcer) {
+      const result = await this.guardrailEnforcer.check(toolCall.name, toolCall.arguments, roomToken);
+      if (!result.allowed) {
+        this.logger.info(`[AgentLoop] GuardrailEnforcer blocked: ${toolCall.name} — ${result.reason}`);
+        return { success: false, result: '', error: `Action blocked: ${result.reason}` };
+      }
+    }
+
+    return this.toolRegistry.execute(toolCall.name, toolCall.arguments);
   }
 
   /**

@@ -257,3 +257,4 @@ class ToolGuard {
 }
 
 module.exports = ToolGuard;
+module.exports.ToolGuard = ToolGuard;

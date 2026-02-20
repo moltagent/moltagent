@@ -327,7 +327,7 @@ try {
   DailyBriefing = null;
 }
 
-let AgentLoop, ToolRegistry, OllamaToolsProvider, SecretsGuard, ToolGuard, PromptGuard, SystemTagsClient, ProviderChain, RouterChatBridge;
+let AgentLoop, ToolRegistry, OllamaToolsProvider, SecretsGuard, ToolGuard, PromptGuard, SystemTagsClient, ProviderChain, RouterChatBridge, GuardrailEnforcer;
 try {
   ({ AgentLoop } = require('./src/lib/agent/agent-loop'));
   ({ ToolRegistry } = require('./src/lib/agent/tool-registry'));
@@ -338,6 +338,7 @@ try {
   ({ ToolGuard } = require('./src/security/guards/tool-guard'));
   ({ PromptGuard } = require('./src/security/guards/prompt-guard'));
   ({ SystemTagsClient } = require('./src/lib/nc-flow/system-tags'));
+  ({ GuardrailEnforcer } = require('./src/lib/agent/guardrail-enforcer'));
 } catch (err) {
   console.warn(`[WARN] AgentLoop modules not fully available: ${err.message}`);
   AgentLoop = null;
@@ -1216,6 +1217,19 @@ async function initialize() {
       const toolGuard = ToolGuard ? new ToolGuard() : null;
       const promptGuard = PromptGuard ? new PromptGuard() : null;
 
+      // GuardrailEnforcer: runtime guardrail checks with semantic matching + HITL
+      let guardrailEnforcer = null;
+      if (GuardrailEnforcer && cockpitManager && talkQueue && conversationContext) {
+        guardrailEnforcer = new GuardrailEnforcer({
+          cockpitManager,
+          talkSendQueue: talkQueue,
+          conversationContext,
+          ollamaProvider,
+          classifyTimeout: appConfig.ollama.classifyTimeout
+        });
+        console.log('[INIT] GuardrailEnforcer ready');
+      }
+
       // First-message-of-day briefing (caldav/deck patched after HeartbeatManager)
       if (DailyBriefing) {
         dailyBriefing = new DailyBriefing({
@@ -1238,6 +1252,7 @@ async function initialize() {
         toolGuard,
         secretsGuard,
         promptGuard,
+        guardrailEnforcer,
         llmProvider,
         statusIndicator: ncStatusIndicator,
         config: { soulPath: path.join(__dirname, 'config', 'SOUL.md'), timezone: appConfig.timezone }

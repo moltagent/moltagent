@@ -1429,6 +1429,9 @@ class ToolRegistry {
     return (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
   }
 
+  // NOTE: If a tool modifies external state (email, files, calendar),
+  // evaluate adding it to SENSITIVE_TOOLS in src/lib/agent/guardrail-enforcer.js
+
   /** @private */
   _registerFileTools() {
     const files = this.clients.ncFilesClient;
