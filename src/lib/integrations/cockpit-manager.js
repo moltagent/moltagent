@@ -70,7 +70,8 @@ const LABEL_DEFS = [
   { title: '⚙️7', color: '17a2b8' },   // reserved (teal)
   { title: '⚙️8', color: '795548' },   // reserved (brown)
   { title: '⚙️9', color: '6c757d' },   // reserved (slate)
-  { title: '⏸ PAUSED', color: '6b7280' } // guardrail toggle — grey
+  { title: '⏸ PAUSED', color: '6b7280' }, // guardrail toggle — grey
+  { title: '⛔ GATE', color: 'dc2626' }   // guardrail gating — only GATE cards trigger HITL
 ];
 
 /**
@@ -570,10 +571,17 @@ class CockpitManager {
       );
     });
 
-    return activeCards.map(card => ({
-      title: card.title,
-      description: card.description || ''
-    }));
+    return activeCards.map(card => {
+      const labels = card.labels || [];
+      const gate = labels.some(l =>
+        l.title?.replace(/\uFE0F/g, '').trim() === '⛔ GATE'
+      );
+      return {
+        title: card.title,
+        description: card.description || '',
+        gate
+      };
+    });
   }
 
   /**

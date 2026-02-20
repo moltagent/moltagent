@@ -7,6 +7,9 @@
  * (primary) and keyword fallback (safety net). When a guardrail matches,
  * triggers human-in-the-loop confirmation via Talk before allowing the action.
  *
+ * Only guardrails with the ⛔ GATE label are evaluated. All others are
+ * system-prompt-only directives and skip HITL entirely.
+ *
  * @module agent/guardrail-enforcer
  */
 
@@ -31,7 +34,7 @@ const TOOL_CATEGORIES = {
   calendar_delete_event:  'CALENDAR — deletes a calendar event',
 };
 
-// Keyword fallback: runs only when LLM returns UNCERTAIN or errors out
+// Keyword fallback: runs on UNCERTAIN or LLM error/timeout
 const KEYWORD_FALLBACK_MAP = {
   mail_send:              ['external communication', 'email', 'outbound mail'],
   file_delete:            ['delete file', 'file deletion', 'destructive'],
@@ -42,6 +45,7 @@ const KEYWORD_FALLBACK_MAP = {
 };
 
 const MATCH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const SEMANTIC_TIMEOUT_MS = 30000; // 30s — classification needs headroom
 
 const AFFIRMATIVE = new Set(['yes', 'y', 'approve', 'ok', 'go ahead', 'proceed']);
 const NEGATIVE = new Set(['no', 'n', 'deny', 'cancel', 'stop', 'abort']);
@@ -56,7 +60,7 @@ class GuardrailEnforcer {
    * @param {Object} [options.talkSendQueue] - Sends confirmation messages
    * @param {Object} [options.conversationContext] - Polls for human reply
    * @param {Object} [options.ollamaProvider] - Local LLM for semantic evaluation
-   * @param {number} [options.classifyTimeout=10000] - LLM call timeout (ms)
+   * @param {number} [options.semanticTimeoutMs=30000] - LLM classification timeout (ms)
    * @param {number} [options.confirmationTimeoutMs=300000] - HITL timeout (ms)
    * @param {number} [options.pollIntervalMs=3000] - Poll interval for reply (ms)
    * @param {Object} [options.logger]
@@ -66,7 +70,7 @@ class GuardrailEnforcer {
     talkSendQueue,
     conversationContext,
     ollamaProvider,
-    classifyTimeout = 10000,
+    semanticTimeoutMs = SEMANTIC_TIMEOUT_MS,
     confirmationTimeoutMs = DEFAULT_CONFIRMATION_TIMEOUT_MS,
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
     logger
@@ -75,7 +79,7 @@ class GuardrailEnforcer {
     this.talkSendQueue = talkSendQueue || null;
     this.conversationContext = conversationContext || null;
     this.ollamaProvider = ollamaProvider || null;
-    this.classifyTimeout = classifyTimeout;
+    this.semanticTimeoutMs = semanticTimeoutMs;
     this.confirmationTimeoutMs = confirmationTimeoutMs;
     this.pollIntervalMs = pollIntervalMs;
     this.logger = logger || console;
@@ -88,7 +92,7 @@ class GuardrailEnforcer {
     this.approvalCache = new Map();
 
     // Tracks the timestamp of the last consumed HITL response so subsequent
-    // polls don't re-match the same message (prevents approval loop)
+    // polls don't re-match the same message
     this._lastConsumedTimestamp = 0;
   }
 
@@ -116,24 +120,25 @@ class GuardrailEnforcer {
       return { allowed: true, reason: null };
     }
 
-    // Get active guardrails from Cockpit cached config
-    const guardrails = this._getActiveGuardrails();
+    // Get active GATE guardrails only
+    const guardrails = this._getGateGuardrails();
     if (!guardrails || guardrails.length === 0) {
       return { allowed: true, reason: null };
     }
 
+    this.logger.info(`[GuardrailEnforcer] ${toolName}: evaluating ${guardrails.length} GATE guardrail(s): ${guardrails.map(g => g.title).join(', ')}`);
+
     // Evaluate each guardrail against this tool call
     for (const guardrail of guardrails) {
-      const title = guardrail.title || guardrail.name || '';
+      const title = guardrail.title || '';
       if (!title) continue;
 
       const approvalKey = `${title}:${toolName}`;
 
-      // Bug 2 fix: skip guardrails already approved for this tool
-      // (prevents re-asking on agent loop retry after approval)
+      // Skip guardrails already approved for this tool (prevents re-asking on retry)
       const approved = this.approvalCache.get(approvalKey);
       if (approved && (Date.now() - approved) < MATCH_CACHE_TTL) {
-        this.logger.info(`[GuardrailEnforcer] Skipping "${title}" for ${toolName} — already approved`);
+        this.logger.info(`[GuardrailEnforcer] ${toolName}: "${title}" → SKIP (already approved)`);
         continue;
       }
 
@@ -143,12 +148,13 @@ class GuardrailEnforcer {
         // Guardrail triggered — request HITL confirmation
         const confirmed = await this._requestConfirmation(title, toolName, toolArgs, roomToken);
         if (!confirmed) {
+          this.logger.info(`[GuardrailEnforcer] ${toolName}: BLOCKED by "${title}"`);
           return { allowed: false, reason: `Guardrail "${title}" — action denied or timed out` };
         }
         // User approved — cache approval so retries don't re-ask
         this.approvalCache.set(approvalKey, Date.now());
+        this.logger.info(`[GuardrailEnforcer] ${toolName}: "${title}" → APPROVED by user`);
       }
-      // NO or approved YES — check next guardrail
     }
 
     return { allowed: true, reason: null };
@@ -156,7 +162,14 @@ class GuardrailEnforcer {
 
   /**
    * Evaluate a single guardrail against a tool call.
-   * Uses semantic LLM matching first, keyword fallback on UNCERTAIN/error.
+   *
+   * Three-layer evaluation:
+   * 1. Match cache → instant
+   * 2. Semantic LLM → definitive YES/NO
+   * 3. Keyword fallback → on UNCERTAIN, timeout, or error
+   *
+   * Timeout/error is an infrastructure signal, not a semantic signal.
+   * When the LLM fails, only keywords decide. No fail-cautious escalation.
    *
    * @param {string} guardrailTitle
    * @param {string} toolName
@@ -167,42 +180,49 @@ class GuardrailEnforcer {
   async _evaluateGuardrail(guardrailTitle, toolName, toolArgs) {
     const cacheKey = `${guardrailTitle}:${toolName}`;
 
-    // Check cache
+    // Layer 1: cache
     const cached = this.matchCache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp) < MATCH_CACHE_TTL) {
+      this.logger.info(`[GuardrailEnforcer] ${toolName}: "${guardrailTitle}" → cache hit: ${cached.result}`);
       return cached.result;
     }
 
-    // Semantic LLM evaluation
+    // Layer 2: semantic LLM
+    let semanticResult = null;
+    let semanticFailed = false;
     if (this.ollamaProvider) {
       try {
-        const result = await this._semanticEvaluate(guardrailTitle, toolName, toolArgs);
-        if (result === 'YES' || result === 'NO') {
-          this.matchCache.set(cacheKey, { result, timestamp: Date.now() });
-          return result;
+        semanticResult = await this._semanticEvaluate(guardrailTitle, toolName, toolArgs);
+        this.logger.info(`[GuardrailEnforcer] ${toolName}: "${guardrailTitle}" → semantic: ${semanticResult}`);
+        if (semanticResult === 'YES' || semanticResult === 'NO') {
+          this.matchCache.set(cacheKey, { result: semanticResult, timestamp: Date.now() });
+          return semanticResult;
         }
         // UNCERTAIN — fall through to keyword
       } catch (err) {
-        this.logger.warn(`[GuardrailEnforcer] Semantic eval failed for "${guardrailTitle}": ${err.message}`);
-        // Fall through to keyword
+        semanticFailed = true;
+        this.logger.warn(`[GuardrailEnforcer] ${toolName}: "${guardrailTitle}" → semantic failed: ${err.message}`);
       }
     }
 
-    // Keyword fallback
+    // Layer 3: keyword fallback
     const keywordResult = this._keywordFallback(guardrailTitle, toolName);
+    this.logger.info(`[GuardrailEnforcer] ${toolName}: "${guardrailTitle}" → keyword: ${keywordResult} (semantic=${semanticFailed ? 'ERROR' : semanticResult || 'SKIPPED'})`);
+
     if (keywordResult === 'YES') {
       this.matchCache.set(cacheKey, { result: 'YES', timestamp: Date.now() });
       return 'YES';
     }
 
-    // Both failed with no match — block on uncertainty (fail cautious)
-    if (!this.ollamaProvider) {
-      // No LLM at all — keyword was the only check, trust its NO
+    // Keyword says NO. What now depends on WHY we're here:
+    if (semanticFailed || !this.ollamaProvider) {
+      // Timeout/error/no LLM — infrastructure failure, not semantic uncertainty.
+      // Keywords are the only signal. Trust their NO.
       this.matchCache.set(cacheKey, { result: 'NO', timestamp: Date.now() });
       return 'NO';
     }
 
-    // LLM was UNCERTAIN and keyword didn't match — block to be safe
+    // Genuine UNCERTAIN from the LLM + keyword NO → fail cautious, block and ask
     return 'YES';
   }
 
@@ -228,7 +248,7 @@ class GuardrailEnforcer {
         }
       ],
       tools: [],
-      timeout: this.classifyTimeout
+      timeout: this.semanticTimeoutMs
     });
 
     return this._parseSemanticResult(response.content);
@@ -298,8 +318,6 @@ class GuardrailEnforcer {
 
     const message = this._buildConfirmationMessage(guardrailTitle, toolName, toolArgs);
     const requestTimestamp = Date.now();
-    // Use the later of requestTimestamp and _lastConsumedTimestamp to avoid
-    // re-matching a reply that was already consumed by a previous guardrail check
     const searchAfter = Math.max(requestTimestamp, this._lastConsumedTimestamp);
 
     try {
@@ -317,15 +335,12 @@ class GuardrailEnforcer {
       try {
         const history = await this.conversationContext.getHistory(roomToken, { limit: 5 });
         for (const msg of history) {
-          // Only consider messages strictly after the search cursor
           const msgTimestampMs = (msg.timestamp || 0) * 1000;
           if (msgTimestampMs <= searchAfter) continue;
-          // Only human messages (not the bot)
           if (msg.role !== 'user') continue;
 
           const content = (msg.content || '').trim().toLowerCase();
           if (this._isAffirmative(content)) {
-            // Advance cursor past this message so it won't be re-consumed
             this._lastConsumedTimestamp = msgTimestampMs;
             return true;
           }
@@ -339,20 +354,11 @@ class GuardrailEnforcer {
       }
     }
 
-    // Timeout → block
     this.logger.info('[GuardrailEnforcer] Confirmation timed out — blocking action');
     return false;
   }
 
-  /**
-   * Build the confirmation message for Talk.
-   *
-   * @param {string} guardrailTitle
-   * @param {string} toolName
-   * @param {Object} toolArgs
-   * @returns {string}
-   * @private
-   */
+  /** @private */
   _buildConfirmationMessage(guardrailTitle, toolName, toolArgs) {
     let details = '';
     if (toolName === 'mail_send') {
@@ -373,58 +379,39 @@ class GuardrailEnforcer {
     return `**Guardrail check:** "${guardrailTitle}"\n\n${action}\n\nReply **yes** to approve or **no** to cancel.`;
   }
 
-  /**
-   * Format a tool call for the semantic evaluation prompt.
-   *
-   * @param {string} toolName
-   * @param {Object} toolArgs
-   * @returns {string}
-   * @private
-   */
+  /** @private */
   _formatToolCall(toolName, toolArgs) {
     const argStr = toolArgs ? JSON.stringify(toolArgs) : '{}';
     return `${toolName}(${argStr})`;
   }
 
-  /**
-   * Check if a response is affirmative.
-   * @param {string} text - Lowercased, trimmed
-   * @returns {boolean}
-   */
+  /** @param {string} text - Lowercased, trimmed */
   _isAffirmative(text) {
     return AFFIRMATIVE.has(text);
   }
 
-  /**
-   * Check if a response is negative.
-   * @param {string} text - Lowercased, trimmed
-   * @returns {boolean}
-   */
+  /** @param {string} text - Lowercased, trimmed */
   _isNegative(text) {
     return NEGATIVE.has(text);
   }
 
   /**
-   * Get active guardrails from cockpit config.
+   * Get active guardrails that have the ⛔ GATE label.
+   * Only GATE guardrails trigger HITL. Others are system-prompt-only directives.
    * @returns {Array|null}
    * @private
    */
-  _getActiveGuardrails() {
+  _getGateGuardrails() {
     try {
       const config = this.cockpitManager.cachedConfig;
       if (!config || !config.guardrails) return null;
-      return config.guardrails.filter(g => !g.paused);
+      return config.guardrails.filter(g => g.gate === true);
     } catch {
       return null;
     }
   }
 
-  /**
-   * Sleep helper.
-   * @param {number} ms
-   * @returns {Promise<void>}
-   * @private
-   */
+  /** @private */
   _sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }

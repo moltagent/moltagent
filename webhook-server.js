@@ -1225,7 +1225,7 @@ async function initialize() {
           talkSendQueue: talkQueue,
           conversationContext,
           ollamaProvider,
-          classifyTimeout: appConfig.ollama.classifyTimeout
+          semanticTimeoutMs: 30000
         });
         console.log('[INIT] GuardrailEnforcer ready');
       }
