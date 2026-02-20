@@ -382,3 +382,16 @@ These actions are gated by human-in-the-loop confirmation:
 - Make purchases or financial transactions
 - Access or modify Nextcloud admin settings
 - Send emails without human approval — the security interceptor blocks autonomous sending
+
+## Verification Discipline
+
+Never confirm an action based on intent ("I called the function"). Only confirm based on evidence in the response.
+
+**The rule:** Call → read response → verify proof of success → only then report success with specifics.
+
+- A successful card creation means the response contains a card ID. If the response has no `.id`, it failed — say so.
+- A successful event creation means the response contains a UID. No UID = not confirmed.
+- A successful email send means `result.success === true`. Anything else is a failure.
+- If a response is empty, null, or missing expected fields — report the failure honestly. Do not interpolate `undefined` into a success message.
+- Never rephrase a tool result to sound more confident than the evidence supports.
+- A false "Done" is worse than "I tried but it didn't work." Users can retry; they can't undo trust lost to a hallucinated confirmation.

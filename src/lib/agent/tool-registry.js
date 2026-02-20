@@ -583,6 +583,7 @@ class ToolRegistry {
             { title: args.title, description: args.description || '', type: 'plain', order: 0 }
           );
 
+          if (!card || !card.id) return `Failed to create "${args.title}" — the server returned an empty response. Try again.`;
           return `Created "${args.title}" (card #${card.id}) in "${stack.title}" on board "${board.title}".`;
         }
 
@@ -593,6 +594,7 @@ class ToolRegistry {
           description: args.description || ''
         });
 
+        if (!card || !card.id) return `Failed to create "${args.title}" — no card ID returned. Try again.`;
         return `Created "${args.title}" (card #${card.id}) in ${args.stack || 'Inbox'}.`;
       }
     });
@@ -825,7 +827,21 @@ class ToolRegistry {
         if (!resolved) return `No card found matching "${args.card}".`;
 
         const { card: found, stackKey } = resolved;
-        await deck.assignUser(found.id, stackKey, args.user);
+        const assignResult = await deck.assignUser(found.id, stackKey, args.user);
+        if (assignResult === undefined || assignResult === null) {
+          // assignUser returns undefined when user is not a board member
+          // Re-read card to verify assignment actually took effect
+          try {
+            const updated = await deck.getCard(found.id, stackKey);
+            const isAssigned = (updated.assignedUsers || []).some(
+              a => (a.participant?.uid || '').toLowerCase() === args.user.toLowerCase()
+            );
+            if (!isAssigned) return `Could not assign "${args.user}" to card #${found.id} — user may not be a member of this board.`;
+          } catch {
+            // If re-read fails, we can't confirm — report uncertainty
+            return `Assignment of "${args.user}" to card #${found.id} could not be confirmed. The user may not be a member of this board.`;
+          }
+        }
         return `Assigned "${args.user}" to card #${found.id} "${found.title}".`;
       }
     });
@@ -1245,8 +1261,11 @@ class ToolRegistry {
 
         const event = await cal.createEvent(eventData);
 
-        let msg = `Created "${args.title}" on ${startDate.toLocaleDateString()} at ${startDate.toLocaleTimeString()}.`;
-        if (event?.uid) msg += ` Event ID: ${event.uid}`;
+        if (!event || !event.uid) {
+          return `Calendar event "${args.title}" may not have been created — no event ID returned. Check the calendar to verify.`;
+        }
+
+        let msg = `Created "${args.title}" on ${startDate.toLocaleDateString()} at ${startDate.toLocaleTimeString()}. Event ID: ${event.uid}`;
         if (args.attendees && args.attendees.length > 0) {
           const names = args.attendees.map(a => a.name || a.email).join(', ');
           msg += ` Invitations sent to: ${names}.`;
@@ -1985,6 +2004,10 @@ class ToolRegistry {
         // Create the page with just the leaf title
         const created = await wiki.createPage(collectiveId, parentId, leafTitle);
 
+        if (!created || !created.id) {
+          return `Failed to create wiki page "${leafTitle}" — no page ID returned.`;
+        }
+
         // Use API-returned path for WebDAV write
         const pagePath = created.filePath
           ? `${created.filePath}/${created.fileName}`
@@ -1994,9 +2017,7 @@ class ToolRegistry {
         await wiki.writePageContent(pagePath, writeContent);
 
         // Touch page to invalidate NC Text editor cache
-        if (created.id) {
-          await wiki.touchPage(collectiveId, created.id);
-        }
+        await wiki.touchPage(collectiveId, created.id);
 
         // Log to learning log
         if (this.clients.learningLog) {
@@ -2511,6 +2532,7 @@ class ToolRegistry {
             };
 
         const card = await createFn();
+        if (!card || !card.id) return `Failed to create "${args.title}" — no card ID returned.`;
         return `Created "${args.title}" (card #${card.id}) in "${targetStack.title}" (stack ${targetStack.id}) on board ${args.board_id}.`;
       }
     });
@@ -2587,6 +2609,7 @@ class ToolRegistry {
             { to: args.to, subject: args.subject, body: args.body },
             'moltagent'
           );
+          if (!result || !result.success) return `Failed to send email: ${result?.error || 'no confirmation from mail server.'}`;
           return result.message || `Email sent to ${args.to}.`;
         }
       });
