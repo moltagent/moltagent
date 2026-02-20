@@ -134,9 +134,9 @@ async function runTests() {
 
     assert.strictEqual(ollama._getCallCount(), 1);
     const lastCall = ollama._getLastCall();
-    assert.ok(lastCall.system.includes('guardrail evaluation system'));
+    assert.ok(lastCall.system.includes('guardrail category matcher'));
     assert.ok(lastCall.messages[0].content.includes('<guardrail>'));
-    assert.ok(lastCall.messages[0].content.includes('<tool_call>'));
+    assert.ok(lastCall.messages[0].content.includes('Tool category: EMAIL'));
     assert.ok(lastCall.messages[0].content.includes('Confirm before sending external communications'));
     assert.ok(lastCall.messages[0].content.includes('mail_send'));
     assert.deepStrictEqual(lastCall.tools, []);
@@ -504,8 +504,8 @@ async function runTests() {
 
     await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
     const system = ollama._getLastCall().system;
-    assert.ok(system.includes('file deletion does NOT apply to sending email'));
-    assert.ok(system.includes('Be strict and precise'));
+    assert.ok(system.includes('FILE DELETION does not apply to EMAIL'));
+    assert.ok(system.includes('Only answer YES if the guardrail directly governs'));
   });
 
   await asyncTest('semantic prompt includes chain-of-thought instruction', async () => {
@@ -519,7 +519,110 @@ async function runTests() {
 
     await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
     const userMsg = ollama._getLastCall().messages[0].content;
-    assert.ok(userMsg.includes('First identify what category the guardrail governs'));
+    assert.ok(userMsg.includes('Tool category: EMAIL'));
+    assert.ok(userMsg.includes('Does this guardrail govern the EMAIL category?'));
+  });
+
+  // --- Approval cache (Bug 2 fix: prevents re-asking on retry) ---
+
+  await asyncTest('approval cache skips re-asking on retry for same guardrail+tool', async () => {
+    const now = Date.now();
+    const ollama = createMockOllama('YES');
+    const queue = createMockTalkQueue();
+    const enforcer = makeEnforcer({
+      cockpitManager: createMockCockpit([{ title: 'Confirm external comms' }]),
+      ollamaProvider: ollama,
+      talkSendQueue: queue,
+      conversationContext: createMockConversationContext([
+        { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
+      ])
+    });
+
+    // First call: HITL triggered, user approves
+    const r1 = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
+    assert.strictEqual(r1.allowed, true);
+    assert.strictEqual(queue._getSent().length, 1); // one confirmation sent
+
+    // Second call (retry): approval cached, no HITL
+    const r2 = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
+    assert.strictEqual(r2.allowed, true);
+    assert.strictEqual(queue._getSent().length, 1); // still one — no new confirmation
+  });
+
+  await asyncTest('approval cache does not cross different tool names', async () => {
+    const now = Date.now();
+    const enforcer = makeEnforcer({
+      cockpitManager: createMockCockpit([{ title: 'Confirm everything' }]),
+      ollamaProvider: createMockOllama('YES'),
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([
+        { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
+      ])
+    });
+
+    // Approve for mail_send
+    await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
+    assert.ok(enforcer.approvalCache.has('Confirm everything:mail_send'));
+    assert.ok(!enforcer.approvalCache.has('Confirm everything:file_delete'));
+  });
+
+  await asyncTest('denial is not cached — re-asks on retry after denial', async () => {
+    const now = Date.now();
+    let callNum = 0;
+    const enforcer = makeEnforcer({
+      cockpitManager: createMockCockpit([{ title: 'Confirm email' }]),
+      ollamaProvider: createMockOllama('YES'),
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: {
+        getHistory: async () => {
+          callNum++;
+          // First check: user says no. Second check: user says yes.
+          if (callNum <= 5) {
+            return [{ role: 'user', content: 'no', timestamp: Math.ceil(now / 1000) + 1 }];
+          }
+          return [{ role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 10 }];
+        }
+      }
+    });
+
+    const r1 = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
+    assert.strictEqual(r1.allowed, false); // denied
+    assert.ok(!enforcer.approvalCache.has('Confirm email:mail_send')); // denial NOT cached
+
+    const r2 = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
+    assert.strictEqual(r2.allowed, true); // re-asked, now approved
+  });
+
+  // --- Tool category in prompt (Bug 1 fix) ---
+
+  await asyncTest('semantic prompt includes explicit tool category for mail_send', async () => {
+    const ollama = createMockOllama('NO');
+    const enforcer = makeEnforcer({
+      cockpitManager: createMockCockpit([{ title: 'Never delete files' }]),
+      ollamaProvider: ollama,
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([])
+    });
+
+    await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
+    const userMsg = ollama._getLastCall().messages[0].content;
+    assert.ok(userMsg.includes('Tool category: EMAIL — sends a message to an external recipient'));
+    assert.ok(userMsg.includes('Does this guardrail govern the EMAIL category?'));
+  });
+
+  await asyncTest('semantic prompt includes explicit tool category for file_delete', async () => {
+    const ollama = createMockOllama('NO');
+    const enforcer = makeEnforcer({
+      cockpitManager: createMockCockpit([{ title: 'Confirm external comms' }]),
+      ollamaProvider: ollama,
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([])
+    });
+
+    await enforcer.check('file_delete', { path: '/test.txt' }, 'room1');
+    const userMsg = ollama._getLastCall().messages[0].content;
+    assert.ok(userMsg.includes('Tool category: FILE DELETION'));
+    assert.ok(userMsg.includes('Does this guardrail govern the FILE DELETION category?'));
   });
 
   await asyncTest('keyword-only mode when no ollamaProvider: no match allows', async () => {
