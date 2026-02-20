@@ -21,6 +21,7 @@ const SENSITIVE_TOOLS = new Set([
   'calendar_create_event',
   'calendar_update_event',
   'calendar_delete_event',
+  'wiki_write',
 ]);
 
 // Tools that support the "edit" response (non-destructive, revisable actions)
@@ -29,6 +30,7 @@ const EDITABLE_TOOLS = new Set([
   'mail_reply',
   'calendar_create_event',
   'calendar_update_event',
+  'wiki_write',
 ]);
 
 // Explicit tool categories — fed to the LLM so it reasons about category membership,
@@ -40,6 +42,7 @@ const TOOL_CATEGORIES = {
   calendar_create_event:  'CALENDAR — creates a new calendar event',
   calendar_update_event:  'CALENDAR — modifies an existing calendar event',
   calendar_delete_event:  'CALENDAR — deletes a calendar event',
+  wiki_write:             'KNOWLEDGE BASE — creates or updates a wiki page in shared knowledge',
 };
 
 // Keyword fallback: runs on UNCERTAIN or LLM error/timeout
@@ -50,6 +53,7 @@ const KEYWORD_FALLBACK_MAP = {
   calendar_create_event:  ['calendar event', 'schedule meeting'],
   calendar_update_event:  ['calendar event', 'modify calendar'],
   calendar_delete_event:  ['delete event', 'cancel event'],
+  wiki_write:             ['knowledge base', 'wiki', 'knowledge change'],
 };
 
 const MATCH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -408,6 +412,8 @@ class GuardrailEnforcer {
         return this._buildCalendarConfirmation(toolName, toolArgs, guardrailLine);
       case 'calendar_delete_event':
         return this._buildCalendarDeleteConfirmation(toolArgs, guardrailLine);
+      case 'wiki_write':
+        return this._buildWikiWriteConfirmation(toolArgs, guardrailLine);
       default:
         return this._buildGenericConfirmation(toolName, toolArgs, guardrailLine);
     }
@@ -497,6 +503,24 @@ class GuardrailEnforcer {
       guardrailLine,
       '',
       'Reply **yes** to delete \u00b7 **no** to cancel',
+    ].join('\n');
+  }
+
+  /** @private */
+  _buildWikiWriteConfirmation(args, guardrailLine) {
+    const page = args.page_title || '(unknown page)';
+    const contentPreview = (args.content || '').slice(0, 200);
+    const truncated = (args.content || '').length > 200 ? '...' : '';
+
+    return [
+      '\u{1f4d6} **Wiki write requires your approval**',
+      '',
+      `**Page:** ${page}`,
+      `**Preview:** ${contentPreview}${truncated}`,
+      '',
+      guardrailLine,
+      '',
+      'Reply **yes** to save \u00b7 **no** to cancel \u00b7 **edit** to revise',
     ].join('\n');
   }
 

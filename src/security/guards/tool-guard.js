@@ -55,9 +55,9 @@ const REQUIRES_APPROVAL = [
   // Sensitive file operations (sharing data)
   'file_share',
 
-  // Phase 2: External communication + shared knowledge writes
+  // Phase 2: External communication
   // mail_send — handled by SOUL.md instruction (LLM must confirm with user before calling)
-  'wiki_write',           // Writing to shared knowledge — content review
+  // wiki_write — moved to GuardrailEnforcer SENSITIVE_TOOLS (Cockpit-governed, not hardcoded)
   'notification_send',    // Pushing notifications — prevent spam
 ];
 

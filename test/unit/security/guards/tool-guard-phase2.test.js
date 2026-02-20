@@ -22,15 +22,13 @@ const ToolGuard = require('../../../../src/security/guards/tool-guard');
 // Tests for Phase 2 additions to REQUIRES_APPROVAL list
 // -----------------------------------------------------------------------------
 
-test('wiki_write requires approval', () => {
+test('wiki_write is allowed (HITL moved to GuardrailEnforcer SENSITIVE_TOOLS)', () => {
   const guard = new ToolGuard();
   const result = guard.evaluate('wiki_write');
 
-  assert.strictEqual(result.allowed, false, 'wiki_write should require approval');
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED', 'Should be APPROVAL_REQUIRED level');
-  assert.strictEqual(result.requiresAction, 'await_approval', 'Should require await_approval action');
-  assert.ok(result.approvalPrompt, 'Should provide approval prompt');
-  assert.ok(result.approvalPrompt.includes('wiki_write'), 'Prompt should mention operation name');
+  assert.strictEqual(result.allowed, true, 'wiki_write should be allowed (Cockpit-governed, not hardcoded)');
+  assert.strictEqual(result.level, 'ALLOWED', 'Should be ALLOWED level');
+  assert.strictEqual(result.requiresAction, null, 'Should not require any action');
 });
 
 test('mail_send is allowed (HITL handled by SOUL.md instruction, not guard)', () => {
@@ -91,13 +89,13 @@ test('wiki_search is allowed (not in restricted lists)', () => {
 });
 
 // Additional tests to verify the guard is working correctly
-test('Approval prompt includes operation name', () => {
+test('Approval prompt includes operation name for notification_send', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('wiki_write', { target: 'MyPage' });
+  const result = guard.evaluate('notification_send', { target: 'user123' });
 
   assert.ok(result.approvalPrompt, 'Should have approval prompt');
-  assert.ok(result.approvalPrompt.includes('wiki_write'), 'Prompt should mention operation');
-  assert.ok(result.approvalPrompt.includes('MyPage'), 'Prompt should mention target when provided');
+  assert.ok(result.approvalPrompt.includes('notification_send'), 'Prompt should mention operation');
+  assert.ok(result.approvalPrompt.includes('user123'), 'Prompt should mention target when provided');
 });
 
 test('Forbidden operations still blocked', () => {
