@@ -268,13 +268,19 @@ class GuardrailEnforcer {
     // Chain-of-thought: check the last line first (answer should be there)
     const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
     const lastLine = (lines[lines.length - 1] || '').toUpperCase();
+
+    // Check last line: starts with or ends with YES/NO (model may inline the answer)
     if (lastLine === 'YES' || lastLine.startsWith('YES')) return 'YES';
     if (lastLine === 'NO' || lastLine.startsWith('NO')) return 'NO';
+    if (/\bYES\.?\s*$/.test(lastLine)) return 'YES';
+    if (/\bNO\.?\s*$/.test(lastLine)) return 'NO';
 
     // Fallback: check the whole response (single-line answers)
     const clean = text.toUpperCase();
     if (clean === 'YES' || clean.startsWith('YES')) return 'YES';
     if (clean === 'NO' || clean.startsWith('NO')) return 'NO';
+    if (/\bYES\.?\s*$/.test(clean)) return 'YES';
+    if (/\bNO\.?\s*$/.test(clean)) return 'NO';
     return 'UNCERTAIN';
   }
 

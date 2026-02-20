@@ -502,6 +502,27 @@ async function runTests() {
     ), 'NO');
   });
 
+  test('_parseSemanticResult handles inline answer at end of single line (real Ollama format)', () => {
+    const enforcer = makeEnforcer({});
+    // Actual qwen3:8b responses — answer inlined at end with period
+    assert.strictEqual(enforcer._parseSemanticResult(
+      'The guardrail addresses message verification before sending, which is a direct concern for the EMAIL category. YES.'
+    ), 'YES');
+    assert.strictEqual(enforcer._parseSemanticResult(
+      'The guardrail is about file deletion, which does not apply to EMAIL tools. NO.'
+    ), 'NO');
+    assert.strictEqual(enforcer._parseSemanticResult(
+      'The guardrail "Confirm before sending external communications" directly applies to the EMAIL category, as it addresses sending messages to external recipients. YES.'
+    ), 'YES');
+    // Without trailing period
+    assert.strictEqual(enforcer._parseSemanticResult(
+      'This guardrail governs email sending. YES'
+    ), 'YES');
+    assert.strictEqual(enforcer._parseSemanticResult(
+      'File deletion does not apply to email. NO'
+    ), 'NO');
+  });
+
   // --- No ollamaProvider: keyword-only ---
 
   await asyncTest('keyword-only mode when no ollamaProvider: match triggers HITL', async () => {
