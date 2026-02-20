@@ -126,6 +126,11 @@ class AgentLoop {
       { role: 'user', content: message }
     ];
 
+    // Inject optional system-level context (e.g. memory flush prompt)
+    if (options.systemSuffix) {
+      messages.push({ role: 'system', content: options.systemSuffix });
+    }
+
     // 3. Agent loop
     const maxIter = options.maxIterations || this.maxIterations;
     let iteration = 0;

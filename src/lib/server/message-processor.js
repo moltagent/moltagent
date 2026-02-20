@@ -269,9 +269,33 @@ class MessageProcessor {
 
     // Session 29b: Track user message in SessionManager for context persistence
     let session = null;
+    let flushPrompt = null;
     if (this.sessionManager && extracted.token && extracted.user) {
       session = this.sessionManager.getSession(extracted.token, extracted.user);
-      this.sessionManager.addContext(session, 'user', extracted.content);
+      const { flushNeeded } = this.sessionManager.addContext(session, 'user', extracted.content);
+      // Also honour a pending flush set by the previous assistant reply
+      // (the 80% threshold can be crossed by an assistant entry, not always a user entry)
+      const shouldFlush = flushNeeded || session._pendingFlush;
+      if (session._pendingFlush) {
+        session._pendingFlush = false;     // consume the pending flag
+        session._flushRequested = true;    // prevent SessionManager from double-firing this cycle
+      }
+      if (shouldFlush) {
+        console.log(`[Memory] Context flush triggered for ${extracted.token}:${extracted.user} — prompting selective persist`);
+        flushPrompt = [
+          '[SYSTEM — Memory Flush]',
+          'You are approaching context limits. Before this conversation is trimmed, identify the 5–10 most important facts from this session:',
+          '- Key decisions made',
+          '- Commitments or deadlines agreed',
+          '- Names, roles, or relationships mentioned',
+          '- Numbers: budgets, dates, quantities',
+          '- Preferences or corrections the user expressed',
+          '',
+          'Write each fact to the appropriate wiki page using wiki_write (People/, Projects/, Procedures/, Research/).',
+          'Be selective — this is memory, not a transcript. Only persist what would be valuable in a future conversation.',
+          'After persisting, continue answering the user\'s current message normally.',
+        ].join('\n');
+      }
     }
 
     // Set status to thinking before processing
@@ -306,8 +330,9 @@ class MessageProcessor {
           messageId: extracted.messageId
         });
         response = result.response;
-      } else if (this.microPipeline && this._shouldUseMicroPipeline()) {
+      } else if (this.microPipeline && this._shouldUseMicroPipeline() && !flushPrompt) {
         // Local Intelligence: MicroPipeline handles local-only messages with focused calls
+        // (skipped when flushPrompt is pending — wiki_write requires the full agent loop)
         response = await this.microPipeline.process(extracted.content, {
           userName: extracted.user,
           roomToken: extracted.token,
@@ -319,7 +344,22 @@ class MessageProcessor {
         const { useLocal, useDomainTools, intent } = await this._smartMixClassify(extracted.content, session);
         console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}`);
 
-        if (useLocal && useDomainTools) {
+        if (flushPrompt) {
+          // Memory flush pending — escalate to agentLoop regardless of smart-mix classification
+          // (wiki_write requires the full agent loop, MicroPipeline can't persist)
+          console.log(`[Message] Smart-mix overridden by memory flush — escalating to cloud`);
+          if (this.agentLoop.llmProvider?.skipLocalForConversation) {
+            this.agentLoop.llmProvider.skipLocalForConversation();
+          }
+          response = await this.agentLoop.process(extracted.content, extracted.token, {
+            messageId: extracted.messageId,
+            inputType: extracted._isVoice ? 'voice' : 'text',
+            user: extracted.user,
+            systemSuffix: flushPrompt
+          });
+          result = { intent: `smart_mix_flush:${intent}`, provider: 'agent' };
+          response = response || 'Sorry, I encountered an error processing your message.';
+        } else if (useLocal && useDomainTools) {
           // Path 2: Domain-specific — local tool-calling with focused subset
           if (this.agentLoop.llmProvider?.clearLocalSkip) {
             this.agentLoop.llmProvider.clearLocalSkip();
@@ -341,7 +381,8 @@ class MessageProcessor {
             response = await this.agentLoop.process(extracted.content, extracted.token, {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
-              user: extracted.user
+              user: extracted.user,
+              systemSuffix: flushPrompt
             });
             result = { intent: `smart_mix_escalated:${intent}`, provider: 'agent' };
             response = response || 'Sorry, I encountered an error processing your message.';
@@ -378,7 +419,10 @@ class MessageProcessor {
             agentOpts.maxIterations = 2;
           }
 
-          response = await this.agentLoop.process(extracted.content, extracted.token, agentOpts);
+          response = await this.agentLoop.process(extracted.content, extracted.token, {
+            ...agentOpts,
+            systemSuffix: flushPrompt
+          });
           result = { intent: `smart_mix_cloud:${intent}`, provider: 'agent' };
           response = response || 'Sorry, I encountered an error processing your message.';
         }
@@ -398,7 +442,10 @@ class MessageProcessor {
           agentOpts.maxIterations = 2;
         }
 
-        response = await this.agentLoop.process(extracted.content, extracted.token, agentOpts);
+        response = await this.agentLoop.process(extracted.content, extracted.token, {
+          ...agentOpts,
+          systemSuffix: flushPrompt
+        });
         result = { intent: 'agent_loop', provider: 'agent' };
         response = response || 'Sorry, I encountered an error processing your message.';
       } else {
@@ -448,8 +495,17 @@ class MessageProcessor {
       }
 
       // Session 29b: Track assistant response in SessionManager
+      // addContext() can return flushNeeded=true for the assistant entry when the 80%
+      // threshold is crossed mid-turn (user message landed at threshold-1, assistant
+      // reply lands at threshold).  Capture that signal and carry it forward as a
+      // pending flag so the NEXT user-message turn injects the flush prompt.
       if (session && response) {
-        this.sessionManager.addContext(session, 'assistant', response);
+        const { flushNeeded: assistantFlush } = this.sessionManager.addContext(session, 'assistant', response);
+        if (assistantFlush && !flushPrompt) {
+          // Flush fired on the assistant side — store pending for next user turn
+          session._pendingFlush = true;
+          console.log(`[Memory] Context flush pending after assistant reply for ${extracted.token}:${extracted.user}`);
+        }
       }
 
       await this.auditLog('chat_outgoing', {
