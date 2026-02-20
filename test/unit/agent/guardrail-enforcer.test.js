@@ -398,6 +398,19 @@ async function runTests() {
     assert.strictEqual(enforcer._parseSemanticResult(null), 'UNCERTAIN');
   });
 
+  test('_parseSemanticResult handles chain-of-thought with answer on last line', () => {
+    const enforcer = makeEnforcer({});
+    assert.strictEqual(enforcer._parseSemanticResult(
+      'The guardrail is about email confirmation. The tool call is mail_send.\nYES'
+    ), 'YES');
+    assert.strictEqual(enforcer._parseSemanticResult(
+      'This guardrail governs file deletion. The tool call is sending email.\nNO'
+    ), 'NO');
+    assert.strictEqual(enforcer._parseSemanticResult(
+      'The guardrail concerns calendar events. mail_send is not calendar-related.\nNo, this does not apply.'
+    ), 'NO');
+  });
+
   // --- No ollamaProvider: keyword-only ---
 
   await asyncTest('keyword-only mode when no ollamaProvider: match triggers HITL', async () => {
@@ -413,6 +426,100 @@ async function runTests() {
 
     const result = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
     assert.strictEqual(result.allowed, true); // keyword matched → HITL → user said yes
+  });
+
+  // --- Cursor advancement (Fix 1: prevents approval loop) ---
+
+  await asyncTest('cursor advances past consumed reply — second guardrail does not re-match first reply', async () => {
+    const now = Date.now();
+    const replyTimestamp = Math.ceil(now / 1000) + 1;
+    // Two guardrails both return YES — both need separate HITL confirmations
+    // But there's only ONE "yes" reply. The second guardrail should timeout, not re-use it.
+    const enforcer = makeEnforcer({
+      cockpitManager: createMockCockpit([
+        { title: 'Confirm external comms' },
+        { title: 'Double-check outbound mail' }
+      ]),
+      ollamaProvider: createMockOllama('YES'),
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([
+        { role: 'user', content: 'yes', timestamp: replyTimestamp }
+      ]),
+      confirmationTimeoutMs: 200,
+      pollIntervalMs: 50
+    });
+
+    // First guardrail consumes "yes", second guardrail should timeout
+    const result = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
+    assert.strictEqual(result.allowed, false);
+    assert.ok(result.reason.includes('Double-check outbound mail'));
+  });
+
+  await asyncTest('cursor allows fresh reply after previous consumed', async () => {
+    const now = Date.now();
+    const firstReplyTs = Math.ceil(now / 1000) + 1;
+    const secondReplyTs = firstReplyTs + 2; // 2 seconds later
+    let pollCount = 0;
+
+    // Two guardrails, both YES. Replies arrive at different timestamps.
+    const enforcer = makeEnforcer({
+      cockpitManager: createMockCockpit([
+        { title: 'Confirm external comms' },
+        { title: 'Double-check outbound mail' }
+      ]),
+      ollamaProvider: createMockOllama('YES'),
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: {
+        getHistory: async () => {
+          pollCount++;
+          // First few polls: only the first reply
+          // Later polls: both replies (simulating user typing second reply)
+          if (pollCount <= 3) {
+            return [{ role: 'user', content: 'yes', timestamp: firstReplyTs }];
+          }
+          return [
+            { role: 'user', content: 'yes', timestamp: firstReplyTs },
+            { role: 'user', content: 'yes', timestamp: secondReplyTs }
+          ];
+        }
+      },
+      confirmationTimeoutMs: 2000,
+      pollIntervalMs: 50
+    });
+
+    const result = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
+    assert.strictEqual(result.allowed, true); // both guardrails approved
+  });
+
+  // --- Semantic prompt tightening (Fix 2) ---
+
+  await asyncTest('semantic prompt includes negative framing for cross-category rejection', async () => {
+    const ollama = createMockOllama('NO');
+    const enforcer = makeEnforcer({
+      cockpitManager: createMockCockpit([{ title: 'Confirm before deleting files' }]),
+      ollamaProvider: ollama,
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([])
+    });
+
+    await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
+    const system = ollama._getLastCall().system;
+    assert.ok(system.includes('file deletion does NOT apply to sending email'));
+    assert.ok(system.includes('Be strict and precise'));
+  });
+
+  await asyncTest('semantic prompt includes chain-of-thought instruction', async () => {
+    const ollama = createMockOllama('NO');
+    const enforcer = makeEnforcer({
+      cockpitManager: createMockCockpit([{ title: 'Check calendar' }]),
+      ollamaProvider: ollama,
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([])
+    });
+
+    await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
+    const userMsg = ollama._getLastCall().messages[0].content;
+    assert.ok(userMsg.includes('First identify what category the guardrail governs'));
   });
 
   await asyncTest('keyword-only mode when no ollamaProvider: no match allows', async () => {
