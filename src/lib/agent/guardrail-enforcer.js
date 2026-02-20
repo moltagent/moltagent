@@ -23,6 +23,14 @@ const SENSITIVE_TOOLS = new Set([
   'calendar_delete_event',
 ]);
 
+// Tools that support the "edit" response (non-destructive, revisable actions)
+const EDITABLE_TOOLS = new Set([
+  'mail_send',
+  'mail_reply',
+  'calendar_create_event',
+  'calendar_update_event',
+]);
+
 // Explicit tool categories — fed to the LLM so it reasons about category membership,
 // not abstract semantic similarity ("irreversibility" etc.)
 const TOOL_CATEGORIES = {
@@ -49,6 +57,7 @@ const SEMANTIC_TIMEOUT_MS = 30000; // 30s — classification needs headroom
 
 const AFFIRMATIVE = new Set(['yes', 'y', 'approve', 'ok', 'go ahead', 'proceed']);
 const NEGATIVE = new Set(['no', 'n', 'deny', 'cancel', 'stop', 'abort']);
+const EDIT_WORDS = ['edit', 'revise', 'change', 'update', 'modify', 'fix', 'adjust'];
 
 const DEFAULT_CONFIRMATION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_POLL_INTERVAL_MS = 3000;
@@ -102,7 +111,7 @@ class GuardrailEnforcer {
    * @param {string} toolName - Tool being called
    * @param {Object} toolArgs - Tool call arguments
    * @param {string|null} roomToken - Talk room token (null for workflow/non-interactive)
-   * @returns {Promise<{allowed: boolean, reason: string|null}>}
+   * @returns {Promise<{allowed: boolean, reason: string|null, editRequest?: boolean, editMessage?: string}>}
    */
   async check(toolName, toolArgs, roomToken) {
     // Fail open: no cockpitManager → no guardrails to check
@@ -146,11 +155,23 @@ class GuardrailEnforcer {
 
       if (matchResult === 'YES') {
         // Guardrail triggered — request HITL confirmation
-        const confirmed = await this._requestConfirmation(title, toolName, toolArgs, roomToken);
-        if (!confirmed) {
+        const response = await this._requestConfirmation(title, toolName, toolArgs, roomToken);
+
+        if (response.decision === 'edit') {
+          this.logger.info(`[GuardrailEnforcer] ${toolName}: "${title}" → EDIT requested`);
+          return {
+            allowed: false,
+            reason: 'User requested revision before sending',
+            editRequest: true,
+            editMessage: response.message
+          };
+        }
+
+        if (response.decision !== 'yes') {
           this.logger.info(`[GuardrailEnforcer] ${toolName}: BLOCKED by "${title}"`);
           return { allowed: false, reason: `Guardrail "${title}" — action denied or timed out` };
         }
+
         // User approved — cache approval so retries don't re-ask
         this.approvalCache.set(approvalKey, Date.now());
         this.logger.info(`[GuardrailEnforcer] ${toolName}: "${title}" → APPROVED by user`);
@@ -312,17 +333,17 @@ class GuardrailEnforcer {
    * @param {string} toolName
    * @param {Object} toolArgs
    * @param {string} roomToken
-   * @returns {Promise<boolean>} true if approved, false if denied/timeout
+   * @returns {Promise<{decision: 'yes'|'no'|'edit'|'timeout', message?: string}>}
    * @private
    */
   async _requestConfirmation(guardrailTitle, toolName, toolArgs, roomToken) {
     // Can't ask = fail closed
     if (!this.talkSendQueue || !this.conversationContext) {
       this.logger.warn('[GuardrailEnforcer] Cannot request confirmation — Talk unavailable, blocking');
-      return false;
+      return { decision: 'no' };
     }
 
-    const message = this._buildConfirmationMessage(guardrailTitle, toolName, toolArgs);
+    const message = this._buildConfirmationMessage(toolName, toolArgs, guardrailTitle);
     const requestTimestamp = Date.now();
     const searchAfter = Math.max(requestTimestamp, this._lastConsumedTimestamp);
 
@@ -330,7 +351,7 @@ class GuardrailEnforcer {
       this.talkSendQueue.enqueue(roomToken, message);
     } catch (err) {
       this.logger.warn(`[GuardrailEnforcer] Failed to send confirmation: ${err.message}`);
-      return false;
+      return { decision: 'no' };
     }
 
     // Poll for human response
@@ -348,11 +369,15 @@ class GuardrailEnforcer {
           const content = (msg.content || '').trim().toLowerCase();
           if (this._isAffirmative(content)) {
             this._lastConsumedTimestamp = msgTimestampMs;
-            return true;
+            return { decision: 'yes' };
           }
           if (this._isNegative(content)) {
             this._lastConsumedTimestamp = msgTimestampMs;
-            return false;
+            return { decision: 'no' };
+          }
+          if (this._isEditRequest(content) && EDITABLE_TOOLS.has(toolName)) {
+            this._lastConsumedTimestamp = msgTimestampMs;
+            return { decision: 'edit', message: (msg.content || '').trim() };
           }
         }
       } catch (err) {
@@ -361,29 +386,144 @@ class GuardrailEnforcer {
     }
 
     this.logger.info('[GuardrailEnforcer] Confirmation timed out — blocking action');
-    return false;
+    return { decision: 'timeout' };
+  }
+
+  // ── Confirmation message templates ──────────────────────────────
+
+  /** @private */
+  _buildConfirmationMessage(toolName, toolArgs, guardrailTitle) {
+    const guardrailLine = `*Guardrail: "${guardrailTitle}"*`;
+
+    switch (toolName) {
+      case 'mail_send':
+      case 'mail_reply':
+        return this._buildEmailConfirmation(toolArgs, guardrailLine);
+      case 'file_delete':
+        return this._buildFileDeleteConfirmation(toolArgs, guardrailLine);
+      case 'file_move':
+        return this._buildFileMoveConfirmation(toolArgs, guardrailLine);
+      case 'calendar_create_event':
+      case 'calendar_update_event':
+        return this._buildCalendarConfirmation(toolName, toolArgs, guardrailLine);
+      case 'calendar_delete_event':
+        return this._buildCalendarDeleteConfirmation(toolArgs, guardrailLine);
+      default:
+        return this._buildGenericConfirmation(toolName, toolArgs, guardrailLine);
+    }
   }
 
   /** @private */
-  _buildConfirmationMessage(guardrailTitle, toolName, toolArgs) {
-    let details = '';
-    if (toolName === 'mail_send') {
-      if (toolArgs.to) details += `\n  To: \`${toolArgs.to}\``;
-      if (toolArgs.subject) details += `\n  Subject: \`${toolArgs.subject}\``;
-    } else if (toolName === 'file_delete' || toolName === 'file_move') {
-      if (toolArgs.path) details += `\n  Path: \`${toolArgs.path}\``;
-      if (toolArgs.destination) details += `\n  Destination: \`${toolArgs.destination}\``;
-    } else if (toolName.startsWith('calendar_')) {
-      if (toolArgs.title) details += `\n  Event: \`${toolArgs.title}\``;
-      if (toolArgs.date) details += `\n  Date: \`${toolArgs.date}\``;
-    }
+  _buildEmailConfirmation(args, guardrailLine) {
+    const separator = '\u2500'.repeat(25);
+    const body = args.body || args.text || '(no body)';
+    const cc = args.cc ? `\nCC: ${args.cc}` : '';
 
-    const action = details
-      ? `I want to use \`${toolName}\`:${details}`
-      : `I want to use \`${toolName}\``;
-
-    return `**Guardrail check:** "${guardrailTitle}"\n\n${action}\n\nReply **yes** to approve or **no** to cancel.`;
+    return [
+      '\u{1f4e7} **Email ready to send**',
+      '',
+      `**To:** ${args.to || '(no recipient)'}${cc}`,
+      `**Subject:** ${args.subject || '(no subject)'}`,
+      '',
+      separator,
+      body.trim(),
+      separator,
+      '',
+      guardrailLine,
+      '',
+      'Reply **yes** to send \u00b7 **no** to cancel \u00b7 **edit** to revise',
+    ].join('\n');
   }
+
+  /** @private */
+  _buildFileDeleteConfirmation(args, guardrailLine) {
+    const filePath = args.path || args.file || args.filename || '(unknown file)';
+    return [
+      '\u{1f5d1}\ufe0f **File deletion requires your approval**',
+      '',
+      `**File:** ${filePath}`,
+      '',
+      '\u26a0\ufe0f This action cannot be undone.',
+      '',
+      guardrailLine,
+      '',
+      'Reply **yes** to delete \u00b7 **no** to cancel',
+    ].join('\n');
+  }
+
+  /** @private */
+  _buildFileMoveConfirmation(args, guardrailLine) {
+    return [
+      '\u{1f4c1} **File move requires your approval**',
+      '',
+      `**From:** ${args.from || args.source || args.path || '(unknown)'}`,
+      `**To:** ${args.to || args.destination || '(unknown)'}`,
+      '',
+      guardrailLine,
+      '',
+      'Reply **yes** to proceed \u00b7 **no** to cancel',
+    ].join('\n');
+  }
+
+  /** @private */
+  _buildCalendarConfirmation(toolName, args, guardrailLine) {
+    const action = toolName === 'calendar_create_event' ? 'Create event' : 'Update event';
+    const attendees = Array.isArray(args.attendees) ? args.attendees.join(', ') : (args.attendee || '');
+
+    return [
+      '\u{1f4c5} **Calendar change requires your approval**',
+      '',
+      `**Action:** ${action}`,
+      `**Title:** ${args.title || args.summary || '(no title)'}`,
+      args.start ? `**Date:** ${args.start}` : null,
+      args.location ? `**Location:** ${args.location}` : null,
+      attendees ? `**Attendees:** ${attendees}` : null,
+      '',
+      guardrailLine,
+      '',
+      'Reply **yes** to confirm \u00b7 **no** to cancel \u00b7 **edit** to revise',
+    ].filter(line => line !== null).join('\n');
+  }
+
+  /** @private */
+  _buildCalendarDeleteConfirmation(args, guardrailLine) {
+    return [
+      '\u{1f4c5} **Calendar deletion requires your approval**',
+      '',
+      `**Event:** ${args.title || args.eventId || '(unknown event)'}`,
+      '',
+      '\u26a0\ufe0f This will remove the event from all attendees.',
+      '',
+      guardrailLine,
+      '',
+      'Reply **yes** to delete \u00b7 **no** to cancel',
+    ].join('\n');
+  }
+
+  /** @private */
+  _buildGenericConfirmation(toolName, toolArgs, guardrailLine) {
+    const actionMap = {
+      mail_send: 'send an email',
+      file_delete: 'delete a file',
+      file_move: 'move a file',
+      calendar_create_event: 'create a calendar event',
+      calendar_update_event: 'update a calendar event',
+      calendar_delete_event: 'delete a calendar event',
+    };
+    const action = actionMap[toolName] || `perform an action (${toolName})`;
+
+    return [
+      '\u26a0\ufe0f **Action requires your approval**',
+      '',
+      `I'm about to: **${action}**`,
+      '',
+      guardrailLine,
+      '',
+      'Reply **yes** to proceed \u00b7 **no** to cancel',
+    ].join('\n');
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────
 
   /** @private */
   _formatToolCall(toolName, toolArgs) {
@@ -399,6 +539,11 @@ class GuardrailEnforcer {
   /** @param {string} text - Lowercased, trimmed */
   _isNegative(text) {
     return NEGATIVE.has(text);
+  }
+
+  /** @param {string} text - Lowercased, trimmed */
+  _isEditRequest(text) {
+    return EDIT_WORDS.some(word => text.startsWith(word));
   }
 
   /**

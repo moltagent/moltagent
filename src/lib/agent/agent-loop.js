@@ -495,6 +495,14 @@ class AgentLoop {
     if (this.guardrailEnforcer) {
       const result = await this.guardrailEnforcer.check(toolCall.name, toolCall.arguments, roomToken);
       if (!result.allowed) {
+        if (result.editRequest) {
+          this.logger.info(`[AgentLoop] GuardrailEnforcer edit requested: ${toolCall.name}`);
+          return {
+            success: false, result: '', error:
+              `The user wants to revise this before it's sent. Their message: "${result.editMessage || 'edit'}". ` +
+              'Ask the user what they\'d like to change, then retry with the updated content.'
+          };
+        }
         this.logger.info(`[AgentLoop] GuardrailEnforcer blocked: ${toolCall.name} — ${result.reason}`);
         return { success: false, result: '', error: `Action blocked: ${result.reason}` };
       }
