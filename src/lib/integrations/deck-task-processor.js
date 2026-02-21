@@ -9,6 +9,7 @@
  */
 
 const DeckClient = require('./deck-client');
+const { isAwaitingHumanResponse } = require('./deck-client');
 const { JOBS } = require('../llm/router');
 
 /**
@@ -138,6 +139,19 @@ class DeckTaskProcessor {
           console.log(`[DeckProcessor] Skipping blocked card: ${card.title}`);
           results.blocked++;
           continue;
+        }
+
+        // Skip cards where bot already posted a question/gate and is awaiting human response
+        try {
+          const comments = await this.deck.getComments(card.id);
+          if (isAwaitingHumanResponse(comments, this.deck.username || 'moltagent')) {
+            console.log(`[DeckProcessor] Skipping card awaiting human response: "${card.title}"`);
+            results.awaitingResponse = (results.awaitingResponse || 0) + 1;
+            continue;
+          }
+        } catch (e) {
+          // Comment fetch failure shouldn't block processing
+          console.warn(`[DeckProcessor] Could not check comments for card ${card.id}: ${e.message}`);
         }
 
         try {
@@ -781,6 +795,18 @@ Please address the user's ${classification.type}. Be concise and helpful.
 
       for (const card of assignedCards) {
         try {
+          // Skip cards where bot already posted a question/gate and is awaiting human response
+          try {
+            const comments = await this.deck.getComments(card.id);
+            if (isAwaitingHumanResponse(comments, this.deck.username || 'moltagent')) {
+              console.log(`[DeckProcessor] Skipping assigned card awaiting human response: "${card.title}"`);
+              results.awaitingResponse = (results.awaitingResponse || 0) + 1;
+              continue;
+            }
+          } catch (e) {
+            console.warn(`[DeckProcessor] Could not check comments for assigned card ${card.id}: ${e.message}`);
+          }
+
           const needsAction = await this._analyzeIfActionNeeded(card);
 
           if (needsAction.action) {

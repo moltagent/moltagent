@@ -20,7 +20,7 @@ const appConfig = require('../config');
  * Used to distinguish bot comments from human comments in scanners.
  * @type {string[]}
  */
-const BOT_PREFIXES = ['[STATUS]', '[PROGRESS]', '[DONE]', '[QUESTION]', '[ERROR]', '[BLOCKED]', '[REVIEW]', '[FOLLOWUP]', '[MENTION]'];
+const BOT_PREFIXES = ['[STATUS]', '[PROGRESS]', '[DONE]', '[QUESTION]', '[ERROR]', '[BLOCKED]', '[REVIEW]', '[FOLLOWUP]', '[MENTION]', '[GATE]'];
 
 /**
  * Check if the bot has already responded to the most recent human comment.
@@ -57,6 +57,57 @@ function hasNewerBotResponse(comments, botUsername) {
   if (latestBotId === -1) return false;
   // Bot responded after the latest human comment
   return latestBotId > latestHumanId;
+}
+
+/**
+ * Patterns in bot comments that indicate the bot is waiting for a human response.
+ * If the most recent comment is from the bot AND matches one of these, the card
+ * should be skipped on heartbeat to avoid reprocessing loops.
+ * @type {RegExp[]}
+ */
+const AWAITING_PATTERNS = [
+  /^\[QUESTION\]/,
+  /^\[GATE\]/,
+  /^\[BLOCKED\]/,
+  /confirm the action/i,
+  /please confirm/i,
+  /awaiting.*(?:approval|confirmation|response)/i
+];
+
+/**
+ * Check if the bot is waiting for a human response on a card.
+ * Returns true when the most recent comment (by ID) is from the bot and
+ * contains a question/gate/confirmation-request pattern.
+ *
+ * The inverse: if the most recent comment is from a human, returns false
+ * (the human has replied — the card should be processed).
+ *
+ * @param {Array} comments - Comments array (any order)
+ * @param {string} botUsername - Bot username (case-insensitive)
+ * @returns {boolean} true if the bot posted a question/gate and nobody has replied yet
+ */
+function isAwaitingHumanResponse(comments, botUsername) {
+  if (!comments || comments.length === 0) return false;
+  const botUser = botUsername.toLowerCase();
+
+  // Find the most recent comment by ID
+  let latest = null;
+  for (const comment of comments) {
+    if (!latest || (comment.id || 0) > (latest.id || 0)) {
+      latest = comment;
+    }
+  }
+  if (!latest) return false;
+
+  // Check if it's a bot comment
+  const msg = latest.message || '';
+  const isBot = BOT_PREFIXES.some(p => msg.startsWith(p)) ||
+                (latest.actorId || '').toLowerCase() === botUser;
+
+  if (!isBot) return false; // Last comment is human → not awaiting
+
+  // Check if the bot comment is a question/gate/confirmation request
+  return AWAITING_PATTERNS.some(pat => pat.test(msg));
 }
 
 /**
@@ -1305,3 +1356,4 @@ class DeckClient {
 module.exports = DeckClient;
 module.exports.BOT_PREFIXES = BOT_PREFIXES;
 module.exports.hasNewerBotResponse = hasNewerBotResponse;
+module.exports.isAwaitingHumanResponse = isAwaitingHumanResponse;
