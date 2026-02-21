@@ -573,7 +573,14 @@ class NCRequestManager {
         }
 
         this.metrics.failures++;
-        reject(new Error(`HTTP ${response.status}: ${response.statusText || ''}`));
+        const bodySnippet = typeof response.body === 'string'
+          ? response.body.slice(0, 500)
+          : JSON.stringify(response.body || '').slice(0, 500);
+        console.error(`[NCRequestManager] HTTP ${response.status} on ${requestItem.method} ${requestItem.url}: ${bodySnippet}`);
+        const err = new Error(`HTTP ${response.status}: ${response.statusText || ''}`);
+        err.statusCode = response.status;
+        err.responseBody = response.body;
+        reject(err);
         return;
       }
 

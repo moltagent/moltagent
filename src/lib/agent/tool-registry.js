@@ -1564,7 +1564,16 @@ class ToolRegistry {
         required: ['path', 'content']
       },
       handler: async (args) => {
+        if (!args.content && args.content !== '') {
+          return `file_write requires "content" — received empty or missing content for "${args.path}".`;
+        }
         try {
+          // Ensure parent directory exists (mkdir is idempotent — 405 on exists)
+          const parts = (args.path || '').split('/');
+          if (parts.length > 1) {
+            const parentDir = parts.slice(0, -1).join('/');
+            await files.mkdir(parentDir);
+          }
           await files.writeFile(args.path, args.content);
           return `Wrote ${this._formatSize(Buffer.byteLength(args.content, 'utf-8'))} to "${args.path}".`;
         } catch (err) {

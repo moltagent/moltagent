@@ -685,15 +685,20 @@ class DeckClient {
   async addComment(cardId, message, type = 'STATUS', { prefix = true } = {}) {
     const prefixedMessage = prefix ? `[${type}] ${message}` : message;
 
-    // Comments use the OCS API wrapper, not the direct API
-    const response = await this._request(
-      'POST',
-      `/ocs/v2.php/apps/deck/api/v1.0/cards/${cardId}/comments`,
-      { message: prefixedMessage }
-    );
+    try {
+      // Comments use the OCS API wrapper, not the direct API
+      const response = await this._request(
+        'POST',
+        `/ocs/v2.php/apps/deck/api/v1.0/cards/${cardId}/comments`,
+        { message: prefixedMessage }
+      );
 
-    console.log(`[Deck] Comment added to card ${cardId}: [${type}]`);
-    return response;
+      console.log(`[Deck] Comment added to card ${cardId}: [${type}]`);
+      return response;
+    } catch (err) {
+      console.error(`[Deck] addComment failed card=${cardId} status=${err.statusCode || '?'} msgLen=${prefixedMessage.length} body=${JSON.stringify(err.responseBody || err.message).slice(0, 300)}`);
+      throw err;
+    }
   }
 
   /**
