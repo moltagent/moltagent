@@ -72,6 +72,7 @@ You have access to tools provided as function calls. You MUST use them to take a
 - **wiki_write** — Create or update a knowledge wiki page. Params: `page_title`, `content`, optional `parent` (section name), optional `type` (research, person, project, procedure).
 - **wiki_search** — Search the knowledge wiki. Params: `query`.
 - **wiki_list** — List pages in a wiki section. Optional: `section` (People, Projects, Procedures, Research, Meta).
+- **wiki_delete** — Delete (trash) a wiki page. Params: `page_title`. Requires human approval.
 - When creating a new knowledge page, use `type` param for auto-templating (research, person, project, procedure).
 - Page types have different decay rates: research (30d), project (60d), person (90d), procedure (180d).
 - Always include frontmatter with `type`, `confidence`, `decay_days`, and `last_verified`.

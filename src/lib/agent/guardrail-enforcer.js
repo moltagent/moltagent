@@ -448,6 +448,9 @@ class GuardrailEnforcer {
       case 'wiki_write':
         return this._buildWikiWriteConfirmation(toolArgs, guardrailLine);
       case 'wiki_delete':
+      case 'deck_delete_card':
+      case 'deck_share_board':
+      case 'file_share':
         return this._buildGenericConfirmation(toolName, toolArgs, guardrailLine);
       default:
         return this._buildGenericConfirmation(toolName, toolArgs, guardrailLine);
@@ -569,6 +572,9 @@ class GuardrailEnforcer {
       calendar_update_event: 'update a calendar event',
       calendar_delete_event: 'delete a calendar event',
       wiki_delete: 'delete a wiki page',
+      deck_delete_card: 'delete a Deck card',
+      deck_share_board: 'share a Deck board',
+      file_share: 'share a file',
     };
     const action = actionMap[toolName] || `perform an action (${toolName})`;
 
@@ -727,6 +733,26 @@ class GuardrailEnforcer {
         if (toolArgs && toolArgs.page_title) {
           const escaped = toolArgs.page_title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
           patterns.push(new RegExp(`\\bdelete\\b.*${escaped}`, 'i'));
+        }
+        break;
+      case 'deck_share_board':
+        patterns.push(
+          /\bshare\b.*\b(?:board|it|that|this)\b/,
+          /\bgive\s+access\b/
+        );
+        if (toolArgs && toolArgs.board_name) {
+          const escaped = toolArgs.board_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          patterns.push(new RegExp(`\\bshare\\b.*${escaped}`, 'i'));
+        }
+        break;
+      case 'file_share':
+        patterns.push(
+          /\bshare\b.*\b(?:file|it|that|this)\b/,
+          /\bgive\s+access\b.*\b(?:file|it|that|this)\b/
+        );
+        if (toolArgs && toolArgs.path) {
+          const escaped = toolArgs.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          patterns.push(new RegExp(`\\bshare\\b.*${escaped}`, 'i'));
         }
         break;
       default:

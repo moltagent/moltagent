@@ -1,6 +1,6 @@
 # Moltagent Wiring Audit Report
 
-Generated: 2026-02-21T23:30:14.491Z
+Generated: 2026-02-21T23:35:32.115Z
 
 ## Scanner 1: Orphaned Client Methods
 
@@ -63,7 +63,7 @@ Generated: 2026-02-21T23:30:14.491Z
 
 ## Scanner 4: SOUL.md ↔ Code Drift
 
-- ℹ wiki_delete — registered but not mentioned in SOUL.md (agent may not know to use it)
+- ✓ No findings
 
 ## Scanner 5: Tool Subset Gaps
 
@@ -85,28 +85,18 @@ Generated: 2026-02-21T23:30:14.491Z
 - ℹ deck_my_assigned_cards — prefix suggests 'deck' subset but NOT included (subset has 5/5 slots)
 - ℹ deck_overdue_cards — prefix suggests 'deck' subset but NOT included (subset has 5/5 slots)
 - ℹ deck_mark_done — prefix suggests 'deck' subset but NOT included (subset has 5/5 slots)
-- ⚠ calendar_update_event — prefix suggests 'calendar' subset but NOT included (subset has 4/5 slots)
-- ⚠ calendar_delete_event — prefix suggests 'calendar' subset but NOT included (subset has 4/5 slots)
-- ⚠ file_info — prefix suggests 'file' subset but NOT included (subset has 4/5 slots)
-- ⚠ file_move — prefix suggests 'file' subset but NOT included (subset has 4/5 slots)
-- ⚠ file_copy — prefix suggests 'file' subset but NOT included (subset has 4/5 slots)
-- ⚠ file_delete — prefix suggests 'file' subset but NOT included (subset has 4/5 slots)
-- ⚠ file_mkdir — prefix suggests 'file' subset but NOT included (subset has 4/5 slots)
-- ⚠ file_share — prefix suggests 'file' subset but NOT included (subset has 4/5 slots)
-- ⚠ file_extract — prefix suggests 'file' subset but NOT included (subset has 4/5 slots)
-- ⚠ unified_search — prefix suggests 'search' subset but NOT included (subset has 3/5 slots)
-- ⚠ memory_recall — prefix suggests 'search' subset but NOT included (subset has 3/5 slots)
+- ℹ file_info — prefix suggests 'file' subset but NOT included (subset has 5/5 slots)
+- ℹ file_copy — prefix suggests 'file' subset but NOT included (subset has 5/5 slots)
+- ℹ file_mkdir — prefix suggests 'file' subset but NOT included (subset has 5/5 slots)
+- ℹ file_share — prefix suggests 'file' subset but NOT included (subset has 5/5 slots)
+- ℹ file_extract — prefix suggests 'file' subset but NOT included (subset has 5/5 slots)
+- ℹ memory_recall — prefix suggests 'search' subset but NOT included (subset has 5/5 slots)
 - ℹ wiki_list — prefix suggests 'wiki' subset but NOT included (subset has 5/5 slots)
-- ⚠ web_read — prefix suggests 'search' subset but NOT included (subset has 3/5 slots)
-- ⚠ contacts_get — prefix suggests 'search' subset but NOT included (subset has 3/5 slots)
-- ⚠ getCloudWorkflowToolDefinitions references 'mail_draft' but only 'mail_send' is registered
-- ⚠ getCloudWorkflowToolDefinitions references 'talk_send' but it is not registered
+- ℹ contacts_get — prefix suggests 'search' subset but NOT included (subset has 5/5 slots)
 
 ## Scanner 6: Approval Path Completeness
 
-- ⚠ deck_delete_card — missing in: _buildConfirmationMessage
-- ⚠ deck_share_board — missing in: _getConfirmationPatterns, _buildConfirmationMessage
-- ⚠ file_share — missing in: _getConfirmationPatterns, _buildConfirmationMessage
+- ✓ No findings
 
 ---
-**Summary:** 37 warnings, 50 info items
+**Summary:** 19 warnings, 56 info items

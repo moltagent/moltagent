@@ -126,9 +126,8 @@ class ToolRegistry {
     if (ctx.includes('folder') || ctx.includes('/clients/') || ctx.includes('file'))
       ['file_mkdir', 'file_write'].forEach(t => allowed.add(t));
     if (ctx.includes('email') || ctx.includes('mail'))
-      allowed.add('mail_draft');
-    if (ctx.includes('talk') || ctx.includes('notify') || ctx.includes('notification'))
-      allowed.add('talk_send');
+      allowed.add('mail_send');
+    // talk_send: not yet implemented — add here when wired
 
     return Array.from(this.tools.values())
       .filter(t => allowed.has(t.name))
@@ -161,7 +160,8 @@ class ToolRegistry {
         'calendar_list_events',
         'calendar_create_event',
         'calendar_check_conflicts',
-        'memory_search'
+        'calendar_update_event',
+        'calendar_delete_event'
       ],
       email: [
         'mail_send',
@@ -179,12 +179,15 @@ class ToolRegistry {
         'file_read',
         'file_write',
         'file_list',
-        'memory_search'
+        'file_move',
+        'file_delete'
       ],
       search: [
         'memory_search',
+        'unified_search',
         'contacts_search',
-        'web_search'
+        'web_search',
+        'web_read'
       ]
     };
 
