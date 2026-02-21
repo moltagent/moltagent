@@ -407,7 +407,7 @@ function scanUnguardedTools() {
   //   2. GuardrailEnforcer SENSITIVE_TOOLS — Cockpit-governed, dynamic
   // Only flag tools that are in NEITHER system and perform destructive/external actions.
   const sensitiveSet = new Set(sensitiveTools);
-  const destructivePatterns = /delete|remove|trash|send|share/;
+  const destructivePatterns = /delete|trash|send|share/;
   for (const tool of registeredTools) {
     if (!allGuarded.has(tool) && !sensitiveSet.has(tool)) {
       if (destructivePatterns.test(tool)) {

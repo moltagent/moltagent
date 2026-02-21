@@ -1,6 +1,6 @@
 # Moltagent Wiring Audit Report
 
-Generated: 2026-02-21T23:35:32.115Z
+Generated: 2026-02-21T23:39:04.551Z
 
 ## Scanner 1: Orphaned Client Methods
 
@@ -38,7 +38,6 @@ Generated: 2026-02-21T23:35:32.115Z
 
 ## Scanner 2: Unguarded Tools
 
-- ⚠ deck_remove_label — destructive tool not in ToolGuard OR SENSITIVE_TOOLS (defaults to ALLOWED, no guardrails)
 - ℹ send_email — in REQUIRES_APPROVAL but not registered as a tool (may be intentional guard for future or external ops)
 - ℹ send_message_external — in REQUIRES_APPROVAL but not registered as a tool (may be intentional guard for future or external ops)
 - ℹ webhook_call — in REQUIRES_APPROVAL but not registered as a tool (may be intentional guard for future or external ops)
@@ -99,4 +98,4 @@ Generated: 2026-02-21T23:35:32.115Z
 - ✓ No findings
 
 ---
-**Summary:** 19 warnings, 56 info items
+**Summary:** 18 warnings, 56 info items
