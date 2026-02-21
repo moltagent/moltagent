@@ -433,73 +433,78 @@ class ToolRegistry {
         required: []
       },
       handler: async (args) => {
-        // Non-default board: resolve board, fetch stacks, list cards
-        if (args.board) {
-          const board = await this._resolveBoard(deck, args.board);
-          if (!board) return `No board found matching "${args.board}".`;
+        try {
+          // Non-default board: resolve board, fetch stacks, list cards
+          if (args.board) {
+            const board = await this._resolveBoard(deck, args.board);
+            if (!board) return `No board found matching "${args.board}".`;
 
-          const stacks = await deck.getStacks(board.id);
-          if (!stacks || stacks.length === 0) return `Board "${board.title}" has no stacks.`;
+            const stacks = await deck.getStacks(board.id);
+            if (!stacks || stacks.length === 0) return `Board "${board.title}" has no stacks.`;
 
+            const lines = [];
+            let totalCards = 0;
+
+            for (const s of stacks) {
+              const cards = s.cards || [];
+              // Filter by stack name if specified
+              if (args.stack && s.title.toLowerCase() !== args.stack.toLowerCase()) continue;
+              if (cards.length === 0) continue;
+              totalCards += cards.length;
+              lines.push(`**${s.title}** (${cards.length}):`);
+              for (const c of cards) {
+                const labels = (c.labels || []).map(l => l.title).join(', ');
+                lines.push(`- [#${c.id}] "${c.title}"${labels ? ` [${labels}]` : ''}${c.duedate ? ` (due: ${c.duedate})` : ''}`);
+              }
+            }
+
+            if (totalCards === 0) {
+              return args.stack
+                ? `No cards in stack "${args.stack}" on board "${board.title}".`
+                : `Board "${board.title}" is empty.`;
+            }
+
+            return lines.join('\n');
+          }
+
+          // Default task board path (existing behavior)
+          if (args.stack) {
+            const key = this._stackKey(args.stack);
+            const cards = await deck.getCardsInStack(key);
+
+            if (cards.length === 0) {
+              return `No cards in ${args.stack}.`;
+            }
+
+            return cards.map(c =>
+              `- [#${c.id}] "${c.title}" in ${args.stack}${c.duedate ? ` (due: ${c.duedate})` : ''}`
+            ).join('\n');
+          }
+
+          // All stacks — grouped by stack for readability
+          const allCards = await deck.getAllCards();
           const lines = [];
           let totalCards = 0;
 
-          for (const s of stacks) {
-            const cards = s.cards || [];
-            // Filter by stack name if specified
-            if (args.stack && s.title.toLowerCase() !== args.stack.toLowerCase()) continue;
+          for (const [key, cards] of Object.entries(allCards)) {
             if (cards.length === 0) continue;
             totalCards += cards.length;
-            lines.push(`**${s.title}** (${cards.length}):`);
+            const displayName = this._stackDisplayName(key, deck);
+            lines.push(`**${displayName}** (${cards.length}):`);
             for (const c of cards) {
-              const labels = (c.labels || []).map(l => l.title).join(', ');
-              lines.push(`- [#${c.id}] "${c.title}"${labels ? ` [${labels}]` : ''}${c.duedate ? ` (due: ${c.duedate})` : ''}`);
+              lines.push(`- [#${c.id}] "${c.title}"${c.duedate ? ` (due: ${c.duedate})` : ''}`);
             }
           }
 
           if (totalCards === 0) {
-            return args.stack
-              ? `No cards in stack "${args.stack}" on board "${board.title}".`
-              : `Board "${board.title}" is empty.`;
+            return 'The board is empty.';
           }
 
           return lines.join('\n');
+        } catch (err) {
+          this.logger.error(`[deck_list_cards] ${err.message}`);
+          return `Failed to list cards: ${err.message}`;
         }
-
-        // Default task board path (existing behavior)
-        if (args.stack) {
-          const key = this._stackKey(args.stack);
-          const cards = await deck.getCardsInStack(key);
-
-          if (cards.length === 0) {
-            return `No cards in ${args.stack}.`;
-          }
-
-          return cards.map(c =>
-            `- [#${c.id}] "${c.title}" in ${args.stack}${c.duedate ? ` (due: ${c.duedate})` : ''}`
-          ).join('\n');
-        }
-
-        // All stacks — grouped by stack for readability
-        const allCards = await deck.getAllCards();
-        const lines = [];
-        let totalCards = 0;
-
-        for (const [key, cards] of Object.entries(allCards)) {
-          if (cards.length === 0) continue;
-          totalCards += cards.length;
-          const displayName = this._stackDisplayName(key, deck);
-          lines.push(`**${displayName}** (${cards.length}):`);
-          for (const c of cards) {
-            lines.push(`- [#${c.id}] "${c.title}"${c.duedate ? ` (due: ${c.duedate})` : ''}`);
-          }
-        }
-
-        if (totalCards === 0) {
-          return 'The board is empty.';
-        }
-
-        return lines.join('\n');
       }
     });
 
@@ -522,25 +527,30 @@ class ToolRegistry {
         required: ['card', 'target_stack']
       },
       handler: async (args) => {
-        const resolved = await this._resolveCard(deck, args.card);
+        try {
+          const resolved = await this._resolveCard(deck, args.card);
 
-        if (!resolved) {
-          const allCards = await deck.getAllCards();
-          const available = Object.entries(allCards)
-            .flatMap(([k, cards]) => cards.map(c => `  - "${c.title}" in ${this._stackDisplayName(k, deck)}`))
-            .join('\n');
-          return `No card found matching "${args.card}".${available ? ` Available cards:\n${available}` : ''}`;
+          if (!resolved) {
+            const allCards = await deck.getAllCards();
+            const available = Object.entries(allCards)
+              .flatMap(([k, cards]) => cards.map(c => `  - "${c.title}" in ${this._stackDisplayName(k, deck)}`))
+              .join('\n');
+            return `No card found matching "${args.card}".${available ? ` Available cards:\n${available}` : ''}`;
+          }
+
+          const { card: foundCard, stackKey: fromStackKey } = resolved;
+          const toStackKey = this._stackKey(args.target_stack);
+
+          if (fromStackKey === toStackKey) {
+            return `Card "${foundCard.title}" is already in ${args.target_stack}.`;
+          }
+
+          await deck.moveCard(foundCard.id, fromStackKey, toStackKey);
+          return `Moved "${foundCard.title}" (card #${foundCard.id}) from ${this._stackDisplayName(fromStackKey, deck)} to ${args.target_stack}.`;
+        } catch (err) {
+          this.logger.error(`[deck_move_card] ${err.message}`);
+          return `Failed to move card: ${err.message}`;
         }
-
-        const { card: foundCard, stackKey: fromStackKey } = resolved;
-        const toStackKey = this._stackKey(args.target_stack);
-
-        if (fromStackKey === toStackKey) {
-          return `Card "${foundCard.title}" is already in ${args.target_stack}.`;
-        }
-
-        await deck.moveCard(foundCard.id, fromStackKey, toStackKey);
-        return `Moved "${foundCard.title}" (card #${foundCard.id}) from ${this._stackDisplayName(fromStackKey, deck)} to ${args.target_stack}.`;
       }
     });
 
@@ -565,38 +575,43 @@ class ToolRegistry {
         required: ['title']
       },
       handler: async (args) => {
-        // Board-targeted creation
-        if (args.board) {
-          const board = await this._resolveBoard(deck, args.board);
-          if (!board) return `No board found matching "${args.board}".`;
+        try {
+          // Board-targeted creation
+          if (args.board) {
+            const board = await this._resolveBoard(deck, args.board);
+            if (!board) return `No board found matching "${args.board}".`;
 
-          const stacks = await deck.getStacks(board.id);
-          const targetStackName = args.stack || 'Inbox';
-          const stack = (stacks || []).find(s => s.title.toLowerCase() === targetStackName.toLowerCase());
+            const stacks = await deck.getStacks(board.id);
+            const targetStackName = args.stack || 'Inbox';
+            const stack = (stacks || []).find(s => s.title.toLowerCase() === targetStackName.toLowerCase());
 
-          if (!stack) {
-            const available = (stacks || []).map(s => `"${s.title}" (ID: ${s.id})`).join(', ');
-            return `No stack "${targetStackName}" on board "${board.title}". Available stacks: ${available}`;
+            if (!stack) {
+              const available = (stacks || []).map(s => `"${s.title}" (ID: ${s.id})`).join(', ');
+              return `No stack "${targetStackName}" on board "${board.title}". Available stacks: ${available}`;
+            }
+
+            const card = await deck._request('POST',
+              `/index.php/apps/deck/api/v1.0/boards/${board.id}/stacks/${stack.id}/cards`,
+              { title: args.title, description: args.description || '', type: 'plain', order: 0 }
+            );
+
+            if (!card || !card.id) return `Failed to create "${args.title}" — the server returned an empty response. Try again.`;
+            return `Created "${args.title}" (card #${card.id}) in "${stack.title}" on board "${board.title}".`;
           }
 
-          const card = await deck._request('POST',
-            `/index.php/apps/deck/api/v1.0/boards/${board.id}/stacks/${stack.id}/cards`,
-            { title: args.title, description: args.description || '', type: 'plain', order: 0 }
-          );
+          // Default board creation
+          const stackKey = this._stackKey(args.stack || 'Inbox');
+          const card = await deck.createCard(stackKey, {
+            title: args.title,
+            description: args.description || ''
+          });
 
-          if (!card || !card.id) return `Failed to create "${args.title}" — the server returned an empty response. Try again.`;
-          return `Created "${args.title}" (card #${card.id}) in "${stack.title}" on board "${board.title}".`;
+          if (!card || !card.id) return `Failed to create "${args.title}" — no card ID returned. Try again.`;
+          return `Created "${args.title}" (card #${card.id}) in ${args.stack || 'Inbox'}.`;
+        } catch (err) {
+          this.logger.error(`[deck_create_card] ${err.message}`);
+          return `Failed to create card: ${err.message}`;
         }
-
-        // Default board creation
-        const stackKey = this._stackKey(args.stack || 'Inbox');
-        const card = await deck.createCard(stackKey, {
-          title: args.title,
-          description: args.description || ''
-        });
-
-        if (!card || !card.id) return `Failed to create "${args.title}" — no card ID returned. Try again.`;
-        return `Created "${args.title}" (card #${card.id}) in ${args.stack || 'Inbox'}.`;
       }
     });
 
@@ -607,13 +622,18 @@ class ToolRegistry {
       description: 'List all Deck boards accessible to you (owned and shared). Returns board names, IDs, and ownership info.',
       parameters: { type: 'object', properties: {}, required: [] },
       handler: async () => {
-        const boards = await deck.listBoards();
-        if (!boards || boards.length === 0) return 'No boards found.';
+        try {
+          const boards = await deck.listBoards();
+          if (!boards || boards.length === 0) return 'No boards found.';
 
-        return boards.map(b => {
-          const owned = b.owner?.uid === deck.username || b.owner === deck.username;
-          return `- "${b.title}" (ID: ${b.id}, ${owned ? 'yours' : 'shared'})`;
-        }).join('\n');
+          return boards.map(b => {
+            const owned = b.owner?.uid === deck.username || b.owner === deck.username;
+            return `- "${b.title}" (ID: ${b.id}, ${owned ? 'yours' : 'shared'})`;
+          }).join('\n');
+        } catch (err) {
+          this.logger.error(`[deck_list_boards] ${err.message}`);
+          return `Failed to list boards: ${err.message}`;
+        }
       }
     });
 
@@ -628,18 +648,23 @@ class ToolRegistry {
         required: ['board']
       },
       handler: async (args) => {
-        const board = await this._resolveBoard(deck, args.board);
-        if (!board) return `No board found matching "${args.board}".`;
+        try {
+          const board = await this._resolveBoard(deck, args.board);
+          if (!board) return `No board found matching "${args.board}".`;
 
-        const full = await deck.getBoard(board.id);
-        const stacks = (full.stacks || []).map(s => `  - ${s.title} (ID: ${s.id}, ${(s.cards || []).length} cards)`).join('\n');
-        const labels = (full.labels || []).map(l => l.title).join(', ');
-        const owned = full.owner?.uid === deck.username || full.owner === deck.username;
+          const full = await deck.getBoard(board.id);
+          const stacks = (full.stacks || []).map(s => `  - ${s.title} (ID: ${s.id}, ${(s.cards || []).length} cards)`).join('\n');
+          const labels = (full.labels || []).map(l => l.title).join(', ');
+          const owned = full.owner?.uid === deck.username || full.owner === deck.username;
 
-        let result = `Board: "${full.title}" (ID: ${full.id}, ${owned ? 'yours' : 'shared'})\n`;
-        result += `Stacks:\n${stacks || '  (none)'}\n`;
-        result += `Labels: ${labels || '(none)'}`;
-        return result;
+          let result = `Board: "${full.title}" (ID: ${full.id}, ${owned ? 'yours' : 'shared'})\n`;
+          result += `Stacks:\n${stacks || '  (none)'}\n`;
+          result += `Labels: ${labels || '(none)'}`;
+          return result;
+        } catch (err) {
+          this.logger.error(`[deck_get_board] ${err.message}`);
+          return `Failed to get board details: ${err.message}`;
+        }
       }
     });
 
@@ -655,11 +680,16 @@ class ToolRegistry {
         required: ['title']
       },
       handler: async (args) => {
-        const board = await deck._request('POST', '/index.php/apps/deck/api/v1.0/boards', {
-          title: args.title,
-          color: args.color || '0082c9'
-        });
-        return `Created board "${args.title}" (ID: ${board.id}).`;
+        try {
+          const board = await deck._request('POST', '/index.php/apps/deck/api/v1.0/boards', {
+            title: args.title,
+            color: args.color || '0082c9'
+          });
+          return `Created board "${args.title}" (ID: ${board.id}).`;
+        } catch (err) {
+          this.logger.error(`[deck_create_board] ${err.message}`);
+          return `Failed to create board: ${err.message}`;
+        }
       }
     });
 
@@ -676,15 +706,20 @@ class ToolRegistry {
         required: ['board']
       },
       handler: async (args) => {
-        const board = await this._resolveBoard(deck, args.board);
-        if (!board) return `No board found matching "${args.board}".`;
+        try {
+          const board = await this._resolveBoard(deck, args.board);
+          if (!board) return `No board found matching "${args.board}".`;
 
-        const stacks = await deck.getStacks(board.id);
-        if (!stacks || stacks.length === 0) return `Board "${board.title}" has no stacks.`;
+          const stacks = await deck.getStacks(board.id);
+          if (!stacks || stacks.length === 0) return `Board "${board.title}" has no stacks.`;
 
-        return stacks.map(s =>
-          `- "${s.title}" (ID: ${s.id}, ${(s.cards || []).length} cards)`
-        ).join('\n');
+          return stacks.map(s =>
+            `- "${s.title}" (ID: ${s.id}, ${(s.cards || []).length} cards)`
+          ).join('\n');
+        } catch (err) {
+          this.logger.error(`[deck_list_stacks] ${err.message}`);
+          return `Failed to list stacks: ${err.message}`;
+        }
       }
     });
 
@@ -701,11 +736,16 @@ class ToolRegistry {
         required: ['board', 'title']
       },
       handler: async (args) => {
-        const board = await this._resolveBoard(deck, args.board);
-        if (!board) return `No board found matching "${args.board}".`;
+        try {
+          const board = await this._resolveBoard(deck, args.board);
+          if (!board) return `No board found matching "${args.board}".`;
 
-        const stack = await deck.createStack(board.id, args.title, args.order || 999);
-        return `Created stack "${args.title}" in board "${board.title}" (stack ID: ${stack.id}).`;
+          const stack = await deck.createStack(board.id, args.title, args.order || 999);
+          return `Created stack "${args.title}" in board "${board.title}" (stack ID: ${stack.id}).`;
+        } catch (err) {
+          this.logger.error(`[deck_create_stack] ${err.message}`);
+          return `Failed to create stack: ${err.message}`;
+        }
       }
     });
 
@@ -722,34 +762,39 @@ class ToolRegistry {
         required: ['card']
       },
       handler: async (args) => {
-        const resolved = await this._resolveCard(deck, args.card);
-        if (!resolved) return `No card found matching "${args.card}".`;
+        try {
+          const resolved = await this._resolveCard(deck, args.card);
+          if (!resolved) return `No card found matching "${args.card}".`;
 
-        const { card: found, stackKey } = resolved;
-        const full = await deck.getCard(found.id, stackKey);
-        const comments = await deck.getComments(found.id);
+          const { card: found, stackKey } = resolved;
+          const full = await deck.getCard(found.id, stackKey);
+          const comments = await deck.getComments(found.id);
 
-        let result = `Card #${full.id}: "${full.title}" in ${this._stackDisplayName(stackKey, deck)}\n`;
-        if (full.description) result += `Description: ${full.description}\n`;
-        if (full.duedate) result += `Due: ${full.duedate}\n`;
+          let result = `Card #${full.id}: "${full.title}" in ${this._stackDisplayName(stackKey, deck)}\n`;
+          if (full.description) result += `Description: ${full.description}\n`;
+          if (full.duedate) result += `Due: ${full.duedate}\n`;
 
-        const assigned = (full.assignedUsers || []).map(u =>
-          u.participant?.uid || u.uid || 'unknown'
-        ).join(', ');
-        if (assigned) result += `Assigned: ${assigned}\n`;
+          const assigned = (full.assignedUsers || []).map(u =>
+            u.participant?.uid || u.uid || 'unknown'
+          ).join(', ');
+          if (assigned) result += `Assigned: ${assigned}\n`;
 
-        const labels = (full.labels || []).map(l => l.title).join(', ');
-        if (labels) result += `Labels: ${labels}\n`;
+          const labels = (full.labels || []).map(l => l.title).join(', ');
+          if (labels) result += `Labels: ${labels}\n`;
 
-        if (comments.length > 0) {
-          result += `\nComments (${comments.length}):\n`;
-          for (const c of comments.slice(0, 10)) {
-            const author = c.actorId || 'unknown';
-            const date = c.creationDateTime || '';
-            result += `  - [${author}] ${c.message}${date ? ` (${date})` : ''}\n`;
+          if (comments.length > 0) {
+            result += `\nComments (${comments.length}):\n`;
+            for (const c of comments.slice(0, 10)) {
+              const author = c.actorId || 'unknown';
+              const date = c.creationDateTime || '';
+              result += `  - [${author}] ${c.message}${date ? ` (${date})` : ''}\n`;
+            }
           }
+          return result.trim();
+        } catch (err) {
+          this.logger.error(`[deck_get_card] ${err.message}`);
+          return `Failed to get card: ${err.message}`;
         }
-        return result.trim();
       }
     });
 
@@ -767,28 +812,33 @@ class ToolRegistry {
         required: ['card']
       },
       handler: async (args) => {
-        const resolved = await this._resolveCard(deck, args.card);
-        if (!resolved) return `No card found matching "${args.card}".`;
+        try {
+          const resolved = await this._resolveCard(deck, args.card);
+          if (!resolved) return `No card found matching "${args.card}".`;
 
-        const { card: found, stackKey } = resolved;
-        const current = await deck.getCard(found.id, stackKey);
+          const { card: found, stackKey } = resolved;
+          const current = await deck.getCard(found.id, stackKey);
 
-        const updates = {
-          title: args.title || current.title,
-          type: current.type || 'plain',
-          owner: current.owner?.uid || current.owner || deck.username,
-          description: args.description !== undefined ? args.description : (current.description || ''),
-          duedate: args.duedate === 'none' ? null : (args.duedate || current.duedate || null)
-        };
+          const updates = {
+            title: args.title || current.title,
+            type: current.type || 'plain',
+            owner: current.owner?.uid || current.owner || deck.username,
+            description: args.description !== undefined ? args.description : (current.description || ''),
+            duedate: args.duedate === 'none' ? null : (args.duedate || current.duedate || null)
+          };
 
-        await deck.updateCard(found.id, stackKey, updates);
+          await deck.updateCard(found.id, stackKey, updates);
 
-        const changes = [];
-        if (args.title) changes.push(`title: "${args.title}"`);
-        if (args.description !== undefined) changes.push('description updated');
-        if (args.duedate) changes.push(`due: ${args.duedate}`);
+          const changes = [];
+          if (args.title) changes.push(`title: "${args.title}"`);
+          if (args.description !== undefined) changes.push('description updated');
+          if (args.duedate) changes.push(`due: ${args.duedate}`);
 
-        return `Updated card #${found.id} "${updates.title}".${changes.length ? ' Changes: ' + changes.join(', ') + '.' : ''}`;
+          return `Updated card #${found.id} "${updates.title}".${changes.length ? ' Changes: ' + changes.join(', ') + '.' : ''}`;
+        } catch (err) {
+          this.logger.error(`[deck_update_card] ${err.message}`);
+          return `Failed to update card: ${err.message}`;
+        }
       }
     });
 
@@ -803,12 +853,17 @@ class ToolRegistry {
         required: ['card']
       },
       handler: async (args) => {
-        const resolved = await this._resolveCard(deck, args.card);
-        if (!resolved) return `No card found matching "${args.card}".`;
+        try {
+          const resolved = await this._resolveCard(deck, args.card);
+          if (!resolved) return `No card found matching "${args.card}".`;
 
-        const { card: found, stackKey } = resolved;
-        await deck.deleteCard(found.id, stackKey);
-        return `Deleted card #${found.id} "${found.title}" from ${this._stackDisplayName(stackKey, deck)}.`;
+          const { card: found, stackKey } = resolved;
+          await deck.deleteCard(found.id, stackKey);
+          return `Deleted card #${found.id} "${found.title}" from ${this._stackDisplayName(stackKey, deck)}.`;
+        } catch (err) {
+          this.logger.error(`[deck_delete_card] ${err.message}`);
+          return `Failed to delete card: ${err.message}`;
+        }
       }
     });
 
@@ -859,12 +914,17 @@ class ToolRegistry {
         required: ['card', 'user']
       },
       handler: async (args) => {
-        const resolved = await this._resolveCard(deck, args.card);
-        if (!resolved) return `No card found matching "${args.card}".`;
+        try {
+          const resolved = await this._resolveCard(deck, args.card);
+          if (!resolved) return `No card found matching "${args.card}".`;
 
-        const { card: found, stackKey } = resolved;
-        await deck.unassignUser(found.id, stackKey, args.user);
-        return `Unassigned "${args.user}" from card #${found.id} "${found.title}".`;
+          const { card: found, stackKey } = resolved;
+          await deck.unassignUser(found.id, stackKey, args.user);
+          return `Unassigned "${args.user}" from card #${found.id} "${found.title}".`;
+        } catch (err) {
+          this.logger.error(`[deck_unassign_user] ${err.message}`);
+          return `Failed to unassign user: ${err.message}`;
+        }
       }
     });
 
@@ -880,23 +940,28 @@ class ToolRegistry {
         required: ['card', 'duedate']
       },
       handler: async (args) => {
-        const resolved = await this._resolveCard(deck, args.card);
-        if (!resolved) return `No card found matching "${args.card}".`;
+        try {
+          const resolved = await this._resolveCard(deck, args.card);
+          if (!resolved) return `No card found matching "${args.card}".`;
 
-        const { card: found, stackKey } = resolved;
-        const current = await deck.getCard(found.id, stackKey);
+          const { card: found, stackKey } = resolved;
+          const current = await deck.getCard(found.id, stackKey);
 
-        const duedate = args.duedate.toLowerCase() === 'none' ? null : args.duedate;
-        await deck.updateCard(found.id, stackKey, {
-          title: current.title,
-          type: current.type || 'plain',
-          owner: current.owner?.uid || current.owner || deck.username,
-          duedate
-        });
+          const duedate = args.duedate.toLowerCase() === 'none' ? null : args.duedate;
+          await deck.updateCard(found.id, stackKey, {
+            title: current.title,
+            type: current.type || 'plain',
+            owner: current.owner?.uid || current.owner || deck.username,
+            duedate
+          });
 
-        return duedate
-          ? `Set due date on card #${found.id} "${found.title}" to ${duedate}.`
-          : `Cleared due date on card #${found.id} "${found.title}".`;
+          return duedate
+            ? `Set due date on card #${found.id} "${found.title}" to ${duedate}.`
+            : `Cleared due date on card #${found.id} "${found.title}".`;
+        } catch (err) {
+          this.logger.error(`[deck_set_due_date] ${err.message}`);
+          return `Failed to set due date: ${err.message}`;
+        }
       }
     });
 
@@ -914,12 +979,17 @@ class ToolRegistry {
         required: ['card', 'label']
       },
       handler: async (args) => {
-        const resolved = await this._resolveCard(deck, args.card);
-        if (!resolved) return `No card found matching "${args.card}".`;
+        try {
+          const resolved = await this._resolveCard(deck, args.card);
+          if (!resolved) return `No card found matching "${args.card}".`;
 
-        const { card: found, stackKey } = resolved;
-        await deck.addLabel(found.id, stackKey, args.label);
-        return `Added label "${args.label}" to card #${found.id} "${found.title}".`;
+          const { card: found, stackKey } = resolved;
+          await deck.addLabel(found.id, stackKey, args.label);
+          return `Added label "${args.label}" to card #${found.id} "${found.title}".`;
+        } catch (err) {
+          this.logger.error(`[deck_add_label] ${err.message}`);
+          return `Failed to add label: ${err.message}`;
+        }
       }
     });
 
@@ -935,12 +1005,17 @@ class ToolRegistry {
         required: ['card', 'label']
       },
       handler: async (args) => {
-        const resolved = await this._resolveCard(deck, args.card);
-        if (!resolved) return `No card found matching "${args.card}".`;
+        try {
+          const resolved = await this._resolveCard(deck, args.card);
+          if (!resolved) return `No card found matching "${args.card}".`;
 
-        const { card: found, stackKey } = resolved;
-        await deck.removeLabel(found.id, stackKey, args.label);
-        return `Removed label "${args.label}" from card #${found.id} "${found.title}".`;
+          const { card: found, stackKey } = resolved;
+          await deck.removeLabel(found.id, stackKey, args.label);
+          return `Removed label "${args.label}" from card #${found.id} "${found.title}".`;
+        } catch (err) {
+          this.logger.error(`[deck_remove_label] ${err.message}`);
+          return `Failed to remove label: ${err.message}`;
+        }
       }
     });
 
@@ -958,12 +1033,17 @@ class ToolRegistry {
         required: ['card', 'message']
       },
       handler: async (args) => {
-        const resolved = await this._resolveCard(deck, args.card);
-        if (!resolved) return `No card found matching "${args.card}".`;
+        try {
+          const resolved = await this._resolveCard(deck, args.card);
+          if (!resolved) return `No card found matching "${args.card}".`;
 
-        const { card: found } = resolved;
-        await deck.addComment(found.id, args.message, 'STATUS', { prefix: false });
-        return `Added comment to card #${found.id} "${found.title}".`;
+          const { card: found } = resolved;
+          await deck.addComment(found.id, args.message, 'STATUS', { prefix: false });
+          return `Added comment to card #${found.id} "${found.title}".`;
+        } catch (err) {
+          this.logger.error(`[deck_add_comment] ${err.message}`);
+          return `Failed to add comment: ${err.message}`;
+        }
       }
     });
 
@@ -978,21 +1058,26 @@ class ToolRegistry {
         required: ['card']
       },
       handler: async (args) => {
-        const resolved = await this._resolveCard(deck, args.card);
-        if (!resolved) return `No card found matching "${args.card}".`;
+        try {
+          const resolved = await this._resolveCard(deck, args.card);
+          if (!resolved) return `No card found matching "${args.card}".`;
 
-        const { card: found } = resolved;
-        const comments = await deck.getComments(found.id);
+          const { card: found } = resolved;
+          const comments = await deck.getComments(found.id);
 
-        if (comments.length === 0) return `No comments on card #${found.id} "${found.title}".`;
+          if (comments.length === 0) return `No comments on card #${found.id} "${found.title}".`;
 
-        const lines = [`Comments on card #${found.id} "${found.title}":`];
-        for (const c of comments) {
-          const author = c.actorId || 'unknown';
-          const date = c.creationDateTime || '';
-          lines.push(`- [${author}] ${c.message}${date ? ` (${date})` : ''}`);
+          const lines = [`Comments on card #${found.id} "${found.title}":`];
+          for (const c of comments) {
+            const author = c.actorId || 'unknown';
+            const date = c.creationDateTime || '';
+            lines.push(`- [${author}] ${c.message}${date ? ` (${date})` : ''}`);
+          }
+          return lines.join('\n');
+        } catch (err) {
+          this.logger.error(`[deck_list_comments] ${err.message}`);
+          return `Failed to list comments: ${err.message}`;
         }
-        return lines.join('\n');
       }
     });
 
@@ -1012,20 +1097,25 @@ class ToolRegistry {
         required: ['board', 'participant']
       },
       handler: async (args) => {
-        const board = await this._resolveBoard(deck, args.board);
-        if (!board) return `No board found matching "${args.board}".`;
+        try {
+          const board = await this._resolveBoard(deck, args.board);
+          if (!board) return `No board found matching "${args.board}".`;
 
-        const owned = board.owner?.uid === deck.username || board.owner === deck.username;
-        if (!owned) return `You don't own "${board.title}" — only board owners can share.`;
+          const owned = board.owner?.uid === deck.username || board.owner === deck.username;
+          if (!owned) return `You don't own "${board.title}" — only board owners can share.`;
 
-        const shareType = args.type === 'group' ? 1 : 0;
-        const perm = args.permission || 'edit';
-        const permissionEdit = perm === 'edit' || perm === 'manage';
-        const permissionShare = perm === 'manage';
-        const permissionManage = perm === 'manage';
+          const shareType = args.type === 'group' ? 1 : 0;
+          const perm = args.permission || 'edit';
+          const permissionEdit = perm === 'edit' || perm === 'manage';
+          const permissionShare = perm === 'manage';
+          const permissionManage = perm === 'manage';
 
-        await deck.shareBoard(board.id, args.participant, shareType, permissionEdit, permissionShare, permissionManage);
-        return `Shared board "${board.title}" with ${args.type || 'user'} "${args.participant}" (${perm} access).`;
+          await deck.shareBoard(board.id, args.participant, shareType, permissionEdit, permissionShare, permissionManage);
+          return `Shared board "${board.title}" with ${args.type || 'user'} "${args.participant}" (${perm} access).`;
+        } catch (err) {
+          this.logger.error(`[deck_share_board] ${err.message}`);
+          return `Failed to share board: ${err.message}`;
+        }
       }
     });
 
@@ -1078,21 +1168,26 @@ class ToolRegistry {
         required: []
       },
       handler: async (args) => {
-        const targetUser = (args.user || deck.username).toLowerCase();
-        const allEntries = await this._resolveCardAcrossBoards(deck);
+        try {
+          const targetUser = (args.user || deck.username).toLowerCase();
+          const allEntries = await this._resolveCardAcrossBoards(deck);
 
-        const assigned = allEntries.filter(e => {
-          const users = e.card.assignedUsers || [];
-          return users.some(u =>
-            (u.participant?.uid || u.uid || '').toLowerCase() === targetUser
-          );
-        });
+          const assigned = allEntries.filter(e => {
+            const users = e.card.assignedUsers || [];
+            return users.some(u =>
+              (u.participant?.uid || u.uid || '').toLowerCase() === targetUser
+            );
+          });
 
-        if (assigned.length === 0) return `No cards assigned to "${args.user || deck.username}".`;
+          if (assigned.length === 0) return `No cards assigned to "${args.user || deck.username}".`;
 
-        return assigned.map(e =>
-          `- [#${e.card.id}] "${e.card.title}" in ${e.stackTitle} (board: ${e.boardTitle})${e.card.duedate ? ` — due: ${e.card.duedate}` : ''}`
-        ).join('\n');
+          return assigned.map(e =>
+            `- [#${e.card.id}] "${e.card.title}" in ${e.stackTitle} (board: ${e.boardTitle})${e.card.duedate ? ` — due: ${e.card.duedate}` : ''}`
+          ).join('\n');
+        } catch (err) {
+          this.logger.error(`[deck_my_assigned_cards] ${err.message}`);
+          return `Failed to list assigned cards: ${err.message}`;
+        }
       }
     });
 
@@ -1101,18 +1196,23 @@ class ToolRegistry {
       description: 'List all cards with past due dates across all accessible boards.',
       parameters: { type: 'object', properties: {}, required: [] },
       handler: async () => {
-        const allEntries = await this._resolveCardAcrossBoards(deck);
-        const now = new Date();
+        try {
+          const allEntries = await this._resolveCardAcrossBoards(deck);
+          const now = new Date();
 
-        const overdue = allEntries.filter(e =>
-          e.card.duedate && new Date(e.card.duedate) < now
-        );
+          const overdue = allEntries.filter(e =>
+            e.card.duedate && new Date(e.card.duedate) < now
+          );
 
-        if (overdue.length === 0) return 'No overdue cards found.';
+          if (overdue.length === 0) return 'No overdue cards found.';
 
-        return overdue.map(e =>
-          `- [#${e.card.id}] "${e.card.title}" — due: ${e.card.duedate} (board: ${e.boardTitle}, stack: ${e.stackTitle})`
-        ).join('\n');
+          return overdue.map(e =>
+            `- [#${e.card.id}] "${e.card.title}" — due: ${e.card.duedate} (board: ${e.boardTitle}, stack: ${e.stackTitle})`
+          ).join('\n');
+        } catch (err) {
+          this.logger.error(`[deck_overdue_cards] ${err.message}`);
+          return `Failed to list overdue cards: ${err.message}`;
+        }
       }
     });
 
@@ -1127,14 +1227,19 @@ class ToolRegistry {
         required: ['card']
       },
       handler: async (args) => {
-        const resolved = await this._resolveCard(deck, args.card);
-        if (!resolved) return `No card found matching "${args.card}".`;
+        try {
+          const resolved = await this._resolveCard(deck, args.card);
+          if (!resolved) return `No card found matching "${args.card}".`;
 
-        const { card: found, stackKey } = resolved;
-        if (stackKey === 'done') return `Card #${found.id} "${found.title}" is already in Done.`;
+          const { card: found, stackKey } = resolved;
+          if (stackKey === 'done') return `Card #${found.id} "${found.title}" is already in Done.`;
 
-        await deck.moveCard(found.id, stackKey, 'done');
-        return `Marked card #${found.id} "${found.title}" as done (moved from ${this._stackDisplayName(stackKey, deck)} to Done).`;
+          await deck.moveCard(found.id, stackKey, 'done');
+          return `Marked card #${found.id} "${found.title}" as done (moved from ${this._stackDisplayName(stackKey, deck)} to Done).`;
+        } catch (err) {
+          this.logger.error(`[deck_mark_done] ${err.message}`);
+          return `Failed to mark card as done: ${err.message}`;
+        }
       }
     });
   }
@@ -1161,20 +1266,25 @@ class ToolRegistry {
         required: []
       },
       handler: async (args) => {
-        const hours = args.hours || 168;
-        const events = await cal.getUpcomingEvents(hours);
+        try {
+          const hours = args.hours || 168;
+          const events = await cal.getUpcomingEvents(hours);
 
-        if (!events || events.length === 0) {
-          return `No events in the next ${hours} hours.`;
+          if (!events || events.length === 0) {
+            return `No events in the next ${hours} hours.`;
+          }
+
+          return events.map(e => {
+            const start = e.start ? new Date(e.start).toLocaleString() : '?';
+            const end = e.end ? new Date(e.end).toLocaleString() : '?';
+            let line = `- ${e.summary || 'Untitled'} (${start} to ${end})`;
+            if (e.location) line += ` at ${e.location}`;
+            return line;
+          }).join('\n');
+        } catch (err) {
+          this.logger.error(`[calendar_list_events] ${err.message}`);
+          return `Failed to list events: ${err.message}`;
         }
-
-        return events.map(e => {
-          const start = e.start ? new Date(e.start).toLocaleString() : '?';
-          const end = e.end ? new Date(e.end).toLocaleString() : '?';
-          let line = `- ${e.summary || 'Untitled'} (${start} to ${end})`;
-          if (e.location) line += ` at ${e.location}`;
-          return line;
-        }).join('\n');
       }
     });
 
@@ -1287,19 +1397,24 @@ class ToolRegistry {
         required: ['start']
       },
       handler: async (args) => {
-        const startDate = new Date(args.start);
-        const endDate = args.end
-          ? new Date(args.end)
-          : new Date(startDate.getTime() + 60 * 60 * 1000);
+        try {
+          const startDate = new Date(args.start);
+          const endDate = args.end
+            ? new Date(args.end)
+            : new Date(startDate.getTime() + 60 * 60 * 1000);
 
-        const result = await cal.checkAvailability(startDate, endDate);
+          const result = await cal.checkAvailability(startDate, endDate);
 
-        if (result.isFree) {
-          return `No conflicts on ${startDate.toLocaleDateString()} at ${startDate.toLocaleTimeString()}.`;
+          if (result.isFree) {
+            return `No conflicts on ${startDate.toLocaleDateString()} at ${startDate.toLocaleTimeString()}.`;
+          }
+
+          return `Conflicts found:\n` +
+            result.conflicts.map(c => `  - ${c.summary} (${c.start} - ${c.end})`).join('\n');
+        } catch (err) {
+          this.logger.error(`[calendar_check_conflicts] ${err.message}`);
+          return `Failed to check conflicts: ${err.message}`;
         }
-
-        return `Conflicts found:\n` +
-          result.conflicts.map(c => `  - ${c.summary} (${c.start} - ${c.end})`).join('\n');
       }
     });
 
@@ -1421,17 +1536,22 @@ class ToolRegistry {
         required: ['event']
       },
       handler: async (args) => {
-        const match = await this._findCalendarEvent(cal, args.event);
-        if (!match) {
-          return `No event found matching "${args.event}" in the next 30 days or past 7 days.`;
+        try {
+          const match = await this._findCalendarEvent(cal, args.event);
+          if (!match) {
+            return `No event found matching "${args.event}" in the next 30 days or past 7 days.`;
+          }
+          const { event: foundEvent, calendarId: foundCalendar } = match;
+
+          await cal.deleteEvent(foundCalendar, foundEvent.uid, foundEvent.etag);
+
+          const eventTitle = foundEvent.summary || 'Untitled';
+          const eventStart = foundEvent.start ? new Date(foundEvent.start).toLocaleString() : '';
+          return `Deleted "${eventTitle}"${eventStart ? ` (was scheduled for ${eventStart})` : ''}.`;
+        } catch (err) {
+          this.logger.error(`[calendar_delete_event] ${err.message}`);
+          return `Failed to delete event: ${err.message}`;
         }
-        const { event: foundEvent, calendarId: foundCalendar } = match;
-
-        await cal.deleteEvent(foundCalendar, foundEvent.uid, foundEvent.etag);
-
-        const eventTitle = foundEvent.summary || 'Untitled';
-        const eventStart = foundEvent.start ? new Date(foundEvent.start).toLocaleString() : '';
-        return `Deleted "${eventTitle}"${eventStart ? ` (was scheduled for ${eventStart})` : ''}.`;
       }
     });
   }
@@ -1505,51 +1625,56 @@ class ToolRegistry {
         required: []
       },
       handler: async (args) => {
-        let targetPath = args.path || '/';
+        try {
+          let targetPath = args.path || '/';
 
-        // Fuzzy path resolution (skip for root)
-        if (targetPath !== '/') {
-          const resolved = await files.resolvePath(targetPath);
-          if (resolved === null) {
-            const names = await files.getRootFolderNames();
-            return `Path "${targetPath}" not found. Available: ${names.join(', ')}`;
+          // Fuzzy path resolution (skip for root)
+          if (targetPath !== '/') {
+            const resolved = await files.resolvePath(targetPath);
+            if (resolved === null) {
+              const names = await files.getRootFolderNames();
+              return `Path "${targetPath}" not found. Available: ${names.join(', ')}`;
+            }
+            if (resolved !== targetPath) {
+              this.logger.info(`[ToolRegistry] file_list: resolved "${targetPath}" → "${resolved}"`);
+            }
+            targetPath = resolved;
           }
-          if (resolved !== targetPath) {
-            this.logger.info(`[ToolRegistry] file_list: resolved "${targetPath}" → "${resolved}"`);
+
+          const items = await files.listDirectory(targetPath);
+
+          if (items.length === 0) {
+            return `No files in "${targetPath}"`;
           }
-          targetPath = resolved;
+
+          // Sort: directories first, then alphabetically by name
+          items.sort((a, b) => {
+            const aIsDir = a.type === 'directory' ? 0 : 1;
+            const bIsDir = b.type === 'directory' ? 0 : 1;
+            if (aIsDir !== bIsDir) return aIsDir - bIsDir;
+            return a.name.localeCompare(b.name);
+          });
+
+          // Cap output to prevent token explosion
+          const MAX_ENTRIES = 30;
+          const total = items.length;
+          const shown = items.slice(0, MAX_ENTRIES);
+
+          let result = shown.map(item => {
+            const prefix = item.type === 'directory' ? '[dir] ' : '      ';
+            const sizeStr = item.type === 'file' ? ` (${this._formatSize(item.size)})` : '';
+            return `${prefix}${item.name}${sizeStr}`;
+          }).join('\n');
+
+          if (total > MAX_ENTRIES) {
+            result += `\n\n... and ${total - MAX_ENTRIES} more items. Use a more specific path to narrow results.`;
+          }
+
+          return result;
+        } catch (err) {
+          this.logger.error(`[file_list] ${err.message}`);
+          return `Failed to list files: ${err.message}`;
         }
-
-        const items = await files.listDirectory(targetPath);
-
-        if (items.length === 0) {
-          return `No files in "${targetPath}"`;
-        }
-
-        // Sort: directories first, then alphabetically by name
-        items.sort((a, b) => {
-          const aIsDir = a.type === 'directory' ? 0 : 1;
-          const bIsDir = b.type === 'directory' ? 0 : 1;
-          if (aIsDir !== bIsDir) return aIsDir - bIsDir;
-          return a.name.localeCompare(b.name);
-        });
-
-        // Cap output to prevent token explosion
-        const MAX_ENTRIES = 30;
-        const total = items.length;
-        const shown = items.slice(0, MAX_ENTRIES);
-
-        let result = shown.map(item => {
-          const prefix = item.type === 'directory' ? '[dir] ' : '      ';
-          const sizeStr = item.type === 'file' ? ` (${this._formatSize(item.size)})` : '';
-          return `${prefix}${item.name}${sizeStr}`;
-        }).join('\n');
-
-        if (total > MAX_ENTRIES) {
-          result += `\n\n... and ${total - MAX_ENTRIES} more items. Use a more specific path to narrow results.`;
-        }
-
-        return result;
       }
     });
 
@@ -1639,8 +1764,13 @@ class ToolRegistry {
         required: ['from_path', 'to_path']
       },
       handler: async (args) => {
-        await files.moveFile(args.from_path, args.to_path);
-        return `Moved "${args.from_path}" to "${args.to_path}".`;
+        try {
+          await files.moveFile(args.from_path, args.to_path);
+          return `Moved "${args.from_path}" to "${args.to_path}".`;
+        } catch (err) {
+          this.logger.error(`[file_move] ${err.message}`);
+          return `Failed to move file: ${err.message}`;
+        }
       }
     });
 
@@ -1656,8 +1786,13 @@ class ToolRegistry {
         required: ['from_path', 'to_path']
       },
       handler: async (args) => {
-        await files.copyFile(args.from_path, args.to_path);
-        return `Copied "${args.from_path}" to "${args.to_path}".`;
+        try {
+          await files.copyFile(args.from_path, args.to_path);
+          return `Copied "${args.from_path}" to "${args.to_path}".`;
+        } catch (err) {
+          this.logger.error(`[file_copy] ${err.message}`);
+          return `Failed to copy file: ${err.message}`;
+        }
       }
     });
 
@@ -1672,8 +1807,13 @@ class ToolRegistry {
         required: ['path']
       },
       handler: async (args) => {
-        await files.deleteFile(args.path);
-        return `Deleted "${args.path}".`;
+        try {
+          await files.deleteFile(args.path);
+          return `Deleted "${args.path}".`;
+        } catch (err) {
+          this.logger.error(`[file_delete] ${err.message}`);
+          return `Failed to delete file: ${err.message}`;
+        }
       }
     });
 
@@ -1688,8 +1828,13 @@ class ToolRegistry {
         required: ['path']
       },
       handler: async (args) => {
-        await files.mkdir(args.path);
-        return `Created folder "${args.path}".`;
+        try {
+          await files.mkdir(args.path);
+          return `Created folder "${args.path}".`;
+        } catch (err) {
+          this.logger.error(`[file_mkdir] ${err.message}`);
+          return `Failed to create folder: ${err.message}`;
+        }
       }
     });
 
@@ -1706,8 +1851,13 @@ class ToolRegistry {
         required: ['path', 'share_with']
       },
       handler: async (args) => {
-        const result = await files.shareFile(args.path, args.share_with, args.permission || 'read');
-        return `Shared "${args.path}" with "${args.share_with}" (${args.permission || 'read'} access).${result.shareId ? ' Share ID: ' + result.shareId : ''}`;
+        try {
+          const result = await files.shareFile(args.path, args.share_with, args.permission || 'read');
+          return `Shared "${args.path}" with "${args.share_with}" (${args.permission || 'read'} access).${result.shareId ? ' Share ID: ' + result.shareId : ''}`;
+        } catch (err) {
+          this.logger.error(`[file_share] ${err.message}`);
+          return `Failed to share file: ${err.message}`;
+        }
       }
     });
 
@@ -1782,20 +1932,25 @@ class ToolRegistry {
         required: ['query']
       },
       handler: async (args) => {
-        const providerIds = args.providers
-          ? args.providers.split(',').map(s => s.trim()).filter(Boolean)
-          : undefined;
-        const limit = args.limit || 5;
+        try {
+          const providerIds = args.providers
+            ? args.providers.split(',').map(s => s.trim()).filter(Boolean)
+            : undefined;
+          const limit = args.limit || 5;
 
-        const results = await search.search(args.query, providerIds, limit);
+          const results = await search.search(args.query, providerIds, limit);
 
-        if (results.length === 0) {
-          return `No results found for "${args.query}".`;
+          if (results.length === 0) {
+            return `No results found for "${args.query}".`;
+          }
+
+          return results.map(r =>
+            `[${r.provider}] ${r.title}${r.subline ? ' — ' + r.subline : ''}`
+          ).join('\n');
+        } catch (err) {
+          this.logger.error(`[unified_search] ${err.message}`);
+          return `Failed to search: ${err.message}`;
         }
-
-        return results.map(r =>
-          `[${r.provider}] ${r.title}${r.subline ? ' — ' + r.subline : ''}`
-        ).join('\n');
       }
     });
   }
@@ -1823,10 +1978,15 @@ class ToolRegistry {
         required: ['path', 'tag']
       },
       handler: async (args) => {
-        const success = await tags.tagFileByPath(args.path, args.tag);
-        return success
-          ? `Tagged "${args.path}" as ${args.tag}.`
-          : `Failed to tag "${args.path}" as ${args.tag}.`;
+        try {
+          const success = await tags.tagFileByPath(args.path, args.tag);
+          return success
+            ? `Tagged "${args.path}" as ${args.tag}.`
+            : `Failed to tag "${args.path}" as ${args.tag}.`;
+        } catch (err) {
+          this.logger.error(`[tag_file] ${err.message}`);
+          return `Failed to tag file: ${err.message}`;
+        }
       }
     });
   }
@@ -1893,25 +2053,30 @@ class ToolRegistry {
         required: ['page_title']
       },
       handler: async (args) => {
-        const result = await wiki.readPageWithFrontmatter(args.page_title);
-        if (!result) {
-          return `No wiki page found matching "${args.page_title}". Use wiki_search to find pages or wiki_list to browse sections.`;
-        }
-
-        let output = '';
-        if (result.frontmatter && Object.keys(result.frontmatter).length > 0) {
-          const fm = result.frontmatter;
-          const meta = [];
-          if (fm.type) meta.push(`Type: ${fm.type}`);
-          if (fm.confidence) meta.push(`Confidence: ${fm.confidence}`);
-          if (fm.last_verified) meta.push(`Last verified: ${fm.last_verified}`);
-          if (fm.tags) meta.push(`Tags: ${Array.isArray(fm.tags) ? fm.tags.join(', ') : fm.tags}`);
-          if (meta.length > 0) {
-            output += `[${meta.join(' | ')}]\n\n`;
+        try {
+          const result = await wiki.readPageWithFrontmatter(args.page_title);
+          if (!result) {
+            return `No wiki page found matching "${args.page_title}". Use wiki_search to find pages or wiki_list to browse sections.`;
           }
+
+          let output = '';
+          if (result.frontmatter && Object.keys(result.frontmatter).length > 0) {
+            const fm = result.frontmatter;
+            const meta = [];
+            if (fm.type) meta.push(`Type: ${fm.type}`);
+            if (fm.confidence) meta.push(`Confidence: ${fm.confidence}`);
+            if (fm.last_verified) meta.push(`Last verified: ${fm.last_verified}`);
+            if (fm.tags) meta.push(`Tags: ${Array.isArray(fm.tags) ? fm.tags.join(', ') : fm.tags}`);
+            if (meta.length > 0) {
+              output += `[${meta.join(' | ')}]\n\n`;
+            }
+          }
+          output += result.body;
+          return output;
+        } catch (err) {
+          this.logger.error(`[wiki_read] ${err.message}`);
+          return `Failed to read wiki page: ${err.message}`;
         }
-        output += result.body;
-        return output;
       }
     });
 
@@ -2104,46 +2269,51 @@ class ToolRegistry {
         required: []
       },
       handler: async (args) => {
-        const collectiveId = await wiki.resolveCollective();
-        if (!collectiveId) return 'Could not find the knowledge wiki collective.';
-        const pages = await wiki.listPages(collectiveId);
+        try {
+          const collectiveId = await wiki.resolveCollective();
+          if (!collectiveId) return 'Could not find the knowledge wiki collective.';
+          const pages = await wiki.listPages(collectiveId);
 
-        if (!Array.isArray(pages) || pages.length === 0) {
-          return 'The knowledge wiki is empty.';
-        }
+          if (!Array.isArray(pages) || pages.length === 0) {
+            return 'The knowledge wiki is empty.';
+          }
 
-        // Landing page (parentId 0) is the root; sections are its children
-        const landingPage = pages.find(p => p.parentId === 0);
-        const landingId = landingPage ? landingPage.id : 0;
+          // Landing page (parentId 0) is the root; sections are its children
+          const landingPage = pages.find(p => p.parentId === 0);
+          const landingId = landingPage ? landingPage.id : 0;
 
-        let filtered = pages;
-        if (args.section) {
-          // Find section page
-          const sectionPage = pages.find(p =>
-            (p.title || '').toLowerCase() === args.section.toLowerCase()
-          );
-          if (sectionPage) {
-            filtered = pages.filter(p => p.parentId === sectionPage.id);
-            if (filtered.length === 0) {
-              return `No pages in the "${args.section}" section.`;
+          let filtered = pages;
+          if (args.section) {
+            // Find section page
+            const sectionPage = pages.find(p =>
+              (p.title || '').toLowerCase() === args.section.toLowerCase()
+            );
+            if (sectionPage) {
+              filtered = pages.filter(p => p.parentId === sectionPage.id);
+              if (filtered.length === 0) {
+                return `No pages in the "${args.section}" section.`;
+              }
+            } else {
+              const sections = pages.filter(p => p.parentId === landingId).map(p => p.title);
+              return `Section "${args.section}" not found. Available sections: ${sections.join(', ')}`;
             }
           } else {
-            const sections = pages.filter(p => p.parentId === landingId).map(p => p.title);
-            return `Section "${args.section}" not found. Available sections: ${sections.join(', ')}`;
+            // Root-level pages = children of landing page
+            filtered = pages.filter(p => p.parentId === landingId);
           }
-        } else {
-          // Root-level pages = children of landing page
-          filtered = pages.filter(p => p.parentId === landingId);
-        }
 
-        return filtered.map(p => {
-          let line = `- "${p.title}"`;
-          if (p.emoji) line += ` ${p.emoji}`;
-          // Count children
-          const childCount = pages.filter(c => c.parentId === p.id).length;
-          if (childCount > 0) line += ` (${childCount} subpages)`;
-          return line;
-        }).join('\n');
+          return filtered.map(p => {
+            let line = `- "${p.title}"`;
+            if (p.emoji) line += ` ${p.emoji}`;
+            // Count children
+            const childCount = pages.filter(c => c.parentId === p.id).length;
+            if (childCount > 0) line += ` (${childCount} subpages)`;
+            return line;
+          }).join('\n');
+        } catch (err) {
+          this.logger.error(`[wiki_list] ${err.message}`);
+          return `Failed to list wiki pages: ${err.message}`;
+        }
       }
     });
 
@@ -2158,20 +2328,25 @@ class ToolRegistry {
         required: ['page_title']
       },
       handler: async (args) => {
-        const collectiveId = await wiki.resolveCollective();
-        if (!collectiveId) return 'Could not find the knowledge wiki collective.';
+        try {
+          const collectiveId = await wiki.resolveCollective();
+          if (!collectiveId) return 'Could not find the knowledge wiki collective.';
 
-        const found = await wiki.findPageByTitle(args.page_title);
-        if (!found || !found.page) {
-          return `No wiki page found matching "${args.page_title}". Use wiki_search or wiki_list to find pages.`;
+          const found = await wiki.findPageByTitle(args.page_title);
+          if (!found || !found.page) {
+            return `No wiki page found matching "${args.page_title}". Use wiki_search or wiki_list to find pages.`;
+          }
+
+          await wiki.trashPage(collectiveId, found.page.id);
+
+          // Invalidate wikilink cache so deleted page is removed
+          wiki._wikilinkMap = null;
+
+          return `Deleted wiki page "${found.page.title}" (page #${found.page.id}).`;
+        } catch (err) {
+          this.logger.error(`[wiki_delete] ${err.message}`);
+          return `Failed to delete wiki page: ${err.message}`;
         }
-
-        await wiki.trashPage(collectiveId, found.page.id);
-
-        // Invalidate wikilink cache so deleted page is removed
-        wiki._wikilinkMap = null;
-
-        return `Deleted wiki page "${found.page.title}" (page #${found.page.id}).`;
       }
     });
   }
@@ -2205,85 +2380,90 @@ class ToolRegistry {
           required: ['query']
         },
         handler: async (args) => {
-          const provider = args.provider || 'searxng';
+          try {
+            const provider = args.provider || 'searxng';
 
-          // --- Commercial provider shortcut ---
-          if (provider !== 'searxng' && provider !== 'multi' && searchAdapters?.[provider]) {
-            const adapter = searchAdapters[provider];
-            const results = await adapter.search(args.query, { maxResults: args.limit || 5 });
-            if (results.length === 0) {
-              return `No results found for "${args.query}" via ${provider}.`;
+            // --- Commercial provider shortcut ---
+            if (provider !== 'searxng' && provider !== 'multi' && searchAdapters?.[provider]) {
+              const adapter = searchAdapters[provider];
+              const results = await adapter.search(args.query, { maxResults: args.limit || 5 });
+              if (results.length === 0) {
+                return `No results found for "${args.query}" via ${provider}.`;
+              }
+              const lines = [`Found ${results.length} result(s) for "${args.query}" via ${provider}:\n`];
+              for (const r of results) {
+                lines.push(`**${r.title}**\n${r.url}\n${r.snippet || ''}\n`);
+              }
+              return lines.join('\n');
             }
-            const lines = [`Found ${results.length} result(s) for "${args.query}" via ${provider}:\n`];
-            for (const r of results) {
-              lines.push(`**${r.title}**\n${r.url}\n${r.snippet || ''}\n`);
+
+            // --- Unconfigured provider ---
+            if (provider !== 'searxng' && provider !== 'multi') {
+              const available = ['searxng'];
+              if (searchAdapters) available.push(...Object.keys(searchAdapters));
+              available.push('multi');
+              return `Provider "${provider}" is not configured. Available: ${available.join(', ')}.`;
+            }
+
+            // --- Multi-source search ---
+            if (provider === 'multi') {
+              const { multiSourceSearch } = require('../integrations/search-provider-adapters');
+
+              // Build SearXNG as a provider-compatible wrapper
+              const searxngWrapper = {
+                source: 'searxng',
+                search: async (q, opts) => {
+                  const res = await searxng.search(q, { limit: opts?.maxResults });
+                  return res.results.map(r => ({
+                    title: r.title,
+                    url: r.url,
+                    snippet: r.content,
+                    source: 'searxng',
+                    score: r.score || 0.5
+                  }));
+                }
+              };
+
+              const providers = [searxngWrapper];
+              if (searchAdapters) {
+                for (const adapter of Object.values(searchAdapters)) {
+                  providers.push(adapter);
+                }
+              }
+
+              const merged = await multiSourceSearch(providers, args.query, args.limit || 10);
+              if (merged.length === 0) {
+                return `No results found for "${args.query}" across all providers.`;
+              }
+              const lines = [`Found ${merged.length} result(s) for "${args.query}" (multi-source):\n`];
+              for (const r of merged) {
+                const srcTag = r.sources?.length > 1 ? ` [${r.sources.join(', ')}]` : ` [${r.source}]`;
+                lines.push(`**${r.title}**${srcTag}\n${r.url}\n${r.snippet || ''}\n`);
+              }
+              return lines.join('\n');
+            }
+
+            // --- Default: SearXNG only ---
+            const results = await searxng.search(args.query, {
+              limit: args.limit,
+              engines: args.engines,
+              categories: args.categories,
+              time_range: args.time_range
+            });
+
+            if (results.results.length === 0) {
+              return `No results found for "${args.query}".`;
+            }
+
+            const lines = [`Found ${results.results.length} result(s) for "${args.query}":\n`];
+            for (const r of results.results) {
+              lines.push(`**${r.title}**\n${r.url}\n${r.content}\n`);
             }
             return lines.join('\n');
+          } catch (err) {
+            this.logger.error(`[web_search] ${err.message}`);
+            return `Failed to search the web: ${err.message}`;
           }
-
-          // --- Unconfigured provider ---
-          if (provider !== 'searxng' && provider !== 'multi') {
-            const available = ['searxng'];
-            if (searchAdapters) available.push(...Object.keys(searchAdapters));
-            available.push('multi');
-            return `Provider "${provider}" is not configured. Available: ${available.join(', ')}.`;
-          }
-
-          // --- Multi-source search ---
-          if (provider === 'multi') {
-            const { multiSourceSearch } = require('../integrations/search-provider-adapters');
-
-            // Build SearXNG as a provider-compatible wrapper
-            const searxngWrapper = {
-              source: 'searxng',
-              search: async (q, opts) => {
-                const res = await searxng.search(q, { limit: opts?.maxResults });
-                return res.results.map(r => ({
-                  title: r.title,
-                  url: r.url,
-                  snippet: r.content,
-                  source: 'searxng',
-                  score: r.score || 0.5
-                }));
-              }
-            };
-
-            const providers = [searxngWrapper];
-            if (searchAdapters) {
-              for (const adapter of Object.values(searchAdapters)) {
-                providers.push(adapter);
-              }
-            }
-
-            const merged = await multiSourceSearch(providers, args.query, args.limit || 10);
-            if (merged.length === 0) {
-              return `No results found for "${args.query}" across all providers.`;
-            }
-            const lines = [`Found ${merged.length} result(s) for "${args.query}" (multi-source):\n`];
-            for (const r of merged) {
-              const srcTag = r.sources?.length > 1 ? ` [${r.sources.join(', ')}]` : ` [${r.source}]`;
-              lines.push(`**${r.title}**${srcTag}\n${r.url}\n${r.snippet || ''}\n`);
-            }
-            return lines.join('\n');
-          }
-
-          // --- Default: SearXNG only ---
-          const results = await searxng.search(args.query, {
-            limit: args.limit,
-            engines: args.engines,
-            categories: args.categories,
-            time_range: args.time_range
-          });
-
-          if (results.results.length === 0) {
-            return `No results found for "${args.query}".`;
-          }
-
-          const lines = [`Found ${results.results.length} result(s) for "${args.query}":\n`];
-          for (const r of results.results) {
-            lines.push(`**${r.title}**\n${r.url}\n${r.content}\n`);
-          }
-          return lines.join('\n');
         }
       });
     }
@@ -2300,12 +2480,17 @@ class ToolRegistry {
           required: ['url']
         },
         handler: async (args) => {
-          const result = await webReader.read(args.url);
-          let output = `**${result.title}**\nSource: ${result.url}\n\n${result.content}`;
-          if (result.truncated) {
-            output += '\n\n(Content was truncated due to length)';
+          try {
+            const result = await webReader.read(args.url);
+            let output = `**${result.title}**\nSource: ${result.url}\n\n${result.content}`;
+            if (result.truncated) {
+              output += '\n\n(Content was truncated due to length)';
+            }
+            return output;
+          } catch (err) {
+            this.logger.error(`[web_read] ${err.message}`);
+            return `Failed to read web page: ${err.message}`;
           }
-          return output;
         }
       });
     }
@@ -2451,29 +2636,34 @@ class ToolRegistry {
         required: ['query']
       },
       handler: async (args) => {
-        const results = await searcher.search(
-          args.query,
-          {
-            scope: args.scope || 'all',
-            maxResults: 5,
-            since: args.since,
-            until: args.until
+        try {
+          const results = await searcher.search(
+            args.query,
+            {
+              scope: args.scope || 'all',
+              maxResults: 5,
+              since: args.since,
+              until: args.until
+            }
+          );
+
+          if (results.length === 0) {
+            return 'No matching memories found.';
           }
-        );
 
-        if (results.length === 0) {
-          return 'No matching memories found.';
+          // Format results for the LLM with source labels
+          const formatted = results.map(r => {
+            const parts = [`**${r.title}** [${r.source}]`];
+            if (r.excerpt) parts.push(r.excerpt);
+            if (r.link) parts.push(`Link: ${r.link}`);
+            return parts.join('\n');
+          }).join('\n\n');
+
+          return formatted;
+        } catch (err) {
+          this.logger.error(`[memory_search] ${err.message}`);
+          return `Failed to search memory: ${err.message}`;
         }
-
-        // Format results for the LLM with source labels
-        const formatted = results.map(r => {
-          const parts = [`**${r.title}** [${r.source}]`];
-          if (r.excerpt) parts.push(r.excerpt);
-          if (r.link) parts.push(`Link: ${r.link}`);
-          return parts.join('\n');
-        }).join('\n\n');
-
-        return formatted;
       }
     });
   }
@@ -2503,11 +2693,16 @@ class ToolRegistry {
         required: ['card_id', 'target_stack_id']
       },
       handler: async (args) => {
-        await nc.request(`/index.php/apps/deck/cards/${args.card_id}/reorder`, {
-          method: 'PUT',
-          body: { stackId: args.target_stack_id, order: args.order || 0 }
-        });
-        return `Moved card ${args.card_id} to stack ${args.target_stack_id}.`;
+        try {
+          await nc.request(`/index.php/apps/deck/cards/${args.card_id}/reorder`, {
+            method: 'PUT',
+            body: { stackId: args.target_stack_id, order: args.order || 0 }
+          });
+          return `Moved card ${args.card_id} to stack ${args.target_stack_id}.`;
+        } catch (err) {
+          this.logger.error(`[workflow_deck_move_card] ${err.message}`);
+          return `Failed to move card: ${err.message}`;
+        }
       }
     });
 
@@ -2523,11 +2718,16 @@ class ToolRegistry {
         required: ['card_id', 'message']
       },
       handler: async (args) => {
-        await nc.request(`/ocs/v2.php/apps/deck/api/v1.0/cards/${args.card_id}/comments`, {
-          method: 'POST',
-          body: { message: args.message }
-        });
-        return `Added comment to card ${args.card_id}.`;
+        try {
+          await nc.request(`/ocs/v2.php/apps/deck/api/v1.0/cards/${args.card_id}/comments`, {
+            method: 'POST',
+            body: { message: args.message }
+          });
+          return `Added comment to card ${args.card_id}.`;
+        } catch (err) {
+          this.logger.error(`[workflow_deck_add_comment] ${err.message}`);
+          return `Failed to add comment: ${err.message}`;
+        }
       }
     });
 
@@ -2614,33 +2814,38 @@ class ToolRegistry {
         required: ['card_id', 'board_id', 'stack_id']
       },
       handler: async (args) => {
-        const apiPath = `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${args.stack_id}/cards/${args.card_id}`;
+        try {
+          const apiPath = `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${args.stack_id}/cards/${args.card_id}`;
 
-        // Fetch current card to preserve unchanged fields
-        const cardData = deck
-          ? await deck._request('GET', apiPath)
-          : (await nc.request(apiPath, { method: 'GET' })).body || {};
+          // Fetch current card to preserve unchanged fields
+          const cardData = deck
+            ? await deck._request('GET', apiPath)
+            : (await nc.request(apiPath, { method: 'GET' })).body || {};
 
-        const updates = {
-          title: args.title || cardData.title,
-          type: cardData.type || 'plain',
-          owner: cardData.owner?.uid || cardData.owner || '',
-          description: args.description !== undefined ? args.description : (cardData.description || ''),
-          duedate: args.duedate !== undefined ? args.duedate : (cardData.duedate || null)
-        };
+          const updates = {
+            title: args.title || cardData.title,
+            type: cardData.type || 'plain',
+            owner: cardData.owner?.uid || cardData.owner || '',
+            description: args.description !== undefined ? args.description : (cardData.description || ''),
+            duedate: args.duedate !== undefined ? args.duedate : (cardData.duedate || null)
+          };
 
-        if (deck) {
-          await deck._request('PUT', apiPath, updates);
-        } else {
-          await nc.request(apiPath, { method: 'PUT', body: updates });
+          if (deck) {
+            await deck._request('PUT', apiPath, updates);
+          } else {
+            await nc.request(apiPath, { method: 'PUT', body: updates });
+          }
+
+          const changes = [];
+          if (args.title) changes.push(`title: "${args.title}"`);
+          if (args.description !== undefined) changes.push('description updated');
+          if (args.duedate !== undefined) changes.push(`due: ${args.duedate}`);
+
+          return `Updated card ${args.card_id}.${changes.length ? ' Changes: ' + changes.join(', ') + '.' : ''}`;
+        } catch (err) {
+          this.logger.error(`[workflow_deck_update_card] ${err.message}`);
+          return `Failed to update card: ${err.message}`;
         }
-
-        const changes = [];
-        if (args.title) changes.push(`title: "${args.title}"`);
-        if (args.description !== undefined) changes.push('description updated');
-        if (args.duedate !== undefined) changes.push(`due: ${args.duedate}`);
-
-        return `Updated card ${args.card_id}.${changes.length ? ' Changes: ' + changes.join(', ') + '.' : ''}`;
       }
     });
 
@@ -2663,15 +2868,20 @@ class ToolRegistry {
           required: ['to', 'subject', 'body']
         },
         handler: async (args) => {
-          if (!args.to || !args.to.includes('@')) {
-            return 'Invalid email address. Please provide a valid recipient email.';
+          try {
+            if (!args.to || !args.to.includes('@')) {
+              return 'Invalid email address. Please provide a valid recipient email.';
+            }
+            const result = await emailHandler.confirmSendEmail(
+              { to: args.to, subject: args.subject, body: args.body },
+              'moltagent'
+            );
+            if (!result || !result.success) return `Failed to send email: ${result?.error || 'no confirmation from mail server.'}`;
+            return result.message || `Email sent to ${args.to}.`;
+          } catch (err) {
+            this.logger.error(`[mail_send] ${err.message}`);
+            return `Failed to send email: ${err.message}`;
           }
-          const result = await emailHandler.confirmSendEmail(
-            { to: args.to, subject: args.subject, body: args.body },
-            'moltagent'
-          );
-          if (!result || !result.success) return `Failed to send email: ${result?.error || 'no confirmation from mail server.'}`;
-          return result.message || `Email sent to ${args.to}.`;
         }
       });
     }

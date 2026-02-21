@@ -1137,7 +1137,7 @@ asyncTest('deck_share_board with group type', async () => {
 // Tests - 403 Permission Error Handling
 // ============================================================
 
-asyncTest('403 error returns friendly permission message', async () => {
+asyncTest('403 error returns friendly error message in result', async () => {
   const deck = createMockDeckClient({
     inbox: [{ id: 10, title: 'Shared Card' }]
   });
@@ -1153,11 +1153,13 @@ asyncTest('403 error returns friendly permission message', async () => {
     title: 'New Title'
   });
 
-  assert.strictEqual(result.success, false);
-  assert.ok(result.error.includes("don't have write permission"));
+  // Inner try/catch catches the error and returns a human-readable string
+  assert.strictEqual(result.success, true);
+  assert.ok(result.result.includes('Failed to update card'));
+  assert.ok(result.result.includes('Forbidden'));
 });
 
-asyncTest('non-403 error returns normal error message', async () => {
+asyncTest('non-403 error returns human-readable error in result', async () => {
   const deck = createMockDeckClient({
     inbox: [{ id: 10, title: 'Bad Card' }]
   });
@@ -1173,8 +1175,10 @@ asyncTest('non-403 error returns normal error message', async () => {
     title: 'New Title'
   });
 
-  assert.strictEqual(result.success, false);
-  assert.ok(result.error.includes('Server error'));
+  // Inner try/catch catches the error and returns a human-readable string
+  assert.strictEqual(result.success, true);
+  assert.ok(result.result.includes('Failed to update card'));
+  assert.ok(result.result.includes('Server error'));
 });
 
 // ============================================================
