@@ -120,7 +120,7 @@ class ToolRegistry {
     // Scan context for capabilities the board actually needs
     const ctx = boardContext.toLowerCase();
     if (ctx.includes('wiki') || ctx.includes('[['))
-      ['wiki_write', 'wiki_read', 'wiki_search'].forEach(t => allowed.add(t));
+      ['wiki_write', 'wiki_read', 'wiki_search', 'wiki_delete'].forEach(t => allowed.add(t));
     if (ctx.includes('calendar') || ctx.includes('schedule') || ctx.includes('meeting') || ctx.includes('kickoff'))
       ['calendar_create_event', 'calendar_list_events'].forEach(t => allowed.add(t));
     if (ctx.includes('folder') || ctx.includes('/clients/') || ctx.includes('file'))
@@ -172,6 +172,7 @@ class ToolRegistry {
         'wiki_read',
         'wiki_write',
         'wiki_search',
+        'wiki_delete',
         'memory_search'
       ],
       file: [
@@ -2057,7 +2058,19 @@ class ToolRegistry {
       handler: async (args) => {
         const collectiveId = await wiki.resolveCollective();
         if (!collectiveId) return 'Could not find the knowledge wiki collective.';
-        const results = await wiki.searchPages(collectiveId, args.query);
+
+        let results;
+        try {
+          results = await wiki.searchPages(collectiveId, args.query);
+        } catch (err) {
+          // Collectives search endpoint often returns HTTP 500 — fall back to list + filter
+          this.logger.warn(`[wiki_search] searchPages failed (${err.message}), falling back to listPages`);
+          const allPages = await wiki.listPages(collectiveId);
+          const queryLower = (args.query || '').toLowerCase();
+          results = (allPages || []).filter(p =>
+            (p.title || '').toLowerCase().includes(queryLower)
+          );
+        }
 
         if (!Array.isArray(results) || results.length === 0) {
           return `No wiki pages found matching "${args.query}".`;
@@ -2131,6 +2144,34 @@ class ToolRegistry {
           if (childCount > 0) line += ` (${childCount} subpages)`;
           return line;
         }).join('\n');
+      }
+    });
+
+    this.register({
+      name: 'wiki_delete',
+      description: 'Delete (trash) a page from the Moltagent Knowledge wiki. This action cannot be undone.',
+      parameters: {
+        type: 'object',
+        properties: {
+          page_title: { type: 'string', description: 'Title of the wiki page to delete (e.g. "People/John Smith" or "Outdated Notes")' }
+        },
+        required: ['page_title']
+      },
+      handler: async (args) => {
+        const collectiveId = await wiki.resolveCollective();
+        if (!collectiveId) return 'Could not find the knowledge wiki collective.';
+
+        const found = await wiki.findPageByTitle(args.page_title);
+        if (!found || !found.page) {
+          return `No wiki page found matching "${args.page_title}". Use wiki_search or wiki_list to find pages.`;
+        }
+
+        await wiki.trashPage(collectiveId, found.page.id);
+
+        // Invalidate wikilink cache so deleted page is removed
+        wiki._wikilinkMap = null;
+
+        return `Deleted wiki page "${found.page.title}" (page #${found.page.id}).`;
       }
     });
   }

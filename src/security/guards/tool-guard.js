@@ -49,6 +49,9 @@ const REQUIRES_APPROVAL = [
   // Destructive deck operations
   'deck_delete_card',
 
+  // Destructive wiki operations
+  'wiki_delete',
+
   // Sensitive deck operations (sharing data)
   'deck_share_board',
 

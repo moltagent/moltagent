@@ -22,6 +22,7 @@ const SENSITIVE_TOOLS = new Set([
   'calendar_update_event',
   'calendar_delete_event',
   'wiki_write',
+  'wiki_delete',
 ]);
 
 // Tools that support the "edit" response (non-destructive, revisable actions)
@@ -43,6 +44,7 @@ const TOOL_CATEGORIES = {
   calendar_update_event:  'CALENDAR — modifies an existing calendar event',
   calendar_delete_event:  'CALENDAR — deletes a calendar event',
   wiki_write:             'KNOWLEDGE BASE — creates or updates a wiki page in shared knowledge',
+  wiki_delete:            'KNOWLEDGE BASE — permanently trashes a wiki page',
 };
 
 // Keyword fallback: runs on UNCERTAIN or LLM error/timeout
@@ -54,6 +56,7 @@ const KEYWORD_FALLBACK_MAP = {
   calendar_update_event:  ['calendar event', 'modify calendar'],
   calendar_delete_event:  ['delete event', 'cancel event'],
   wiki_write:             ['knowledge base', 'wiki', 'knowledge change'],
+  wiki_delete:            ['delete wiki', 'wiki page deletion', 'remove wiki page'],
 };
 
 const MATCH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
@@ -90,6 +93,7 @@ const TOOL_APPROVAL_LABELS = {
   file_share:           'Share file',
   deck_share_board:     'Share board',
   access_new_credential:'Access credential',
+  wiki_delete:          'Delete wiki page',
 };
 
 const DEFAULT_CONFIRMATION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -443,6 +447,8 @@ class GuardrailEnforcer {
         return this._buildCalendarDeleteConfirmation(toolArgs, guardrailLine);
       case 'wiki_write':
         return this._buildWikiWriteConfirmation(toolArgs, guardrailLine);
+      case 'wiki_delete':
+        return this._buildGenericConfirmation(toolName, toolArgs, guardrailLine);
       default:
         return this._buildGenericConfirmation(toolName, toolArgs, guardrailLine);
     }
@@ -562,6 +568,7 @@ class GuardrailEnforcer {
       calendar_create_event: 'create a calendar event',
       calendar_update_event: 'update a calendar event',
       calendar_delete_event: 'delete a calendar event',
+      wiki_delete: 'delete a wiki page',
     };
     const action = actionMap[toolName] || `perform an action (${toolName})`;
 
@@ -712,6 +719,16 @@ class GuardrailEnforcer {
           /\bremove\b.*\b(?:folder|directory|it|that|this)\b/
         );
         break;
+      case 'wiki_delete':
+        patterns.push(
+          /\bdelete\b.*\b(?:wiki|page|it|that|this)\b/,
+          /\bremove\b.*\b(?:wiki|page|it|that|this)\b/
+        );
+        if (toolArgs && toolArgs.page_title) {
+          const escaped = toolArgs.page_title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          patterns.push(new RegExp(`\\bdelete\\b.*${escaped}`, 'i'));
+        }
+        break;
       default:
         // No conversational downgrade for unrecognized tools
         break;
@@ -806,6 +823,10 @@ class GuardrailEnforcer {
         break;
       case 'file_share':
         lines.push(`Path: \`${args.path || '?'}\``);
+        break;
+      case 'wiki_delete':
+        lines.push(`Page: **${args.page_title || '?'}**`);
+        lines.push('\u26a0\ufe0f This cannot be undone.');
         break;
       default: {
         // Generic: show tool args summary

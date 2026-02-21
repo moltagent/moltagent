@@ -180,6 +180,76 @@ asyncTest('wiki_list returns message for empty wiki', async () => {
   assert.ok(result.result.includes('empty'));
 });
 
+// -- wiki_delete --
+
+test('wiki_delete registered when collectivesClient is provided', () => {
+  const mockCollectives = createMockCollectivesClient();
+  const registry = new ToolRegistry({ collectivesClient: mockCollectives });
+  assert.ok(registry.has('wiki_delete'));
+});
+
+asyncTest('wiki_delete calls trashPage on found page', async () => {
+  let trashedPageId = null;
+  let trashedCollectiveId = null;
+  const mockCollectives = createMockCollectivesClient({
+    resolveCollective: 10,
+    findPageByTitle: { page: { id: 200, title: 'Old Notes' }, path: 'Research/Old Notes/Readme.md' }
+  });
+  mockCollectives.trashPage = async (cId, pageId) => {
+    trashedCollectiveId = cId;
+    trashedPageId = pageId;
+  };
+
+  const registry = new ToolRegistry({ collectivesClient: mockCollectives });
+  const result = await registry.execute('wiki_delete', { page_title: 'Old Notes' });
+  assert.ok(result.success);
+  assert.ok(result.result.includes('Deleted'));
+  assert.ok(result.result.includes('Old Notes'));
+  assert.ok(result.result.includes('#200'));
+  assert.strictEqual(trashedCollectiveId, 10);
+  assert.strictEqual(trashedPageId, 200);
+  // Verify wikilink cache was invalidated
+  assert.strictEqual(mockCollectives._wikilinkMap, null);
+});
+
+asyncTest('wiki_delete returns not-found when page missing', async () => {
+  const mockCollectives = createMockCollectivesClient({
+    resolveCollective: 10,
+    findPageByTitle: null
+  });
+
+  const registry = new ToolRegistry({ collectivesClient: mockCollectives });
+  const result = await registry.execute('wiki_delete', { page_title: 'Nonexistent Page' });
+  assert.ok(result.success);
+  assert.ok(result.result.includes('No wiki page found'));
+  assert.ok(result.result.includes('Nonexistent Page'));
+});
+
+// -- wiki_search fallback --
+
+asyncTest('wiki_search falls back to listPages on 500', async () => {
+  const mockCollectives = createMockCollectivesClient({
+    resolveCollective: 10,
+    listPages: [
+      { id: 1, title: 'MoltAgent Knowledge', parentId: 0 },
+      { id: 100, title: 'Marketing Plan', parentId: 1 },
+      { id: 101, title: 'Engineering Roadmap', parentId: 1 },
+      { id: 102, title: 'Market Research', parentId: 1 }
+    ]
+  });
+  // Make searchPages throw to simulate HTTP 500
+  mockCollectives.searchPages = async () => { throw new Error('HTTP 500 Internal Server Error'); };
+
+  const registry = new ToolRegistry({ collectivesClient: mockCollectives });
+  const result = await registry.execute('wiki_search', { query: 'Market' });
+  assert.ok(result.success);
+  // Should find "Marketing Plan" and "Market Research" via title filter
+  assert.ok(result.result.includes('Marketing Plan'));
+  assert.ok(result.result.includes('Market Research'));
+  // Should NOT include unrelated page
+  assert.ok(!result.result.includes('Engineering Roadmap'));
+});
+
 // ============================================================
 // Summary
 // ============================================================

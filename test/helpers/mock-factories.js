@@ -203,6 +203,7 @@ function createMockCollectivesClient(responses = {}) {
       const encodedName = encodeURIComponent(this.collectiveName);
       return `${this.baseUrl}/apps/collectives/${encodedName}/${pagePath}`;
     },
+    trashPage: async () => responses.trashPage || {},
     _ensureWikilinkCache: async () => {}
   };
 }
