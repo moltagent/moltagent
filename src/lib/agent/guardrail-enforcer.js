@@ -63,6 +63,35 @@ const AFFIRMATIVE = new Set(['yes', 'y', 'approve', 'ok', 'go ahead', 'proceed']
 const NEGATIVE = new Set(['no', 'n', 'deny', 'cancel', 'stop', 'abort']);
 const EDIT_WORDS = ['edit', 'revise', 'change', 'update', 'modify', 'fix', 'adjust'];
 
+// Severity classification for ToolGuard APPROVAL_REQUIRED tools
+const HIGH_SEVERITY_TOOLS = new Set([
+  'send_email', 'send_message_external', 'webhook_call',
+  'execute_shell', 'run_command',
+  'notification_send', 'external_api_call',
+  'file_share', 'deck_share_board',
+]);
+
+const TOOL_APPROVAL_LABELS = {
+  deck_delete_card:     'Delete Deck card',
+  file_delete:          'Delete file',
+  delete_file:          'Delete file',
+  delete_files:         'Delete files',
+  delete_folder:        'Delete folder',
+  file_move:            'Move file',
+  modify_calendar:      'Modify calendar',
+  delete_calendar_event:'Delete calendar event',
+  modify_contacts:      'Modify contacts',
+  send_email:           'Send email',
+  webhook_call:         'Call webhook',
+  execute_shell:        'Execute shell command',
+  run_command:          'Run command',
+  notification_send:    'Send notification',
+  external_api_call:    'External API call',
+  file_share:           'Share file',
+  deck_share_board:     'Share board',
+  access_new_credential:'Access credential',
+};
+
 const DEFAULT_CONFIRMATION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_POLL_INTERVAL_MS = 3000;
 
@@ -547,6 +576,252 @@ class GuardrailEnforcer {
     ].join('\n');
   }
 
+  // ── ToolGuard APPROVAL_REQUIRED handling ────────────────────────
+
+  /**
+   * Handle APPROVAL_REQUIRED tools from ToolGuard.
+   * Classifies severity and routes through appropriate approval ceremony.
+   *
+   * @param {string} toolName
+   * @param {Object} toolArgs
+   * @param {string|null} roomToken
+   * @param {Array} conversationHistory - recent messages for LOW-tier check
+   * @returns {Promise<{allowed: boolean, reason: string|null, editRequest?: boolean, editMessage?: string}>}
+   */
+  async checkApproval(toolName, toolArgs, roomToken, conversationHistory = []) {
+    const severity = this._classifySeverity(toolName);
+
+    // No roomToken → non-interactive → block (can't ask for approval)
+    if (!roomToken) {
+      this.logger.warn(`[GuardrailEnforcer] checkApproval: ${toolName} blocked — no room token`);
+      return { allowed: false, reason: `${toolName} requires approval but no interactive session available` };
+    }
+
+    // MEDIUM: check if recent conversation already contains confirmation
+    if (severity === 'MEDIUM') {
+      const hasConfirmation = this._checkRecentConfirmation(conversationHistory, toolName, toolArgs);
+      if (hasConfirmation) {
+        this.logger.info(`[GuardrailEnforcer] checkApproval: ${toolName} → LOW (recent confirmation found)`);
+        return { allowed: true, reason: null };
+      }
+    }
+
+    // MEDIUM and HIGH: full HITL via Talk
+    this.logger.info(`[GuardrailEnforcer] checkApproval: ${toolName} → ${severity} severity, requesting HITL`);
+
+    const approvalKey = `toolguard:${toolName}`;
+    const cached = this.approvalCache.get(approvalKey);
+    if (cached && (Date.now() - cached) < MATCH_CACHE_TTL) {
+      this.logger.info(`[GuardrailEnforcer] checkApproval: ${toolName} → SKIP (already approved)`);
+      return { allowed: true, reason: null };
+    }
+
+    const label = TOOL_APPROVAL_LABELS[toolName] || toolName;
+    const response = await this._requestToolApproval(label, toolName, toolArgs, roomToken);
+
+    if (response.decision === 'yes') {
+      this.approvalCache.set(approvalKey, Date.now());
+      return { allowed: true, reason: null };
+    }
+
+    if (response.decision === 'edit' && EDITABLE_TOOLS.has(toolName)) {
+      return {
+        allowed: false,
+        reason: 'User requested revision before sending',
+        editRequest: true,
+        editMessage: response.message
+      };
+    }
+
+    return { allowed: false, reason: `${label} — action denied or timed out` };
+  }
+
+  /**
+   * Classify tool severity for approval routing.
+   * @param {string} toolName
+   * @returns {'HIGH'|'MEDIUM'}
+   * @private
+   */
+  _classifySeverity(toolName) {
+    if (HIGH_SEVERITY_TOOLS.has(toolName)) return 'HIGH';
+    return 'MEDIUM';  // Everything else in REQUIRES_APPROVAL is MEDIUM
+  }
+
+  /**
+   * Check if recent conversation already contains confirmation for this action.
+   * @param {Array} history - recent messages
+   * @param {string} toolName
+   * @param {Object} toolArgs
+   * @returns {boolean}
+   * @private
+   */
+  _checkRecentConfirmation(history, toolName, toolArgs) {
+    if (!history || history.length === 0) return false;
+
+    // Only check the last 5 user messages
+    const recentUserMessages = history
+      .filter(m => m.role === 'user')
+      .slice(-5);
+
+    // Build action-specific patterns
+    const patterns = this._getConfirmationPatterns(toolName, toolArgs);
+    if (patterns.length === 0) return false;
+
+    for (const msg of recentUserMessages) {
+      const content = (msg.content || '').toLowerCase();
+      if (patterns.some(p => p.test(content))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Get regex patterns for contextual confirmation matching.
+   * @param {string} toolName
+   * @param {Object} toolArgs
+   * @returns {RegExp[]}
+   * @private
+   */
+  _getConfirmationPatterns(toolName, toolArgs) {
+    const patterns = [];
+    switch (toolName) {
+      case 'deck_delete_card':
+        patterns.push(
+          /\bdelete\b.*\b(?:card|it|that|this)\b/,
+          /\bremove\b.*\b(?:card|it|that|this)\b/,
+          /\bget rid of\b/,
+          /\bDELETE ME\b/i
+        );
+        if (toolArgs && toolArgs.title) {
+          const escaped = toolArgs.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          patterns.push(new RegExp(`\\bdelete\\b.*${escaped}`, 'i'));
+        }
+        break;
+      case 'file_delete':
+      case 'delete_file':
+      case 'delete_files':
+        patterns.push(
+          /\bdelete\b.*\b(?:file|it|that|this)\b/,
+          /\bremove\b.*\b(?:file|it|that|this)\b/
+        );
+        break;
+      case 'delete_folder':
+        patterns.push(
+          /\bdelete\b.*\b(?:folder|directory|it|that|this)\b/,
+          /\bremove\b.*\b(?:folder|directory|it|that|this)\b/
+        );
+        break;
+      default:
+        // No conversational downgrade for unrecognized tools
+        break;
+    }
+    return patterns;
+  }
+
+  /**
+   * Request tool approval via Talk polling (similar to _requestConfirmation).
+   * @param {string} label - Human-readable action label
+   * @param {string} toolName
+   * @param {Object} toolArgs
+   * @param {string} roomToken
+   * @returns {Promise<{decision: 'yes'|'no'|'edit'|'timeout', message?: string}>}
+   * @private
+   */
+  async _requestToolApproval(label, toolName, toolArgs, roomToken) {
+    if (!this.talkSendQueue || !this.conversationContext) {
+      this.logger.warn('[GuardrailEnforcer] Cannot request tool approval — Talk unavailable');
+      return { decision: 'no' };
+    }
+
+    const message = this._buildToolApprovalMessage(label, toolName, toolArgs);
+    const requestTimestamp = Date.now();
+    const searchAfter = Math.max(requestTimestamp, this._lastConsumedTimestamp);
+
+    try {
+      this.talkSendQueue.enqueue(roomToken, message);
+    } catch (err) {
+      this.logger.warn(`[GuardrailEnforcer] Failed to send approval request: ${err.message}`);
+      return { decision: 'no' };
+    }
+
+    // Poll — identical to _requestConfirmation polling
+    const deadline = requestTimestamp + this.confirmationTimeoutMs;
+    while (Date.now() < deadline) {
+      await this._sleep(this.pollIntervalMs);
+      try {
+        const history = await this.conversationContext.getHistory(roomToken, { limit: 5 });
+        for (const msg of history) {
+          const msgTimestampMs = (msg.timestamp || 0) * 1000;
+          if (msgTimestampMs <= searchAfter) continue;
+          if (msg.role !== 'user') continue;
+          const content = (msg.content || '').trim().toLowerCase();
+          if (this._isAffirmative(content)) {
+            this._lastConsumedTimestamp = msgTimestampMs;
+            return { decision: 'yes' };
+          }
+          if (this._isNegative(content)) {
+            this._lastConsumedTimestamp = msgTimestampMs;
+            return { decision: 'no' };
+          }
+          if (this._isEditRequest(content) && EDITABLE_TOOLS.has(toolName)) {
+            this._lastConsumedTimestamp = msgTimestampMs;
+            return { decision: 'edit', message: (msg.content || '').trim() };
+          }
+        }
+      } catch (err) {
+        this.logger.warn(`[GuardrailEnforcer] Approval poll failed: ${err.message}`);
+      }
+    }
+
+    this.logger.info('[GuardrailEnforcer] Tool approval timed out — blocking action');
+    return { decision: 'timeout' };
+  }
+
+  /**
+   * Build the approval message for ToolGuard APPROVAL_REQUIRED tools.
+   * @param {string} label
+   * @param {string} toolName
+   * @param {Object} toolArgs
+   * @returns {string}
+   * @private
+   */
+  _buildToolApprovalMessage(label, toolName, toolArgs) {
+    const args = toolArgs || {};
+    const lines = [`\u{1f510} **${label}** — requires approval\n`];
+
+    switch (toolName) {
+      case 'deck_delete_card':
+        lines.push(`Card: **${args.title || `#${args.cardId || args.card_id || '?'}`}**`);
+        lines.push('\u26a0\ufe0f This cannot be undone.');
+        break;
+      case 'file_delete':
+      case 'delete_file':
+      case 'delete_files':
+        lines.push(`Path: \`${args.path || args.file_path || '?'}\``);
+        lines.push('\u26a0\ufe0f This cannot be undone.');
+        break;
+      case 'deck_share_board':
+        lines.push(`Board: **${args.board_name || args.boardId || '?'}**`);
+        break;
+      case 'file_share':
+        lines.push(`Path: \`${args.path || '?'}\``);
+        break;
+      default: {
+        // Generic: show tool args summary
+        const summary = Object.entries(args)
+          .slice(0, 3)
+          .map(([k, v]) => `${k}: ${typeof v === 'string' ? v.substring(0, 80) : v}`)
+          .join('\n');
+        if (summary) lines.push(summary);
+        break;
+      }
+    }
+
+    lines.push('\nReply **yes** to approve or **no** to deny.');
+    return lines.join('\n');
+  }
+
   // ── Helpers ─────────────────────────────────────────────────────
 
   /** @private */
@@ -592,4 +867,4 @@ class GuardrailEnforcer {
   }
 }
 
-module.exports = { GuardrailEnforcer };
+module.exports = { GuardrailEnforcer, HIGH_SEVERITY_TOOLS, TOOL_APPROVAL_LABELS };

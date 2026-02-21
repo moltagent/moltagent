@@ -491,8 +491,31 @@ class AgentLoop {
     if (this.toolGuard) {
       const guardResult = this.toolGuard.evaluate(toolCall.name);
       if (!guardResult.allowed) {
-        this.logger.warn(`[AgentLoop] ToolGuard blocked: ${toolCall.name} — ${guardResult.reason}`);
-        return { success: false, result: '', error: `Tool call blocked by security policy: ${guardResult.reason}` };
+        if (guardResult.level === 'APPROVAL_REQUIRED' && this.guardrailEnforcer) {
+          // Route through HITL approval instead of hard-blocking
+          const history = (roomToken && this.conversationContext)
+            ? await this.conversationContext.getHistory(roomToken, { limit: 10 })
+            : [];
+          const approvalResult = await this.guardrailEnforcer.checkApproval(
+            toolCall.name, toolCall.arguments, roomToken, history
+          );
+          if (!approvalResult.allowed) {
+            if (approvalResult.editRequest) {
+              this.logger.info(`[AgentLoop] ToolGuard approval edit: ${toolCall.name}`);
+              return {
+                success: false, result: '', error:
+                  `The user wants to revise this before it's sent. Their message: "${approvalResult.editMessage || 'edit'}". ` +
+                  'Ask the user what they\'d like to change, then retry with the updated content.'
+              };
+            }
+            this.logger.info(`[AgentLoop] ToolGuard approval denied: ${toolCall.name} — ${approvalResult.reason}`);
+            return { success: false, result: '', error: `Action blocked: ${approvalResult.reason}` };
+          }
+          // Approved — fall through to GuardrailEnforcer.check() and then execute
+        } else {
+          this.logger.warn(`[AgentLoop] ToolGuard blocked: ${toolCall.name} — ${guardResult.reason}`);
+          return { success: false, result: '', error: `Tool call blocked by security policy: ${guardResult.reason}` };
+        }
       }
     }
 

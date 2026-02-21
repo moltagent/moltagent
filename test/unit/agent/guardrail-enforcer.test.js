@@ -923,6 +923,191 @@ async function runTests() {
     assert.ok(userMsg.includes('Does this guardrail govern the FILE DELETION category?'));
   });
 
+  // ============================================================
+  // checkApproval() — ToolGuard APPROVAL_REQUIRED routing
+  // ============================================================
+
+  await asyncTest('TC-APPROVE-001: checkApproval blocks when no roomToken', async () => {
+    const enforcer = makeEnforcer({
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([])
+    });
+
+    const result = await enforcer.checkApproval('deck_delete_card', { cardId: 42 }, null, []);
+    assert.strictEqual(result.allowed, false);
+    assert.ok(result.reason.includes('no interactive session'));
+  });
+
+  await asyncTest('TC-APPROVE-002: checkApproval allows MEDIUM tool when recent confirmation found', async () => {
+    const enforcer = makeEnforcer({
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([])
+    });
+
+    const history = [
+      { role: 'user', content: 'Please delete the card' }
+    ];
+    const result = await enforcer.checkApproval('deck_delete_card', { cardId: 42 }, 'room1', history);
+    assert.strictEqual(result.allowed, true);
+  });
+
+  await asyncTest('TC-APPROVE-003: checkApproval asks HITL for MEDIUM tool when no confirmation', async () => {
+    const now = Date.now();
+    const enforcer = makeEnforcer({
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([
+        { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
+      ]),
+      confirmationTimeoutMs: 500,
+      pollIntervalMs: 50
+    });
+
+    // History has no confirmation patterns
+    const history = [
+      { role: 'user', content: 'What cards are on the board?' }
+    ];
+    const result = await enforcer.checkApproval('deck_delete_card', { cardId: 42 }, 'room1', history);
+    assert.strictEqual(result.allowed, true); // user replied "yes" via HITL
+  });
+
+  await asyncTest('TC-APPROVE-004: checkApproval always asks HITL for HIGH tool (no downgrade)', async () => {
+    const now = Date.now();
+    const queue = createMockTalkQueue();
+    const enforcer = makeEnforcer({
+      talkSendQueue: queue,
+      conversationContext: createMockConversationContext([
+        { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
+      ]),
+      confirmationTimeoutMs: 500,
+      pollIntervalMs: 50
+    });
+
+    // Even with "send the email" in history, HIGH tools always ask HITL
+    const history = [
+      { role: 'user', content: 'send the email now' }
+    ];
+    const result = await enforcer.checkApproval('send_email', { to: 'a@b.com' }, 'room1', history);
+    assert.strictEqual(result.allowed, true);
+    // Verify it actually sent a HITL message (not short-circuited)
+    assert.strictEqual(queue._getSent().length, 1);
+  });
+
+  await asyncTest('TC-APPROVE-005: checkApproval caches approval on yes', async () => {
+    const now = Date.now();
+    const queue = createMockTalkQueue();
+    const enforcer = makeEnforcer({
+      talkSendQueue: queue,
+      conversationContext: createMockConversationContext([
+        { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
+      ]),
+      confirmationTimeoutMs: 500,
+      pollIntervalMs: 50
+    });
+
+    await enforcer.checkApproval('deck_delete_card', { cardId: 42 }, 'room1', []);
+    assert.ok(enforcer.approvalCache.has('toolguard:deck_delete_card'));
+
+    // Second call should hit cache — no new message sent
+    const r2 = await enforcer.checkApproval('deck_delete_card', { cardId: 99 }, 'room1', []);
+    assert.strictEqual(r2.allowed, true);
+    assert.strictEqual(queue._getSent().length, 1); // only 1 message, not 2
+  });
+
+  await asyncTest('TC-APPROVE-006: checkApproval blocks on timeout', async () => {
+    const enforcer = makeEnforcer({
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([]),
+      confirmationTimeoutMs: 200,
+      pollIntervalMs: 50
+    });
+
+    const result = await enforcer.checkApproval('deck_delete_card', { cardId: 42 }, 'room1', []);
+    assert.strictEqual(result.allowed, false);
+    assert.ok(result.reason.includes('denied or timed out'));
+  });
+
+  await asyncTest('TC-APPROVE-007: checkApproval blocks when Talk unavailable', async () => {
+    const enforcer = makeEnforcer({
+      talkSendQueue: null,
+      conversationContext: null
+    });
+
+    const result = await enforcer.checkApproval('deck_delete_card', { cardId: 42 }, 'room1', []);
+    assert.strictEqual(result.allowed, false);
+    assert.ok(result.reason.includes('denied or timed out'));
+  });
+
+  // --- _classifySeverity ---
+
+  test('TC-APPROVE-008: _classifySeverity returns HIGH for high-severity tools', () => {
+    const enforcer = makeEnforcer({});
+    assert.strictEqual(enforcer._classifySeverity('send_email'), 'HIGH');
+    assert.strictEqual(enforcer._classifySeverity('execute_shell'), 'HIGH');
+    assert.strictEqual(enforcer._classifySeverity('webhook_call'), 'HIGH');
+    assert.strictEqual(enforcer._classifySeverity('external_api_call'), 'HIGH');
+    assert.strictEqual(enforcer._classifySeverity('deck_share_board'), 'HIGH');
+  });
+
+  test('TC-APPROVE-009: _classifySeverity returns MEDIUM for deck_delete_card', () => {
+    const enforcer = makeEnforcer({});
+    assert.strictEqual(enforcer._classifySeverity('deck_delete_card'), 'MEDIUM');
+    assert.strictEqual(enforcer._classifySeverity('file_delete'), 'MEDIUM');
+    assert.strictEqual(enforcer._classifySeverity('delete_file'), 'MEDIUM');
+    assert.strictEqual(enforcer._classifySeverity('delete_folder'), 'MEDIUM');
+  });
+
+  // --- _checkRecentConfirmation ---
+
+  test('TC-APPROVE-010: _checkRecentConfirmation matches "delete the card"', () => {
+    const enforcer = makeEnforcer({});
+    const history = [
+      { role: 'user', content: 'please delete the card' }
+    ];
+    assert.strictEqual(
+      enforcer._checkRecentConfirmation(history, 'deck_delete_card', {}),
+      true
+    );
+  });
+
+  test('TC-APPROVE-011: _checkRecentConfirmation does not match unrelated text', () => {
+    const enforcer = makeEnforcer({});
+    const history = [
+      { role: 'user', content: 'what is the weather today?' }
+    ];
+    assert.strictEqual(
+      enforcer._checkRecentConfirmation(history, 'deck_delete_card', {}),
+      false
+    );
+  });
+
+  // --- _getConfirmationPatterns ---
+
+  test('TC-APPROVE-012: _getConfirmationPatterns returns empty for HIGH tools', () => {
+    const enforcer = makeEnforcer({});
+    assert.strictEqual(enforcer._getConfirmationPatterns('send_email', {}).length, 0);
+    assert.strictEqual(enforcer._getConfirmationPatterns('execute_shell', {}).length, 0);
+    assert.strictEqual(enforcer._getConfirmationPatterns('webhook_call', {}).length, 0);
+  });
+
+  // --- _buildToolApprovalMessage ---
+
+  test('TC-APPROVE-013: _buildToolApprovalMessage shows card title for deck_delete_card', () => {
+    const enforcer = makeEnforcer({});
+    const msg = enforcer._buildToolApprovalMessage('Delete Deck card', 'deck_delete_card', { title: 'Buy groceries' });
+    assert.ok(msg.includes('Buy groceries'));
+    assert.ok(msg.includes('cannot be undone'));
+    assert.ok(msg.includes('requires approval'));
+    assert.ok(!msg.includes('deck_delete_card'));
+  });
+
+  test('TC-APPROVE-014: _buildToolApprovalMessage shows path for file_delete', () => {
+    const enforcer = makeEnforcer({});
+    const msg = enforcer._buildToolApprovalMessage('Delete file', 'file_delete', { path: '/docs/secret.txt' });
+    assert.ok(msg.includes('/docs/secret.txt'));
+    assert.ok(msg.includes('cannot be undone'));
+    assert.ok(!msg.includes('file_delete'));
+  });
+
   const { passed, failed } = summary();
   exitWithCode();
 }
