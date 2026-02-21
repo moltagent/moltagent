@@ -173,9 +173,11 @@ function createMockSecurityInterceptor(overrides = {}) {
 
 // CollectivesClient Mock (for wiki tool tests)
 function createMockCollectivesClient(responses = {}) {
+  const baseUrl = 'https://cloud.example.com';
+  const collectiveName = 'Moltagent Knowledge';
   return {
     resolveCollective: async () => responses.resolveCollective || 10,
-    listCollectives: async () => responses.listCollectives || [{ id: 10, name: 'Moltagent Knowledge' }],
+    listCollectives: async () => responses.listCollectives || [{ id: 10, name: collectiveName }],
     getCollective: async (name) => responses.getCollective || { id: 10, name },
     listPages: async () => responses.listPages || [],
     getPage: async (cId, pageId) => responses.getPage || { id: pageId, title: 'Test' },
@@ -194,7 +196,14 @@ function createMockCollectivesClient(responses = {}) {
     },
     writePageWithFrontmatter: async (title, fm, body) => responses.writePageWithFrontmatter || 'Test/Readme.md',
     resolveWikilinks: async (content) => responses.resolveWikilinks !== undefined ? responses.resolveWikilinks : content,
-    collectiveName: 'Moltagent Knowledge'
+    baseUrl,
+    collectiveName,
+    _wikilinkMap: responses._wikilinkMap || null,
+    _collectivesPageUrl(pagePath) {
+      const encodedName = encodeURIComponent(this.collectiveName);
+      return `${this.baseUrl}/apps/collectives/${encodedName}/${pagePath}`;
+    },
+    _ensureWikilinkCache: async () => {}
   };
 }
 

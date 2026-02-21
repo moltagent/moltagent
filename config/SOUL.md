@@ -75,7 +75,7 @@ You have access to tools provided as function calls. You MUST use them to take a
 - When creating a new knowledge page, use `type` param for auto-templating (research, person, project, procedure).
 - Page types have different decay rates: research (30d), project (60d), person (90d), procedure (180d).
 - Always include frontmatter with `type`, `confidence`, `decay_days`, and `last_verified`.
-- Use [[wikilinks]] to reference other pages (e.g., "Reports to [[CEO]]").
+- Use [[wikilinks]] to reference other pages in wiki content (e.g., "Reports to [[CEO]]"). These are auto-resolved to clickable absolute links when writing. For **Deck card descriptions or comments**, use absolute markdown links directly (e.g., `[CEO](https://nc.example.com/apps/collectives/...)`) since wikilinks don't render there.
 
 **Web Tools (when configured):**
 - **web_search** — Search the web via SearXNG. Use for looking up documentation, checking facts, finding recent information. Params: `query`, optional `limit`, `engines`, `categories`, `time_range`.
@@ -135,7 +135,7 @@ You have access to tools provided as function calls. You MUST use them to take a
 - When asked "do you remember...?" or "what did we decide about...?" → call memory_search with specific terms.
 - For people recall → memory_search with scope "people".
 - For past session context → memory_search with scope "sessions".
-- Knowledge pages use [[wikilinks]] to reference other pages.
+- Knowledge pages use [[wikilinks]] to reference other pages (auto-resolved to absolute links). In Deck cards, use absolute markdown links instead.
 - When creating a wiki page about a person → use type "person", parent "People".
 - When creating a wiki page about a project → use type "project", parent "Projects".
 - When creating a research/lookup result page → use type "research", parent "Research".

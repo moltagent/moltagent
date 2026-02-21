@@ -1972,7 +1972,8 @@ class ToolRegistry {
             } catch { /* best effort */ }
           }
 
-          return `Updated wiki page "${args.page_title}" at ${existing.path}.`;
+          const updateUrl = wiki._collectivesPageUrl(args.page_title.split('/').map(s => encodeURIComponent(s)).join('/'));
+          return `Updated wiki page "${args.page_title}" at ${existing.path}. [View](${updateUrl})`;
         }
 
         // Create new page: need collective ID and parent
@@ -2007,7 +2008,8 @@ class ToolRegistry {
           if (existingByList.id) {
             await wiki.touchPage(collectiveId, existingByList.id);
           }
-          return `Updated wiki page "${leafTitle}" (dedup: found via list scan).`;
+          const dedupUrl = wiki._collectivesPageUrl(args.page_title.split('/').map(s => encodeURIComponent(s)).join('/'));
+          return `Updated wiki page "${leafTitle}" (dedup: found via list scan). [View](${dedupUrl})`;
         }
 
         // Create the page with just the leaf title
@@ -2037,7 +2039,8 @@ class ToolRegistry {
           } catch { /* best effort */ }
         }
 
-        return `Created wiki page "${leafTitle}" (page #${created.id})${parentHint ? ` under ${parentHint}` : ''}.`;
+        const createUrl = wiki._collectivesPageUrl(args.page_title.split('/').map(s => encodeURIComponent(s)).join('/'));
+        return `Created wiki page "${leafTitle}" (page #${created.id})${parentHint ? ` under ${parentHint}` : ''}. [View](${createUrl})`;
       }
     });
 
@@ -2060,10 +2063,18 @@ class ToolRegistry {
           return `No wiki pages found matching "${args.query}".`;
         }
 
+        // Ensure wikilink cache is populated for path resolution
+        await wiki._ensureWikilinkCache();
+
         return results.map(p => {
           let line = `- "${p.title}"`;
           if (p.emoji) line += ` ${p.emoji}`;
           if (p.excerpt || p.snippet) line += ` — ${(p.excerpt || p.snippet).substring(0, 100)}`;
+          // Append clickable Collectives link
+          const cachedPath = wiki._wikilinkMap && wiki._wikilinkMap.get((p.title || '').toLowerCase());
+          if (cachedPath) {
+            line += ` [View](${wiki._collectivesPageUrl(cachedPath)})`;
+          }
           return line;
         }).join('\n');
       }

@@ -50,7 +50,7 @@ class CollectivesClient {
       collectivesTTL: 0
     };
 
-    // Cache for wikilink resolution (title → fileId), populated once per session
+    // Cache for wikilink resolution (title → collectivesPath), populated once per session
     this._wikilinkMap = null;
 
     // OCS API base path
@@ -457,8 +457,19 @@ class CollectivesClient {
   }
 
   /**
-   * Ensure the wikilink title→fileId cache is populated.
+   * Build an absolute Collectives UI URL for a page path.
+   * @param {string} pagePath - URI-encoded path segments (e.g. "Meta/Pending%20Questions")
+   * @returns {string} Full URL like https://nc.example.com/apps/collectives/Moltagent%20Knowledge/Meta/Pending%20Questions
+   */
+  _collectivesPageUrl(pagePath) {
+    const encodedName = encodeURIComponent(this.collectiveName);
+    return `${this.baseUrl}/apps/collectives/${encodedName}/${pagePath}`;
+  }
+
+  /**
+   * Ensure the wikilink title→collectivesPath cache is populated.
    * Loads all pages from listPages() once per session.
+   * Stores the Collectives UI path (not fileId) for each page.
    * @private
    */
   async _ensureWikilinkCache() {
@@ -468,10 +479,29 @@ class CollectivesClient {
       const collectiveId = await this.resolveCollective();
       const pages = await this.listPages(collectiveId);
       const pageList = Array.isArray(pages) ? pages : [];
+
+      // Build parent lookup: id → { title, parentId }
+      const idToInfo = new Map();
       for (const page of pageList) {
-        if (page.title && page.fileId) {
-          this._wikilinkMap.set(page.title.toLowerCase(), page.fileId);
+        if (page.id && page.title) {
+          idToInfo.set(page.id, { title: page.title, parentId: page.parentId });
         }
+      }
+
+      // For each page, build Collectives UI path by walking up parents
+      for (const page of pageList) {
+        if (!page.title) continue;
+        const segments = [page.title];
+        let cur = page.parentId;
+        while (cur && idToInfo.has(cur)) {
+          const parent = idToInfo.get(cur);
+          // Stop at root pages (parentId 0 or self-referencing)
+          if (!parent.parentId || parent.parentId === cur) break;
+          segments.unshift(parent.title);
+          cur = parent.parentId;
+        }
+        const collectivesPath = segments.map(s => encodeURIComponent(s)).join('/');
+        this._wikilinkMap.set(page.title.toLowerCase(), collectivesPath);
       }
     } catch {
       // Cache stays empty — resolveWikilinks will fall back to plain text
@@ -479,8 +509,8 @@ class CollectivesClient {
   }
 
   /**
-   * Resolve [[wikilink]] patterns to Nextcloud file links.
-   * [[Page/Name]] → [Name](https://ncUrl/f/fileId)
+   * Resolve [[wikilink]] patterns to absolute Collectives UI links.
+   * [[Page/Name]] → [Name](https://ncUrl/apps/collectives/CollectiveName/Section/Name)
    * If page not found: Page/Name (page not found)
    * @param {string} content - Markdown content with potential wikilinks
    * @returns {Promise<string>} Content with wikilinks resolved
@@ -499,9 +529,9 @@ class CollectivesClient {
       const label = target.includes('/') ? target.split('/').pop() : target;
       const leafTitle = label.toLowerCase();
 
-      const fileId = this._wikilinkMap.get(leafTitle);
-      const replacement = fileId
-        ? `[${label}](${this.baseUrl}/f/${fileId})`
+      const pagePath = this._wikilinkMap.get(leafTitle);
+      const replacement = pagePath
+        ? `[${label}](${this._collectivesPageUrl(pagePath)})`
         : `${target} (page not found)`;
 
       result = result.slice(0, match.index) + replacement + result.slice(match.index + match[0].length);
