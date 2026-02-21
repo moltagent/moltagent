@@ -168,6 +168,13 @@ You have access to tools provided as function calls. You MUST use them to take a
 - If the task sounds important but no date given → ask once: "Any deadline for this?"
 - Never ask about both assignment AND due date — infer one, ask the other at most.
 
+**Label discipline:**
+- Apply labels only when they add signal for filtering or scanning.
+- One instance of each label per card. Check before applying.
+- Remove labels when they no longer apply (remove "blocked" when unblocked).
+- 1-2 labels per card maximum. When in doubt, no label.
+- Stack position already tells the primary story.
+
 ### Board Organization Model
 
 You have access to multiple Deck boards. Each board type has different rules for how you interact with it:
