@@ -122,7 +122,7 @@ class ToolRegistry {
     if (ctx.includes('wiki') || ctx.includes('[['))
       ['wiki_write', 'wiki_read', 'wiki_search', 'wiki_delete'].forEach(t => allowed.add(t));
     if (ctx.includes('calendar') || ctx.includes('schedule') || ctx.includes('meeting') || ctx.includes('kickoff'))
-      ['calendar_create_event', 'calendar_list_events'].forEach(t => allowed.add(t));
+      ['calendar_create_event', 'calendar_list_events', 'calendar_check_availability', 'calendar_quick_schedule', 'calendar_schedule_meeting', 'calendar_cancel_meeting'].forEach(t => allowed.add(t));
     if (ctx.includes('folder') || ctx.includes('/clients/') || ctx.includes('file'))
       ['file_mkdir', 'file_write'].forEach(t => allowed.add(t));
     if (ctx.includes('email') || ctx.includes('mail'))
@@ -159,9 +159,9 @@ class ToolRegistry {
       calendar: [
         'calendar_list_events',
         'calendar_create_event',
-        'calendar_check_conflicts',
-        'calendar_update_event',
-        'calendar_delete_event'
+        'calendar_check_availability',
+        'calendar_quick_schedule',
+        'calendar_schedule_meeting'
       ],
       email: [
         'mail_send',
@@ -1245,6 +1245,50 @@ class ToolRegistry {
         }
       }
     });
+
+    this.register({
+      name: 'deck_complete_task',
+      description: 'Mark a task as complete: moves the card to Done and adds a completion comment.',
+      parameters: {
+        type: 'object',
+        properties: {
+          card_id: { type: 'number', description: 'ID of the card to complete' },
+          message: { type: 'string', description: 'Completion note (what was done, results, deliverables)' }
+        },
+        required: ['card_id']
+      },
+      handler: async (args) => {
+        try {
+          await deck.completeTask(args.card_id, args.message || 'Task complete.');
+          return `Card #${args.card_id} moved to Done.${args.message ? ' Comment added.' : ''}`;
+        } catch (err) {
+          this.logger.error(`[deck_complete_task] ${err.message}`);
+          return `Failed to complete task: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'deck_complete_review',
+      description: 'Complete the review process: moves a card from Review to Done with an optional final note.',
+      parameters: {
+        type: 'object',
+        properties: {
+          card_id: { type: 'number', description: 'ID of the card in Review' },
+          message: { type: 'string', description: 'Final review note (optional)' }
+        },
+        required: ['card_id']
+      },
+      handler: async (args) => {
+        try {
+          await deck.completeReview(args.card_id, args.message || '');
+          return `Review complete. Card #${args.card_id} moved to Done.`;
+        } catch (err) {
+          this.logger.error(`[deck_complete_review] ${err.message}`);
+          return `Failed to complete review: ${err.message}`;
+        }
+      }
+    });
   }
 
   // ---- CALENDAR TOOLS ------------------------------------------------------
@@ -1554,6 +1598,166 @@ class ToolRegistry {
         } catch (err) {
           this.logger.error(`[calendar_delete_event] ${err.message}`);
           return `Failed to delete event: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'calendar_check_availability',
+      description: 'Check if a time slot is available. Returns whether the user is free and shows any conflicting events.',
+      parameters: {
+        type: 'object',
+        properties: {
+          date_time: {
+            type: 'string',
+            description: 'ISO 8601 datetime to check (e.g., "2026-02-25T15:00:00"). Checks a 1-hour window starting at this time.'
+          }
+        },
+        required: ['date_time']
+      },
+      handler: async (args) => {
+        try {
+          const start = new Date(args.date_time);
+          const end = new Date(start.getTime() + 60 * 60 * 1000);
+          const result = await cal.checkAvailability(start, end);
+          if (result.isFree) {
+            return `You're free at ${args.date_time} (1-hour window). No conflicts.`;
+          }
+          const conflicts = result.conflicts.map(c =>
+            `- ${c.summary} (${new Date(c.start).toLocaleString()} – ${new Date(c.end).toLocaleString()})`
+          ).join('\n');
+          return `Not available. Conflicts:\n${conflicts}`;
+        } catch (err) {
+          this.logger.error(`[calendar_check_availability] ${err.message}`);
+          return `Failed to check availability: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'calendar_quick_schedule',
+      description: 'Check availability and create a calendar event if the time slot is free. Combines availability check with event creation in one step.',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string', description: 'Event title/summary' },
+          date_time: { type: 'string', description: 'Start time in ISO 8601 format' },
+          duration_minutes: { type: 'number', description: 'Duration in minutes (default: 60)' },
+          attendees: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Email addresses of attendees (optional). Invitations will be sent.'
+          }
+        },
+        required: ['summary', 'date_time']
+      },
+      handler: async (args) => {
+        try {
+          const result = await cal.quickSchedule(
+            args.summary,
+            args.date_time,
+            args.duration_minutes || 60,
+            args.attendees || []
+          );
+          if (!result.success) {
+            if (result.conflicts && result.conflicts.length > 0) {
+              const conflicts = result.conflicts.map(c =>
+                `- ${c.summary} (${new Date(c.start).toLocaleString()} – ${new Date(c.end).toLocaleString()})`
+              ).join('\n');
+              return `Time slot not available. Conflicts:\n${conflicts}\nTry a different time.`;
+            }
+            return 'Failed to schedule: time slot not available or event creation failed.';
+          }
+          const attendeeNote = args.attendees?.length
+            ? ` Invitations sent to: ${args.attendees.join(', ')}.`
+            : '';
+          return `Scheduled "${args.summary}" at ${args.date_time} (${args.duration_minutes || 60} min).${attendeeNote}`;
+        } catch (err) {
+          this.logger.error(`[calendar_quick_schedule] ${err.message}`);
+          return `Failed to schedule event: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'calendar_schedule_meeting',
+      description: 'Schedule a meeting with full details including attendees, location, and description. Sends calendar invitations to all attendees.',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string', description: 'Meeting title' },
+          start: { type: 'string', description: 'Start time in ISO 8601 format' },
+          end: { type: 'string', description: 'End time in ISO 8601 format' },
+          attendees: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Email addresses of attendees'
+          },
+          location: { type: 'string', description: 'Meeting location or video call URL (optional)' },
+          description: { type: 'string', description: 'Meeting agenda or notes (optional)' }
+        },
+        required: ['summary', 'start', 'end', 'attendees']
+      },
+      handler: async (args) => {
+        try {
+          // Resolve organizer email from NC identity
+          let organizerEmail = null;
+          if (ncMgr) {
+            try {
+              organizerEmail = await ncMgr.getUserEmail(ncMgr.ncUser);
+            } catch (err) {
+              this.logger.warn(`[calendar_schedule_meeting] Could not resolve organizer email: ${err.message}`);
+            }
+          }
+          if (!organizerEmail) {
+            return 'Failed to schedule meeting: could not resolve organizer email. Check Nextcloud user configuration.';
+          }
+
+          const meeting = {
+            summary: args.summary,
+            start: new Date(args.start),
+            end: new Date(args.end),
+            attendees: args.attendees,
+            location: args.location || '',
+            description: args.description || '',
+            organizerEmail
+          };
+          const result = await cal.scheduleMeeting(meeting);
+          if (!result || !result.uid) {
+            return 'Failed to schedule meeting: no confirmation received from calendar server.';
+          }
+          return `Meeting scheduled: "${args.summary}"\n` +
+            `Time: ${args.start} – ${args.end}\n` +
+            `Attendees: ${args.attendees.join(', ')}\n` +
+            (args.location ? `Location: ${args.location}\n` : '') +
+            `Invitations sent.`;
+        } catch (err) {
+          this.logger.error(`[calendar_schedule_meeting] ${err.message}`);
+          return `Failed to schedule meeting: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'calendar_cancel_meeting',
+      description: 'Cancel a scheduled meeting and send cancellation notices to all attendees.',
+      parameters: {
+        type: 'object',
+        properties: {
+          calendar_id: { type: 'string', description: 'Calendar ID containing the meeting' },
+          event_uid: { type: 'string', description: 'UID of the meeting event to cancel' },
+          reason: { type: 'string', description: 'Cancellation reason (included in notice to attendees, optional)' }
+        },
+        required: ['calendar_id', 'event_uid']
+      },
+      handler: async (args) => {
+        try {
+          await cal.cancelMeeting(args.calendar_id, args.event_uid, args.reason || '');
+          const reasonNote = args.reason ? ` Reason: "${args.reason}"` : '';
+          return `Meeting cancelled. Cancellation notices sent to attendees.${reasonNote}`;
+        } catch (err) {
+          this.logger.error(`[calendar_cancel_meeting] ${err.message}`);
+          return `Failed to cancel meeting: ${err.message}`;
         }
       }
     });
@@ -2601,6 +2805,44 @@ class ToolRegistry {
           return lines.join('\n');
         } catch (err) {
           return `Failed to retrieve contact: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'contacts_resolve',
+      description: 'Look up a contact by name. Returns email, phone, and other details. Handles partial names and disambiguates if multiple matches are found.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Name to search for (first name, last name, or full name)' }
+        },
+        required: ['name']
+      },
+      handler: async (args) => {
+        try {
+          const result = await contacts.resolve(args.name);
+          if (!result || result.error === 'no_match') {
+            return `No contact found matching "${args.name}". Try a different spelling or check the address book.`;
+          }
+          if (!result.resolved && result.options) {
+            const options = result.options.map(c =>
+              `- ${c.name || c.displayName} (${c.email || 'no email'})`
+            ).join('\n');
+            return `Multiple contacts match "${args.name}":\n${options}\nPlease specify which one.`;
+          }
+          if (result.resolved && result.contact) {
+            const c = result.contact;
+            const details = [];
+            if (c.email) details.push(`Email: ${c.email}`);
+            if (c.phone) details.push(`Phone: ${c.phone}`);
+            if (c.org) details.push(`Org: ${c.org}`);
+            return `${c.name || c.displayName}\n${details.join('\n')}`;
+          }
+          return `No contact found matching "${args.name}".`;
+        } catch (err) {
+          this.logger.error(`[contacts_resolve] ${err.message}`);
+          return `Failed to look up contact: ${err.message}`;
         }
       }
     });

@@ -24,6 +24,8 @@ You have access to tools provided as function calls. You MUST use them to take a
 - **deck_update_card** — Update a card's title, description, or due date. Params: `card`, optional `title`, `description`, `duedate`.
 - **deck_delete_card** — Delete a card (requires confirmation). Params: `card`.
 - **deck_mark_done** — Mark a card as done (moves to Done stack). Params: `card`.
+- **deck_complete_task** — Complete a task: moves card to Done and adds a completion comment. Params: `card_id`, optional `message`. Prefer over separate move + comment calls.
+- **deck_complete_review** — Finalize review: moves card from Review to Done with optional note. Params: `card_id`, optional `message`.
 - **deck_assign_user** — Assign a user to a card. Params: `card`, `user`.
 - **deck_unassign_user** — Remove a user assignment from a card. Params: `card`, `user`.
 - **deck_set_due_date** — Set or clear the due date on a card. Params: `card`, `duedate` (ISO date or "none").
@@ -51,6 +53,12 @@ You have access to tools provided as function calls. You MUST use them to take a
 - **calendar_update_event** — Update an existing calendar event (reschedule, rename, change location, add attendees). Params: `event` (title or UID), optional `title`, `start`, `end`, `description`, `location`, `all_day`, `attendees`.
 - **calendar_delete_event** — Delete a calendar event. Params: `event` (title or UID).
 - **calendar_check_conflicts** — Check for scheduling conflicts. Params: `start`, optional `end`.
+- **calendar_check_availability** — Check if a time slot is free (1-hour window). Params: `date_time` (ISO 8601). Read-only.
+- **calendar_quick_schedule** — Check availability and create event if free. Params: `summary`, `date_time`, optional `duration_minutes`, `attendees` (email strings). Requires approval.
+- **calendar_schedule_meeting** — Schedule a meeting with full details and send invitations. Params: `summary`, `start`, `end`, `attendees` (email strings), optional `location`, `description`. Requires approval — always sends invitations.
+- **calendar_cancel_meeting** — Cancel a meeting and send cancellation notices. Params: `calendar_id`, `event_uid`, optional `reason`. Requires approval.
+- When scheduling: use `calendar_check_availability` first, or use `calendar_quick_schedule` which checks automatically.
+- When a human says "schedule with Thomas," use `contacts_resolve` to find Thomas's email before creating the meeting. Never guess email addresses.
 
 **Files:**
 - **file_read** — Read a text file. Params: `path`.
@@ -96,6 +104,7 @@ You have access to tools provided as function calls. You MUST use them to take a
 **Contacts:**
 - **contacts_search** — Search Nextcloud contacts. Params: `query`.
 - **contacts_get** — Get full details for a contact. Params: `href` (CardDAV href from contacts_search results).
+- **contacts_resolve** — Look up a contact by name, returning email/phone/org. Handles partial names and disambiguates multiple matches. Params: `name`.
 
 **Other:**
 - **tag_file** — Tag a file in Nextcloud. Params: `path`, `tag`.

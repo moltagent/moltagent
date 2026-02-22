@@ -123,6 +123,18 @@ function createMockCalDAVClient(responses = {}) {
       if (responses.getEvent === null) return null;
       if (typeof responses.getEvent === 'function') return responses.getEvent(calId, uid);
       return responses.getEvent || null;
+    },
+    quickSchedule: async (summary, dateTime, duration, attendees) => {
+      if (responses.quickSchedule) return responses.quickSchedule;
+      return { success: true, event: { uid: 'qs-uid-' + Date.now(), summary } };
+    },
+    scheduleMeeting: async (meeting) => {
+      if (responses.scheduleMeeting) return responses.scheduleMeeting;
+      return { uid: 'mtg-uid-' + Date.now(), summary: meeting.summary };
+    },
+    cancelMeeting: async (calendarId, uid, reason) => {
+      if (responses.cancelMeeting !== undefined) return responses.cancelMeeting;
+      return true;
     }
   };
 }

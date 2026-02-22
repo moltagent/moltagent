@@ -603,7 +603,7 @@ function scanSoulDrift() {
       // Only consider names that look like tool names (have underscore, known prefixes)
       if (!toolName.includes('_')) continue;
       // Skip known parameter names and non-tool patterns
-      if (/^(decay_days|last_verified|page_title|card_id|board_id|stack_id|target_stack|target_stack_id|due_date|label_name|event_uid|calendar_id|frontmatter|confidence_level|trust_level|from_path|to_path|share_with|time_range|all_day|stack_name|board_name|file_path|attendee_email|share_type|permission_edit|permission_share|permission_manage|user_id|display_name|phone_number|email_address|job_title|start_date|end_date|event_title|sort_order|max_results|search_query|include_body|provider_ids)$/.test(toolName)) continue;
+      if (/^(decay_days|last_verified|page_title|card_id|board_id|stack_id|target_stack|target_stack_id|due_date|label_name|event_uid|calendar_id|frontmatter|confidence_level|trust_level|from_path|to_path|share_with|time_range|all_day|stack_name|board_name|file_path|attendee_email|share_type|permission_edit|permission_share|permission_manage|user_id|display_name|phone_number|email_address|job_title|start_date|end_date|event_title|sort_order|max_results|search_query|include_body|provider_ids|date_time|duration_minutes)$/.test(toolName)) continue;
 
       if (!soulTools.has(toolName)) {
         soulTools.set(toolName, []);
@@ -620,6 +620,8 @@ function scanSoulDrift() {
     plainToolPattern.lastIndex = 0;
     while ((m = plainToolPattern.exec(line)) !== null) {
       const toolName = m[1];
+      // Skip parameter names that happen to match tool prefixes (e.g. calendar_id)
+      if (/^(calendar_id|file_path|deck_id|wiki_id|contacts_id|mail_id)$/.test(toolName)) continue;
       if (!soulTools.has(toolName)) {
         soulTools.set(toolName, []);
       }

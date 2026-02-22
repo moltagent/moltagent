@@ -1,6 +1,6 @@
 # Moltagent Wiring Audit Report
 
-Generated: 2026-02-21T23:39:04.551Z
+Generated: 2026-02-22T00:04:39.217Z
 
 ## Scanner 1: Orphaned Client Methods
 
@@ -9,17 +9,12 @@ Generated: 2026-02-21T23:39:04.551Z
 - ⚠ DeckClient.getBoardType() — no external references found
 - ℹ DeckClient.findBoard() — internal use only (called by other methods in same class)
 - ℹ DeckClient.createBoard() — internal use only (called by other methods in same class)
-- ⚠ DeckClient.completeTask() — no external references found
-- ⚠ DeckClient.completeReview() — no external references found
 - ⚠ DeckClient.clearCache() — no external references found
 - ⚠ DeckClient.getAssignedUsers() — no external references found
 - ℹ CalDAVClient.getCalendars() — internal use only (called by other methods in same class)
 - ⚠ CalDAVClient.getCalendar() — no external references found
 - ℹ CalDAVClient.getTodayEvents() — internal use only (called by other methods in same class)
-- ⚠ CalDAVClient.scheduleMeeting() — no external references found
-- ⚠ CalDAVClient.cancelMeeting() — no external references found
 - ⚠ CalDAVClient.amIFreeAt() — no external references found
-- ⚠ CalDAVClient.quickSchedule() — no external references found
 - ℹ CollectivesClient.listCollectives() — internal use only (called by other methods in same class)
 - ℹ CollectivesClient.getCollective() — internal use only (called by other methods in same class)
 - ℹ CollectivesClient.createCollective() — internal use only (called by other methods in same class)
@@ -28,7 +23,6 @@ Generated: 2026-02-21T23:39:04.551Z
 - ℹ CollectivesClient.resolveWikilinks() — internal use only (called by other methods in same class)
 - ℹ CollectivesClient.getCollectiveCircleId() — internal use only (called by other methods in same class)
 - ℹ CollectivesClient.addTeamMember() — internal use only (called by other methods in same class)
-- ⚠ ContactsClient.resolve() — no external references found
 - ⚠ ContactsClient.fetchAll() — no external references found
 - ℹ NCFilesClient.getRootListing() — internal use only (called by other methods in same class)
 - ⚠ NCFilesClient.invalidateRootCache() — no external references found
@@ -84,6 +78,12 @@ Generated: 2026-02-21T23:39:04.551Z
 - ℹ deck_my_assigned_cards — prefix suggests 'deck' subset but NOT included (subset has 5/5 slots)
 - ℹ deck_overdue_cards — prefix suggests 'deck' subset but NOT included (subset has 5/5 slots)
 - ℹ deck_mark_done — prefix suggests 'deck' subset but NOT included (subset has 5/5 slots)
+- ℹ deck_complete_task — prefix suggests 'deck' subset but NOT included (subset has 5/5 slots)
+- ℹ deck_complete_review — prefix suggests 'deck' subset but NOT included (subset has 5/5 slots)
+- ℹ calendar_check_conflicts — prefix suggests 'calendar' subset but NOT included (subset has 5/5 slots)
+- ℹ calendar_update_event — prefix suggests 'calendar' subset but NOT included (subset has 5/5 slots)
+- ℹ calendar_delete_event — prefix suggests 'calendar' subset but NOT included (subset has 5/5 slots)
+- ℹ calendar_cancel_meeting — prefix suggests 'calendar' subset but NOT included (subset has 5/5 slots)
 - ℹ file_info — prefix suggests 'file' subset but NOT included (subset has 5/5 slots)
 - ℹ file_copy — prefix suggests 'file' subset but NOT included (subset has 5/5 slots)
 - ℹ file_mkdir — prefix suggests 'file' subset but NOT included (subset has 5/5 slots)
@@ -92,10 +92,11 @@ Generated: 2026-02-21T23:39:04.551Z
 - ℹ memory_recall — prefix suggests 'search' subset but NOT included (subset has 5/5 slots)
 - ℹ wiki_list — prefix suggests 'wiki' subset but NOT included (subset has 5/5 slots)
 - ℹ contacts_get — prefix suggests 'search' subset but NOT included (subset has 5/5 slots)
+- ℹ contacts_resolve — prefix suggests 'search' subset but NOT included (subset has 5/5 slots)
 
 ## Scanner 6: Approval Path Completeness
 
 - ✓ No findings
 
 ---
-**Summary:** 18 warnings, 56 info items
+**Summary:** 12 warnings, 63 info items

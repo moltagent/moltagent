@@ -70,7 +70,9 @@ function createMockDeckClient(cards = {}) {
       { actorId: 'moltagent', message: '[STATUS] Working on it', creationDateTime: '2026-02-08T11:00:00Z' }
     ],
     shareBoard: async (_boardId, _participant, _type, _pe, _ps, _pm) => ({ id: 100 }),
-    _request: async (method, path, body) => ({ id: 77, title: body?.title || 'New Board' })
+    _request: async (method, path, body) => ({ id: 77, title: body?.title || 'New Board' }),
+    completeTask: async (_cardId, _message) => {},
+    completeReview: async (_cardId, _message) => {}
   };
 }
 
@@ -162,7 +164,7 @@ test('getToolDefinitions returns correct format', () => {
   assert.ok(first.function.parameters, 'Should have parameters');
 });
 
-test('all 19 deck tools registered when deckClient provided', () => {
+test('all deck tools registered when deckClient provided', () => {
   const registry = new ToolRegistry({
     deckClient: createMockDeckClient(),
     logger: silentLogger
@@ -176,7 +178,8 @@ test('all 19 deck tools registered when deckClient provided', () => {
     'deck_assign_user', 'deck_unassign_user', 'deck_set_due_date',
     'deck_add_label', 'deck_remove_label',
     'deck_add_comment', 'deck_list_comments',
-    'deck_overview', 'deck_my_assigned_cards', 'deck_overdue_cards', 'deck_mark_done'
+    'deck_overview', 'deck_my_assigned_cards', 'deck_overdue_cards', 'deck_mark_done',
+    'deck_complete_task', 'deck_complete_review'
   ];
 
   for (const toolName of deckTools) {
@@ -1260,7 +1263,7 @@ test('search tool registered when ncSearchClient provided', () => {
   assert.ok(registry.has('unified_search'), 'Should have unified_search');
 });
 
-test('all 45 tools registered with all clients', () => {
+test('all 51 tools registered with all clients', () => {
   const registry = new ToolRegistry({
     deckClient: createMockDeckClient(),
     calDAVClient: createMockCalDAVClient(),
@@ -1271,8 +1274,8 @@ test('all 45 tools registered with all clients', () => {
     textExtractor: createMockTextExtractor(),
     logger: silentLogger
   });
-  // 22 deck + 6 calendar + 1 tag + 1 memory + 10 file + 1 search + 4 workflow_deck = 45
-  assert.strictEqual(registry.size, 45, `Expected 45 tools, got ${registry.size}`);
+  // 24 deck + 10 calendar + 1 tag + 1 memory + 10 file + 1 search + 4 workflow_deck = 51
+  assert.strictEqual(registry.size, 51, `Expected 51 tools, got ${registry.size}`);
 });
 
 asyncTest('file_read returns file content', async () => {

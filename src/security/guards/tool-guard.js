@@ -37,6 +37,9 @@ const REQUIRES_APPROVAL = [
   // Calendar/contact modification
   'modify_calendar', 'delete_calendar_event', 'modify_contacts',
 
+  // Calendar scheduling (sends external invitations/cancellations)
+  'calendar_quick_schedule', 'calendar_schedule_meeting', 'calendar_cancel_meeting',
+
   // System-level operations
   'execute_shell', 'run_command',
 
