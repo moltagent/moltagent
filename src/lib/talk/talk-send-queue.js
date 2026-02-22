@@ -116,32 +116,6 @@ class TalkSendQueue {
   }
 
   /**
-   * Send typing indicator to a Talk room.
-   * Cosmetic — silent failure, never blocks processing.
-   *
-   * @param {string} token - Talk room token
-   * @param {boolean} [typing=true] - true to show typing, false to clear
-   */
-  async setTyping(token, typing = true) {
-    try {
-      await this.nc.request(
-        `/ocs/v2.php/apps/spreed/api/v1/chat/${token}/typing`,
-        {
-          method: 'POST',
-          headers: {
-            'OCS-APIRequest': 'true',
-            'Content-Type': 'application/json'
-          },
-          body: { typing },
-          skipCache: true
-        }
-      );
-    } catch (err) {
-      this.logger.debug?.(`[Talk] Typing indicator failed: ${err.message}`);
-    }
-  }
-
-  /**
    * Drain remaining messages before shutdown.
    */
   async shutdown() {
