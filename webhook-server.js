@@ -372,6 +372,10 @@ const CONFIG = {
       .filter(Boolean),
     strictMode: process.env.STRICT_MODE !== 'false'
   },
+  claude: {
+    modelPremium: process.env.CLAUDE_MODEL_PREMIUM || appConfig.claude.modelPremium,
+    modelStandard: process.env.CLAUDE_MODEL_STANDARD || appConfig.claude.modelStandard
+  },
   ollama: {
     url: process.env.OLLAMA_URL || appConfig.ollama.url,
     model: process.env.OLLAMA_MODEL || appConfig.ollama.model,
@@ -1123,21 +1127,21 @@ async function initialize() {
       if (intentRouter) console.log(`[INIT] IntentRouter ready (${appConfig.ollama.classifyTimeout}ms timeout)`);
 
       const claudeProvider = new ClaudeToolsProvider({
-        model: claudeConfig.model || 'claude-opus-4-6',
+        model: claudeConfig.model || CONFIG.claude.modelPremium,
         maxTokens: 1024,
         timeout: 30000,
         getApiKey: () => getCredential(claudeConfig.credentialName || 'claude-api-key')
       });
-      console.log(`[INIT] ClaudeToolsProvider ready (${claudeConfig.model || 'claude-opus-4-6'})`);
+      console.log(`[INIT] ClaudeToolsProvider ready (${claudeConfig.model || CONFIG.claude.modelPremium})`);
 
       // Sonnet: workhorse cloud provider (same API key, cheaper model)
       const sonnetProvider = new ClaudeToolsProvider({
-        model: 'claude-sonnet-4-5-20250929',
+        model: CONFIG.claude.modelStandard,
         maxTokens: 1024,
         timeout: 30000,
         getApiKey: () => getCredential('claude-api-key')
       });
-      console.log('[INIT] ClaudeToolsProvider ready (claude-sonnet-4-5-20250929)');
+      console.log(`[INIT] ClaudeToolsProvider ready (${CONFIG.claude.modelStandard})`);
 
       // --- Primary path: RouterChatBridge (LLMRouter v3 routing) ---
       let llmProvider = null;

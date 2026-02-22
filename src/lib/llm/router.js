@@ -572,14 +572,14 @@ class LLMRouter {
 
       for (const job of VALID_JOBS) {
         if (job === JOBS.QUICK || job === JOBS.TOOLS) {
-          // Volume work: local first, workhorse cloud as fallback
-          roster[job] = [...new Set([...localIds, workhorse, ...rest].filter(Boolean))];
-        } else if (job === JOBS.THINKING || job === JOBS.WRITING) {
-          // Deep work: heavy cloud first, workhorse fallback, rest, local last
+          // Volume work: workhorse cloud first (Sonnet handles tools well), local fallback
+          roster[job] = [...new Set([workhorse, ...rest, ...localIds].filter(Boolean))];
+        } else if (job === JOBS.THINKING || job === JOBS.WRITING || job === JOBS.CODING) {
+          // Deep/complex work: heavy cloud first, workhorse fallback, rest, local last
           roster[job] = [...new Set([heavy, workhorse, ...rest, ...localIds].filter(Boolean))];
-        } else if (job === JOBS.RESEARCH || job === JOBS.CODING) {
-          // Skilled work: workhorse cloud first, heavy fallback, rest, local last
-          roster[job] = [...new Set([workhorse, heavy, ...rest, ...localIds].filter(Boolean))];
+        } else if (job === JOBS.RESEARCH) {
+          // Research: workhorse cloud first, rest, local last (no heavy — cost-efficient)
+          roster[job] = [...new Set([workhorse, ...rest, ...localIds].filter(Boolean))];
         }
       }
     } else if (presetName === 'cloud-first') {

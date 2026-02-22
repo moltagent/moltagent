@@ -154,6 +154,10 @@ const CONFIG = {
     username: process.env.NC_USER || appConfig.nextcloud.username
     // NOTE: Password comes from credential broker, NOT here
   },
+  claude: {
+    modelPremium: process.env.CLAUDE_MODEL_PREMIUM || appConfig.claude.modelPremium,
+    modelStandard: process.env.CLAUDE_MODEL_STANDARD || appConfig.claude.modelStandard
+  },
   ollama: {
     url: process.env.OLLAMA_URL || appConfig.ollama.url,
     model: process.env.OLLAMA_MODEL || appConfig.ollama.model,

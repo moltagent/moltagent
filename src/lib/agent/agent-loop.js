@@ -150,7 +150,7 @@ class AgentLoop {
           system: systemPrompt,
           messages,
           tools,
-          job: tools.length > 0 ? 'tools' : 'quick'
+          job: this._classifyJob(messages, tools)
         });
       } catch (llmErr) {
         // Friendly message on rate limit / overload instead of surfacing raw error
@@ -379,7 +379,7 @@ class AgentLoop {
           messages,
           tools,
           forceLocal,
-          job: tools.length > 0 ? 'tools' : 'quick'
+          job: this._classifyJob(messages, tools)
         });
       } catch (llmErr) {
         if (this._isRateLimitError(llmErr)) {
@@ -800,6 +800,80 @@ class AgentLoop {
     }
     return "I'm a bit busy right now — the AI service is temporarily " +
            'at capacity. Please try again in a minute or two.';
+  }
+
+  /**
+   * Classify the current agent loop iteration into a job type for LLM routing.
+   * Routes to the cheapest appropriate model: Sonnet for tool-calling and simple
+   * queries, Opus for complex reasoning and code generation.
+   *
+   * @param {Array<Object>} messages - Current conversation messages
+   * @param {Array<Object>} tools - Available tool definitions
+   * @returns {string} Job type: 'quick' | 'tools' | 'thinking' | 'writing' | 'coding' | 'research'
+   * @private
+   */
+  _classifyJob(messages, tools) {
+    // If tools are available, this is likely a tool-calling turn
+    if (tools && tools.length > 0) {
+      // Check if recent messages contain tool results we need to synthesize
+      const recentToolResults = this._recentToolResultCount(messages);
+      if (recentToolResults >= 2) {
+        // Multiple tool results gathered — now synthesizing into a response
+        return 'writing';
+      }
+      return 'tools';
+    }
+
+    // No tools — final response turn. Classify based on the user's original message.
+    const userContent = this._lastUserContent(messages);
+    if (!userContent) return 'quick';
+
+    // Check for coding signals (before length check — "debug this" is short but coding)
+    const codingPattern = /\b(code|debug|function|script|implement|refactor|sql|regex|bug|stack\s?trace|syntax)\b/i;
+    if (codingPattern.test(userContent)) return 'coding';
+
+    // Check for writing signals
+    const writingPattern = /\b(write|draft|compose|summarize|summary|email|report|document|letter|blog|template)\b/i;
+    if (writingPattern.test(userContent)) return 'writing';
+
+    // Check for research signals
+    const researchPattern = /\b(search|find out|look\s?up|research|compare|what\s+is|who\s+is|latest|news)\b/i;
+    if (researchPattern.test(userContent)) return 'research';
+
+    // Short messages without keyword signals are quick
+    if (userContent.length < 100) return 'quick';
+
+    // Default: thinking (complex reasoning)
+    return 'thinking';
+  }
+
+  /**
+   * Count tool results in the last N messages.
+   * @param {Array<Object>} messages
+   * @returns {number}
+   * @private
+   */
+  _recentToolResultCount(messages) {
+    let count = 0;
+    for (let i = messages.length - 1; i >= Math.max(0, messages.length - 6); i--) {
+      if (messages[i]?.role === 'tool') count++;
+    }
+    return count;
+  }
+
+  /**
+   * Extract the content of the last user message.
+   * @param {Array<Object>} messages
+   * @returns {string}
+   * @private
+   */
+  _lastUserContent(messages) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.role === 'user') {
+        return typeof messages[i].content === 'string' ? messages[i].content : '';
+      }
+    }
+    return '';
   }
 
   /**
