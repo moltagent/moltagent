@@ -76,7 +76,7 @@ console.log('\n=== Heartbeat Initiative Level Tests ===\n');
     assert.strictEqual(assignmentsCalled, false, 'Assignments should not run at level 1');
     assert.strictEqual(calendarCalled, false, 'Calendar should not run at level 1');
     assert.strictEqual(knowledgeCalled, false, 'Knowledge should not run at level 1');
-    assert.strictEqual(flowCalled, false, 'Flow should not run at level 1');
+    assert.strictEqual(flowCalled, true, 'Flow runs at all levels (before initiative gate)');
   });
 
   await asyncTest('Level 2: pulse() runs Deck + Calendar + Flow, skips Knowledge', async () => {
