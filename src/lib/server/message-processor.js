@@ -301,10 +301,11 @@ class MessageProcessor {
     // Set status to thinking before processing
     await this.statusIndicator?.setStatus('thinking');
 
-    // Signal typing indicator in Talk
+    // Signal typing indicator in Talk — pulse every 10s (Talk auto-expires after ~15s)
+    let typingPulse = null;
     if (extracted.token && this.ncRequestManager) {
-      try {
-        await this.ncRequestManager.request(
+      const sendTyping = () => {
+        this.ncRequestManager.request(
           `/ocs/v2.php/apps/spreed/api/v1/chat/${extracted.token}/typing`,
           {
             method: 'POST',
@@ -312,10 +313,10 @@ class MessageProcessor {
             body: { typing: true },
             skipCache: true
           }
-        );
-      } catch (err) {
-        // Non-critical — don't block processing if typing indicator fails
-      }
+        ).catch(() => {}); // Cosmetic — never crash over typing
+      };
+      sendTyping();
+      typingPulse = setInterval(sendTyping, 10000);
     }
 
     try {
@@ -558,6 +559,8 @@ class MessageProcessor {
       await this.statusIndicator?.setStatus('ready');
 
       return { error: errorResponse };
+    } finally {
+      if (typingPulse) clearInterval(typingPulse);
     }
   }
 
