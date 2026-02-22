@@ -352,7 +352,7 @@ class HeartbeatManager {
       if (this.credentialBroker?.prefetchAll) {
         try {
           await this.credentialBroker.prefetchAll([
-            'email-imap', 'email-smtp', 'claude-api-key', 'deepseek-api-key'
+            'email-imap', 'email-smtp', 'claude-api-key'
           ]);
         } catch (err) {
           console.warn('[Heartbeat] Credential prefetch error:', err.message);

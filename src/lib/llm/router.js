@@ -529,16 +529,13 @@ class LLMRouter {
 
   /**
    * Resolve primary cloud provider ID.
-   * Priority: anthropic-claude > deepseek > first non-local.
+   * Priority: anthropic-claude > first non-local.
    * @private
    * @returns {string|null}
    */
   _resolveCloudPrimary() {
     if (this.providers.has('anthropic-claude') && this.providers.get('anthropic-claude').type !== 'local') {
       return 'anthropic-claude';
-    }
-    if (this.providers.has('deepseek') && this.providers.get('deepseek').type !== 'local') {
-      return 'deepseek';
     }
     for (const [id, provider] of this.providers) {
       if (provider.type !== 'local') return id;

@@ -8,15 +8,6 @@
       "model": "qwen3:8b",
       "costModel": { "type": "fixed", "monthlyFixed": 15 }
     },
-    "deepseek": {
-      "id": "deepseek",
-      "name": "DeepSeek API",
-      "type": "api",
-      "endpoint": "https://api.deepseek.com/v1/chat/completions",
-      "model": "deepseek-chat",
-      "credentialName": "deepseek-api-key",
-      "costModel": { "type": "per_token", "inputPer1M": 0.14, "outputPer1M": 0.28 }
-    },
     "claude": {
       "id": "claude",
       "name": "Claude Opus",
@@ -29,24 +20,23 @@
   },
   "roles": {
     "sovereign": ["ollama"],
-    "workhorse": ["ollama", "deepseek"],
-    "value": ["deepseek", "ollama"],
-    "premium": ["claude", "deepseek", "ollama"]
+    "workhorse": ["ollama"],
+    "value": ["ollama"],
+    "premium": ["claude", "ollama"]
   },
   "fallbackChains": {
-    "claude": ["deepseek", "ollama"],
-    "deepseek": ["ollama"],
+    "claude": ["ollama"],
     "ollama": []
   },
   "budgets": {
-    "daily": { "claude": 2.00, "deepseek": 1.00 },
-    "monthly": { "claude": 50.00, "deepseek": 20.00 }
+    "daily": { "claude": 2.00 },
+    "monthly": { "claude": 50.00 }
   },
   "routing": {
     "credentialSensitive": "ollama",
     "untrustedContent": "ollama",
     "heartbeat": "ollama",
-    "bulkProcessing": "deepseek",
+    "bulkProcessing": "ollama",
     "qualityCritical": "claude",
     "default": "claude"
   }

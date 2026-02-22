@@ -29,40 +29,38 @@ providers:
       inputPer1M: 3.00
       outputPer1M: 15.00
 
-  # Value tier - DeepSeek
-  deepseek:
-    adapter: deepseek
-    credentialName: deepseek-api-key
-    model: deepseek-chat
-    costModel:
-      type: per_token
-      inputPer1M: 0.14
-      outputPer1M: 0.28
+  # DeepSeek - available but not active on Prime
+  # To enable: uncomment and set deepseek-api-key in NC Passwords
+  # deepseek:
+  #   adapter: deepseek
+  #   credentialName: deepseek-api-key
+  #   model: deepseek-chat
+  #   costModel:
+  #     type: per_token
+  #     inputPer1M: 0.14
+  #     outputPer1M: 0.28
 
 # Role assignments (providers tried in order listed)
 roles:
   sovereign: [ollama-local]
   free: [ollama-local]
-  value: [claude-sonnet, deepseek, ollama-local]
-  premium: [anthropic-claude, claude-sonnet, deepseek, ollama-local]
+  value: [claude-sonnet, ollama-local]
+  premium: [anthropic-claude, claude-sonnet, ollama-local]
 
 # Fallback chains
 fallbackChain:
   ollama-local: []
-  anthropic-claude: [claude-sonnet, deepseek, ollama-local]
-  claude-sonnet: [deepseek, ollama-local]
-  deepseek: [ollama-local]
+  anthropic-claude: [claude-sonnet, ollama-local]
+  claude-sonnet: [ollama-local]
 
 # Budget limits in USD
 budgets:
   daily:
     anthropic-claude: 2.00
     claude-sonnet: 3.00
-    deepseek: 1.00
   monthly:
     anthropic-claude: 50.00
     claude-sonnet: 30.00
-    deepseek: 20.00
 
 # Search provider configuration
 search:
