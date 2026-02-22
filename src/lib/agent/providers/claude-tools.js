@@ -11,7 +11,7 @@ class ClaudeToolsProvider {
   /**
    * @param {Object} config
    * @param {string} [config.model='claude-opus-4-6']
-   * @param {number} [config.maxTokens=1024]
+   * @param {number} [config.maxTokens=4096]
    * @param {number} [config.timeout=30000]
    * @param {Function} config.getApiKey - Async function that returns the API key
    * @param {number} [config.maxRetries=3] - Max retries on 429
@@ -19,7 +19,7 @@ class ClaudeToolsProvider {
    */
   constructor(config, logger) {
     this.model = config.model || 'claude-opus-4-6';
-    this.maxTokens = config.maxTokens || 1024;
+    this.maxTokens = config.maxTokens || 4096;
     this.timeout = config.timeout || 30000;
     this.getApiKey = config.getApiKey;
     this.maxRetries = config.maxRetries ?? 3;

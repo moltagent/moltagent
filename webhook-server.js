@@ -1128,7 +1128,7 @@ async function initialize() {
 
       const claudeProvider = new ClaudeToolsProvider({
         model: claudeConfig.model || CONFIG.claude.modelPremium,
-        maxTokens: 1024,
+        maxTokens: 4096,
         timeout: 30000,
         getApiKey: () => getCredential(claudeConfig.credentialName || 'claude-api-key')
       });
@@ -1137,7 +1137,7 @@ async function initialize() {
       // Sonnet: workhorse cloud provider (same API key, cheaper model)
       const sonnetProvider = new ClaudeToolsProvider({
         model: CONFIG.claude.modelStandard,
-        maxTokens: 1024,
+        maxTokens: 2048,
         timeout: 30000,
         getApiKey: () => getCredential('claude-api-key')
       });
