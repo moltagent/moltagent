@@ -375,7 +375,9 @@ const CONFIG = {
   ollama: {
     url: process.env.OLLAMA_URL || appConfig.ollama.url,
     model: process.env.OLLAMA_MODEL || appConfig.ollama.model,
-    timeout: appConfig.ollama.timeout
+    modelCredential: process.env.OLLAMA_MODEL_CREDENTIAL || process.env.OLLAMA_MODEL || appConfig.ollama.modelCredential,
+    timeout: appConfig.ollama.timeout,
+    toolTimeout: appConfig.ollama.toolTimeout
   },
   deck: {
     boardId: parseInt(process.env.DECK_BOARD_ID) || appConfig.deck.boardId
@@ -1100,6 +1102,18 @@ async function initialize() {
         console.log(`[INIT] OllamaToolsProvider ready (${ollamaConfig.endpoint || CONFIG.ollama.url}, ${ollamaConfig.model || CONFIG.ollama.model})`);
       }
 
+      let ollamaCredentialProvider = null;
+      if (OllamaToolsProvider && CONFIG.ollama.modelCredential &&
+          CONFIG.ollama.modelCredential !== (ollamaConfig.model || CONFIG.ollama.model)) {
+        ollamaCredentialProvider = new OllamaToolsProvider({
+          endpoint: ollamaConfig.endpoint || CONFIG.ollama.url,
+          model: CONFIG.ollama.modelCredential,
+          timeout: CONFIG.ollama.timeout,
+          toolTimeout: CONFIG.ollama.toolTimeout
+        });
+        console.log(`[INIT] OllamaToolsProvider (credential) ready (${CONFIG.ollama.modelCredential})`);
+      }
+
       // IntentRouter: LLM-powered intent classification with conversation context
       const IntentRouter = require('./src/lib/agent/intent-router');
       intentRouter = ollamaProvider ? new IntentRouter({
@@ -1132,6 +1146,7 @@ async function initialize() {
         try {
           // Build chatProviders map: routerProviderId → chatProvider
           const chatProviders = new Map();
+          if (ollamaCredentialProvider) chatProviders.set('ollama-credential', ollamaCredentialProvider);
           if (ollamaProvider) chatProviders.set('ollama-local', ollamaProvider);
           chatProviders.set('anthropic-claude', claudeProvider);
           chatProviders.set('claude-sonnet', sonnetProvider);

@@ -36,6 +36,15 @@ class LegacyLLMRouter {
         endpoint: config.ollama.url || 'http://localhost:11434',
         model: config.ollama.model || 'qwen3:8b'
       };
+      // Credential-dedicated model (same endpoint, potentially heavier model)
+      const credModel = config.ollama.modelCredential || config.ollama.model || 'qwen3:8b';
+      if (credModel !== (config.ollama.model || 'qwen3:8b')) {
+        loadedConfig.providers['ollama-credential'] = {
+          adapter: 'ollama',
+          endpoint: config.ollama.url || 'http://localhost:11434',
+          model: credModel
+        };
+      }
     }
 
     // Create the new router

@@ -156,7 +156,8 @@ const CONFIG = {
   },
   ollama: {
     url: process.env.OLLAMA_URL || appConfig.ollama.url,
-    model: process.env.OLLAMA_MODEL || appConfig.ollama.model
+    model: process.env.OLLAMA_MODEL || appConfig.ollama.model,
+    modelCredential: process.env.OLLAMA_MODEL_CREDENTIAL || process.env.OLLAMA_MODEL || appConfig.ollama.modelCredential
   },
   deck: {
     boardId: parseInt(process.env.DECK_BOARD_ID) || appConfig.deck.boardId

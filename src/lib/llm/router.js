@@ -591,8 +591,10 @@ class LLMRouter {
       }
     }
 
-    // credentials always local-only regardless of preset
-    roster[JOBS.CREDENTIALS] = [...localIds];
+    // credentials: prefer credential-specific local provider, then all other local
+    const credLocalIds = localIds.filter(id => id.includes('-credential'));
+    const otherLocalIds = localIds.filter(id => !id.includes('-credential'));
+    roster[JOBS.CREDENTIALS] = [...credLocalIds, ...otherLocalIds];
 
     return roster;
   }
