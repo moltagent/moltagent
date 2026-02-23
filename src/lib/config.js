@@ -513,7 +513,7 @@ const config = {
   // Voice Pipeline (Whisper STT + call-aware routing)
   // -------------------------------------------------------------------------
   voice: {
-    whisperUrl: envStr('WHISPER_URL', 'http://138.201.246.236:8178'),
+    whisperUrl: envStr('WHISPER_URL', 'http://138.201.246.236:8014'),
     whisperTimeout: envInt('WHISPER_TIMEOUT', 60000),
     whisperModel: envStr('WHISPER_MODEL', 'small'),
     ffmpegPath: envStr('FFMPEG_PATH', 'ffmpeg'),

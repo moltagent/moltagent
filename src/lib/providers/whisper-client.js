@@ -18,7 +18,7 @@ class WhisperClient {
    * @param {string} [config.whisperModel] - Model name to request
    */
   constructor(config = {}) {
-    this.baseUrl = (config.whisperUrl || 'http://138.201.246.236:8178').replace(/\/+$/, '');
+    this.baseUrl = (config.whisperUrl || 'http://138.201.246.236:8014').replace(/\/+$/, '');
     this.timeout = config.whisperTimeout || 60000;
     this.model = config.whisperModel || 'small';
   }
