@@ -1666,6 +1666,11 @@ async function initialize() {
         }
       }
 
+      // Wire MessageProcessor for mode propagation from Cockpit
+      if (serverComponents && serverComponents.messageProcessor) {
+        heartbeatManager.messageProcessor = serverComponents.messageProcessor;
+      }
+
       // Wire NC Flow events into HeartbeatManager
       if (ncFlowActivityPoller) {
         ncFlowActivityPoller.on('event', (event) => heartbeatManager.enqueueExternalEvent(event));

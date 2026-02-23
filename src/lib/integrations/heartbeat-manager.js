@@ -14,6 +14,7 @@ const DeckClient = require('./deck-client');
 const DeckTaskProcessor = require('./deck-task-processor');
 const CalDAVClient = require('./caldav-client');
 const appConfig = require('../config');
+const { MODES, normalizeModeName } = require('./cockpit-modes');
 
 class HeartbeatManager {
   /**
@@ -138,6 +139,12 @@ class HeartbeatManager {
 
     // VoiceManager (optional, for mode-aware voice orchestration)
     this.voiceManager = config.voiceManager || null;
+
+    // MessageProcessor (optional, for mode propagation to OOO auto-responder)
+    this.messageProcessor = config.messageProcessor || null;
+
+    // Active Cockpit mode (defaults to Full Auto)
+    this._activeMode = MODES.FULL_AUTO;
 
     // Knowledge modules (optional, for agent memory)
     this.knowledgeLog = config.knowledgeLog || null;
@@ -380,11 +387,14 @@ class HeartbeatManager {
 
       // @Mention handling runs regardless of quiet hours — a user tapping
       // Molti on the shoulder shouldn't have to wait until morning.
-      try {
-        results.flow = await this._processFlowEvents();
-      } catch (err) {
-        console.warn('[Heartbeat] NC Flow processing error:', err.message);
-        results.errors.push({ component: 'flow', error: err.message });
+      // Mode-gated: skipped in Focus Mode and Out of Office.
+      if (!this._isModeGated('flow')) {
+        try {
+          results.flow = await this._processFlowEvents();
+        } catch (err) {
+          console.warn('[Heartbeat] NC Flow processing error:', err.message);
+          results.errors.push({ component: 'flow', error: err.message });
+        }
       }
 
       // Read cockpit working hours before the quiet hours gate so the
@@ -417,7 +427,7 @@ class HeartbeatManager {
       const level = this.settings.initiativeLevel;
 
       // Level >= 2: Deck processing
-      if (level >= 2 && this.settings.deckEnabled) {
+      if (level >= 2 && this.settings.deckEnabled && !this._isModeGated('deck')) {
         try {
           results.deck = await this._processDeck();
           this.state.lastDeckProcess = new Date();
@@ -446,7 +456,7 @@ class HeartbeatManager {
       }
 
       // Level >= 2: Calendar
-      if (level >= 2 && this.settings.caldavEnabled) {
+      if (level >= 2 && this.settings.caldavEnabled && !this._isModeGated('calendar')) {
         try {
           results.calendar = await this._checkCalendar();
           this.state.lastCalendarCheck = new Date();
@@ -457,7 +467,7 @@ class HeartbeatManager {
       }
 
       // Level >= 2: Email inbox check
-      if (level >= 2 && this.emailMonitor) {
+      if (level >= 2 && this.emailMonitor && !this._isModeGated('email')) {
         try {
           results.email = await this.emailMonitor.checkInbox();
           this.state.lastEmailCheck = new Date();
@@ -469,7 +479,7 @@ class HeartbeatManager {
       }
 
       // Level >= 2: RSVP tracking
-      if (level >= 2 && this.rsvpTracker && this.rsvpTracker.trackedCount > 0) {
+      if (level >= 2 && this.rsvpTracker && this.rsvpTracker.trackedCount > 0 && !this._isModeGated('rsvp')) {
         try {
           results.rsvp = await this.rsvpTracker.checkUpdates();
           this.state.lastRsvpCheck = new Date();
@@ -481,7 +491,7 @@ class HeartbeatManager {
       }
 
       // Level >= 3: Knowledge board
-      if (level >= 3 && this.knowledgeBoard) {
+      if (level >= 3 && this.knowledgeBoard && !this._isModeGated('knowledge')) {
         try {
           results.knowledge = await this._checkKnowledgeBoard();
           this.state.lastKnowledgeCheck = new Date();
@@ -492,7 +502,7 @@ class HeartbeatManager {
       }
 
       // Level >= 2: Workflow boards
-      if (level >= 2 && this.workflowEngine) {
+      if (level >= 2 && this.workflowEngine && !this._isModeGated('workflow')) {
         try {
           results.workflow = await this.workflowEngine.processAll();
         } catch (err) {
@@ -518,6 +528,19 @@ class HeartbeatManager {
       if (this.cockpitManager) {
         try {
           const cockpitConfig = await this.cockpitManager.readConfig();
+
+          // Propagate active mode from Cockpit
+          if (cockpitConfig?.mode) {
+            const newMode = normalizeModeName(cockpitConfig.mode.name);
+            if (newMode !== this._activeMode) {
+              console.log(`[Heartbeat] Mode changed: ${this._activeMode} -> ${newMode}`);
+              this._activeMode = newMode;
+            }
+            // Propagate to MessageProcessor
+            if (this.messageProcessor && this.messageProcessor.setMode) {
+              this.messageProcessor.setMode(newMode);
+            }
+          }
 
           // Propagate runtime settings from Cockpit
           if (cockpitConfig && cockpitConfig.system) {
@@ -709,7 +732,7 @@ class HeartbeatManager {
       }
 
       // Level >= 3: Meeting prep
-      if (level >= 3 && this.meetingPreparer) {
+      if (level >= 3 && this.meetingPreparer && !this._isModeGated('meetingPrep')) {
         try {
           results.meetingPrep = await this.meetingPreparer.checkAndPrep();
         } catch (err) {
@@ -724,9 +747,13 @@ class HeartbeatManager {
         ? this.state.consecutiveFailures + 1
         : 0;
 
+      // Include active mode in results
+      results.activeMode = this._activeMode;
+
       // Log heartbeat
       await this.auditLog('heartbeat_pulse', {
         durationMs: Date.now() - pulseStart,
+        activeMode: this._activeMode,
         deckTasksProcessed: results.deck?.processed || 0,
         reviewFeedbackProcessed: results.review?.processed || 0,
         assignmentsProcessed: results.assignments?.processed || 0,
@@ -755,7 +782,7 @@ class HeartbeatManager {
     }
 
     // Local Intelligence: Process deferred tasks when cloud is available
-    if (this.deferralQueue) {
+    if (this.deferralQueue && !this._isModeGated('deferral')) {
       try {
         const deferralResult = await this.deferralQueue.processNext(this.agentLoop, 2);
         if (deferralResult.processed > 0) {
@@ -1070,6 +1097,23 @@ class HeartbeatManager {
       summary: event.summary,
       minutesUntil
     });
+  }
+
+  /**
+   * Check whether the given subsystem should be skipped under the active mode.
+   *
+   * @param {string} subsystem - One of: deck, calendar, email, rsvp, workflow,
+   *   knowledge, meetingPrep, flow, deferral, infra, cockpit
+   * @returns {boolean} true if the subsystem should be skipped
+   * @private
+   */
+  _isModeGated(subsystem) {
+    const mode = this._activeMode;
+    if (mode === MODES.FULL_AUTO || mode === MODES.CREATIVE_SESSION) return false;
+    if (mode === MODES.FOCUS_MODE) return subsystem !== 'cockpit' && subsystem !== 'infra';
+    if (mode === MODES.MEETING_DAY) return !['cockpit', 'infra', 'calendar', 'rsvp', 'meetingPrep', 'flow'].includes(subsystem);
+    if (mode === MODES.OUT_OF_OFFICE) return subsystem !== 'cockpit' && subsystem !== 'infra';
+    return false;
   }
 
   /**

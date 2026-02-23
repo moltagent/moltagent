@@ -333,6 +333,113 @@ console.log('\n=== Heartbeat-Cockpit Integration Tests ===\n');
     assert.strictEqual(status.cockpitDailyDigest, '08:00');
   });
 
+  // ============================================================
+  // Cockpit Mode Gating Tests
+  // ============================================================
+
+  console.log('\n--- Cockpit Mode Gating Tests ---\n');
+
+  await asyncTest('TC-HB-MODE-001: pulse() reads mode from cockpitConfig and sets _activeMode', async () => {
+    const mockCockpit = createMockCockpitManager();
+    mockCockpit.readConfig = async () => ({
+      style: null,
+      persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
+      guardrails: [],
+      mode: { name: 'Focus Mode', description: 'Minimal interruptions.' },
+      system: { initiativeLevel: 2, workingHours: '08:00-18:00' }
+    });
+    mockCockpit.updateStatus = async () => {};
+
+    const config = createMockConfig({ cockpitManager: mockCockpit });
+    const hb = new HeartbeatManager(config);
+    stubHeartbeatMethods(hb);
+
+    await hb.pulse();
+
+    assert.strictEqual(hb._activeMode, 'focus-mode', 'Active mode should be set to focus-mode');
+  });
+
+  await asyncTest('TC-HB-MODE-002: Focus Mode skips Deck, email, workflow processing', async () => {
+    const config = createMockConfig({});
+    const hb = new HeartbeatManager(config);
+    hb._activeMode = 'focus-mode';
+
+    assert.strictEqual(hb._isModeGated('deck'), true, 'Deck should be gated in Focus Mode');
+    assert.strictEqual(hb._isModeGated('email'), true, 'Email should be gated in Focus Mode');
+    assert.strictEqual(hb._isModeGated('workflow'), true, 'Workflow should be gated in Focus Mode');
+    assert.strictEqual(hb._isModeGated('calendar'), true, 'Calendar should be gated in Focus Mode');
+    assert.strictEqual(hb._isModeGated('cockpit'), false, 'Cockpit should NOT be gated in Focus Mode');
+    assert.strictEqual(hb._isModeGated('infra'), false, 'Infra should NOT be gated in Focus Mode');
+  });
+
+  await asyncTest('TC-HB-MODE-003: Meeting Day runs calendar + meeting prep, skips Deck', async () => {
+    const config = createMockConfig({});
+    const hb = new HeartbeatManager(config);
+    hb._activeMode = 'meeting-day';
+
+    assert.strictEqual(hb._isModeGated('deck'), true, 'Deck should be gated in Meeting Day');
+    assert.strictEqual(hb._isModeGated('email'), true, 'Email should be gated in Meeting Day');
+    assert.strictEqual(hb._isModeGated('calendar'), false, 'Calendar should NOT be gated in Meeting Day');
+    assert.strictEqual(hb._isModeGated('meetingPrep'), false, 'Meeting prep should NOT be gated in Meeting Day');
+    assert.strictEqual(hb._isModeGated('rsvp'), false, 'RSVP should NOT be gated in Meeting Day');
+    assert.strictEqual(hb._isModeGated('flow'), false, 'Flow should NOT be gated in Meeting Day');
+    assert.strictEqual(hb._isModeGated('cockpit'), false, 'Cockpit should NOT be gated in Meeting Day');
+    assert.strictEqual(hb._isModeGated('infra'), false, 'Infra should NOT be gated in Meeting Day');
+  });
+
+  await asyncTest('TC-HB-MODE-004: Out of Office skips everything except cockpit + infra', async () => {
+    const config = createMockConfig({});
+    const hb = new HeartbeatManager(config);
+    hb._activeMode = 'out-of-office';
+
+    assert.strictEqual(hb._isModeGated('deck'), true, 'Deck should be gated in OOO');
+    assert.strictEqual(hb._isModeGated('email'), true, 'Email should be gated in OOO');
+    assert.strictEqual(hb._isModeGated('calendar'), true, 'Calendar should be gated in OOO');
+    assert.strictEqual(hb._isModeGated('workflow'), true, 'Workflow should be gated in OOO');
+    assert.strictEqual(hb._isModeGated('flow'), true, 'Flow should be gated in OOO');
+    assert.strictEqual(hb._isModeGated('deferral'), true, 'Deferral should be gated in OOO');
+    assert.strictEqual(hb._isModeGated('cockpit'), false, 'Cockpit should NOT be gated in OOO');
+    assert.strictEqual(hb._isModeGated('infra'), false, 'Infra should NOT be gated in OOO');
+  });
+
+  await asyncTest('TC-HB-MODE-005: Full Auto runs all subsystems (no gating)', async () => {
+    const config = createMockConfig({});
+    const hb = new HeartbeatManager(config);
+    hb._activeMode = 'full-auto';
+
+    const subsystems = ['deck', 'calendar', 'email', 'rsvp', 'workflow', 'knowledge', 'meetingPrep', 'flow', 'deferral', 'infra', 'cockpit'];
+    for (const sub of subsystems) {
+      assert.strictEqual(hb._isModeGated(sub), false, `${sub} should NOT be gated in Full Auto`);
+    }
+  });
+
+  await asyncTest('TC-HB-MODE-006: Mode change propagates to messageProcessor.setMode()', async () => {
+    let setModeArg = null;
+    const mockCockpit = createMockCockpitManager();
+    mockCockpit.readConfig = async () => ({
+      style: null,
+      persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
+      guardrails: [],
+      mode: { name: 'Out of Office', description: 'Away.' },
+      system: { initiativeLevel: 2, workingHours: '08:00-18:00' }
+    });
+    mockCockpit.updateStatus = async () => {};
+
+    const config = createMockConfig({ cockpitManager: mockCockpit });
+    const hb = new HeartbeatManager(config);
+    stubHeartbeatMethods(hb);
+
+    // Attach mock messageProcessor
+    hb.messageProcessor = {
+      setMode: (mode) => { setModeArg = mode; }
+    };
+
+    await hb.pulse();
+
+    assert.strictEqual(setModeArg, 'out-of-office', 'setMode should be called with out-of-office');
+    assert.strictEqual(hb._activeMode, 'out-of-office', '_activeMode should be set');
+  });
+
   summary();
   exitWithCode();
 })();

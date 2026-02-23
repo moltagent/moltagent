@@ -39,6 +39,7 @@
 'use strict';
 
 const { createErrorHandler } = require('../errors/error-handler');
+const { MODES } = require('../integrations/cockpit-modes');
 
 /** Domain intents that can be handled locally with focused tool subsets. */
 const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search']);
@@ -183,6 +184,19 @@ class MessageProcessor {
       serviceName: 'MessageProcessor',
       auditLog: this.auditLog
     });
+
+    /** @type {string|null} - Active Cockpit mode (propagated by HeartbeatManager) */
+    this.activeMode = null;
+  }
+
+  /**
+   * Set the active Cockpit mode.
+   * Called by HeartbeatManager when mode changes are detected.
+   *
+   * @param {string} modeName - One of the MODES values from cockpit-modes.js
+   */
+  setMode(modeName) {
+    this.activeMode = modeName;
   }
 
   // ---------------------------------------------------------------------------
@@ -203,6 +217,18 @@ class MessageProcessor {
     if (extracted.isBotMessage) {
       console.log(`[Message] Ignoring own message from: ${extracted.user}`);
       return { skipped: true };
+    }
+
+    // OOO auto-responder: reply with away notice, skip processing
+    if (this.activeMode === MODES.OUT_OF_OFFICE && !extracted.isBotMessage) {
+      const oooMessage = "I'm currently out of office. Your message has been noted and will be reviewed on my return.";
+      try {
+        await this.sendTalkReply(extracted.token, oooMessage, extracted.messageId);
+        await this.auditLog('ooo_auto_reply', { user: extracted.user, token: extracted.token });
+      } catch (err) {
+        // Swallow — best effort
+      }
+      return { response: oooMessage, skipped: false, reason: 'ooo_auto_reply' };
     }
 
     // Session 37: Call-aware — check if we should respond in this room

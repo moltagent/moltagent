@@ -1002,6 +1002,76 @@ asyncTest('TC-FILTER-002: Skip messages with actorType bots', async () => {
   assert.strictEqual(result.skipped, true);
 });
 
+// --- OOO Auto-Responder Tests ---
+console.log('\n--- OOO Auto-Responder Tests ---\n');
+
+asyncTest('TC-OOO-001: OOO mode sends auto-reply and returns early', async () => {
+  const sendTalkReply = createMockSendTalkReply();
+  const processor = createProcessor({
+    sendTalkReply,
+    agentLoop: {
+      process: async () => { throw new Error('AgentLoop should NOT be called in OOO mode'); }
+    }
+  });
+  processor.setMode('out-of-office');
+
+  const data = createActivityStreamsData('Can you help me?');
+  const result = await processor.process(data);
+
+  assert.strictEqual(result.reason, 'ooo_auto_reply', 'Should return ooo_auto_reply reason');
+  assert.ok(result.response.includes('out of office'), 'Response should mention out of office');
+  assert.strictEqual(result.skipped, false, 'Should not be marked as skipped');
+
+  const calls = sendTalkReply.getCalls();
+  assert.strictEqual(calls.length, 1, 'Should send exactly one reply');
+  assert.ok(calls[0].message.includes('out of office'), 'Reply should mention out of office');
+});
+
+asyncTest('TC-OOO-002: OOO mode skips agent loop processing', async () => {
+  let agentLoopCalled = false;
+  const processor = createProcessor({
+    agentLoop: {
+      process: async () => {
+        agentLoopCalled = true;
+        return 'should not happen';
+      }
+    }
+  });
+  processor.setMode('out-of-office');
+
+  const data = createActivityStreamsData('Hello');
+  await processor.process(data);
+
+  assert.strictEqual(agentLoopCalled, false, 'AgentLoop should NOT be called in OOO mode');
+});
+
+asyncTest('TC-OOO-003: Non-OOO modes process normally', async () => {
+  const processor = createProcessor({
+    agentLoop: {
+      process: async () => 'Normal response'
+    }
+  });
+  processor.setMode('full-auto');
+
+  const data = createActivityStreamsData('Hello');
+  const result = await processor.process(data);
+
+  assert.ok(result.response.includes('Normal response'), 'Should process normally in full-auto');
+  assert.strictEqual(result.reason, undefined, 'Should not have ooo reason');
+});
+
+asyncTest('TC-OOO-004: setMode() stores the active mode', async () => {
+  const processor = createProcessor();
+
+  assert.strictEqual(processor.activeMode, null, 'Should start as null');
+
+  processor.setMode('focus-mode');
+  assert.strictEqual(processor.activeMode, 'focus-mode', 'Should store focus-mode');
+
+  processor.setMode('out-of-office');
+  assert.strictEqual(processor.activeMode, 'out-of-office', 'Should store out-of-office');
+});
+
 // Summary
 setTimeout(() => {
   summary();

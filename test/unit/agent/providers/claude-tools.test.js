@@ -27,7 +27,7 @@ test('constructor sets defaults', () => {
   }, silentLogger);
 
   assert.strictEqual(provider.model, 'claude-opus-4-6');
-  assert.strictEqual(provider.maxTokens, 1024);
+  assert.strictEqual(provider.maxTokens, 4096);
   assert.strictEqual(provider.timeout, 30000);
 });
 
