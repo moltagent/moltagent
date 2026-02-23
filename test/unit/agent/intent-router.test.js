@@ -20,25 +20,68 @@ function createRouter(providerResponse) {
   });
 }
 
-// -- Test 1: "hi" → greeting (regex fast-path, no LLM) --
-asyncTest('classify() returns greeting for "hi" (regex fast-path)', async () => {
+// -- Test 1: "hi" → greeting via LLM (no regex fast-path) --
+asyncTest('classify() sends "hi" to LLM for classification', async () => {
   let llmCalled = false;
   const router = new IntentRouter({
-    provider: { chat: async () => { llmCalled = true; return { content: '{}' }; } },
+    provider: { chat: async () => { llmCalled = true; return { content: '{"intent":"greeting"}' }; } },
     config: { classifyTimeout: 5000 }
   });
   const result = await router.classify('hi');
   assert.strictEqual(result.intent, 'greeting');
-  assert.strictEqual(result.confidence, 1);
-  assert.strictEqual(llmCalled, false, 'LLM should NOT be called for greeting');
+  assert.strictEqual(llmCalled, true, 'LLM SHOULD be called — no regex fast-path');
 });
 
-// -- Test 2: "good morning" → greeting (regex fast-path) --
-asyncTest('classify() returns greeting for "good morning" (regex fast-path)', async () => {
-  const router = createRouter('should not matter');
+// -- Test 2: "good morning" → greeting via LLM --
+asyncTest('classify() sends "good morning" to LLM for classification', async () => {
+  const router = createRouter('{"intent":"greeting"}');
   const result = await router.classify('good morning');
   assert.strictEqual(result.intent, 'greeting');
   assert.strictEqual(result.needsHistory, false);
+});
+
+// -- Regression: "Hey Molti, what mode are you in?" must NOT be greeting --
+asyncTest('classify() sends "Hey Molti, what mode are you in?" to LLM (no regex intercept)', async () => {
+  const router = createRouter('{"intent":"complex"}');
+  const result = await router.classify('Hey Molti, what mode are you in?');
+  assert.strictEqual(result.intent, 'complex');
+  assert.notStrictEqual(result.intent, 'greeting', 'Must NOT be classified as greeting');
+});
+
+// -- Regression: "Hi Molti, is whisper running?" must NOT be greeting --
+asyncTest('classify() sends "Hi Molti, is whisper running?" to LLM (no regex intercept)', async () => {
+  const router = createRouter('{"intent":"complex"}');
+  const result = await router.classify('Hi Molti, is whisper running?');
+  assert.strictEqual(result.intent, 'complex');
+  assert.notStrictEqual(result.intent, 'greeting', 'Must NOT be classified as greeting');
+});
+
+// -- Regression: "Hey Molti, is whisper running now?" must NOT be greeting --
+asyncTest('classify() sends "Hey Molti, is whisper running now?" to LLM (no regex intercept)', async () => {
+  const router = createRouter('{"intent":"complex"}');
+  const result = await router.classify('Hey Molti, is whisper running now, or still not reachable?');
+  assert.strictEqual(result.intent, 'complex');
+  assert.notStrictEqual(result.intent, 'greeting', 'Must NOT be classified as greeting');
+});
+
+// -- Boundary: bare greeting words still reach LLM --
+asyncTest('classify() routes bare "Hey" to LLM, not regex', async () => {
+  let llmCalled = false;
+  const router = new IntentRouter({
+    provider: { chat: async () => { llmCalled = true; return { content: '{"intent":"greeting"}' }; } },
+    config: { classifyTimeout: 5000 }
+  });
+  const result = await router.classify('Hey');
+  assert.strictEqual(llmCalled, true, 'LLM should be called even for bare greetings');
+  assert.strictEqual(result.intent, 'greeting');
+});
+
+// -- Boundary: "Good morning, can you check my calendar?" → LLM decides --
+asyncTest('classify() routes "Good morning, can you check my calendar?" to LLM', async () => {
+  const router = createRouter('{"intent":"calendar"}');
+  const result = await router.classify('Good morning, can you check my calendar?');
+  assert.strictEqual(result.intent, 'domain');
+  assert.strictEqual(result.domain, 'calendar');
 });
 
 // -- Test 3: LLM returns {"intent":"deck"} → domain:deck --

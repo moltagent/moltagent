@@ -3,16 +3,15 @@
  *
  * Replaces regex-based classification in MicroPipeline's _classify() with a
  * single LLM call that receives the last 2 exchanges of conversation context.
- * Greetings use a regex fast-path (no LLM). On any error/timeout the router
- * falls back to a safe "complex" classification that routes to cloud AgentLoop.
+ * All intents (including greetings) go through the LLM for accurate
+ * classification. On any error/timeout the router falls back to a safe
+ * "complex" classification that routes to cloud AgentLoop.
  *
  * @module agent/intent-router
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 'use strict';
-
-const GREETING_PATTERNS = /^(hi|hello|hey|good\s*(morning|afternoon|evening)|howdy|yo|sup|what'?s\s*up)\b/i;
 
 const VALID_INTENTS = new Set([
   'greeting', 'chitchat', 'confirmation', 'selection',
@@ -44,11 +43,6 @@ class IntentRouter {
    * @returns {Promise<{intent: string, domain: string|null, needsHistory: boolean, confidence: number}>}
    */
   async classify(message, recentContext = []) {
-    // Fast-path: greeting detection (no LLM needed)
-    if (this._isGreeting(message)) {
-      return { intent: 'greeting', domain: null, needsHistory: false, confidence: 1 };
-    }
-
     try {
       const prompt = this._buildPrompt(message, recentContext);
 
@@ -153,15 +147,6 @@ Reply ONLY with: {"intent":"<intent>"}`;
     }
   }
 
-  /**
-   * Regex fast-path for greeting detection.
-   * @param {string} message
-   * @returns {boolean}
-   * @private
-   */
-  _isGreeting(message) {
-    return GREETING_PATTERNS.test(message.trim());
-  }
 }
 
 module.exports = IntentRouter;

@@ -561,16 +561,16 @@ test('TC-SMIX-003: _isSmartMixMode() true when RouterChatBridge with >1 provider
   assert.strictEqual(processor._isSmartMixMode(), true);
 });
 
-asyncTest('TC-SMIX-004: Greeting routed to MicroPipeline via IntentRouter, AgentLoop not called', async () => {
+asyncTest('TC-SMIX-004: Greeting routed to MicroPipeline via IntentRouter LLM, AgentLoop not called', async () => {
   let agentLoopCalled = false;
 
   const processor = createProcessor({
     intentRouter: {
-      classify: async () => ({ intent: 'greeting', domain: null, needsHistory: false, confidence: 1 })
+      classify: async () => ({ intent: 'greeting', domain: null, needsHistory: false, confidence: 0.9 })
     },
     microPipeline: {
-      _classifyFallback: async () => ({ intent: 'greeting' }),
-      process: async () => 'Hello!'
+      _classifyFallback: async () => ({ intent: 'chitchat' }),
+      process: async () => 'Hi there! How can I help?'
     },
     agentLoop: {
       llmProvider: {
@@ -588,7 +588,7 @@ asyncTest('TC-SMIX-004: Greeting routed to MicroPipeline via IntentRouter, Agent
   const data = createActivityStreamsData('Hi there');
   const result = await processor.process(data);
 
-  assert.ok(result.response.includes('Hello!'), 'Response should contain MicroPipeline output');
+  assert.ok(result.response.includes('Hi there! How can I help?'), 'Response should contain MicroPipeline LLM output');
   assert.strictEqual(agentLoopCalled, false, 'AgentLoop.process should NOT be called');
 });
 

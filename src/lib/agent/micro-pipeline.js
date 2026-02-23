@@ -13,10 +13,7 @@
 
 'use strict';
 
-const GREETING_PATTERNS = /^(hi|hello|hey|good\s*(morning|afternoon|evening)|howdy|yo|sup|what'?s\s*up)\b/i;
-
 const INTENTS = Object.freeze({
-  GREETING: 'greeting',
   QUESTION: 'question',
   TASK: 'task',
   COMMAND: 'command',
@@ -52,12 +49,6 @@ const DOMAIN_PROMPTS = Object.freeze({
   file: `File assistant. Use tools for file operations. Be concise. Confirm actions.`,
   search: `Search assistant. Use tools to find information. Summarize results concisely.`
 });
-
-const GREETING_TEMPLATES = [
-  'Hello! How can I help you today?',
-  'Hi there! What can I do for you?',
-  'Hey! Ready to help. What do you need?'
-];
 
 class MicroPipeline {
   /**
@@ -112,8 +103,6 @@ class MicroPipeline {
 
       // Stage 2: Route to handler
       switch (intent) {
-        case INTENTS.GREETING:
-          return this._handleGreeting(context);
         case INTENTS.QUESTION:
           return await this._handleQuestion(message, classification, context);
         case INTENTS.TASK:
@@ -163,11 +152,6 @@ class MicroPipeline {
    * @returns {Promise<Object>} { intent, topics?, names? }
    */
   async _classifyFallback(message) {
-    // Fast-path: greeting detection via regex (no LLM needed)
-    if (GREETING_PATTERNS.test(message.trim())) {
-      return { intent: INTENTS.GREETING };
-    }
-
     // Fast-path: short messages (< 5 words) are likely chitchat
     const wordCount = message.trim().split(/\s+/).length;
     if (wordCount <= 2) {
@@ -285,17 +269,6 @@ Category:`;
   // ---------------------------------------------------------------------------
   // Stage 2: Intent Handlers
   // ---------------------------------------------------------------------------
-
-  /**
-   * Handle greetings — no LLM call needed.
-   * @param {Object} context
-   * @returns {string}
-   */
-  _handleGreeting(context) {
-    const name = context.userName ? `, ${context.userName}` : '';
-    const idx = Math.floor(Math.random() * GREETING_TEMPLATES.length);
-    return GREETING_TEMPLATES[idx].replace('!', `${name}!`);
-  }
 
   /**
    * Handle questions — search memory, then synthesize.

@@ -36,20 +36,25 @@ function createMockDeferralQueue() {
   };
 }
 
-// -- Test 1: _classifyFallback() returns greeting for hello --
-asyncTest('_classifyFallback() returns greeting intent for hello messages', async () => {
+// -- Test 1: _classifyFallback() routes "Hello!" to chitchat (single word → short msg heuristic) --
+asyncTest('_classifyFallback() routes single-word "Hello!" to chitchat', async () => {
   const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
   const result = await pipeline._classifyFallback('Hello!');
-  assert.strictEqual(result.intent, 'greeting');
+  assert.strictEqual(result.intent, 'chitchat', 'Single word should be chitchat (no greeting fast-path)');
 });
 
-// -- Test 2: _handleGreeting() returns template without LLM call --
-test('_handleGreeting() returns template without LLM call', () => {
-  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
-  const result = pipeline._handleGreeting({ userName: 'Alice' });
-  assert.ok(typeof result === 'string');
-  assert.ok(result.length > 0);
-  assert.ok(result.includes('Alice'), `Expected greeting to contain userName, got: ${result}`);
+// -- Test 2: _classifyFallback() routes "Hey Molti, what mode are you in?" to LLM (regression) --
+asyncTest('_classifyFallback() sends "Hey Molti, what mode..." to LLM, not greeting regex', async () => {
+  let llmCalled = false;
+  const router = {
+    route: async () => { llmCalled = true; return { result: 'chitchat', provider: 'mock', tokens: 5 }; },
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
+  const result = await pipeline._classifyFallback('Hey Molti, what mode are you in?');
+  assert.strictEqual(llmCalled, true, 'LLM should be called for messages starting with greeting words');
+  assert.notStrictEqual(result.intent, 'greeting', 'Must NOT be classified as greeting');
 });
 
 // -- Test 3: _handleQuestion() searches memory then synthesizes --
@@ -159,14 +164,14 @@ test('_stitchAnswers() produces readable output', () => {
   assert.ok(result.includes('Part 2'));
 });
 
-// -- Test 10: process() routes greeting intent to template handler --
-asyncTest('process() routes greeting intent to template handler', async () => {
-  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+// -- Test 10: process() routes "Hello there!" to chat handler (no greeting template) --
+asyncTest('process() routes "Hello there!" to chat handler, not greeting template', async () => {
+  const router = createMockRouter({ result: 'Hi Dave, how can I help?', provider: 'mock', tokens: 20 });
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
   const result = await pipeline.process('Hello there!', { userName: 'Dave' });
 
   assert.ok(typeof result === 'string');
-  assert.ok(result.includes('Dave'));
-  assert.strictEqual(pipeline.getStats().byIntent.greeting, 1);
+  assert.strictEqual(pipeline.getStats().byIntent.greeting, undefined, 'Should NOT have greeting intent');
 });
 
 // -- Test 11: process() routes question intent to search+synthesize --
@@ -256,12 +261,14 @@ asyncTest('_classifyFallback() routes short numeric selections to chitchat (Inte
 // -- Test 17: process() uses pre-classified intent from context (skips _classifyFallback) --
 asyncTest('process() uses context.intent and skips _classifyFallback', async () => {
   let classifyCalled = false;
-  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  const router = createMockRouter({ result: 'LLM chat response', provider: 'mock', tokens: 20 });
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
   const origClassify = pipeline._classifyFallback.bind(pipeline);
   pipeline._classifyFallback = async (msg) => { classifyCalled = true; return origClassify(msg); };
 
-  const result = await pipeline.process('Hello there!', { userName: 'Eve', intent: 'greeting' });
-  assert.ok(result.includes('Eve'), 'Should handle greeting with userName');
+  // Pre-classified as chitchat (greeting intent no longer exists in MicroPipeline)
+  const result = await pipeline.process('Hello there!', { userName: 'Eve', intent: 'chitchat' });
+  assert.ok(typeof result === 'string');
   assert.strictEqual(classifyCalled, false, '_classifyFallback should NOT be called when context.intent is provided');
 });
 
