@@ -921,10 +921,13 @@ class CockpitManager {
       parts.push('');
     }
 
-    // Current Mode
+    // Current Mode — prominent block so the model can't miss it
     if (c.mode) {
-      parts.push(`### Current Mode: ${c.mode.name}`);
-      parts.push(c.mode.description);
+      parts.push('=== YOUR CURRENT OPERATING MODE ===');
+      parts.push(`Mode: ${c.mode.name}`);
+      parts.push(`Behavior: ${c.mode.description}`);
+      parts.push('When asked about your mode, state this mode name explicitly.');
+      parts.push('===============================');
       parts.push('');
     }
 

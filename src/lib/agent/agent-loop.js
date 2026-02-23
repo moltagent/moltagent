@@ -602,7 +602,21 @@ class AgentLoop {
       }
     }
 
-    let prompt = stylePrefix + personaPrefix + dateHeader + (this.soul || '');
+    // Cockpit overlay: inject active configuration EARLY for positional authority.
+    // Mode and guardrails are operational state — the model needs them front-of-mind.
+    let cockpitBlock = '';
+    if (this.cockpitManager) {
+      try {
+        const cockpitOverlay = this.cockpitManager.buildSystemPromptOverlay();
+        if (cockpitOverlay) {
+          cockpitBlock = cockpitOverlay + '\n\n';
+        }
+      } catch (err) {
+        this.logger.warn('[AgentLoop] Cockpit overlay failed:', err.message);
+      }
+    }
+
+    let prompt = stylePrefix + personaPrefix + cockpitBlock + dateHeader + (this.soul || '');
 
     if (memoryContext) {
       prompt += `\n\n${memoryContext}`;
@@ -614,18 +628,6 @@ class AgentLoop {
 
     if (briefingContext) {
       prompt += `\n\n${briefingContext}`;
-    }
-
-    // Cockpit overlay: inject active configuration from Deck control plane
-    if (this.cockpitManager) {
-      try {
-        const cockpitOverlay = this.cockpitManager.buildSystemPromptOverlay();
-        if (cockpitOverlay) {
-          prompt += `\n\n${cockpitOverlay}`;
-        }
-      } catch (err) {
-        this.logger.warn('[AgentLoop] Cockpit overlay failed:', err.message);
-      }
     }
 
     // Voice input context: help LLM interpret transcribed speech
