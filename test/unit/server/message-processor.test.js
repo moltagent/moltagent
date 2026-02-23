@@ -592,6 +592,39 @@ asyncTest('TC-SMIX-004: Greeting routed to MicroPipeline via IntentRouter LLM, A
   assert.strictEqual(agentLoopCalled, false, 'AgentLoop.process should NOT be called');
 });
 
+asyncTest('TC-SMIX-004b: Substantive greeting (>4 words) routed to cloud for full system prompt', async () => {
+  let agentLoopCalled = false;
+  let microPipelineCalled = false;
+
+  const processor = createProcessor({
+    intentRouter: {
+      classify: async () => ({ intent: 'greeting', domain: null, needsHistory: false, confidence: 0.9 })
+    },
+    microPipeline: {
+      _classifyFallback: async () => ({ intent: 'chitchat' }),
+      process: async () => { microPipelineCalled = true; return 'Local greeting'; }
+    },
+    agentLoop: {
+      llmProvider: {
+        resetConversation: function () {},
+        skipLocalForConversation: function () {},
+        chatProviders: new Map([['local', {}], ['cloud', {}]])
+      },
+      process: async () => {
+        agentLoopCalled = true;
+        return 'I am currently in Focus Mode.';
+      }
+    }
+  });
+
+  const data = createActivityStreamsData('Hey Molti, what mode are you in?');
+  const result = await processor.process(data);
+
+  assert.strictEqual(agentLoopCalled, true, 'AgentLoop SHOULD be called for substantive greeting (>4 words)');
+  assert.strictEqual(microPipelineCalled, false, 'MicroPipeline should NOT be called');
+  assert.ok(result.response.includes('Focus Mode'), 'Response should come from AgentLoop with full system prompt');
+});
+
 asyncTest('TC-SMIX-005: Complex intent routed to AgentLoop with skipLocal via IntentRouter', async () => {
   let skipLocalCalled = false;
 

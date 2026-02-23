@@ -928,9 +928,16 @@ class MessageProcessor {
 
       const { intent, domain } = classification;
 
-      // Greeting/chitchat → local, no tools
+      // Greeting/chitchat → local for short messages, cloud for substantive ones.
+      // Messages like "Hey Molti, what mode are you in?" get misclassified as
+      // greeting but need the full system prompt (with cockpit overlay) to answer.
       if (intent === 'greeting' || intent === 'chitchat') {
-        return { useLocal: true, useDomainTools: false, intent };
+        const wordCount = message.trim().split(/\s+/).length;
+        if (wordCount <= 4) {
+          return { useLocal: true, useDomainTools: false, intent };
+        }
+        // Substantive message misclassified as greeting → send to cloud
+        return { useLocal: false, useDomainTools: false, intent };
       }
       // Confirmation/selection → cloud (needs full history)
       if (intent === 'confirmation' || intent === 'selection') {
