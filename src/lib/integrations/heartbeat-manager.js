@@ -397,13 +397,24 @@ class HeartbeatManager {
         }
       }
 
-      // Read cockpit working hours before the quiet hours gate so the
-      // user's configured schedule is authoritative from the first pulse.
+      // Read cockpit working hours + mode before the quiet hours gate so the
+      // user's configured schedule and mode are authoritative from the first pulse.
       if (this.cockpitManager && !this._cockpitWorkingHours) {
         try {
           const cockpitConfig = await this.cockpitManager.readConfig();
           if (cockpitConfig?.system?.workingHours) {
             this._cockpitWorkingHours = cockpitConfig.system.workingHours;
+          }
+          // Early mode extraction so gating is active from the first pulse
+          if (cockpitConfig?.mode) {
+            const earlyMode = normalizeModeName(cockpitConfig.mode.name);
+            if (earlyMode !== this._activeMode) {
+              console.log(`[Heartbeat] Mode changed: ${this._activeMode} -> ${earlyMode}`);
+              this._activeMode = earlyMode;
+            }
+            if (this.messageProcessor && this.messageProcessor.setMode) {
+              this.messageProcessor.setMode(earlyMode);
+            }
           }
         } catch {
           // Non-fatal — quiet hours fallback still works
