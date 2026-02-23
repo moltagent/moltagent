@@ -77,7 +77,7 @@ class VoiceManager {
    * Process a voice message: download, convert, transcribe.
    *
    * @param {Object} message - NC Talk message object (raw)
-   * @returns {Promise<{transcript: string, duration: number}|null>}
+   * @returns {Promise<{transcript: string, confidence: number|null, duration: number}|null>}
    *   Returns null if mode is off, transcription fails, or transcript is empty.
    */
   async processVoiceMessage(message) {
@@ -121,23 +121,32 @@ class VoiceManager {
       }
 
       // 3. Transcribe via SpeachesClient
-      let transcript;
+      let transcriptText;
+      let confidence = null;
       try {
         const language = this.config.language || undefined;
-        transcript = await this.speachesClient.transcribe(wavBuffer, { language });
+        const sttResult = await this.speachesClient.transcribe(wavBuffer, { language });
+        // SpeachesClient returns { text, confidence }
+        if (typeof sttResult === 'string') {
+          transcriptText = sttResult;
+        } else {
+          transcriptText = sttResult.text || '';
+          confidence = sttResult.confidence ?? null;
+        }
       } catch (err) {
         this.logger.warn(`[VoiceManager] Transcription failed: ${err.message}`);
         return null;
       }
 
-      if (!transcript || transcript.trim().length === 0) {
+      if (!transcriptText || transcriptText.trim().length === 0) {
         return null;
       }
 
       const duration = Date.now() - startTime;
-      this.logger.info(`[VoiceManager] Transcribed (${duration}ms): "${transcript.substring(0, 80)}..."`);
+      const confStr = confidence != null ? ` (confidence: ${Math.round(confidence * 100)}%)` : '';
+      this.logger.info(`[VoiceManager] Transcribed${confStr} (${duration}ms): "${transcriptText.substring(0, 80)}..."`);
 
-      return { transcript: transcript.trim(), duration };
+      return { transcript: transcriptText.trim(), confidence, duration };
     } catch (err) {
       this.logger.warn(`[VoiceManager] processVoiceMessage error: ${err.message}`);
       return null;

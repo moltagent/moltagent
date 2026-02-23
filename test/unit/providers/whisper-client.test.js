@@ -69,7 +69,8 @@ asyncTest('TC-TRANSCRIBE-001: Sends multipart POST with correct structure', asyn
     assert.strictEqual(capturedOptions.method, 'POST');
     assert.ok(capturedOptions.body instanceof FormData);
     assert.ok(capturedOptions.signal, 'Should have abort signal');
-    assert.strictEqual(result, 'Hello world');
+    assert.strictEqual(result.text, 'Hello world');
+    assert.strictEqual(result.confidence, null, 'No segments means null confidence');
   } finally {
     global.fetch = originalFetch;
   }
@@ -86,7 +87,7 @@ asyncTest('TC-TRANSCRIBE-002: Returns trimmed text', async () => {
   try {
     const client = new WhisperClient({ whisperUrl: 'http://test:8178' });
     const result = await client.transcribe(Buffer.from('fake audio'));
-    assert.strictEqual(result, 'Hello world');
+    assert.strictEqual(result.text, 'Hello world');
   } finally {
     global.fetch = originalFetch;
   }
@@ -103,7 +104,8 @@ asyncTest('TC-TRANSCRIBE-003: Returns empty string when text is missing', async 
   try {
     const client = new WhisperClient({ whisperUrl: 'http://test:8178' });
     const result = await client.transcribe(Buffer.from('fake audio'));
-    assert.strictEqual(result, '');
+    assert.strictEqual(result.text, '');
+    assert.strictEqual(result.confidence, null);
   } finally {
     global.fetch = originalFetch;
   }

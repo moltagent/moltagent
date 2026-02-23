@@ -375,7 +375,7 @@ test('TC-OBSERVE-002: _silentlyObserve caps at 200 messages', () => {
 // --- process() Voice Integration Tests (Session 37) ---
 console.log('\n--- process() Voice Integration (Session 37) ---\n');
 
-asyncTest('TC-PROC-001: process() transcribes voice message and routes to agent', async () => {
+asyncTest('TC-PROC-001: process() transcribes voice message with provenance tag and routes to agent', async () => {
   let transcribedText = null;
 
   const processor = createProcessor({
@@ -389,7 +389,7 @@ asyncTest('TC-PROC-001: process() transcribes voice message and routes to agent'
       readFileBuffer: async () => Buffer.from('audio data')
     },
     whisperClient: {
-      transcribe: async () => 'Hello from voice'
+      transcribe: async () => ({ text: 'Hello from voice', confidence: null })
     },
     audioConverter: {
       toWav16kMono: async (buf) => buf
@@ -411,7 +411,7 @@ asyncTest('TC-PROC-001: process() transcribes voice message and routes to agent'
 
   const result = await processor.process(data);
   assert.ok(result.response, 'Should have a response');
-  assert.strictEqual(transcribedText, 'Hello from voice', 'Agent should receive transcript');
+  assert.strictEqual(transcribedText, '[Voice transcription]: "Hello from voice"', 'Agent should receive provenance-tagged transcript');
 });
 
 asyncTest('TC-PROC-002: process() adds transcript indicator to response', async () => {
@@ -423,7 +423,7 @@ asyncTest('TC-PROC-002: process() adds transcript indicator to response', async 
       readFileBuffer: async () => Buffer.from('audio')
     },
     whisperClient: {
-      transcribe: async () => 'Please help me with this'
+      transcribe: async () => ({ text: 'Please help me with this', confidence: null })
     },
     audioConverter: {
       toWav16kMono: async (buf) => buf
@@ -458,7 +458,7 @@ asyncTest('TC-PROC-003: process() handles transcription failure gracefully', asy
       readFileBuffer: async () => { throw new Error('File not found'); }
     },
     whisperClient: {
-      transcribe: async () => 'should not reach'
+      transcribe: async () => ({ text: 'should not reach', confidence: null })
     }
   });
 
@@ -759,6 +759,195 @@ asyncTest('TC-SMIX-007: All-local mode still uses existing MicroPipeline path (r
   const result = await processor.process(data);
 
   assert.ok(result.response.includes('Local pipeline response'), 'Response should come from MicroPipeline in all-local mode');
+});
+
+// --- Voice Provenance Tagging Tests ---
+console.log('\n--- Voice Provenance Tagging ---\n');
+
+test('TC-PROV-001: _tagVoiceTranscription tags voice-only (no confidence)', () => {
+  const processor = createProcessor();
+  const result = processor._tagVoiceTranscription('hello world', null, null);
+  assert.strictEqual(result, '[Voice transcription]: "hello world"');
+});
+
+test('TC-PROV-002: _tagVoiceTranscription includes confidence when available', () => {
+  const processor = createProcessor();
+  const result = processor._tagVoiceTranscription('hello world', 0.87, null);
+  assert.strictEqual(result, '[Voice transcription, confidence: 87%]: "hello world"');
+});
+
+test('TC-PROV-003: _tagVoiceTranscription preserves typed text alongside voice', () => {
+  const processor = createProcessor();
+  const result = processor._tagVoiceTranscription('check this recording', null, 'Look at this');
+  assert.strictEqual(result, 'Look at this\n[Voice transcription]: "check this recording"');
+});
+
+test('TC-PROV-004: _tagVoiceTranscription with typed text AND confidence', () => {
+  const processor = createProcessor();
+  const result = processor._tagVoiceTranscription('urgent task', 0.92, 'Please handle:');
+  assert.strictEqual(result, 'Please handle:\n[Voice transcription, confidence: 92%]: "urgent task"');
+});
+
+test('TC-PROV-005: _extractMessage detects voice with typed text alongside audio', () => {
+  const processor = createProcessor();
+  const data = {
+    object: {
+      content: 'Check this out',
+      id: 'msg-1',
+      message: {
+        messageType: 'voice-message',
+        messageParameters: { file: { path: '/voice.ogg', mimetype: 'audio/ogg' } }
+      }
+    },
+    actor: { id: 'users/alice', type: 'users' },
+    target: { id: 'room-abc' }
+  };
+
+  const extracted = processor._extractMessage(data);
+  assert.strictEqual(extracted._isVoice, true, 'Should detect voice even with typed text');
+  assert.strictEqual(extracted._typedContent, 'Check this out', 'Should preserve typed content');
+  assert.strictEqual(extracted.content, 'Check this out', 'Content should be the typed text');
+});
+
+test('TC-PROV-006: _extractMessage sets _typedContent null for voice-only', () => {
+  const processor = createProcessor();
+  const data = {
+    object: {
+      content: '{object}',
+      id: 'msg-1',
+      message: {
+        messageType: 'voice-message',
+        messageParameters: { file: { path: '/voice.ogg', mimetype: 'audio/ogg' } }
+      }
+    },
+    actor: { id: 'users/alice', type: 'users' },
+    target: { id: 'room-abc' }
+  };
+
+  const extracted = processor._extractMessage(data);
+  assert.strictEqual(extracted._isVoice, true);
+  assert.strictEqual(extracted._typedContent, null, 'Voice-only should have null typedContent');
+});
+
+test('TC-PROV-007: Typed-only message has no voice tags', () => {
+  const processor = createProcessor();
+  const data = {
+    object: {
+      content: 'Just a normal text message',
+      id: 'msg-1',
+      message: { messageParameters: {} }
+    },
+    actor: { id: 'users/alice', type: 'users' },
+    target: { id: 'room-abc' }
+  };
+
+  const extracted = processor._extractMessage(data);
+  assert.strictEqual(extracted._isVoice, false, 'Text-only should not be voice');
+  assert.strictEqual(extracted._typedContent, null, 'Text-only should have null typedContent');
+  assert.strictEqual(extracted.content, 'Just a normal text message', 'Content unchanged');
+});
+
+asyncTest('TC-PROV-008: process() voice-only message tagged in agent context', async () => {
+  let agentInput = null;
+
+  const processor = createProcessor({
+    agentLoop: {
+      process: async (content) => {
+        agentInput = content;
+        return 'Got it';
+      }
+    },
+    voiceManager: {
+      mode: 'listen',
+      processVoiceMessage: async () => ({ transcript: 'remind me tomorrow', confidence: 0.85, duration: 1200 })
+    }
+  });
+
+  const data = {
+    object: {
+      content: '{object}',
+      id: 'msg-1',
+      message: {
+        messageType: 'voice-message',
+        messageParameters: { file: { path: '/voice.ogg', mimetype: 'audio/ogg' } }
+      }
+    },
+    actor: { id: 'users/alice', type: 'users' },
+    target: { id: 'room-abc' }
+  };
+
+  await processor.process(data);
+  assert.strictEqual(agentInput, '[Voice transcription, confidence: 85%]: "remind me tomorrow"',
+    'Agent should receive provenance-tagged transcription with confidence');
+});
+
+asyncTest('TC-PROV-009: process() voice + typed text both present, only transcription tagged', async () => {
+  let agentInput = null;
+
+  const processor = createProcessor({
+    agentLoop: {
+      process: async (content) => {
+        agentInput = content;
+        return 'Got it';
+      }
+    },
+    voiceManager: {
+      mode: 'listen',
+      processVoiceMessage: async () => ({ transcript: 'more details here', confidence: null, duration: 800 })
+    }
+  });
+
+  const data = {
+    object: {
+      content: 'Check this recording',
+      id: 'msg-1',
+      message: {
+        messageType: 'voice-message',
+        messageParameters: { file: { path: '/voice.ogg', mimetype: 'audio/ogg' } }
+      }
+    },
+    actor: { id: 'users/alice', type: 'users' },
+    target: { id: 'room-abc' }
+  };
+
+  await processor.process(data);
+  assert.strictEqual(agentInput, 'Check this recording\n[Voice transcription]: "more details here"',
+    'Typed text should be present and untagged, transcription should be tagged');
+});
+
+asyncTest('TC-PROV-010: process() voice transcription without confidence omits confidence from tag', async () => {
+  let agentInput = null;
+
+  const processor = createProcessor({
+    agentLoop: {
+      process: async (content) => {
+        agentInput = content;
+        return 'Done';
+      }
+    },
+    voiceManager: {
+      mode: 'listen',
+      processVoiceMessage: async () => ({ transcript: 'hello there', confidence: null, duration: 500 })
+    }
+  });
+
+  const data = {
+    object: {
+      content: '{object}',
+      id: 'msg-1',
+      message: {
+        messageType: 'voice-message',
+        messageParameters: { file: { path: '/voice.ogg', mimetype: 'audio/ogg' } }
+      }
+    },
+    actor: { id: 'users/alice', type: 'users' },
+    target: { id: 'room-abc' }
+  };
+
+  await processor.process(data);
+  assert.strictEqual(agentInput, '[Voice transcription]: "hello there"',
+    'Should not include confidence when null');
+  assert.ok(!agentInput.includes('confidence'), 'No confidence substring when null');
 });
 
 // --- Existing Behavior Tests ---

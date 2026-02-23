@@ -15,9 +15,9 @@ const VoiceManager = require('../../../src/lib/voice/voice-manager');
 // Helpers
 // ============================================================
 
-function createMockSpeachesClient(transcript = 'Hello world') {
+function createMockSpeachesClient(transcript = 'Hello world', confidence = null) {
   return {
-    transcribe: async () => transcript,
+    transcribe: async () => ({ text: transcript, confidence }),
     isHealthy: async () => true
   };
 }
@@ -149,7 +149,7 @@ asyncTest('TC-VM-008: Calls speachesClient.transcribe with audio buffer', async 
     speachesClient: {
       transcribe: async (buf) => {
         transcribeBuffer = buf;
-        return 'Test transcript';
+        return { text: 'Test transcript', confidence: null };
       },
       isHealthy: async () => true
     }
@@ -163,10 +163,10 @@ asyncTest('TC-VM-008: Calls speachesClient.transcribe with audio buffer', async 
   assert.ok(Buffer.isBuffer(transcribeBuffer), 'Should pass a buffer to transcribe');
 });
 
-asyncTest('TC-VM-009: Returns transcript and duration on success', async () => {
+asyncTest('TC-VM-009: Returns transcript, confidence, and duration on success', async () => {
   const vm = createVoiceManager({
     speachesClient: {
-      transcribe: async () => 'Hello from voice',
+      transcribe: async () => ({ text: 'Hello from voice', confidence: 0.92 }),
       isHealthy: async () => true
     }
   });
@@ -177,6 +177,7 @@ asyncTest('TC-VM-009: Returns transcript and duration on success', async () => {
   };
   const result = await vm.processVoiceMessage(msg);
   assert.strictEqual(result.transcript, 'Hello from voice');
+  assert.strictEqual(result.confidence, 0.92, 'Should pass through confidence from STT');
   assert.ok(typeof result.duration === 'number');
   assert.ok(result.duration >= 0);
 });
@@ -184,7 +185,7 @@ asyncTest('TC-VM-009: Returns transcript and duration on success', async () => {
 asyncTest('TC-VM-010: Returns null on empty transcript', async () => {
   const vm = createVoiceManager({
     speachesClient: {
-      transcribe: async () => '   ',
+      transcribe: async () => ({ text: '   ', confidence: null }),
       isHealthy: async () => true
     }
   });
@@ -227,6 +228,40 @@ asyncTest('TC-VM-012: Returns null when transcription fails (graceful degradatio
   };
   const result = await vm.processVoiceMessage(msg);
   assert.strictEqual(result, null);
+});
+
+asyncTest('TC-VM-023: Returns null confidence when STT has no confidence data', async () => {
+  const vm = createVoiceManager({
+    speachesClient: {
+      transcribe: async () => ({ text: 'Hello', confidence: null }),
+      isHealthy: async () => true
+    }
+  });
+  vm.setMode('listen');
+  const msg = {
+    messageType: 'voice-message',
+    messageParameters: { file: { path: '/audio.ogg' } }
+  };
+  const result = await vm.processVoiceMessage(msg);
+  assert.strictEqual(result.transcript, 'Hello');
+  assert.strictEqual(result.confidence, null, 'Should pass through null confidence');
+});
+
+asyncTest('TC-VM-024: Handles legacy string return from transcribe (backward compat)', async () => {
+  const vm = createVoiceManager({
+    speachesClient: {
+      transcribe: async () => 'Legacy string result',
+      isHealthy: async () => true
+    }
+  });
+  vm.setMode('listen');
+  const msg = {
+    messageType: 'voice-message',
+    messageParameters: { file: { path: '/audio.ogg' } }
+  };
+  const result = await vm.processVoiceMessage(msg);
+  assert.strictEqual(result.transcript, 'Legacy string result');
+  assert.strictEqual(result.confidence, null, 'Legacy string has no confidence');
 });
 
 // --- setMode() Tests ---

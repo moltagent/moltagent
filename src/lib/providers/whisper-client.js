@@ -28,7 +28,7 @@ class WhisperClient {
    *
    * @param {Buffer} audioBuffer - Audio data (WAV 16kHz mono recommended)
    * @param {string} [language] - Optional language hint (e.g. 'en', 'de')
-   * @returns {Promise<string>} Transcribed text
+   * @returns {Promise<{text: string, confidence: number|null}>} Transcription result with optional confidence
    * @throws {Error} On network/server errors
    */
   async transcribe(audioBuffer, language = null) {
@@ -54,7 +54,17 @@ class WhisperClient {
     }
 
     const result = await response.json();
-    return (result.text || '').trim();
+    const text = (result.text || '').trim();
+
+    // Extract confidence from verbose response if available.
+    // whisper.cpp may return segments with avg_logprob.
+    let confidence = null;
+    if (Array.isArray(result.segments) && result.segments.length > 0) {
+      const avgLogprob = result.segments.reduce((sum, s) => sum + (s.avg_logprob || 0), 0) / result.segments.length;
+      confidence = Math.min(1, Math.max(0, 1 + avgLogprob));
+    }
+
+    return { text, confidence };
   }
 
   /**

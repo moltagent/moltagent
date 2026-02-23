@@ -77,6 +77,7 @@ const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'se
  * @property {boolean} [_isVoice] - True if message is a voice message
  * @property {Object} [_voiceFile] - Voice file metadata from messageParameters
  * @property {string} [_transcript] - Transcribed text from voice message
+ * @property {string|null} [_typedContent] - User-typed text alongside voice (null if voice-only)
  */
 
 /**
@@ -237,8 +238,10 @@ class MessageProcessor {
         try {
           const result = await this.voiceManager.processVoiceMessage(extracted._rawMessage);
           if (result && result.transcript) {
-            extracted.content = result.transcript;
             extracted._transcript = result.transcript;
+            extracted.content = this._tagVoiceTranscription(
+              result.transcript, result.confidence, extracted._typedContent
+            );
           } else {
             extracted.content = 'I received your voice message but it appeared to be empty or inaudible. ' +
               'Could you try again or send a text message?';
@@ -251,13 +254,17 @@ class MessageProcessor {
       } else if (this.whisperClient && this.filesClient) {
         // Fallback: Session 37 WhisperClient path
         try {
-          const transcript = await this._transcribeVoiceMessage(extracted._voiceFile);
+          const sttResult = await this._transcribeVoiceMessage(extracted._voiceFile);
+          const transcript = typeof sttResult === 'string' ? sttResult : (sttResult.text || '');
+          const confidence = (typeof sttResult === 'object' && sttResult) ? (sttResult.confidence ?? null) : null;
           if (!transcript || transcript.trim().length === 0) {
             extracted.content = 'I received your voice message but it appeared to be empty or inaudible. ' +
               'Could you try again or send a text message?';
           } else {
-            extracted.content = transcript;
             extracted._transcript = transcript;
+            extracted.content = this._tagVoiceTranscription(
+              transcript, confidence, extracted._typedContent
+            );
           }
         } catch (err) {
           console.error('[Message] Voice transcription failed:', err.message);
@@ -591,17 +598,24 @@ class MessageProcessor {
     // Session 37: Voice message detection — check BEFORE generic rich-object error
     let isVoice = false;
     let voiceFile = null;
+    let typedContent = null;   // user-typed text alongside voice (null = voice-only)
 
     if (messageContent === '{object}' || messageContent === '[object Object]' || messageContent === '{file}') {
       if (this._isVoiceMessage(messageObj)) {
         isVoice = true;
         voiceFile = messageObj.messageParameters?.file;
         messageContent = '[Voice message]';
+        // No typed content — the placeholder means voice-only
       } else {
         messageContent = "I can see you sent something, but it came through as a rich object " +
           "(like a poll, file, or location) that I can't read directly. " +
           "Could you share the content as a text message instead?";
       }
+    } else if (this._isVoiceMessage(messageObj)) {
+      // User typed text alongside a voice recording — both present
+      isVoice = true;
+      voiceFile = messageObj.messageParameters?.file;
+      typedContent = messageContent;  // preserve the user's typed text
     }
 
     return {
@@ -613,7 +627,8 @@ class MessageProcessor {
       isBotMessage: this._isBotMessage(user, actorType),
       _rawMessage: messageObj,
       _isVoice: isVoice,
-      _voiceFile: voiceFile
+      _voiceFile: voiceFile,
+      _typedContent: typedContent
     };
   }
 
@@ -637,7 +652,7 @@ class MessageProcessor {
    * Transcribe a voice message file via Whisper STT.
    *
    * @param {Object} file - File metadata from messageParameters
-   * @returns {Promise<string>} Transcribed text
+   * @returns {Promise<{text: string, confidence: number|null}>} Transcription result
    * @private
    */
   async _transcribeVoiceMessage(file) {
@@ -651,10 +666,38 @@ class MessageProcessor {
     }
 
     // 3. Send to Whisper
-    const transcript = await this.whisperClient.transcribe(wavBuffer);
+    const result = await this.whisperClient.transcribe(wavBuffer);
+    const text = typeof result === 'string' ? result : (result.text || '');
+    const confidence = (typeof result === 'object' && result) ? (result.confidence ?? null) : null;
 
-    console.log(`[Message] Transcribed voice: "${transcript.substring(0, 80)}..."`);
-    return transcript;
+    console.log(`[Message] Transcribed voice: "${text.substring(0, 80)}..."`);
+    return { text, confidence };
+  }
+
+  /**
+   * Build a provenance-tagged string for a voice transcription.
+   *
+   * @param {string} transcript - Raw transcribed text
+   * @param {number|null} confidence - Whisper confidence score (0–1), or null if unavailable
+   * @param {string|null} typedContent - User-typed text alongside voice, or null if voice-only
+   * @returns {string} Tagged message content for the agent's context
+   * @private
+   */
+  _tagVoiceTranscription(transcript, confidence, typedContent) {
+    let tag = '[Voice transcription';
+    if (confidence != null) {
+      tag += `, confidence: ${Math.round(confidence * 100)}%`;
+    }
+    tag += ']';
+
+    // Replace inner double-quotes to prevent ambiguous tag boundaries
+    const safeTranscript = transcript.replace(/"/g, "'");
+    const tagged = `${tag}: "${safeTranscript}"`;
+
+    if (typedContent) {
+      return `${typedContent}\n${tagged}`;
+    }
+    return tagged;
   }
 
   // ---------------------------------------------------------------------------
