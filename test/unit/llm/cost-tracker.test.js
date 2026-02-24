@@ -222,7 +222,7 @@ await asyncTest('Flush writes to ncFilesClient and clears buffer', async () => {
   let writtenPath = null;
   let writtenContent = null;
   const mockFiles = {
-    createDirectory: async () => {},
+    mkdir: async () => {},
     readFile: async () => { throw new Error('not found'); },
     writeFile: async (path, content) => { writtenPath = path; writtenContent = content; },
   };

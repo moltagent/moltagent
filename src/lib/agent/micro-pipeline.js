@@ -72,6 +72,7 @@ class MicroPipeline {
     this.deferralQueue = config.deferralQueue || null;
     this.toolRegistry = config.toolRegistry || null;
     this.ollamaToolsProvider = config.ollamaToolsProvider || null;
+    this.costTracker = config.costTracker || null;
     this.domainToolTimeout = config.domainToolTimeout || 90000;
     this.logger = config.logger || console;
 
@@ -515,6 +516,19 @@ Sub-questions:`;
           tools,
           timeout: this.domainToolTimeout
         });
+
+        // Record local LLM call with CostTracker
+        if (this.costTracker) {
+          this.costTracker.record({
+            model: this.ollamaToolsProvider.model || 'ollama-local',
+            provider: 'ollama-local',
+            job: `domain:${intent}`,
+            trigger: context.trigger || 'user_message',
+            inputTokens: llmResult._inputTokens || 0,
+            outputTokens: llmResult._outputTokens || 0,
+            isLocal: true,
+          });
+        }
 
         // If no tool calls, we have the final response
         if (!llmResult.toolCalls || llmResult.toolCalls.length === 0) {

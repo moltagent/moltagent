@@ -23,8 +23,10 @@ const PRICING = {
   // Anthropic (per million tokens)
   'claude-opus-4-6':            { input: 15.00, output: 75.00 },
   'claude-opus-4-20250918':     { input: 15.00, output: 75.00 },
+  'claude-sonnet-4-6':          { input: 3.00,  output: 15.00 },
   'claude-sonnet-4-20250514':   { input: 3.00,  output: 15.00 },
   'claude-sonnet-4-5-20250514': { input: 3.00,  output: 15.00 },
+  'claude-sonnet-4-5-20250929': { input: 3.00,  output: 15.00 },
   'claude-haiku-3-5-20241022':  { input: 0.80,  output: 4.00  },
 
   // OpenAI (per million tokens)
@@ -177,7 +179,7 @@ class CostTracker {
       // Ensure log directory exists (once per lifetime)
       if (!this._logDirEnsured) {
         try {
-          await this.files.createDirectory(this.logDir);
+          await this.files.mkdir(this.logDir);
         } catch (_e) {
           // Directory likely already exists — ignore
         }

@@ -1151,9 +1151,13 @@ async function initialize() {
       // --- CostTracker: per-call audit logging + enriched cost reporting ---
       costTracker = new CostTracker({
         ncFilesClient: ncFilesClient || undefined,
-        logDir: '/Moltagent/Logs',
+        logDir: 'Logs',
         usdToEur: 0.92,
       });
+      // Wire CostTracker into LLMRouter so all route() calls are metered
+      if (llmRouter?.router) {
+        llmRouter.router.costTracker = costTracker;
+      }
       console.log('[INIT] CostTracker ready');
 
       // --- Primary path: RouterChatBridge (LLMRouter v3 routing) ---
@@ -1365,6 +1369,7 @@ async function initialize() {
         calendarClient: caldavClient,
         talkSendQueue: talkQueue,
         deferralQueue,
+        costTracker,
         domainToolTimeout: appConfig.ollama.domainToolTimeout,
         logger: console
       });

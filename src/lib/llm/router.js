@@ -100,6 +100,9 @@ class LLMRouter {
       onLoopDetected: (info) => this._handleLoopDetected(info)
     });
 
+    // CostTracker (optional, set post-construction)
+    this.costTracker = null;
+
     // Output verifier
     this.outputVerifier = new OutputVerifier({
       auditLog: this.auditLog,
@@ -307,6 +310,19 @@ class LLMRouter {
           if (opType === 'proactive') {
             this.budget.recordProactiveSpend(result.cost, result.tokens);
           }
+        }
+
+        // Record per-call audit with CostTracker
+        if (this.costTracker) {
+          this.costTracker.record({
+            model: result.model || providerId,
+            provider: providerId,
+            job: job || task || 'route',
+            trigger: context.trigger || 'user_message',
+            inputTokens: result.inputTokens || 0,
+            outputTokens: result.outputTokens || 0,
+            isLocal: provider.type === 'local',
+          });
         }
 
         // Track stats
