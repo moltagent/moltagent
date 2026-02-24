@@ -639,6 +639,56 @@ console.log('\n=== Heartbeat-Cockpit Integration Tests ===\n');
     assert.strictEqual(hb.routerChatBridge, null);
   });
 
+  await asyncTest('TC-MODELS-010: pulse() skips propagation when modelsConfig.changed is false', async () => {
+    let setPresetCalled = false;
+    const mockCockpit = createMockCockpitManager();
+    mockCockpit.readConfig = async () => ({
+      style: null,
+      persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
+      guardrails: [],
+      mode: null,
+      system: { modelsConfig: { preset: 'smart-mix', changed: false }, dailyDigest: 'off', initiativeLevel: 2, workingHours: '08:00-18:00' }
+    });
+    mockCockpit.updateStatus = async () => {};
+
+    const config = createMockConfig({ cockpitManager: mockCockpit });
+    const hb = new HeartbeatManager(config);
+    stubHeartbeatMethods(hb);
+
+    hb.llmRouter = {
+      route: async () => ({ result: 'ok', tokens: 10 }),
+      setPreset: () => { setPresetCalled = true; }
+    };
+
+    await hb.pulse();
+    assert.strictEqual(setPresetCalled, false, 'setPreset should NOT be called when changed=false');
+  });
+
+  await asyncTest('TC-MODELS-011: pulse() propagates when modelsConfig.changed is true', async () => {
+    let setPresetCalled = null;
+    const mockCockpit = createMockCockpitManager();
+    mockCockpit.readConfig = async () => ({
+      style: null,
+      persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
+      guardrails: [],
+      mode: null,
+      system: { modelsConfig: { preset: 'cloud-first', changed: true }, dailyDigest: 'off', initiativeLevel: 2, workingHours: '08:00-18:00' }
+    });
+    mockCockpit.updateStatus = async () => {};
+
+    const config = createMockConfig({ cockpitManager: mockCockpit });
+    const hb = new HeartbeatManager(config);
+    stubHeartbeatMethods(hb);
+
+    hb.llmRouter = {
+      route: async () => ({ result: 'ok', tokens: 10 }),
+      setPreset: (p) => { setPresetCalled = p; }
+    };
+
+    await hb.pulse();
+    assert.strictEqual(setPresetCalled, 'cloud-first', 'setPreset should be called when changed=true');
+  });
+
   summary();
   exitWithCode();
 })();

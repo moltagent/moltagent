@@ -302,6 +302,7 @@ function createMockCockpitManager(responses = {}) {
   return {
     initialize: async () => responses.initialize || undefined,
     bootstrap: async () => responses.bootstrap || { boardId: 99, stacks: {}, labels: {} },
+    invalidateCache: () => {},
     readConfig: async () => responses.readConfig || config,
     getActiveStyle: async () => responses.getActiveStyle || config.style,
     getGuardrails: async () => responses.getGuardrails || config.guardrails,

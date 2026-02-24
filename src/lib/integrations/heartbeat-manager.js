@@ -539,6 +539,8 @@ class HeartbeatManager {
       // Cockpit: Read config and update status cards (all levels)
       if (this.cockpitManager) {
         try {
+          // Invalidate cache so card edits are picked up within one heartbeat
+          this.cockpitManager.invalidateCache();
           const cockpitConfig = await this.cockpitManager.readConfig();
 
           // Propagate active mode from Cockpit
@@ -579,6 +581,8 @@ class HeartbeatManager {
               // Handle null (parse error) — keep current config
               if (mc === null) {
                 console.warn('[Heartbeat] Models card parse error. Keeping current configuration.');
+              } else if (mc.changed === false) {
+                // Content unchanged — skip redundant propagation
               } else if (mc.players) {
                 // Custom roster with player definitions — register providers
                 await this._handleModelsUpdate(mc);

@@ -547,6 +547,64 @@ test('TC-MOD-PARSE-011: ⚙4 parse error returns null (HeartbeatManager keeps cu
 });
 
 // ============================================================
+// Tests: Change detection (fingerprint-based)
+// ============================================================
+
+console.log('\n--- Change detection (fingerprint-based) ---\n');
+
+test('TC-MOD-CHG-001: first parse returns changed=false', () => {
+  const cm = makeCM();
+  const card = makeCard('Models', '', [g2Label]);
+  const result = cm._parseModelsCard(card);
+  assert.strictEqual(result.changed, false);
+  assert.strictEqual(result.preset, 'smart-mix');
+});
+
+test('TC-MOD-CHG-002: same card twice returns changed=false on second call', () => {
+  const cm = makeCM();
+  const card = makeCard('Models', '', [g2Label]);
+  cm._parseModelsCard(card);
+  const result = cm._parseModelsCard(card);
+  assert.strictEqual(result.changed, false);
+  assert.strictEqual(result.preset, 'smart-mix');
+});
+
+test('TC-MOD-CHG-003: label change triggers changed=true', () => {
+  const cm = makeCM();
+  cm._parseModelsCard(makeCard('Models', '', [g2Label]));
+  const result = cm._parseModelsCard(makeCard('Models', '', [g1Label]));
+  assert.strictEqual(result.changed, true);
+  assert.strictEqual(result.preset, 'all-local');
+});
+
+test('TC-MOD-CHG-004: description change within ⚙4 triggers changed=true', () => {
+  const cm = makeCM();
+  const desc1 = 'quick: qwen3:8b\n---\ndocs';
+  const desc2 = 'quick: claude-opus\n---\ndocs';
+  cm._parseModelsCard(makeCard('Models', desc1, [g4Label]));
+  const result = cm._parseModelsCard(makeCard('Models', desc2, [g4Label]));
+  assert.strictEqual(result.changed, true);
+});
+
+test('TC-MOD-CHG-005: doc section change below --- does NOT trigger changed', () => {
+  const cm = makeCM();
+  const desc1 = 'quick: qwen3:8b\n---\nold docs';
+  const desc2 = 'quick: qwen3:8b\n---\nnew docs';
+  cm._parseModelsCard(makeCard('Models', desc1, [g4Label]));
+  const result = cm._parseModelsCard(makeCard('Models', desc2, [g4Label]));
+  assert.strictEqual(result.changed, false);
+});
+
+test('TC-MOD-CHG-006: invalidateCache clears cached config', () => {
+  const cm = makeCM();
+  cm.cachedConfig = { test: true };
+  cm.cacheExpiry = Date.now() + 60000;
+  cm.invalidateCache();
+  assert.strictEqual(cm.cachedConfig, null);
+  assert.strictEqual(cm.cacheExpiry, 0);
+});
+
+// ============================================================
 // Summary
 // ============================================================
 

@@ -274,6 +274,12 @@ class CockpitManager {
     /** @type {number} Cache time-to-live in milliseconds */
     this.CACHE_TTL = config.cacheTTLMs || appConfig.cockpit?.cacheTTLMs || 5 * 60 * 1000;
 
+    /** @type {string|null} Fingerprint of last Models card (labels+description) for change detection */
+    this._lastModelsFingerprint = null;
+
+    /** @type {Object|null} Last parsed modelsConfig (reused when fingerprint unchanged) */
+    this._lastModelsConfig = null;
+
     /** @type {boolean} Whether initialize() has been called successfully */
     this._initialized = false;
   }
@@ -521,6 +527,15 @@ class CockpitManager {
         err
       );
     }
+  }
+
+  /**
+   * Invalidate the cached config so the next readConfig() fetches fresh data.
+   * Call this before heartbeat reads to ensure card edits are picked up.
+   */
+  invalidateCache() {
+    this.cachedConfig = null;
+    this.cacheExpiry = 0;
   }
 
   /**
@@ -1020,8 +1035,24 @@ class CockpitManager {
    * @returns {{ preset?: string, roster?: Object }} Models configuration
    */
   _parseModelsCard(card) {
+    // Fingerprint: labels + description above --- (content that affects parsing)
+    const labelKeys = (card.labels || []).map(l => l.title).sort().join(',');
+    const configSection = (card.description || '').split('---')[0];
+    const fingerprint = `${labelKeys}|||${configSection}`;
+
+    if (fingerprint === this._lastModelsFingerprint && this._lastModelsConfig) {
+      return { ...this._lastModelsConfig, changed: false };
+    }
+
+    const changed = this._lastModelsFingerprint !== null; // false on first parse
+    if (changed) {
+      console.log('[CockpitManager] Models card content changed, re-parsing');
+    }
+    this._lastModelsFingerprint = fingerprint;
+
     const { source } = this._resolveCardValue(card, {});
 
+    let result;
     if (source === 'custom') {
       try {
         // Try new Players/Roster format first
@@ -1030,28 +1061,37 @@ class CockpitManager {
           const pCount = Object.keys(customConfig.players || {}).length;
           const rCount = Object.keys(customConfig.roster || {}).length;
           console.log(`[CockpitManager] Parsed custom Models card: ${pCount} players, ${rCount} jobs`);
-          return customConfig;
+          result = customConfig;
         }
-        // Fall back to legacy job: player1, player2 format
-        const roster = this._parseCustomRoster(card.description);
-        if (Object.keys(roster).length > 0) return { roster };
-        console.warn('[CockpitManager] Custom roster (\u26994) is empty, falling back to smart-mix');
-        return { preset: 'smart-mix' };
+        if (!result) {
+          // Fall back to legacy job: player1, player2 format
+          const roster = this._parseCustomRoster(card.description);
+          if (Object.keys(roster).length > 0) {
+            result = { roster };
+          }
+        }
+        if (!result) {
+          console.warn('[CockpitManager] Custom roster (\u26994) is empty, falling back to smart-mix');
+          result = { preset: 'smart-mix' };
+        }
       } catch (err) {
         console.error(`[CockpitManager] Failed to parse Models card: ${err.message}`);
+        this._lastModelsConfig = null;
         return null;
       }
+    } else {
+      // Map label source to preset
+      const sourceToPreset = {
+        off: 'all-local',       // ⚙1
+        moderate: 'smart-mix',  // ⚙2
+        on: 'cloud-first',      // ⚙3
+        default: 'smart-mix'    // no label
+      };
+      result = { preset: sourceToPreset[source] || 'smart-mix' };
     }
 
-    // Map label source to preset
-    const sourceToPreset = {
-      off: 'all-local',       // ⚙1
-      moderate: 'smart-mix',  // ⚙2
-      on: 'cloud-first',      // ⚙3
-      default: 'smart-mix'    // no label
-    };
-
-    return { preset: sourceToPreset[source] || 'smart-mix' };
+    this._lastModelsConfig = result;
+    return { ...result, changed };
   }
 
   /**
