@@ -711,8 +711,10 @@ class CockpitManager {
       } else if (MODELS_CARD_TITLES.includes(title.toLowerCase())) {
         config.modelsConfig = this._parseModelsCard(card);
         // Write resolved preset state back to card (non-blocking)
-        if (config.modelsConfig?.preset) {
-          this._writeResolvedStateToCard(card, config.modelsConfig.preset).catch(() => {});
+        // Skip for 'custom' — the user's Players/Roster content must not be overwritten
+        const presetForWriteback = config.modelsConfig?.preset;
+        if (presetForWriteback && presetForWriteback !== 'custom') {
+          this._writeResolvedStateToCard(card, presetForWriteback).catch(() => {});
         }
       } else if (title === '\ud83d\udd0a Voice' || title.includes('Voice')) {
         const resolved = this._resolveCardValue(card, SYSTEM_VALUE_MAP['\ud83d\udd0a Voice']);
@@ -1024,11 +1026,16 @@ class CockpitManager {
       try {
         // Try new Players/Roster format first
         const customConfig = this._parseCustomModelsCard(card.description);
-        if (customConfig) return customConfig;
+        if (customConfig) {
+          const pCount = Object.keys(customConfig.players || {}).length;
+          const rCount = Object.keys(customConfig.roster || {}).length;
+          console.log(`[CockpitManager] Parsed custom Models card: ${pCount} players, ${rCount} jobs`);
+          return customConfig;
+        }
         // Fall back to legacy job: player1, player2 format
         const roster = this._parseCustomRoster(card.description);
         if (Object.keys(roster).length > 0) return { roster };
-        console.warn('[CockpitManager] Custom roster (\u29994) is empty, falling back to smart-mix');
+        console.warn('[CockpitManager] Custom roster (\u26994) is empty, falling back to smart-mix');
         return { preset: 'smart-mix' };
       } catch (err) {
         console.error(`[CockpitManager] Failed to parse Models card: ${err.message}`);
