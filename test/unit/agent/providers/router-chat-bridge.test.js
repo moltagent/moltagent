@@ -525,7 +525,7 @@ const silentLogger = { info: () => {}, warn: () => {} };
   // --- Smart-Mix Local Skip ---
   console.log('\n--- Smart-Mix Local Skip ---\n');
 
-  test('TC-BRIDGE-SKIP-001: skipLocalForConversation adds local providers to failures', () => {
+  test('TC-BRIDGE-SKIP-001: skipLocalForConversation adds local providers to _localPreSkip', () => {
     const router = createMockRouter();
     router.providers = new Map([
       ['ollama-local', { type: 'local' }],
@@ -543,10 +543,13 @@ const silentLogger = { info: () => {}, warn: () => {} };
 
     bridge.skipLocalForConversation();
 
-    assert.ok(bridge._conversationFailures.has('ollama-local'),
-      'ollama-local (local) should be in _conversationFailures');
-    assert.ok(!bridge._conversationFailures.has('anthropic-claude'),
-      'anthropic-claude (remote) should NOT be in _conversationFailures');
+    assert.ok(bridge._localPreSkip.has('ollama-local'),
+      'ollama-local (local) should be in _localPreSkip');
+    assert.ok(!bridge._localPreSkip.has('anthropic-claude'),
+      'anthropic-claude (remote) should NOT be in _localPreSkip');
+    // Pre-skip should NOT pollute _conversationFailures
+    assert.ok(!bridge._conversationFailures.has('ollama-local'),
+      'ollama-local should NOT be in _conversationFailures (tracked separately)');
   });
 
   test('TC-BRIDGE-SKIP-002: skipLocalForConversation does NOT add cloud providers', () => {
@@ -567,8 +570,8 @@ const silentLogger = { info: () => {}, warn: () => {} };
 
     bridge.skipLocalForConversation();
 
-    assert.ok(!bridge._conversationFailures.has('anthropic-claude'),
-      'anthropic-claude (remote) should NOT be in _conversationFailures after skipLocalForConversation');
+    assert.ok(!bridge._localPreSkip.has('anthropic-claude'),
+      'anthropic-claude (remote) should NOT be in _localPreSkip after skipLocalForConversation');
   });
 
   test('TC-BRIDGE-SKIP-003: resetConversation re-applies skip when _preSkipLocal is true', () => {
@@ -594,8 +597,8 @@ const silentLogger = { info: () => {}, warn: () => {} };
     // resetConversation should re-apply the local skip
     bridge.resetConversation();
 
-    assert.ok(bridge._conversationFailures.has('ollama-local'),
-      'ollama-local should remain in _conversationFailures after resetConversation when _preSkipLocal is true');
+    assert.ok(bridge._localPreSkip.has('ollama-local'),
+      'ollama-local should remain in _localPreSkip after resetConversation when _preSkipLocal is true');
   });
 
   test('TC-BRIDGE-SKIP-004: resetConversation fully clears when _preSkipLocal is false', () => {
@@ -624,7 +627,7 @@ const silentLogger = { info: () => {}, warn: () => {} };
       '_conversationFailures should be empty after resetConversation when _preSkipLocal is false');
   });
 
-  test('TC-BRIDGE-SKIP-005: clearLocalSkip resets the flag and removes local from failures', () => {
+  test('TC-BRIDGE-SKIP-005: clearLocalSkip resets the flag and clears _localPreSkip', () => {
     const router = createMockRouter();
     router.providers = new Map([
       ['ollama-local', { type: 'local' }],
@@ -642,14 +645,14 @@ const silentLogger = { info: () => {}, warn: () => {} };
 
     bridge.skipLocalForConversation();
     assert.ok(bridge._preSkipLocal, '_preSkipLocal should be true after skip');
-    assert.ok(bridge._conversationFailures.has('ollama-local'), 'ollama-local should be in failures after skip');
+    assert.ok(bridge._localPreSkip.has('ollama-local'), 'ollama-local should be in _localPreSkip after skip');
 
     bridge.clearLocalSkip();
 
     assert.strictEqual(bridge._preSkipLocal, false,
       '_preSkipLocal should be false after clearLocalSkip');
-    assert.ok(!bridge._conversationFailures.has('ollama-local'),
-      'ollama-local should NOT be in _conversationFailures after clearLocalSkip');
+    assert.ok(!bridge._localPreSkip.has('ollama-local'),
+      'ollama-local should NOT be in _localPreSkip after clearLocalSkip');
   });
 
   await asyncTest('TC-BRIDGE-SKIP-006: chat() skips pre-skipped local providers', async () => {
@@ -691,6 +694,140 @@ const silentLogger = { info: () => {}, warn: () => {} };
 
     assert.strictEqual(ollamaCallCount, 0, 'ollama should never be called when pre-skipped');
     assert.strictEqual(result.content, 'Claude response', 'result should come from Claude');
+    assert.strictEqual(result._routing.provider, 'anthropic-claude');
+  });
+
+  await asyncTest('TC-BRIDGE-SKIP-007: pre-skipped local is used as fallback when cloud fails', async () => {
+    const router = createMockRouter({
+      buildProviderChain: () => ({
+        chain: [
+          { id: 'anthropic-claude', provider: { type: 'remote' } },
+          { id: 'ollama-local', provider: { type: 'local' } }
+        ],
+        skipped: []
+      })
+    });
+    router.providers = new Map([
+      ['ollama-local', { type: 'local' }],
+      ['anthropic-claude', { type: 'remote' }]
+    ]);
+
+    let ollamaCallCount = 0;
+    const ollamaProvider = createMockChatProvider({
+      chat: async () => {
+        ollamaCallCount++;
+        return { content: 'Ollama fallback', toolCalls: null };
+      }
+    });
+
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['ollama-local', ollamaProvider],
+        ['anthropic-claude', createMockChatProvider({
+          chat: async () => { throw new Error('API key not available'); }
+        })]
+      ]),
+      logger: silentLogger
+    });
+
+    // Pre-skip local (complex message classified by MicroPipeline)
+    bridge.skipLocalForConversation();
+
+    // Cloud fails → should fall back to pre-skipped local
+    const result = await bridge.chat({ system: 'test', messages: [], tools: [] });
+
+    assert.strictEqual(ollamaCallCount, 1, 'ollama should be tried as fallback');
+    assert.strictEqual(result.content, 'Ollama fallback');
+    assert.strictEqual(result._routing.isFallback, true);
+    assert.strictEqual(result._routing.provider, 'ollama-local');
+  });
+
+  await asyncTest('TC-BRIDGE-SKIP-008: pre-skip demotes local behind cloud in chain order', async () => {
+    // Chain: [local, cloud] — pre-skip should reorder to [cloud, local]
+    const router = createMockRouter({
+      buildProviderChain: () => ({
+        chain: [
+          { id: 'ollama-local', provider: { type: 'local' } },
+          { id: 'anthropic-claude', provider: { type: 'remote' } }
+        ],
+        skipped: []
+      })
+    });
+    router.providers = new Map([
+      ['ollama-local', { type: 'local' }],
+      ['anthropic-claude', { type: 'remote' }]
+    ]);
+
+    let ollamaCallCount = 0;
+    const ollamaProvider = createMockChatProvider({
+      chat: async () => {
+        ollamaCallCount++;
+        return { content: 'Ollama response', toolCalls: null };
+      }
+    });
+
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['ollama-local', ollamaProvider],
+        ['anthropic-claude', createMockChatProvider({ content: 'Claude response' })]
+      ]),
+      logger: silentLogger
+    });
+
+    // Pre-skip local
+    bridge.skipLocalForConversation();
+
+    // Cloud should be tried first (even though chain has local first)
+    const result = await bridge.chat({ system: 'test', messages: [], tools: [] });
+
+    assert.strictEqual(ollamaCallCount, 0, 'ollama should NOT be called when cloud succeeds');
+    assert.strictEqual(result.content, 'Claude response');
+    assert.strictEqual(result._routing.provider, 'anthropic-claude');
+  });
+
+  await asyncTest('TC-BRIDGE-SKIP-009: real timeout still blocks provider even after pre-skip cleared', async () => {
+    const router = createMockRouter({
+      buildProviderChain: () => ({
+        chain: [
+          { id: 'ollama-local', provider: { type: 'local' } },
+          { id: 'anthropic-claude', provider: { type: 'remote' } }
+        ],
+        skipped: []
+      })
+    });
+    router.providers = new Map([
+      ['ollama-local', { type: 'local' }],
+      ['anthropic-claude', { type: 'remote' }]
+    ]);
+
+    let ollamaCallCount = 0;
+    const ollamaProvider = createMockChatProvider({
+      chat: async () => {
+        ollamaCallCount++;
+        throw new Error('Ollama request timed out after 60000ms');
+      }
+    });
+
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['ollama-local', ollamaProvider],
+        ['anthropic-claude', createMockChatProvider({ content: 'Claude response' })]
+      ]),
+      logger: silentLogger
+    });
+
+    // First call: ollama times out (real failure → added to _conversationFailures)
+    await bridge.chat({ system: 'test', messages: [], tools: [] });
+    assert.strictEqual(ollamaCallCount, 1);
+    assert.ok(bridge._conversationFailures.has('ollama-local'),
+      'ollama should be in _conversationFailures after real timeout');
+
+    // Second call: ollama should be skipped (real conversation failure)
+    const result = await bridge.chat({ system: 'test', messages: [], tools: [] });
+    assert.strictEqual(ollamaCallCount, 1, 'ollama should NOT be retried after real timeout');
     assert.strictEqual(result._routing.provider, 'anthropic-claude');
   });
 

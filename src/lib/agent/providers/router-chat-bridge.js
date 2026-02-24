@@ -43,10 +43,11 @@ class RouterChatBridge {
     this._conversationFailures = new Set();
 
     // Smart-mix pre-skip: when MicroPipeline classifies a message as non-local,
-    // skipLocalForConversation() sets this flag and pre-populates _conversationFailures
-    // with local providers. resetConversation() re-applies the skip so AgentLoop's
-    // internal reset doesn't undo it.
+    // skipLocalForConversation() demotes local providers to fallback-only position.
+    // They're tracked in _localPreSkip (separate from real timeout failures) so
+    // they remain available as last-resort fallbacks when cloud providers fail.
     this._preSkipLocal = false;
+    this._localPreSkip = new Set();
   }
 
   /**
@@ -59,6 +60,7 @@ class RouterChatBridge {
    */
   resetConversation() {
     this._conversationFailures.clear();
+    this._localPreSkip.clear();
     if (this._preSkipLocal) {
       this._applyLocalSkip();
     }
@@ -82,24 +84,21 @@ class RouterChatBridge {
    */
   clearLocalSkip() {
     this._preSkipLocal = false;
-    // Remove only local providers from conversation failures (keep real timeouts)
-    for (const id of [...this._conversationFailures]) {
-      const provider = this.router.providers.get(id);
-      if (provider && provider.type === 'local') {
-        this._conversationFailures.delete(id);
-      }
-    }
+    this._localPreSkip.clear();
   }
 
   /**
-   * Add all local providers to _conversationFailures.
+   * Track local providers for demotion (fallback-only, not primary).
+   * Unlike _conversationFailures, these providers remain in the candidate list
+   * but are moved behind cloud providers so cloud is tried first.
    * @private
    */
   _applyLocalSkip() {
+    this._localPreSkip.clear();
     for (const [id] of this.chatProviders) {
       const provider = this.router.providers.get(id);
       if (provider && provider.type === 'local') {
-        this._conversationFailures.add(id);
+        this._localPreSkip.add(id);
       }
     }
   }
@@ -143,7 +142,9 @@ class RouterChatBridge {
     const { chain, skipped } = this.router.buildProviderChain(job, { forceLocal });
 
     // 2. Filter to providers with registered chat implementations,
-    //    and skip providers that already timed out in this conversation
+    //    and skip providers that already timed out in this conversation.
+    //    Pre-skipped locals (_localPreSkip) stay in the list but get demoted
+    //    behind cloud providers so cloud is tried first, local only as fallback.
     const candidates = chain.filter(entry => {
       if (!this.chatProviders.has(entry.id)) return false;
       if (this._conversationFailures.has(entry.id)) {
@@ -152,6 +153,26 @@ class RouterChatBridge {
       }
       return true;
     });
+
+    // Demote pre-skipped locals to end of candidates (fallback position)
+    if (this._preSkipLocal && candidates.length > 1) {
+      const demoted = [];
+      let i = 0;
+      while (i < candidates.length) {
+        if (this._localPreSkip.has(candidates[i].id)) {
+          demoted.push(...candidates.splice(i, 1));
+        } else {
+          i++;
+        }
+      }
+      if (candidates.length > 0) {
+        // Cloud providers remain — append locals as fallbacks
+        candidates.push(...demoted);
+      } else {
+        // ALL candidates were local — restore them (better than nothing)
+        candidates.push(...demoted);
+      }
+    }
 
     if (candidates.length === 0) {
       const allSkipped = [
