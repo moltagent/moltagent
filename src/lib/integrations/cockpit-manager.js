@@ -536,6 +536,9 @@ class CockpitManager {
   invalidateCache() {
     this.cachedConfig = null;
     this.cacheExpiry = 0;
+    // Also clear fingerprint so Models card is re-parsed and propagated
+    this._lastModelsFingerprint = null;
+    this._lastModelsConfig = null;
   }
 
   /**
@@ -1044,8 +1047,9 @@ class CockpitManager {
       return { ...this._lastModelsConfig, changed: false };
     }
 
-    const changed = this._lastModelsFingerprint !== null; // false on first parse
-    if (changed) {
+    // First parse OR content change → needs propagation (provider registration)
+    const isContentChange = this._lastModelsFingerprint !== null;
+    if (isContentChange) {
       console.log('[CockpitManager] Models card content changed, re-parsing');
     }
     this._lastModelsFingerprint = fingerprint;
@@ -1091,7 +1095,10 @@ class CockpitManager {
     }
 
     this._lastModelsConfig = result;
-    return { ...result, changed };
+    // Always return changed: true here — we only reach this point when
+    // fingerprint differs (content change) OR first parse (needs registration).
+    // The shortcut at top returns changed: false when fingerprint matches.
+    return { ...result, changed: true };
   }
 
   /**

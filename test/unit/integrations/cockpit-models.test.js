@@ -552,11 +552,11 @@ test('TC-MOD-PARSE-011: ⚙4 parse error returns null (HeartbeatManager keeps cu
 
 console.log('\n--- Change detection (fingerprint-based) ---\n');
 
-test('TC-MOD-CHG-001: first parse returns changed=false', () => {
+test('TC-MOD-CHG-001: first parse returns changed=true (needs initial registration)', () => {
   const cm = makeCM();
   const card = makeCard('Models', '', [g2Label]);
   const result = cm._parseModelsCard(card);
-  assert.strictEqual(result.changed, false);
+  assert.strictEqual(result.changed, true);
   assert.strictEqual(result.preset, 'smart-mix');
 });
 
