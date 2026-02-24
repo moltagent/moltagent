@@ -21,7 +21,7 @@ function getSystemPrompt() {
       );
     } catch (e) {
       console.error('Failed to load system-prompt.md:', e.message);
-      _systemPrompt = 'You are MoltAgent, a sovereign AI assistant.';
+      _systemPrompt = 'You are Moltagent, a sovereign AI assistant.';
     }
   }
   return _systemPrompt;

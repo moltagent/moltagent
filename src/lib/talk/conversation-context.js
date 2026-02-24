@@ -3,7 +3,7 @@
  *
  * Architecture Brief:
  * -------------------
- * Problem: MoltAgent processes each message in isolation with zero conversation
+ * Problem: Moltagent processes each message in isolation with zero conversation
  * history. The LLM has no context from previous exchanges, causing "amnesia"
  * and inability to resolve references like "the one in inbox" or "close those two".
  *
@@ -36,10 +36,10 @@ class ConversationContext {
   /**
    * @param {Object} config - Configuration options
    * @param {boolean} [config.enabled=true] - Enable/disable context fetching
-   * @param {number} [config.maxMessages=6] - Max messages to fetch
-   * @param {number} [config.maxTokenEstimate=2000] - Token budget
+   * @param {number} [config.maxMessages=20] - Max messages to fetch
+   * @param {number} [config.maxTokenEstimate=4000] - Token budget
    * @param {boolean} [config.includeSystemMessages=false] - Include system messages
-   * @param {number} [config.maxMessageAge=3600000] - Max message age in ms
+   * @param {number} [config.maxMessageAge=7200000] - Max message age in ms (2 hours)
    * @param {Object} ncRequestManager - NCRequestManager instance
    * @param {Object} [logger] - Logger (defaults to console)
    */
@@ -62,7 +62,7 @@ class ConversationContext {
   async getHistory(roomToken, options = {}) {
     if (!this.enabled) return [];
 
-    const limit = options.limit || this.config.maxMessages || 6;
+    const limit = options.limit || this.config.maxMessages || 20;
 
     try {
       const response = await this.nc.request(
@@ -108,7 +108,7 @@ class ConversationContext {
    */
   _formatMessages(rawMessages, excludeId) {
     const now = Date.now();
-    const maxAge = this.config.maxMessageAge || 3600000;
+    const maxAge = this.config.maxMessageAge || 7200000;
     const ncUser = this.nc.ncUser || 'moltagent';
 
     let messages = rawMessages
@@ -129,7 +129,7 @@ class ConversationContext {
       }));
 
     // Trim to token budget (rough estimate: 1 token ≈ 4 chars)
-    const maxChars = (this.config.maxTokenEstimate || 2000) * 4;
+    const maxChars = (this.config.maxTokenEstimate || 4000) * 4;
     let totalChars = 0;
     const trimmed = [];
 
@@ -154,7 +154,7 @@ class ConversationContext {
     if (!history || history.length === 0) return '';
 
     const lines = history.map(m => {
-      const role = m.role === 'assistant' ? 'MoltAgent' : m.name;
+      const role = m.role === 'assistant' ? 'Moltagent' : m.name;
       return `${role}: ${m.content}`;
     });
 

@@ -226,7 +226,7 @@ test('TC-CC-020: formatForPrompt produces conversation_history block', () => {
 
   assert.ok(formatted.includes('<conversation_history>'));
   assert.ok(formatted.includes('Funana: Do I have tasks?'));
-  assert.ok(formatted.includes('MoltAgent: Yes, 4 open tasks.'));
+  assert.ok(formatted.includes('Moltagent: Yes, 4 open tasks.'));
   assert.ok(formatted.includes('Funana: Close the first one'));
   assert.ok(formatted.includes('</conversation_history>'));
 });

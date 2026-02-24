@@ -54,6 +54,7 @@ class SessionManager extends EventEmitter {
    *
    * @param {Object} options - Configuration options
    * @param {number} [options.sessionTimeoutMs=86400000] - Session inactivity timeout (default 24h)
+   * @param {number} [options.idleTimeoutMs=1800000] - Session idle timeout for warm memory consolidation (default 30min)
    * @param {number} [options.approvalExpiryMs=300000] - Approval time-to-live (default 5min)
    * @param {number} [options.maxContextLength=100] - Maximum context entries per session
    * @param {Object} [options.auditLog] - Optional audit logger
@@ -61,6 +62,7 @@ class SessionManager extends EventEmitter {
   constructor(options = {}) {
     super();
     this.sessionTimeoutMs = options.sessionTimeoutMs || 86400000; // 24 hours
+    this.idleTimeoutMs = options.idleTimeoutMs || 1800000; // 30 minutes
     this.approvalExpiryMs = options.approvalExpiryMs || 300000; // 5 minutes
     this.maxContextLength = options.maxContextLength || 100;
     this.auditLog = options.auditLog || null;
@@ -413,11 +415,22 @@ class SessionManager extends EventEmitter {
     let approvalsRemoved = 0;
     const expired = [];
 
-    // Collect expired sessions first (avoid modifying map during iteration)
+    // Collect expired and idle sessions (avoid modifying map during iteration)
+    const idle = [];
     for (const [sessionKey, session] of this.sessions.entries()) {
       if (now - session.lastActivityAt > this.sessionTimeoutMs) {
         expired.push({ sessionKey, session });
       } else {
+        // Detect idle sessions (inactive > idleTimeoutMs, not yet marked)
+        if (!session._idleEmitted &&
+            session.context && session.context.length >= 4 &&
+            now - session.lastActivityAt > this.idleTimeoutMs) {
+          session._idleEmitted = true;
+          idle.push(session);
+        } else if (session._idleEmitted && now - session.lastActivityAt < this.idleTimeoutMs) {
+          // Reset idle flag when session becomes active again
+          session._idleEmitted = false;
+        }
         // Clean expired approvals within active sessions
         for (const [approvalKey, approval] of session.grantedApprovals.entries()) {
           if (now > approval.expiresAt) {
@@ -435,6 +448,11 @@ class SessionManager extends EventEmitter {
       this.emit('sessionExpired', session);
     }
 
+    // Emit idle events for sessions that went quiet (consolidation trigger)
+    for (const session of idle) {
+      this.emit('sessionIdle', session);
+    }
+
     if (this.auditLog && (sessionsRemoved > 0 || approvalsRemoved > 0)) {
       this.auditLog.log('cleanup_completed', {
         sessionsRemoved,
@@ -443,7 +461,7 @@ class SessionManager extends EventEmitter {
       });
     }
 
-    return { sessions: sessionsRemoved, approvals: approvalsRemoved };
+    return { sessions: sessionsRemoved, approvals: approvalsRemoved, idle: idle.length };
   }
 
   /**

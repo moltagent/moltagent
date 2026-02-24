@@ -997,7 +997,27 @@ async function initialize() {
             console.error('[SessionPersister] Failed:', err.message);
           }
         });
-        console.log('[INIT] SessionPersister ready (wired to sessionExpired events)');
+        // Wire sessionIdle to warm memory consolidation (lightweight WARM.md update, no Collectives wiki write)
+        sessionManager.on('sessionIdle', async (session) => {
+          if (!warmMemory || !session.context || session.context.length < 4) return;
+          try {
+            const recentContext = session.context
+              .filter(c => c.role === 'user' || c.role === 'assistant')
+              .slice(-8)
+              .map(c => `${c.role}: ${(c.content || '').substring(0, 150)}`)
+              .join(' | ');
+
+            await warmMemory.consolidate({
+              continuation: recentContext,
+              timestamp: new Date().toISOString()
+            });
+            console.log(`[WarmMemory] Idle consolidation for room ${session.roomToken}`);
+          } catch (err) {
+            console.error('[WarmMemory] Idle consolidation failed:', err.message);
+          }
+        });
+
+        console.log('[INIT] SessionPersister ready (wired to sessionExpired + sessionIdle events)');
       } catch (err) {
         console.warn(`[INIT] SessionPersister failed: ${err.message}`);
       }
@@ -1025,8 +1045,8 @@ async function initialize() {
     sessionCleanupTimer = setInterval(() => {
       try {
         const result = sessionManager.cleanup();
-        if (result.sessions > 0 || result.approvals > 0) {
-          console.log(`[SessionManager] Cleanup: ${result.sessions} sessions, ${result.approvals} approvals expired`);
+        if (result.sessions > 0 || result.approvals > 0 || result.idle > 0) {
+          console.log(`[SessionManager] Cleanup: ${result.sessions} sessions expired, ${result.approvals} approvals expired, ${result.idle} idle consolidated`);
         }
       } catch (err) {
         console.error('[SessionManager] Cleanup error:', err.message);

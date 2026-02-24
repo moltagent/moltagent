@@ -391,13 +391,13 @@ const config = {
     // NC_TALK_DEFAULT_TOKEN is the oldest alias (kept for backward compat).
     primaryRoom: envStr('TALK_PRIMARY_ROOM', envStr('TALK_ROOM_TOKEN', envStr('NC_TALK_DEFAULT_TOKEN', ''))),
     defaultToken: envStr('NC_TALK_DEFAULT_TOKEN', null),
-    botName: envStr('TALK_BOT_NAME', 'MoltAgent'),
+    botName: envStr('TALK_BOT_NAME', 'Moltagent'),
     conversationContext: {
       enabled: envBool('TALK_CONTEXT_ENABLED', true),
-      maxMessages: envInt('TALK_CONTEXT_MAX_MESSAGES', 6),
-      maxTokenEstimate: envInt('TALK_CONTEXT_MAX_TOKENS', 2000),
+      maxMessages: envInt('TALK_CONTEXT_MAX_MESSAGES', 20),
+      maxTokenEstimate: envInt('TALK_CONTEXT_MAX_TOKENS', 4000),
       includeSystemMessages: envBool('TALK_CONTEXT_INCLUDE_SYSTEM', false),
-      maxMessageAge: envInt('TALK_CONTEXT_MAX_AGE', 3600000)
+      maxMessageAge: envInt('TALK_CONTEXT_MAX_AGE', 7200000)
     }
   },
 
