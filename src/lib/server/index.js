@@ -102,6 +102,7 @@ function createServerComponents(deps) {
     intentRouter,
     warmMemory,
     selfHealClient,
+    budgetEnforcer,
     adminUser
   } = deps;
 
@@ -136,7 +137,9 @@ function createServerComponents(deps) {
     botNames,
     microPipeline,
     intentRouter,
-    warmMemory
+    warmMemory,
+    budgetEnforcer,
+    adminUser: adminUser || ''
   });
 
   // Create webhook handler (uses message processor)

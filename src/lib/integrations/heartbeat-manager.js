@@ -121,6 +121,9 @@ class HeartbeatManager {
     // Budget enforcer (optional, for cost control)
     this.budgetEnforcer = config.budgetEnforcer || config.llmRouter?.budget || null;
 
+    // CostTracker (optional, for per-call audit logging + JSONL flush)
+    this.costTracker = config.costTracker || null;
+
     // Cockpit (optional, Deck as control plane)
     this.cockpitManager = config.cockpitManager || null;
 
@@ -312,6 +315,15 @@ class HeartbeatManager {
         await this.budgetEnforcer.persist();
       } catch (err) {
         console.warn('[Heartbeat] Budget persist on shutdown failed:', err.message);
+      }
+    }
+
+    // Flush CostTracker audit log
+    if (this.costTracker?.flush) {
+      try {
+        await this.costTracker.flush();
+      } catch (err) {
+        console.warn('[Heartbeat] CostTracker flush on shutdown failed:', err.message);
       }
     }
 
@@ -643,7 +655,16 @@ class HeartbeatManager {
           }
 
           // Update status cards with current metrics
-          await this.cockpitManager.updateStatus({ health, costs, routerStats });
+          await this.cockpitManager.updateStatus({ health, costs, routerStats, costTracker: this.costTracker });
+
+          // Flush CostTracker audit log to Nextcloud JSONL file
+          if (this.costTracker) {
+            try {
+              await this.costTracker.flush();
+            } catch (err) {
+              console.error('[Heartbeat] Cost log flush failed:', err.message);
+            }
+          }
 
           results.cockpit = { read: true, updated: true };
         } catch (err) {

@@ -140,7 +140,15 @@ class ClaudeToolsProvider {
         }
 
         const data = await response.json();
-        return this._parseResponse(data);
+        const result = this._parseResponse(data);
+        // Capture rate limit headers for RouterChatBridge
+        if (response.headers) {
+          result._headers = {
+            requestsRemaining: this._parseHeaderInt(response.headers, 'anthropic-ratelimit-requests-remaining'),
+            tokensRemaining: this._parseHeaderInt(response.headers, 'anthropic-ratelimit-tokens-remaining'),
+          };
+        }
+        return result;
 
       } catch (err) {
         clearTimeout(timeoutId);
@@ -187,9 +195,24 @@ class ClaudeToolsProvider {
   /** @private */
   _parseResponse(data) {
     const content = data.content || [];
+    const usage = data.usage || {};
+
+    const inputTokens = usage.input_tokens || 0;
+    const outputTokens = usage.output_tokens || 0;
+    const cacheCreationTokens = usage.cache_creation_input_tokens || 0;
+    const cacheReadTokens = usage.cache_read_input_tokens || 0;
+    const tokens = inputTokens + outputTokens;
 
     const textBlocks = content.filter(b => b.type === 'text');
     const toolBlocks = content.filter(b => b.type === 'tool_use');
+
+    const base = {
+      _inputTokens: inputTokens,
+      _outputTokens: outputTokens,
+      _cacheCreationTokens: cacheCreationTokens,
+      _cacheReadTokens: cacheReadTokens,
+      _tokens: tokens,
+    };
 
     if (toolBlocks.length > 0) {
       return {
@@ -198,14 +221,24 @@ class ClaudeToolsProvider {
           id: b.id,
           name: b.name,
           arguments: b.input || {}
-        }))
+        })),
+        ...base
       };
     }
 
     return {
       content: textBlocks.map(b => b.text).join('\n') || '',
-      toolCalls: null
+      toolCalls: null,
+      ...base
     };
+  }
+
+  /** @private */
+  _parseHeaderInt(headers, name) {
+    const val = headers.get(name);
+    if (val === null || val === undefined) return null;
+    const num = parseInt(val, 10);
+    return isNaN(num) ? null : num;
   }
 }
 

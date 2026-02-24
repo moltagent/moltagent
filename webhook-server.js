@@ -344,6 +344,9 @@ try {
   AgentLoop = null;
 }
 
+// Cost metering
+const CostTracker = require('./src/lib/llm/cost-tracker');
+
 // Local Intelligence: ModelScout + MicroPipeline + DeferralQueue
 let ModelScout, MicroPipeline, DeferralQueue;
 try {
@@ -428,6 +431,7 @@ let learningLog = null;
 let freshnessChecker = null;
 let agentLoop = null; // Session 14: AgentLoop instance
 let routerChatBridge = null; // Session B2: RouterChatBridge for dynamic provider registration
+let costTracker = null; // Cost metering: per-call audit + enriched cost reporting
 let dailyBriefing = null; // First-message-of-day briefing
 let cockpitManager = null; // Session 27: Cockpit (Deck as control plane)
 let botEnroller = null; // Auto-enable Talk bot in rooms
@@ -1144,6 +1148,14 @@ async function initialize() {
       });
       console.log(`[INIT] ClaudeToolsProvider ready (${CONFIG.claude.modelStandard})`);
 
+      // --- CostTracker: per-call audit logging + enriched cost reporting ---
+      costTracker = new CostTracker({
+        ncFilesClient: ncFilesClient || undefined,
+        logDir: '/Moltagent/Logs',
+        usdToEur: 0.92,
+      });
+      console.log('[INIT] CostTracker ready');
+
       // --- Primary path: RouterChatBridge (LLMRouter v3 routing) ---
       let llmProvider = null;
 
@@ -1163,6 +1175,7 @@ async function initialize() {
           llmProvider = new RouterChatBridge({
             router: llmRouter.router,
             chatProviders,
+            costTracker,
             logger: console,
             defaultJob: 'tools'
           });
@@ -1477,6 +1490,7 @@ async function initialize() {
     botUsername: CONFIG.nc.username,
     allowedBackends: CONFIG.security.allowedBackends,
     selfHealClient,
+    budgetEnforcer: llmRouter?.router?.budget || null,
     adminUser: appConfig.cockpit?.adminUser || '',
     onTokenDiscovered: (token) => {
       // Save token for email monitor notifications (use first room we see)
@@ -1620,6 +1634,7 @@ async function initialize() {
         agentLoop,
         collectivesClient,
         ncFilesClient,
+        costTracker,
         dailyBriefing,
         talkSendQueue: talkQueue,
         primaryRoomToken: defaultTalkToken,

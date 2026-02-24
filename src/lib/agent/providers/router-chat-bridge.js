@@ -21,8 +21,9 @@ class RouterChatBridge {
    *   e.g. 'ollama-local' → OllamaToolsProvider, 'anthropic-claude' → ClaudeToolsProvider
    * @param {Object} [options.logger=console]
    * @param {string} [options.defaultJob='tools'] - Default job when none specified
+   * @param {Object} [options.costTracker] - CostTracker instance for per-call audit logging
    */
-  constructor({ router, chatProviders, logger, defaultJob } = {}) {
+  constructor({ router, chatProviders, logger, defaultJob, costTracker } = {}) {
     if (!router) throw new Error('RouterChatBridge requires a router instance');
     if (!chatProviders || chatProviders.size === 0) {
       throw new Error('RouterChatBridge requires at least one chatProvider');
@@ -32,6 +33,7 @@ class RouterChatBridge {
     this.chatProviders = chatProviders;
     this.logger = logger || console;
     this.defaultJob = defaultJob || 'tools';
+    this.costTracker = costTracker || null;
 
     // Public property — assigned post-construction (same pattern as ProviderChain)
     this.fallbackNotifier = null;
@@ -219,6 +221,22 @@ class RouterChatBridge {
           outputTokens: result._outputTokens || 0,
           headers: result._headers || null
         });
+
+        // Record per-call audit with CostTracker
+        if (this.costTracker) {
+          const model = providerObj.model || providerId;
+          this.costTracker.record({
+            model,
+            provider: providerId,
+            job,
+            trigger: params.trigger || 'user_message',
+            inputTokens: result._inputTokens || 0,
+            outputTokens: result._outputTokens || 0,
+            cacheCreationTokens: result._cacheCreationTokens || 0,
+            cacheReadTokens: result._cacheReadTokens || 0,
+            isLocal,
+          });
+        }
 
         if (isFallback) {
           this.router.stats.failovers++;

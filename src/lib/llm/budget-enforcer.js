@@ -34,6 +34,10 @@ class BudgetEnforcer {
     this.lastDailyReset = this.getDateKey();
     this.lastMonthlyReset = this.getMonthKey();
 
+    // Budget override state
+    this._overrideActive = false;
+    this._overrideExpiry = 0;
+
     // File persistence via NCRequestManager (optional)
     this.ncRequestManager = config.ncRequestManager || null;
     this._persistPath = '/remote.php/dav/files/moltagent/Memory/spending.json';
@@ -117,6 +121,11 @@ class BudgetEnforcer {
    * @returns {Object} - { allowed, reason?, spent?, budget?, resetAt? }
    */
   canSpend(providerId, estimatedCost) {
+    // Override active = bypass all checks
+    if (this.isOverrideActive()) {
+      return { allowed: true };
+    }
+
     const budget = this.budgets[providerId];
 
     // No budget configured = unlimited
@@ -351,6 +360,31 @@ class BudgetEnforcer {
     };
 
     return report;
+  }
+
+  /**
+   * Activate a temporary budget override.
+   * Allows cloud spending to bypass limits for the specified duration.
+   * @param {number} [durationMs=3600000] - Override duration (default: 1 hour)
+   */
+  activateOverride(durationMs = 3600000) {
+    this._overrideActive = true;
+    this._overrideExpiry = Date.now() + durationMs;
+    console.log(`[BudgetEnforcer] Override activated for ${durationMs / 60000} minutes`);
+  }
+
+  /**
+   * Check if override is currently active.
+   * @returns {boolean}
+   */
+  isOverrideActive() {
+    if (this._overrideActive && Date.now() < this._overrideExpiry) {
+      return true;
+    }
+    if (this._overrideActive) {
+      this._overrideActive = false;
+    }
+    return false;
   }
 
   /**

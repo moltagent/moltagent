@@ -780,7 +780,7 @@ class CockpitManager {
       // Update each known status card
       const updates = [
         { title: 'Health', formatter: this._formatHealthStatus.bind(this), data: statusData.health },
-        { title: 'Costs', formatter: this._formatCostStatus.bind(this), data: statusData.costs },
+        { title: 'Costs', formatter: this._formatCostStatus.bind(this), data: { costs: statusData.costs, costTracker: statusData.costTracker } },
         { title: 'Model Usage', formatter: this._formatModelUsage.bind(this), data: statusData.routerStats }
       ];
 
@@ -1484,7 +1484,14 @@ class CockpitManager {
    * @param {Object} costs - Cost metrics from BudgetEnforcer.getFullReport(), enriched with _providerTypes
    * @returns {string} Formatted description
    */
-  _formatCostStatus(costs) {
+  _formatCostStatus(data) {
+    // Enhanced path: use CostTracker when available
+    if (data?.costTracker) {
+      return this._formatCostStatusFromTracker(data.costTracker, data.costs);
+    }
+
+    // Legacy path: use BudgetEnforcer report directly
+    const costs = data?.costs || data;
     if (!costs || !costs.providers) {
       return 'This month: \u20ac0.00\nCloud: 0 calls\nLocal: 0 calls\nLocal ratio: --';
     }
@@ -1514,6 +1521,57 @@ class CockpitManager {
     lines.push(`Cloud: ${cloudCalls} calls${cloudProviders.length ? ' (' + cloudProviders.join(', ') + ')' : ''}`);
     lines.push(`Local: ${localCalls} calls`);
     lines.push(`Local ratio: ${totalCalls > 0 ? localRatio + '%' : '--'}`);
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Format cost summary using CostTracker data (enriched display).
+   * Shows daily + monthly with budget limits and top spending breakdown.
+   * @private
+   * @param {Object} costTracker - CostTracker instance
+   * @param {Object} [costs] - BudgetEnforcer report (for budget limit display)
+   * @returns {string} Formatted description
+   */
+  _formatCostStatusFromTracker(costTracker, costs) {
+    const totals = costTracker.getTotals();
+    const budget = this.cachedConfig?.budget || {};
+
+    const lines = [];
+
+    // Daily line
+    const dailyEur = totals.daily.costEur.toFixed(2);
+    if (budget.dailyLimit) {
+      lines.push(`Today: \u20ac${dailyEur} / \u20ac${budget.dailyLimit.toFixed(2)}`);
+    } else {
+      lines.push(`Today: \u20ac${dailyEur}`);
+    }
+
+    // Monthly line
+    const monthlyEur = totals.monthly.costEur.toFixed(2);
+    if (budget.monthlyLimit) {
+      lines.push(`This month: \u20ac${monthlyEur} / \u20ac${budget.monthlyLimit.toFixed(2)}`);
+    } else {
+      lines.push(`This month: \u20ac${monthlyEur}`);
+    }
+
+    lines.push('');
+    lines.push(`Cloud: ${totals.monthly.cloudCalls} calls`);
+    lines.push(`Local: ${totals.monthly.localCalls} calls`);
+    lines.push(`Local ratio: ${totals.localRatio}%`);
+
+    // Top spending breakdown
+    if (totals.topSpending.length > 0) {
+      lines.push('');
+      lines.push('Top spending:');
+      for (const s of totals.topSpending) {
+        lines.push(`  ${s.job} (${s.type}): \u20ac${(s.costUsd * costTracker.usdToEur).toFixed(2)}`);
+      }
+    }
+
+    // Timestamp
+    lines.push('');
+    lines.push(`_Updated: ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}_`);
 
     return lines.join('\n');
   }

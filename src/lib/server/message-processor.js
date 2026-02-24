@@ -156,6 +156,12 @@ class MessageProcessor {
     /** @type {Object|null} - WarmMemory instance */
     this.warmMemory = deps.warmMemory || null;
 
+    // Budget override: BudgetEnforcer for "override budget" command
+    /** @type {Object|null} - BudgetEnforcer instance */
+    this.budgetEnforcer = deps.budgetEnforcer || null;
+    /** @type {string} - Admin username for privileged commands (budget override) */
+    this.adminUser = deps.adminUser || '';
+
     // Session V2: VoiceManager for mode-aware voice orchestration
     /** @type {Object|null} - VoiceManager instance */
     this.voiceManager = deps.voiceManager || null;
@@ -253,6 +259,24 @@ class MessageProcessor {
       token: extracted.token,
       messagePreview: extracted.content.substring(0, 100)
     });
+
+    // Budget override detection: "override budget", "budget override", "unlock budget"
+    // Only the admin user is authorized to activate budget overrides.
+    if (this.budgetEnforcer && this._isBudgetOverride(extracted.content)) {
+      if (!this.adminUser || extracted.user !== this.adminUser) {
+        const deny = 'Budget override requires admin privileges.';
+        try { await this.sendTalkReply(extracted.token, deny, extracted.messageId); } catch (_e) { /* best effort */ }
+        await this.auditLog('budget_override_denied', { user: extracted.user, token: extracted.token });
+        return { response: deny, skipped: false, reason: 'budget_override_denied' };
+      }
+      this.budgetEnforcer.activateOverride(3600000); // 1 hour
+      const reply = 'Budget override activated for 1 hour. Cloud models are available. The override will expire automatically.';
+      try {
+        await this.sendTalkReply(extracted.token, reply, extracted.messageId);
+      } catch (_e) { /* best effort */ }
+      await this.auditLog('budget_override', { user: extracted.user, token: extracted.token });
+      return { response: reply, skipped: false, reason: 'budget_override' };
+    }
 
     // Session V2: Voice message — transcribe via VoiceManager (preferred) or WhisperClient (fallback)
     if (extracted._isVoice && extracted._voiceFile) {
@@ -580,6 +604,21 @@ class MessageProcessor {
   // ---------------------------------------------------------------------------
   // Private Methods
   // ---------------------------------------------------------------------------
+
+  /**
+   * Check if message is a budget override command.
+   * @param {string} content
+   * @returns {boolean}
+   * @private
+   */
+  _isBudgetOverride(content) {
+    if (!content) return false;
+    const text = content.toLowerCase().trim();
+    return /override\s+budget/i.test(text) ||
+           /budget\s+override/i.test(text) ||
+           /unlock\s+budget/i.test(text) ||
+           /remove\s+budget\s+limit/i.test(text);
+  }
 
   /**
    * Extract message data from Activity Streams 2.0 format

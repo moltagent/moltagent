@@ -209,6 +209,42 @@ test('Daily reset clears proactive usage', () => {
   assert.strictEqual(enforcer.proactiveBudgetExhaustedNotified, false);
 });
 
+// --- Budget Override Tests ---
+console.log('\n--- Budget Override Tests ---\n');
+
+test('activateOverride() bypasses budget limits', () => {
+  const enforcer = new BudgetEnforcer({
+    budgets: { claude: { daily: 1.00 } }
+  });
+  enforcer.recordSpend('claude', 0.95, 1000);
+  // Without override, should be blocked
+  assert.strictEqual(enforcer.canSpend('claude', 0.10).allowed, false);
+  // Activate override
+  enforcer.activateOverride(3600000); // 1 hour
+  // Now should be allowed
+  assert.strictEqual(enforcer.canSpend('claude', 0.10).allowed, true);
+});
+
+test('isOverrideActive() returns true during active override', () => {
+  const enforcer = new BudgetEnforcer({});
+  assert.strictEqual(enforcer.isOverrideActive(), false);
+  enforcer.activateOverride(3600000);
+  assert.strictEqual(enforcer.isOverrideActive(), true);
+});
+
+test('Override expires after duration', () => {
+  const enforcer = new BudgetEnforcer({
+    budgets: { claude: { daily: 1.00 } }
+  });
+  enforcer.recordSpend('claude', 0.95, 1000);
+  // Activate with very short duration (already expired)
+  enforcer._overrideActive = true;
+  enforcer._overrideExpiry = Date.now() - 1; // already expired
+  // Should not bypass
+  assert.strictEqual(enforcer.canSpend('claude', 0.10).allowed, false);
+  assert.strictEqual(enforcer.isOverrideActive(), false);
+});
+
 // --- Persistence Tests (async) ---
 
 (async () => {

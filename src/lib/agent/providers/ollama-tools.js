@@ -130,6 +130,14 @@ class OllamaToolsProvider {
   /** @private */
   _parseResponse(data) {
     const message = data.message || {};
+    const inputTokens = data.prompt_eval_count || 0;
+    const outputTokens = data.eval_count || 0;
+
+    const base = {
+      _inputTokens: inputTokens,
+      _outputTokens: outputTokens,
+      _tokens: inputTokens + outputTokens,
+    };
 
     if (message.tool_calls && message.tool_calls.length > 0) {
       return {
@@ -138,13 +146,15 @@ class OllamaToolsProvider {
           id: `ollama_${Date.now()}_${i}`,
           name: tc.function?.name,
           arguments: tc.function?.arguments || {}
-        }))
+        })),
+        ...base
       };
     }
 
     return {
       content: message.content || '',
-      toolCalls: null
+      toolCalls: null,
+      ...base
     };
   }
 }
