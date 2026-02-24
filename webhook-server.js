@@ -427,6 +427,7 @@ let contextLoader = null;
 let learningLog = null;
 let freshnessChecker = null;
 let agentLoop = null; // Session 14: AgentLoop instance
+let routerChatBridge = null; // Session B2: RouterChatBridge for dynamic provider registration
 let dailyBriefing = null; // First-message-of-day briefing
 let cockpitManager = null; // Session 27: Cockpit (Deck as control plane)
 let botEnroller = null; // Auto-enable Talk bot in rooms
@@ -1165,6 +1166,7 @@ async function initialize() {
             logger: console,
             defaultJob: 'tools'
           });
+          routerChatBridge = llmProvider;
           console.log('[INIT] RouterChatBridge active — routing through LLMRouter v3');
         } catch (bridgeErr) {
           console.warn(`[INIT] RouterChatBridge failed, falling back to ProviderChain: ${bridgeErr.message}`);
@@ -1600,6 +1602,7 @@ async function initialize() {
           initiativeLevel: appConfig.proactive.initiativeLevel
         },
         llmRouter,
+        routerChatBridge,
         notifyUser,
         auditLog: auditFn,
         knowledgeLog: learningLog,

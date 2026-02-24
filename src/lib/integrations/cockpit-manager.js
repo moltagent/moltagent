@@ -167,15 +167,12 @@ const DEFAULT_CARDS = {
     }
   ],
   system: [
-    { title: 'Search Provider',  description: '\u2699\ufe0f1 none / \u2699\ufe0f2 searxng / \u2699\ufe0f3 searxng / \u2699\ufe0f4 custom\n\n---\n\nWeb search capability for the research job.\n\u2699\ufe0f1  No web search. Agent relies on its training knowledge.\n\u2699\ufe0f2  SearXNG (self-hosted, private, no tracking).\n\u2699\ufe0f3  Same as \u2699\ufe0f2 (SearXNG is the recommended default).\n\u2699\ufe0f4  Custom: write the search endpoint URL above the line.', defaultLabel: '\u2699\ufe0f3' },
     { title: 'Models', description: '\u2699\ufe0f1 all-local / \u2699\ufe0f2 smart mix / \u2699\ufe0f3 cloud-first / \u2699\ufe0f4 custom\n\n---\n\nYour agent does six types of work. Each can use a different\nmodel. Models are tried left to right \u2014 first is preferred,\nrest are fallbacks.\n\nJobs:\n  quick    \u2014 classify, route, label, simple decisions\n  tools    \u2014 Deck, Calendar, Mail, File operations\n  thinking \u2014 analysis, planning, complex reasoning\n  writing  \u2014 emails, documents, creative content\n  research \u2014 web search + synthesis\n  coding   \u2014 write, debug, review code\n\nPresets:\n  \u2699\ufe0f1  All-local. Free, private, slower.\n      Every job \u2192 qwen3:8b\n  \u2699\ufe0f2  Smart mix. Three tiers: heavy cloud for depth,\n      workhorse cloud for volume, local as fallback.\n      quick/tools  \u2192 qwen3:8b \u2192 claude-sonnet\n      thinking     \u2192 claude-opus \u2192 claude-sonnet \u2192 qwen3:8b\n      writing      \u2192 claude-opus \u2192 claude-sonnet \u2192 qwen3:8b\n      research     \u2192 claude-sonnet \u2192 claude-opus \u2192 qwen3:8b\n      coding       \u2192 claude-sonnet \u2192 claude-opus \u2192 qwen3:8b\n  \u2699\ufe0f3  Cloud-first. Maximum quality, highest cost.\n      Every job \u2192 cloud providers \u2192 qwen3:8b\n  \u2699\ufe0f4  Custom: write your roster above the --- line.\n      Format: job: provider1, provider2', defaultLabel: '\u2699\ufe0f2' },
-    { title: 'Daily Digest',    description: '\u2699\ufe0f1 off / \u2699\ufe0f2 morning (08:00) / \u2699\ufe0f3 morning (08:00)\n\n---\n\nDaily summary message in Talk with overnight activity,\nupcoming calendar, and pending tasks.\n\u2699\ufe0f1  No digest.\n\u2699\ufe0f2  Sent at 08:00 local time.\n\u2699\ufe0f4  Custom: write your preferred time above the line.', defaultLabel: '\u2699\ufe0f3' },
-    { title: 'Auto-tag Files',  description: '\u2699\ufe0f1 off / \u2699\ufe0f2 on / \u2699\ufe0f3 on\n\n---\n\nAutomatically tag files in Nextcloud based on content.\n\u2699\ufe0f1  No auto-tagging.\n\u2699\ufe0f2  Tag files on upload and when processing tasks.', defaultLabel: '\u2699\ufe0f3' },
+    { title: 'Daily Digest',    description: '\u2699\ufe0f1 off / \u2699\ufe0f2 morning (08:00) / \u2699\ufe0f3 custom\n\n---\n\nDaily summary message in Talk with overnight activity,\nupcoming calendar, and pending tasks.\n\u2699\ufe0f1  No digest.\n\u2699\ufe0f2  Sent at 08:00 local time.\n\u2699\ufe0f3  Custom: write your preferred time above the line.', defaultLabel: '\u2699\ufe0f2' },
     { title: 'Initiative Level', description: '\u2699\ufe0f1 minimal / \u2699\ufe0f2 moderate / \u2699\ufe0f3 active / \u2699\ufe0f4 autonomous\n\n---\n\nHow proactive your agent is between conversations.\n\u2699\ufe0f1  Only responds when spoken to. No background work.\n\u2699\ufe0f2  Checks inbox, processes queued tasks on heartbeat.\n\u2699\ufe0f3  Suggests improvements, flags issues, prepares briefs.\n\u2699\ufe0f4  Takes action within guardrails without asking first.', defaultLabel: '\u2699\ufe0f2' },
-    { title: 'Working Hours',   description: '08:00-18:00\n\n---\n\nWhen your agent is allowed to do proactive work. Outside\nthese hours, the agent sleeps \u2014 it still responds if you\nmessage it directly in Talk.\nFormat: HH:MM-HH:MM (24-hour).\n\u2699\ufe0f4  Custom: write your hours above the line.', defaultLabel: '\u2699\ufe0f4' },
-    { title: '\ud83d\udcb0 Budget Limits', description: 'Daily cloud limit: \u20ac5.00\nMonthly cloud limit: \u20ac50.00\nWorkflow model: auto\nWarning threshold: 80%\n\n---\n\nCost controls for cloud LLM usage. The agent automatically\nswitches to local models when limits are reached.\nEdit the values above the line to adjust.', defaultLabel: '\u2699\ufe0f4' },
-    { title: '\ud83d\udd0a Voice', description: '\u2699\ufe0f1 off / \u2699\ufe0f2 listen / \u2699\ufe0f3 full voice\n\n---\n\nVoice processing mode.\n\u2699\ufe0f1  Off \u2014 voice messages are ignored.\n\u2699\ufe0f2  Listen \u2014 transcribe voice messages, respond as text.\n\u2699\ufe0f3  Full \u2014 transcribe voice, respond with voice + text.', defaultLabel: '\u2699\ufe0f1' },
-    { title: '\ud83c\udfe5 Infrastructure', description: 'Services:\n- ollama: auto\n- whisper: auto\n- searxng: auto\n- nextcloud: auto\n\nNotify on failure: on\nAuto-heal: on\nCheck interval: 3\n\n---\n\nService health monitoring. The agent checks these endpoints\non every Nth heartbeat and reports status on the Health card.\nauto = use default URL. Replace with a custom URL if needed.', defaultLabel: '\u2699\ufe0f4' }
+    { title: 'Working Hours',   description: '\u2699\ufe0f1 always / \u2699\ufe0f2 business (09:00-18:00) / \u2699\ufe0f3 extended (07:00-22:00) / \u2699\ufe0f4 custom\n\n---\n\nWhen your agent is allowed to do proactive work. Outside\nthese hours, the agent sleeps \u2014 it still responds if you\nmessage it directly in Talk.\n\u2699\ufe0f1  Always active (24/7).\n\u2699\ufe0f2  Business hours: 09:00-18:00.\n\u2699\ufe0f3  Extended hours: 07:00-22:00.\n\u2699\ufe0f4  Custom: write your hours above the line as HH:MM-HH:MM.', defaultLabel: '\u2699\ufe0f2' },
+    { title: '\ud83d\udcb0 Budget Limits', description: '\u2699\ufe0f1 no limits / \u2699\ufe0f2 conservative / \u2699\ufe0f3 moderate / \u2699\ufe0f4 custom\n\n---\n\nCost controls for cloud LLM usage. The agent automatically\nswitches to local models when limits are reached.\n\u2699\ufe0f1  No spending limits.\n\u2699\ufe0f2  Daily: \u20ac2.00 / Monthly: \u20ac30.00\n\u2699\ufe0f3  Daily: \u20ac5.00 / Monthly: \u20ac50.00\n\u2699\ufe0f4  Custom: edit the values above the line.', defaultLabel: '\u2699\ufe0f3' },
+    { title: '\ud83d\udd0a Voice', description: '\u2699\ufe0f1 off / \u2699\ufe0f2 listen / \u2699\ufe0f3 full voice\n\n---\n\nVoice processing mode.\n\u2699\ufe0f1  Off \u2014 voice messages are ignored.\n\u2699\ufe0f2  Listen \u2014 transcribe voice messages, respond as text.\n\u2699\ufe0f3  Full \u2014 transcribe voice, respond with voice + text.', defaultLabel: '\u2699\ufe0f1' }
   ],
   status: [
     { title: 'Health', description: '\ud83d\udfe2 OK -- Uptime: 0d 0h -- Last error: none' },
@@ -201,12 +198,10 @@ const PERSONA_VALUE_MAP = {
  * @type {Object<string, {option1: string, option2: string, option3: string}>}
  */
 const SYSTEM_VALUE_MAP = {
-  'Search Provider':   { off: 'custom',     moderate: 'perplexity', on: 'searxng' },
-  'LLM Tier':          { off: 'local-only', moderate: 'balanced',   on: 'premium' },
-  'Daily Digest':      { off: 'off',        moderate: 'off',        on: 'on' },
-  'Auto-tag Files':    { off: 'off',        moderate: 'off',        on: 'on' },
+  'Daily Digest':      { off: 'off',        moderate: '08:00',      on: 'custom' },
   'Initiative Level':  { off: '1',          moderate: '2',          on: '3' },
-  '\ud83d\udd0a Voice':        { off: 'off',        moderate: 'listen',     on: 'full' }
+  '\ud83d\udd0a Voice':        { off: 'off',        moderate: 'listen',     on: 'full' },
+  'Working Hours':     { off: '00:00-23:59', moderate: '09:00-18:00', on: '07:00-22:00' }
 };
 
 /**
@@ -214,7 +209,7 @@ const SYSTEM_VALUE_MAP = {
  * Supports the renamed card ("Models") and legacy titles.
  * @type {Array<string>}
  */
-const MODELS_CARD_TITLES = ['models', 'llm tier', 'llm provider'];
+const MODELS_CARD_TITLES = ['models', 'llm provider'];
 
 // ===========================================================================
 // Custom Error
@@ -506,7 +501,12 @@ class CockpitManager {
       const systemCards = stacksByKey.system || [];
       const budgetCard = systemCards.find(c => c.title && c.title.includes('Budget'));
       if (budgetCard) {
-        config.budget = this._parseBudgetCard(budgetCard.description);
+        const budgetResolved = this._resolveCardValue(budgetCard, {});
+        if (budgetResolved.source === 'custom') {
+          config.budget = this._parseBudgetCard(budgetCard.description);
+        } else {
+          config.budget = this._expandBudgetPreset(budgetResolved.source);
+        }
       }
 
       // Cache the result
@@ -676,10 +676,7 @@ class CockpitManager {
     }
 
     const config = {
-      searchProvider: 'searxng',
-      llmTier: 'balanced',
       dailyDigest: 'off',
-      autoTagFiles: false,
       initiativeLevel: 2,
       workingHours: '08:00-18:00'
     };
@@ -688,9 +685,12 @@ class CockpitManager {
       const title = card.title;
 
       if (title === 'Working Hours') {
-        // Custom label, read description
-        const resolved = this._resolveCardValue(card, {});
+        const resolved = this._resolveCardValue(card, SYSTEM_VALUE_MAP[title]);
         if (resolved.source === 'custom') {
+          // ⚙4: read HH:MM-HH:MM range from description above the --- line
+          const timeMatch = (card.description || '').split('---')[0].match(/\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}/);
+          config.workingHours = timeMatch ? timeMatch[0] : '09:00-18:00';
+        } else if (resolved.value) {
           config.workingHours = resolved.value;
         }
       } else if (title === 'Initiative Level') {
@@ -698,24 +698,22 @@ class CockpitManager {
         const parsed = parseInt(resolved.value, 10);
         config.initiativeLevel = isNaN(parsed) ? 2 : parsed;
       } else if (title === 'Daily Digest') {
-        // Option 3 = on, read description for time
         const resolved = this._resolveCardValue(card, SYSTEM_VALUE_MAP[title]);
-        if (resolved.value === 'on') {
-          config.dailyDigest = card.description || '08:00';
+        if (resolved.source === 'custom' || resolved.value === 'custom') {
+          // ⚙3 custom: read time from description above the --- line
+          const timeMatch = (card.description || '').split('---')[0].match(/\d{1,2}:\d{2}/);
+          config.dailyDigest = timeMatch ? timeMatch[0] : '08:00';
+        } else if (resolved.value && resolved.value !== 'off') {
+          config.dailyDigest = resolved.value; // e.g. '08:00' from ⚙2
         } else {
           config.dailyDigest = 'off';
         }
-      } else if (title === 'Auto-tag Files') {
-        const resolved = this._resolveCardValue(card, SYSTEM_VALUE_MAP[title]);
-        config.autoTagFiles = resolved.value === 'on';
-      } else if (title === 'Search Provider') {
-        const resolved = this._resolveCardValue(card, SYSTEM_VALUE_MAP[title]);
-        config.searchProvider = resolved.value;
       } else if (MODELS_CARD_TITLES.includes(title.toLowerCase())) {
         config.modelsConfig = this._parseModelsCard(card);
-        // Backward compat: keep llmTier for any old consumers
-        const presetToTier = { 'all-local': 'local-only', 'smart-mix': 'balanced', 'cloud-first': 'premium' };
-        config.llmTier = presetToTier[config.modelsConfig.preset] || 'balanced';
+        // Write resolved preset state back to card (non-blocking)
+        if (config.modelsConfig?.preset) {
+          this._writeResolvedStateToCard(card, config.modelsConfig.preset).catch(() => {});
+        }
       } else if (title === '\ud83d\udd0a Voice' || title.includes('Voice')) {
         const resolved = this._resolveCardValue(card, SYSTEM_VALUE_MAP['\ud83d\udd0a Voice']);
         const validVoiceModes = ['off', 'listen', 'full'];
@@ -728,8 +726,6 @@ class CockpitManager {
         } else {
           config.voice = 'off';
         }
-      } else if (title === '\ud83c\udfe5 Infrastructure' || title.includes('Infrastructure')) {
-        config.infra = this._parseInfraCard(card.description);
       }
     }
 
@@ -939,6 +935,23 @@ class CockpitManager {
   // ===========================================================================
 
   /**
+   * Expand a Budget Limits preset label into a budget config object.
+   * Maps ⚙1/⚙2/⚙3 to fixed limit values; returns null for custom (⚙4).
+   *
+   * @private
+   * @param {string} source - Label source: 'off' (⚙1), 'moderate' (⚙2), 'on' (⚙3), 'custom' (⚙4)
+   * @returns {Object|null} Budget config or null to fall through to custom parsing
+   */
+  _expandBudgetPreset(source) {
+    switch (source) {
+      case 'off':      return { dailyLimit: null, monthlyLimit: null }; // ⚙1 no limits
+      case 'moderate': return { dailyLimit: 2.00, monthlyLimit: 30.00 }; // ⚙2 conservative
+      case 'on':       return { dailyLimit: 5.00, monthlyLimit: 50.00 }; // ⚙3 moderate
+      default:         return null; // fall through to custom parsing
+    }
+  }
+
+  /**
    * Parse a Budget Limits card description into a config object.
    * Expected format (one key-value per line):
    *   Daily cloud limit: €5.00
@@ -997,62 +1010,6 @@ class CockpitManager {
   }
 
   /**
-   * Parse an Infrastructure card description into a config object.
-   * Expected format:
-   *   Services:
-   *   - ollama: auto
-   *   - whisper: http://...
-   *
-   *   Notify on failure: on
-   *   Auto-heal: on
-   *   Check interval: 3
-   *
-   * @private
-   * @param {string} description - Card description text
-   * @returns {Object} Parsed infra config
-   */
-  _parseInfraCard(description) {
-    const config = { services: {}, notifyOnFailure: true, autoHeal: true, checkInterval: 3 };
-    const lines = (description || '').split('---')[0].split('\n');
-    let inServices = false;
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-
-      // Detect "Services:" header
-      if (/^services:/i.test(trimmed)) {
-        inServices = true;
-        continue;
-      }
-
-      // Service entry: "- name: url"
-      if (inServices && trimmed.startsWith('-')) {
-        const match = trimmed.match(/^-\s*(\w+):\s*(.+)/i);
-        if (match) {
-          config.services[match[1].toLowerCase()] = match[2].trim();
-        }
-        continue;
-      }
-
-      // Key-value settings (end service section)
-      const kvMatch = trimmed.match(/^(.+?):\s*(.+)/i);
-      if (kvMatch) {
-        inServices = false;
-        const key = kvMatch[1].trim().toLowerCase();
-        const val = kvMatch[2].trim().toLowerCase();
-        if (key.includes('notify'))
-          config.notifyOnFailure = val === 'on' || val === 'true';
-        if (key.includes('auto-heal') || key.includes('heal'))
-          config.autoHeal = val === 'on' || val === 'true';
-        if (key.includes('check interval') || key.includes('interval'))
-          config.checkInterval = parseInt(val) || 3;
-      }
-    }
-
-    return config;
-  }
-
-  /**
    * Parse the Models card into a modelsConfig object.
    * Maps ⚙ labels to presets, or parses a custom roster from the card description.
    *
@@ -1064,12 +1021,19 @@ class CockpitManager {
     const { source } = this._resolveCardValue(card, {});
 
     if (source === 'custom') {
-      const roster = this._parseCustomRoster(card.description);
-      if (Object.keys(roster).length > 0) {
-        return { roster };
+      try {
+        // Try new Players/Roster format first
+        const customConfig = this._parseCustomModelsCard(card.description);
+        if (customConfig) return customConfig;
+        // Fall back to legacy job: player1, player2 format
+        const roster = this._parseCustomRoster(card.description);
+        if (Object.keys(roster).length > 0) return { roster };
+        console.warn('[CockpitManager] Custom roster (\u29994) is empty, falling back to smart-mix');
+        return { preset: 'smart-mix' };
+      } catch (err) {
+        console.error(`[CockpitManager] Failed to parse Models card: ${err.message}`);
+        return null;
       }
-      console.warn('[CockpitManager] Custom roster (⚙4) is empty, falling back to smart-mix');
-      return { preset: 'smart-mix' };
     }
 
     // Map label source to preset
@@ -1118,6 +1082,204 @@ class CockpitManager {
     }
 
     return roster;
+  }
+
+  /**
+   * Parse a Models card description in the new Players/Roster format.
+   * Returns null if the description has no Players section, so the caller
+   * can fall back to legacy parsing.
+   *
+   * @private
+   * @param {string} description - Card description text
+   * @returns {{ players: Object, roster: Object, localDefault: string|null, preset: string }|null}
+   */
+  _parseCustomModelsCard(description) {
+    if (!description) return null;
+
+    const configSection = description.split('---')[0];
+    const allLines = configSection.split('\n');
+
+    let currentSection = null;
+    const playerLines = [];
+    const rosterLines = [];
+
+    for (const line of allLines) {
+      const lower = line.trim().toLowerCase();
+      if (lower.startsWith('players:')) { currentSection = 'players'; continue; }
+      if (lower.startsWith('roster:')) { currentSection = 'roster'; continue; }
+      if (currentSection === 'players') playerLines.push(line);
+      if (currentSection === 'roster') rosterLines.push(line);
+    }
+
+    const players = this._parsePlayersSection(playerLines);
+    if (Object.keys(players).length === 0) return null;
+
+    const localDefault = this._findLocalDefault(players);
+    const roster = this._parseRosterSection(rosterLines, players, localDefault);
+
+    return { players, roster, localDefault, preset: 'custom' };
+  }
+
+  /**
+   * Find the first local player name in the players map, used as the
+   * automatic last-resort fallback in roster chains.
+   *
+   * @private
+   * @param {Object} players - Map of modelName → player definition
+   * @returns {string|null} First local player name, or null if none
+   */
+  _findLocalDefault(players) {
+    for (const [name, def] of Object.entries(players)) {
+      if (def.local) return name;
+    }
+    return null;
+  }
+
+  /**
+   * Parse a Players section into a map of model definitions.
+   * Each line format: `<scope>: <model1>, <model2> (<provider-type>[, key: <label>][, endpoint: <url>])`
+   * scope is `local` or `cloud` — determines the `local` boolean on each entry.
+   *
+   * @private
+   * @param {string[]} lines - Lines from the Players section
+   * @returns {Object} Map of modelName → { type, model, credentialLabel, endpoint, local }
+   */
+  _parsePlayersSection(lines) {
+    const players = {};
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+
+      // Match: local: model1, model2 (provider-type, key: label, endpoint: url)
+      const match = trimmed.match(/^(?:local|cloud)\s*:\s*(.+?)\s*\(([^)]+)\)\s*$/i);
+      if (!match) continue;
+
+      const modelsStr = match[1];
+      const paramsStr = match[2];
+
+      // First param is provider type; remaining are key: value pairs
+      const params = paramsStr.split(',').map(s => s.trim());
+      const providerType = params[0];
+      const kvPairs = {};
+      for (let i = 1; i < params.length; i++) {
+        const kv = params[i].match(/^(\w+)\s*:\s*(.+)$/);
+        if (kv) kvPairs[kv[1]] = kv[2].trim();
+      }
+
+      const isLocal = trimmed.toLowerCase().startsWith('local');
+      const modelNames = modelsStr.split(',').map(m => m.trim()).filter(Boolean);
+
+      for (const modelName of modelNames) {
+        players[modelName] = {
+          type: providerType,
+          model: modelName,
+          credentialLabel: kvPairs.key || null,
+          endpoint: kvPairs.endpoint || null,
+          local: isLocal,
+        };
+      }
+    }
+    return players;
+  }
+
+  /**
+   * Parse a Roster section into a map of job → ordered player name array.
+   * Each line format: `<job>: <player1> → <player2> → ...` (or ASCII ->).
+   * Applies the last-local rule: if the chain doesn't end with a local player,
+   * `localDefault` is appended as a final fallback.
+   *
+   * @private
+   * @param {string[]} lines - Lines from the Roster section
+   * @param {Object} players - Players map from _parsePlayersSection
+   * @param {string|null} localDefault - First local player name (or null)
+   * @returns {Object} Map of job → [playerName, ...]
+   */
+  _parseRosterSection(lines, players, localDefault) {
+    const roster = {};
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+
+      const match = trimmed.match(/^(\w[\w-]*)\s*:\s*(.+)$/);
+      if (!match) continue;
+
+      const job = match[1].toLowerCase();
+      if (job === 'credentials') continue; // security invariant
+
+      const chain = match[2]
+        .split(/\s*(?:\u2192|->)\s*/)
+        .map(p => p.trim())
+        .filter(Boolean);
+
+      const validChain = [];
+      for (const playerName of chain) {
+        if (players[playerName]) {
+          validChain.push(playerName);
+        } else {
+          console.warn(`[CockpitManager] Unknown player '${playerName}' in ${job} roster. Skipped.`);
+        }
+      }
+
+      if (validChain.length === 0) {
+        if (localDefault) validChain.push(localDefault);
+        else continue;
+      }
+
+      // Last-local rule: ensure chain ends with a local player as ultimate fallback
+      const lastPlayer = players[validChain[validChain.length - 1]];
+      if (lastPlayer && !lastPlayer.local && localDefault && !validChain.includes(localDefault)) {
+        validChain.push(localDefault);
+      }
+
+      roster[job] = validChain;
+    }
+    return roster;
+  }
+
+  /**
+   * Format a human-readable description of an active preset for write-back to the card.
+   *
+   * @private
+   * @param {string} preset - Preset name ('all-local', 'smart-mix', 'cloud-first')
+   * @returns {string} Formatted state text
+   */
+  _formatResolvedState(preset) {
+    const header = '\u2699\ufe0f1 all-local / \u2699\ufe0f2 smart mix / \u2699\ufe0f3 cloud-first / \u2699\ufe0f4 custom';
+    const presetDescriptions = {
+      'all-local':   'Active preset: All-local\nEvery job \u2192 local models',
+      'smart-mix':   'Active preset: Smart mix\nCloud for depth, local as fallback',
+      'cloud-first': 'Active preset: Cloud-first\nMaximum quality, highest cost'
+    };
+    return `${header}\n\n${presetDescriptions[preset] || ''}`;
+  }
+
+  /**
+   * Write the resolved preset state back to the Models card description so users
+   * can see what is actively running. Skips the API call if the content is
+   * unchanged (avoids unnecessary Deck writes on every heartbeat).
+   *
+   * @private
+   * @param {Object} card - Deck card object (must have .id and .description)
+   * @param {string} preset - Active preset name
+   * @returns {Promise<void>}
+   */
+  async _writeResolvedStateToCard(card, preset) {
+    const stateText = this._formatResolvedState(preset);
+    const currentConfig = (card.description || '').split('---')[0].trim();
+    if (currentConfig === stateText.trim()) return; // avoid API spam
+
+    const docSection = (card.description || '').split('---').slice(1).join('---');
+    const newDescription = docSection ? `${stateText}\n\n---\n${docSection}` : stateText;
+
+    try {
+      const stackId = this.stacks.system;
+      if (stackId) {
+        const updatePath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${stackId}/cards/${card.id}`;
+        await this.deck._request('PUT', updatePath, { description: newDescription });
+      }
+    } catch (err) {
+      console.warn(`[CockpitManager] Failed to write resolved state to Models card: ${err.message}`);
+    }
   }
 
   /**
@@ -1415,26 +1577,34 @@ class CockpitManager {
    * @returns {Promise<void>}
    */
   async _removeObsoleteCards(stacks) {
-    const statusStackId = this.stacks.status;
-    if (!statusStackId) return;
+    // Obsolete cards per stack — user-added custom cards are preserved.
+    const OBSOLETE_TITLES = {
+      status: new Set([
+        'Tasks This Week', 'Costs This Month', 'Knowledge',
+        'Recent Actions', '\ud83d\udcb0 Costs'
+      ]),
+      system: new Set([
+        'Search Provider', 'Auto-tag Files', 'LLM Tier',
+        '\ud83c\udfe5 Infrastructure'
+      ])
+    };
 
-    const stack = stacks.find(s => s.id === statusStackId);
-    if (!stack?.cards) return;
+    for (const [stackKey, obsoleteTitles] of Object.entries(OBSOLETE_TITLES)) {
+      const stackId = this.stacks[stackKey];
+      if (!stackId) continue;
 
-    // Explicit list of known obsolete titles — user-added custom cards are preserved.
-    const OBSOLETE_STATUS_TITLES = new Set([
-      'Tasks This Week', 'Costs This Month', 'Knowledge',
-      'Recent Actions', '\ud83d\udcb0 Costs'
-    ]);
+      const stack = stacks.find(s => s.id === stackId);
+      if (!stack?.cards) continue;
 
-    for (const card of stack.cards) {
-      if (OBSOLETE_STATUS_TITLES.has(card.title)) {
-        try {
-          const deletePath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${statusStackId}/cards/${card.id}`;
-          await this.deck._request('DELETE', deletePath);
-          console.log(`[CockpitManager] Removed obsolete status card: "${card.title}"`);
-        } catch (err) {
-          console.warn(`[CockpitManager] Failed to remove card "${card.title}": ${err.message}`);
+      for (const card of stack.cards) {
+        if (obsoleteTitles.has(card.title)) {
+          try {
+            const deletePath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${stackId}/cards/${card.id}`;
+            await this.deck._request('DELETE', deletePath);
+            console.log(`[CockpitManager] Removed obsolete card: "${card.title}"`);
+          } catch (err) {
+            console.warn(`[CockpitManager] Failed to remove card "${card.title}": ${err.message}`);
+          }
         }
       }
     }
@@ -1585,10 +1755,7 @@ class CockpitManager {
 
 /**
  * @typedef {Object} SystemConfig
- * @property {string} searchProvider - searxng | perplexity | custom
- * @property {string} llmTier - local-only | balanced | premium
  * @property {string} dailyDigest - Time string (e.g., "08:00") or "off"
- * @property {boolean} autoTagFiles - Whether to auto-tag files
  * @property {number} initiativeLevel - 1-4
  * @property {string} workingHours - Time range (e.g., "08:00-18:00")
  */

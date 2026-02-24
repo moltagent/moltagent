@@ -105,6 +105,26 @@ class RouterChatBridge {
   }
 
   /**
+   * Dynamically register a chat provider for a router provider ID.
+   * Used when the Models card adds new players at runtime.
+   * @param {string} id - Router provider ID
+   * @param {Object} chatProvider - Chat provider instance (must implement chat())
+   */
+  registerChatProvider(id, chatProvider) {
+    this.chatProviders.set(id, chatProvider);
+    this.logger.info(`[RouterChatBridge] Registered chat provider: ${id}`);
+  }
+
+  /**
+   * Remove a dynamically registered chat provider.
+   * @param {string} id - Router provider ID
+   */
+  unregisterChatProvider(id) {
+    this.chatProviders.delete(id);
+    this.logger.info(`[RouterChatBridge] Unregistered chat provider: ${id}`);
+  }
+
+  /**
    * Route a chat request through LLMRouter's chain, executing via registered chat providers.
    *
    * @param {Object} params

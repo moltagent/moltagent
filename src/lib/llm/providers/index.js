@@ -108,6 +108,71 @@ const ADAPTERS = {
         outputPer1M: 0.90
       }
     }
+  },
+
+  // Generic adapter — endpoint and model must be supplied by the caller.
+  // Useful for any OpenAI-compatible service not listed above.
+  'openai-compatible': {
+    class: OpenAICompatibleProvider,
+    defaults: {
+      costModel: {
+        type: 'per_token',
+        inputPer1M: 1.00,
+        outputPer1M: 3.00
+      }
+    }
+  },
+
+  perplexity: {
+    class: OpenAICompatibleProvider,
+    defaults: {
+      endpoint: 'https://api.perplexity.ai',
+      model: 'sonar-pro',
+      costModel: {
+        type: 'per_token',
+        inputPer1M: 3.00,
+        outputPer1M: 15.00
+      }
+    }
+  },
+
+  fireworks: {
+    class: OpenAICompatibleProvider,
+    defaults: {
+      endpoint: 'https://api.fireworks.ai/inference/v1',
+      model: 'accounts/fireworks/models/llama-v3p1-70b-instruct',
+      costModel: {
+        type: 'per_token',
+        inputPer1M: 0.90,
+        outputPer1M: 0.90
+      }
+    }
+  },
+
+  openrouter: {
+    class: OpenAICompatibleProvider,
+    defaults: {
+      endpoint: 'https://openrouter.ai/api/v1',
+      model: 'anthropic/claude-sonnet-4',
+      costModel: {
+        type: 'per_token',
+        inputPer1M: 3.00,
+        outputPer1M: 15.00
+      }
+    }
+  },
+
+  xai: {
+    class: OpenAICompatibleProvider,
+    defaults: {
+      endpoint: 'https://api.x.ai/v1',
+      model: 'grok-3',
+      costModel: {
+        type: 'per_token',
+        inputPer1M: 3.00,
+        outputPer1M: 15.00
+      }
+    }
   }
 };
 

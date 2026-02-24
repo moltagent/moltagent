@@ -909,8 +909,9 @@ class LLMRouter {
     const base = this._resolvePreset('smart-mix');
 
     for (const [job, chain] of Object.entries(roster)) {
-      if (!VALID_JOBS.has(job)) continue;
-      if (job === JOBS.CREDENTIALS) continue; // credentials always resolved from preset
+      // Accept any job name except credentials (which is always local-only)
+      // This allows future job types (images, video, music) from the Models card
+      if (job === JOBS.CREDENTIALS) continue;
       // Filter to known provider IDs
       const validChain = chain.filter(id => this.providers.has(id));
       if (validChain.length > 0) {
@@ -944,6 +945,65 @@ class LLMRouter {
     return this._activePreset || null;
   }
 
+  /**
+   * Dynamically register a new provider (e.g., from Cockpit Models card).
+   * @param {string} id - Provider ID (e.g., 'perplexity-sonar-pro')
+   * @param {Object} providerConfig - Config for createProvider()
+   * @param {string} providerConfig.adapter - Adapter type (e.g., 'perplexity', 'openai-compatible')
+   * @param {string} providerConfig.endpoint - API endpoint
+   * @param {string} providerConfig.model - Model name
+   * @param {string} [providerConfig.credentialName] - Credential name
+   * @param {Function} [providerConfig.getCredential] - Credential getter
+   */
+  registerProvider(id, providerConfig) {
+    try {
+      const adapter = providerConfig.adapter || 'openai-compatible';
+      const credentialName = providerConfig.credentialName;
+      const getCredential = providerConfig.getCredential || (
+        credentialName ? () => this.getCredential(credentialName) : async () => null
+      );
+
+      const provider = createProvider(adapter, {
+        id,
+        ...providerConfig,
+        getCredential
+      });
+
+      this.providers.set(id, provider);
+      console.log(`[LLMRouter] Registered provider: ${id} (${adapter}, ${providerConfig.model})`);
+    } catch (error) {
+      console.error(`[LLMRouter] Failed to register provider ${id}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Remove a dynamically registered provider.
+   * @param {string} id - Provider ID
+   */
+  unregisterProvider(id) {
+    if (this.providers.has(id)) {
+      this.providers.delete(id);
+      console.log(`[LLMRouter] Unregistered provider: ${id}`);
+    }
+  }
+
+  /**
+   * Get metadata for all registered providers.
+   * @returns {Object} Map of id → { type, model, endpoint }
+   */
+  getRegisteredProviders() {
+    const result = {};
+    for (const [id, provider] of this.providers) {
+      result[id] = {
+        type: provider.type,
+        model: provider.model,
+        endpoint: provider.endpoint || null
+      };
+    }
+    return result;
+  }
+
   // ---------------------------------------------------------------------------
   // Public routing API for RouterChatBridge
   // ---------------------------------------------------------------------------
@@ -960,8 +1020,6 @@ class LLMRouter {
    * @returns {{ chain: Array<{id: string, provider: Object}>, skipped: Array<{id: string, reason: string}> }}
    */
   buildProviderChain(job, context = {}) {
-    const validJob = VALID_JOBS.has(job) ? job : JOBS.QUICK;
-
     // Check proactive budget → forceLocal
     const opType = context.opType || 'reactive';
     let forceLocal = !!context.forceLocal;
@@ -972,10 +1030,18 @@ class LLMRouter {
     // Build raw chain from roster or legacy
     let rawChain;
     if (this._roster) {
-      rawChain = this._buildRosterChain(validJob, { forceLocal });
+      rawChain = this._buildRosterChain(job, { forceLocal });
+
+      // Unknown job with no roster entry — fall back to local providers
+      if (!rawChain || rawChain.length === 0) {
+        console.warn(`[LLMRouter] No roster entry for job '${job}'. Using local fallback.`);
+        rawChain = [...this.providers.entries()]
+          .filter(([, p]) => p.type === 'local')
+          .map(([id]) => id);
+      }
     } else {
-      // Legacy mode: map job → role
-      const role = this._jobToRole(validJob);
+      // Legacy mode: unknown jobs map to QUICK
+      const role = this._jobToRole(VALID_JOBS.has(job) ? job : JOBS.QUICK);
       rawChain = this._buildChain(role);
       if (forceLocal) {
         rawChain = rawChain.filter(id => {

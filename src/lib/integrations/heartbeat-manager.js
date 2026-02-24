@@ -41,6 +41,7 @@ class HeartbeatManager {
   constructor(config) {
     this.config = config;
     this.llmRouter = config.llmRouter;
+    this.routerChatBridge = config.routerChatBridge || null;
     this.notifyUser = config.notifyUser || (async () => {});
     this.auditLog = config.auditLog || (async () => {});
     this.credentialBroker = config.credentialBroker;
@@ -574,14 +575,18 @@ class HeartbeatManager {
             // Models/roster propagation (B2)
             if (cockpitConfig.system.modelsConfig && this.llmRouter) {
               const mc = cockpitConfig.system.modelsConfig;
-              if (mc.roster && this.llmRouter.setRoster) {
+
+              // Handle null (parse error) — keep current config
+              if (mc === null) {
+                console.warn('[Heartbeat] Models card parse error. Keeping current configuration.');
+              } else if (mc.players) {
+                // Custom roster with player definitions — register providers
+                await this._handleModelsUpdate(mc);
+              } else if (mc.roster) {
                 this.llmRouter.setRoster(mc.roster);
-              } else if (mc.preset && this.llmRouter.setPreset) {
+              } else if (mc.preset) {
                 this.llmRouter.setPreset(mc.preset);
               }
-            } else if (cockpitConfig.system.llmTier && this.llmRouter?.setTier) {
-              // Deprecated fallback for old card format
-              this.llmRouter.setTier(cockpitConfig.system.llmTier);
             }
           }
 
@@ -598,15 +603,6 @@ class HeartbeatManager {
           // Propagate voice mode from Cockpit to VoiceManager
           if (this.voiceManager && cockpitConfig?.system?.voice) {
             this.voiceManager.setMode(cockpitConfig.system.voice);
-          }
-
-          // Propagate infra settings from Cockpit to InfraMonitor
-          if (cockpitConfig?.system?.infra && this.infraMonitor) {
-            const infraConf = cockpitConfig.system.infra;
-            if (infraConf.checkInterval && infraConf.checkInterval !== this.infraMonitor.checkInterval) {
-              console.log(`[Heartbeat] Infra check interval changed: ${this.infraMonitor.checkInterval} -> ${infraConf.checkInterval}`);
-              this.infraMonitor.checkInterval = infraConf.checkInterval;
-            }
           }
 
           // Enrich cost report with provider type info (local vs cloud)
@@ -1496,6 +1492,106 @@ class HeartbeatManager {
       return now.toLocaleDateString('sv-SE', { timeZone: this.settings.timezone });
     } catch {
       return now.toISOString().split('T')[0];
+    }
+  }
+
+  /**
+   * Handle a Models card update with player definitions.
+   * Registers new providers, removes stale ones, and updates the roster.
+   * @private
+   * @param {Object} modelsConfig - Parsed models config with players and roster
+   */
+  async _handleModelsUpdate(modelsConfig) {
+    if (!modelsConfig?.players || !this.llmRouter) return;
+
+    const { getProviderDefaults } = require('../providers/known-providers');
+    const { OpenAIToolsProvider } = require('../agent/providers/openai-tools');
+    const { ClaudeToolsProvider } = require('../agent/providers/claude-tools');
+    const { OllamaToolsProvider } = require('../agent/providers/ollama-tools');
+
+    // Track what we register for roster building
+    const registeredIds = new Set();
+
+    for (const [name, playerDef] of Object.entries(modelsConfig.players)) {
+      // Build a provider ID from the player name
+      const providerId = name;
+
+      try {
+        // Look up provider defaults
+        const defaults = getProviderDefaults(playerDef.type);
+        const adapter = defaults?.adapter || 'openai-compatible';
+        const endpoint = playerDef.endpoint || defaults?.endpoint || null;
+        const protocol = defaults?.protocol || 'openai';
+        const isLocal = playerDef.local || defaults?.local || false;
+
+        // Fetch API key if needed
+        let apiKey = null;
+        if (playerDef.credentialLabel && this.credentialBroker) {
+          apiKey = await this.credentialBroker.get(playerDef.credentialLabel);
+          if (!apiKey) {
+            console.warn(
+              `[Heartbeat] API key '${playerDef.credentialLabel}' not found in NC Passwords. ` +
+              `Player '${name}' unavailable. Store the key and the agent will pick it up on next heartbeat.`
+            );
+            continue;
+          }
+        }
+
+        // For local providers (ollama), use the configured ollama URL
+        const effectiveEndpoint = isLocal
+          ? (endpoint || this.config?.heartbeat?.ollamaUrl || 'http://localhost:11434')
+          : endpoint;
+
+        if (!isLocal && !effectiveEndpoint) {
+          console.warn(`[Heartbeat] No endpoint for provider '${playerDef.type}'. Player '${name}' skipped.`);
+          continue;
+        }
+
+        // Register base provider with router
+        const apiKeySnapshot = apiKey;
+        const getCredential = apiKeySnapshot ? (async () => apiKeySnapshot) : (async () => null);
+        this.llmRouter.registerProvider(providerId, {
+          adapter,
+          endpoint: effectiveEndpoint,
+          model: playerDef.model,
+          type: isLocal ? 'local' : 'api',
+          getCredential,
+          costModel: isLocal ? { type: 'free' } : undefined,
+        });
+
+        // Register chat provider with RouterChatBridge
+        if (this.routerChatBridge) {
+          let chatProvider;
+          if (isLocal && (playerDef.type === 'ollama' || playerDef.type === 'llama-cpp' || playerDef.type === 'vllm')) {
+            chatProvider = new OllamaToolsProvider({
+              endpoint: effectiveEndpoint,
+              model: playerDef.model,
+            });
+          } else if (protocol === 'anthropic') {
+            chatProvider = new ClaudeToolsProvider({
+              model: playerDef.model,
+              getApiKey: async () => apiKeySnapshot,
+            });
+          } else {
+            chatProvider = new OpenAIToolsProvider({
+              endpoint: effectiveEndpoint,
+              model: playerDef.model,
+              getApiKey: async () => apiKeySnapshot,
+            });
+          }
+          this.routerChatBridge.registerChatProvider(providerId, chatProvider);
+        }
+
+        registeredIds.add(providerId);
+        console.log(`[Heartbeat] Registered player: ${name} (${playerDef.type})`);
+      } catch (err) {
+        console.error(`[Heartbeat] Failed to register player '${name}': ${err.message}`);
+      }
+    }
+
+    // Update roster if provided
+    if (modelsConfig.roster && Object.keys(modelsConfig.roster).length > 0) {
+      this.llmRouter.setRoster(modelsConfig.roster);
     }
   }
 

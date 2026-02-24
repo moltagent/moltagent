@@ -72,8 +72,8 @@ console.log('--- MODELS_CARD_TITLES constant ---\n');
 test('TC-MOD-CONST-001: MODELS_CARD_TITLES is exported', () => {
   assert.ok(Array.isArray(MODELS_CARD_TITLES));
   assert.ok(MODELS_CARD_TITLES.includes('models'));
-  assert.ok(MODELS_CARD_TITLES.includes('llm tier'));
   assert.ok(MODELS_CARD_TITLES.includes('llm provider'));
+  assert.ok(!MODELS_CARD_TITLES.includes('llm tier'), 'llm tier should be removed');
 });
 
 // ============================================================
@@ -130,9 +130,8 @@ test('TC-MOD-PARSE-006: old "Option 2" label -> smart-mix', () => {
   assert.strictEqual(result.preset, 'smart-mix');
 });
 
-test('TC-MOD-PARSE-007: card titled "LLM Tier" is found by MODELS_CARD_TITLES', () => {
-  assert.ok(MODELS_CARD_TITLES.includes('llm tier'));
-  assert.ok(MODELS_CARD_TITLES.includes('LLM Tier'.toLowerCase()));
+test('TC-MOD-PARSE-007: card titled "LLM Tier" is no longer in MODELS_CARD_TITLES', () => {
+  assert.ok(!MODELS_CARD_TITLES.includes('llm tier'), 'LLM Tier removed as ghost card');
 });
 
 test('TC-MOD-PARSE-008: card titled "Models" is found by MODELS_CARD_TITLES', () => {
@@ -231,7 +230,7 @@ asyncTest('TC-MOD-INT-001: getSystemSettings returns modelsConfig with preset', 
   const config = await cm.getSystemSettings(cards);
   assert.ok(config.modelsConfig);
   assert.strictEqual(config.modelsConfig.preset, 'smart-mix');
-  assert.strictEqual(config.llmTier, 'balanced');
+  assert.strictEqual(config.llmTier, undefined, 'llmTier removed');
 });
 
 asyncTest('TC-MOD-INT-002: getSystemSettings returns modelsConfig with roster for \u2699\ufe0f4', async () => {
@@ -244,26 +243,24 @@ asyncTest('TC-MOD-INT-002: getSystemSettings returns modelsConfig with roster fo
   assert.ok(config.modelsConfig.roster);
   assert.deepStrictEqual(config.modelsConfig.roster.quick, ['qwen3:8b']);
   assert.deepStrictEqual(config.modelsConfig.roster.thinking, ['claude-opus']);
-  assert.strictEqual(config.llmTier, 'balanced');
+  assert.strictEqual(config.llmTier, undefined, 'llmTier removed');
 });
 
-asyncTest('TC-MOD-INT-003: backward compat — llmTier set from preset', async () => {
+asyncTest('TC-MOD-INT-003: llmTier no longer derived from preset', async () => {
   const cm = makeCM();
   const cards = [makeCard('Models', '', [g1Label])];
 
   const config = await cm.getSystemSettings(cards);
   assert.strictEqual(config.modelsConfig.preset, 'all-local');
-  assert.strictEqual(config.llmTier, 'local-only');
+  assert.strictEqual(config.llmTier, undefined, 'llmTier backward compat removed');
 });
 
-asyncTest('TC-MOD-INT-004: legacy "LLM Tier" card title still matches', async () => {
+asyncTest('TC-MOD-INT-004: legacy "LLM Tier" card title no longer matches', async () => {
   const cm = makeCM();
   const cards = [makeCard('LLM Tier', '', [g3Label])];
 
   const config = await cm.getSystemSettings(cards);
-  assert.ok(config.modelsConfig, 'Should parse LLM Tier as models card');
-  assert.strictEqual(config.modelsConfig.preset, 'cloud-first');
-  assert.strictEqual(config.llmTier, 'premium');
+  assert.strictEqual(config.modelsConfig, undefined, 'LLM Tier should no longer match as models card');
 });
 
 test('TC-MOD-INT-005: empty custom roster falls back to smart-mix', () => {
@@ -316,6 +313,237 @@ test('TC-MOD-DC-006: all mode cards have --- separator', () => {
   for (const card of DEFAULT_CARDS.modes) {
     assert.ok(card.description.includes('---'), `Mode "${card.title}" should have --- separator`);
   }
+});
+
+// ============================================================
+// Tests: _parsePlayersSection
+// ============================================================
+
+console.log('\n--- _parsePlayersSection ---\n');
+
+test('TC-MOD-PLAY-001: single provider, single model', () => {
+  const cm = makeCM();
+  const lines = ['  local: qwen3:8b (ollama)'];
+  const players = cm._parsePlayersSection(lines);
+  assert.ok(players['qwen3:8b']);
+  assert.strictEqual(players['qwen3:8b'].type, 'ollama');
+  assert.strictEqual(players['qwen3:8b'].local, true);
+  assert.strictEqual(players['qwen3:8b'].credentialLabel, null);
+  assert.strictEqual(players['qwen3:8b'].endpoint, null);
+});
+
+test('TC-MOD-PLAY-002: single provider, multiple models share type and local flag', () => {
+  const cm = makeCM();
+  const lines = ['  local: qwen3:8b, qwen3:14b-fast (ollama)'];
+  const players = cm._parsePlayersSection(lines);
+  assert.ok(players['qwen3:8b']);
+  assert.ok(players['qwen3:14b-fast']);
+  assert.strictEqual(players['qwen3:8b'].type, 'ollama');
+  assert.strictEqual(players['qwen3:14b-fast'].type, 'ollama');
+  assert.strictEqual(players['qwen3:8b'].local, true);
+  assert.strictEqual(players['qwen3:14b-fast'].local, true);
+});
+
+test('TC-MOD-PLAY-003: multiple provider lines produce separate entries', () => {
+  const cm = makeCM();
+  const lines = [
+    '  local: qwen3:8b (ollama)',
+    '  cloud: claude-sonnet-4.5 (anthropic)',
+  ];
+  const players = cm._parsePlayersSection(lines);
+  assert.ok(players['qwen3:8b']);
+  assert.ok(players['claude-sonnet-4.5']);
+  assert.strictEqual(players['qwen3:8b'].local, true);
+  assert.strictEqual(players['claude-sonnet-4.5'].local, false);
+  assert.strictEqual(players['claude-sonnet-4.5'].type, 'anthropic');
+});
+
+test('TC-MOD-PLAY-004: credential label (key:) is captured', () => {
+  const cm = makeCM();
+  const lines = ['  cloud: pplx-sonar-pro (perplexity, key: perplexity-api-key)'];
+  const players = cm._parsePlayersSection(lines);
+  assert.ok(players['pplx-sonar-pro']);
+  assert.strictEqual(players['pplx-sonar-pro'].credentialLabel, 'perplexity-api-key');
+  assert.strictEqual(players['pplx-sonar-pro'].type, 'perplexity');
+  assert.strictEqual(players['pplx-sonar-pro'].local, false);
+});
+
+test('TC-MOD-PLAY-005: custom endpoint is captured', () => {
+  const cm = makeCM();
+  const lines = ['  local: llama3 (ollama, endpoint: http://gpu-box:11434)'];
+  const players = cm._parsePlayersSection(lines);
+  assert.ok(players['llama3']);
+  assert.strictEqual(players['llama3'].endpoint, 'http://gpu-box:11434');
+  assert.strictEqual(players['llama3'].local, true);
+});
+
+// ============================================================
+// Tests: _parseRosterSection
+// ============================================================
+
+console.log('\n--- _parseRosterSection ---\n');
+
+function makePlayers() {
+  return {
+    'qwen3:8b':         { type: 'ollama', model: 'qwen3:8b',         credentialLabel: null, endpoint: null, local: true },
+    'claude-sonnet':    { type: 'anthropic', model: 'claude-sonnet', credentialLabel: null, endpoint: null, local: false },
+    'claude-opus':      { type: 'anthropic', model: 'claude-opus',   credentialLabel: null, endpoint: null, local: false },
+    'pplx-sonar-pro':   { type: 'perplexity', model: 'pplx-sonar-pro', credentialLabel: 'ppx', endpoint: null, local: false },
+  };
+}
+
+test('TC-MOD-ROST-001: standard jobs with unicode → separator', () => {
+  const cm = makeCM();
+  const lines = [
+    '  quick:    claude-sonnet \u2192 qwen3:8b',
+    '  thinking: claude-opus \u2192 claude-sonnet \u2192 qwen3:8b',
+  ];
+  const roster = cm._parseRosterSection(lines, makePlayers(), 'qwen3:8b');
+  assert.deepStrictEqual(roster.quick,    ['claude-sonnet', 'qwen3:8b']);
+  assert.deepStrictEqual(roster.thinking, ['claude-opus', 'claude-sonnet', 'qwen3:8b']);
+});
+
+test('TC-MOD-ROST-002: ASCII -> separator works the same as unicode →', () => {
+  const cm = makeCM();
+  const lines = ['  quick: claude-sonnet -> qwen3:8b'];
+  const roster = cm._parseRosterSection(lines, makePlayers(), 'qwen3:8b');
+  assert.deepStrictEqual(roster.quick, ['claude-sonnet', 'qwen3:8b']);
+});
+
+test('TC-MOD-ROST-003: custom job names are accepted (not limited to six defaults)', () => {
+  const cm = makeCM();
+  const lines = ['  summarise: claude-sonnet \u2192 qwen3:8b'];
+  const roster = cm._parseRosterSection(lines, makePlayers(), 'qwen3:8b');
+  assert.ok(roster.summarise);
+  assert.deepStrictEqual(roster.summarise, ['claude-sonnet', 'qwen3:8b']);
+});
+
+test('TC-MOD-ROST-004: unknown player name is warned and skipped', () => {
+  const cm = makeCM();
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (msg) => warnings.push(msg);
+  const lines = ['  quick: ghost-model \u2192 qwen3:8b'];
+  const roster = cm._parseRosterSection(lines, makePlayers(), 'qwen3:8b');
+  console.warn = origWarn;
+  // ghost-model skipped, qwen3:8b remains
+  assert.deepStrictEqual(roster.quick, ['qwen3:8b']);
+  assert.ok(warnings.some(w => w.includes("ghost-model")));
+});
+
+test('TC-MOD-ROST-005: last-local rule appends localDefault when chain ends cloud', () => {
+  const cm = makeCM();
+  // Chain ends with cloud player claude-sonnet — qwen3:8b should be appended
+  const lines = ['  quick: claude-sonnet'];
+  const roster = cm._parseRosterSection(lines, makePlayers(), 'qwen3:8b');
+  assert.deepStrictEqual(roster.quick, ['claude-sonnet', 'qwen3:8b']);
+});
+
+test('TC-MOD-ROST-006: last-local rule not applied when chain already ends with local', () => {
+  const cm = makeCM();
+  const lines = ['  quick: claude-sonnet \u2192 qwen3:8b'];
+  const roster = cm._parseRosterSection(lines, makePlayers(), 'qwen3:8b');
+  // Should not double-append qwen3:8b
+  assert.deepStrictEqual(roster.quick, ['claude-sonnet', 'qwen3:8b']);
+  assert.strictEqual(roster.quick.filter(p => p === 'qwen3:8b').length, 1);
+});
+
+// ============================================================
+// Tests: _parseCustomModelsCard
+// ============================================================
+
+console.log('\n--- _parseCustomModelsCard ---\n');
+
+const FULL_PLAYERS_ROSTER_DESC = [
+  'Players:',
+  '  local: qwen3:8b, qwen3:14b-fast (ollama)',
+  '  cloud: claude-sonnet (anthropic)',
+  '  cloud: pplx-sonar-pro (perplexity, key: perplexity-api-key)',
+  '',
+  'Roster:',
+  '  quick:     claude-sonnet \u2192 qwen3:8b',
+  '  tools:     claude-sonnet \u2192 qwen3:8b',
+  '  thinking:  claude-sonnet \u2192 qwen3:14b-fast',
+  '  research:  pplx-sonar-pro \u2192 claude-sonnet \u2192 qwen3:8b',
+  '---',
+  'Documentation below the line (never parsed)',
+].join('\n');
+
+test('TC-MOD-CMC-001: full Players + Roster description parses correctly', () => {
+  const cm = makeCM();
+  const result = cm._parseCustomModelsCard(FULL_PLAYERS_ROSTER_DESC);
+  assert.ok(result, 'should return non-null');
+  assert.strictEqual(result.preset, 'custom');
+  // Players
+  assert.ok(result.players['qwen3:8b']);
+  assert.strictEqual(result.players['qwen3:8b'].local, true);
+  assert.ok(result.players['claude-sonnet']);
+  assert.strictEqual(result.players['claude-sonnet'].local, false);
+  assert.ok(result.players['pplx-sonar-pro']);
+  assert.strictEqual(result.players['pplx-sonar-pro'].credentialLabel, 'perplexity-api-key');
+  // localDefault picks first local player
+  assert.strictEqual(result.localDefault, 'qwen3:8b');
+  // Roster
+  assert.deepStrictEqual(result.roster.quick,    ['claude-sonnet', 'qwen3:8b']);
+  assert.deepStrictEqual(result.roster.tools,    ['claude-sonnet', 'qwen3:8b']);
+  assert.deepStrictEqual(result.roster.research, ['pplx-sonar-pro', 'claude-sonnet', 'qwen3:8b']);
+});
+
+test('TC-MOD-CMC-002: empty description returns null', () => {
+  const cm = makeCM();
+  assert.strictEqual(cm._parseCustomModelsCard(null), null);
+  assert.strictEqual(cm._parseCustomModelsCard(''), null);
+  assert.strictEqual(cm._parseCustomModelsCard('   '), null);
+});
+
+test('TC-MOD-CMC-003: description without Players section returns null (legacy fallback)', () => {
+  const cm = makeCM();
+  const legacyDesc = 'quick: qwen3:8b\nthinking: claude-opus\n---\ndocs';
+  assert.strictEqual(cm._parseCustomModelsCard(legacyDesc), null);
+});
+
+// ============================================================
+// Tests: _parseModelsCard with ⚙4 new/legacy/error behaviour
+// ============================================================
+
+console.log('\n--- _parseModelsCard ⚙4 new/legacy/error paths ---\n');
+
+test('TC-MOD-PARSE-009: ⚙4 with new Players/Roster format takes priority over legacy', () => {
+  const cm = makeCM();
+  const card = makeCard('Models', FULL_PLAYERS_ROSTER_DESC, [g4Label]);
+  const result = cm._parseModelsCard(card);
+  assert.ok(result, 'should return non-null');
+  assert.strictEqual(result.preset, 'custom');
+  assert.ok(result.players, 'new format returns players map');
+  assert.ok(result.roster, 'new format returns roster map');
+  assert.strictEqual(result.roster.quick[0], 'claude-sonnet');
+});
+
+test('TC-MOD-PARSE-010: ⚙4 falls back to legacy format when no Players section', () => {
+  const cm = makeCM();
+  const legacyDesc = 'quick: qwen3:8b\nthinking: claude-opus\n---\ndocs';
+  const card = makeCard('Models', legacyDesc, [g4Label]);
+  const result = cm._parseModelsCard(card);
+  assert.ok(result, 'should return non-null');
+  // Legacy format returns { roster } without players/localDefault
+  assert.ok(result.roster, 'legacy roster present');
+  assert.strictEqual(result.players, undefined);
+  assert.deepStrictEqual(result.roster.quick, ['qwen3:8b']);
+});
+
+test('TC-MOD-PARSE-011: ⚙4 parse error returns null (HeartbeatManager keeps current config)', () => {
+  const cm = makeCM();
+  // Force a throw by patching the internal method
+  cm._parseCustomModelsCard = () => { throw new Error('simulated parse failure'); };
+  cm._parseCustomRoster = () => { throw new Error('simulated legacy failure'); };
+  const errors = [];
+  const origError = console.error;
+  console.error = (msg) => errors.push(msg);
+  const card = makeCard('Models', 'some description', [g4Label]);
+  const result = cm._parseModelsCard(card);
+  console.error = origError;
+  assert.strictEqual(result, null);
+  assert.ok(errors.some(e => e.includes('Failed to parse Models card')));
 });
 
 // ============================================================

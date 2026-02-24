@@ -132,6 +132,17 @@ class LegacyLLMRouter {
   getLocalRoster() { return this._router.getLocalRoster(); }
   hasCloudPlayers() { return this._router.hasCloudPlayers(); }
   async isCloudAvailable() { return this._router.isCloudAvailable(); }
+
+  // Cockpit propagation proxies
+  setPreset(name) { return this._router.setPreset(name); }
+  setRoster(roster) { return this._router.setRoster(roster); }
+  getRoster() { return this._router.getRoster(); }
+  getPreset() { return this._router.getPreset(); }
+
+  // Dynamic provider registration (B2: Models card wiring)
+  registerProvider(id, providerConfig) { return this._router.registerProvider(id, providerConfig); }
+  unregisterProvider(id) { return this._router.unregisterProvider(id); }
+  getRegisteredProviders() { return this._router.getRegisteredProviders(); }
 }
 
 module.exports = LegacyLLMRouter;

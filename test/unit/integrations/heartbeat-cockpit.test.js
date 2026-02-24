@@ -92,7 +92,7 @@ console.log('\n=== Heartbeat-Cockpit Integration Tests ===\n');
         persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
         guardrails: [],
         mode: { name: 'Full Auto', description: 'Max initiative.' },
-        system: { searchProvider: 'searxng', llmTier: 'balanced', dailyDigest: '08:00', autoTagFiles: true, initiativeLevel: 2, workingHours: '08:00-18:00' }
+        system: { dailyDigest: '08:00', initiativeLevel: 2, workingHours: '08:00-18:00' }
       };
     };
     mockCockpit.updateStatus = async (arg) => { updateStatusArg = arg; };
@@ -202,7 +202,7 @@ console.log('\n=== Heartbeat-Cockpit Integration Tests ===\n');
     mockCockpit.readConfig = async () => ({
       style: null, persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
       guardrails: [], mode: null,
-      system: { searchProvider: 'searxng', llmTier: 'balanced', dailyDigest: '08:00', autoTagFiles: true, initiativeLevel: 2, workingHours: '08:00-18:00' }
+      system: { dailyDigest: '08:00', initiativeLevel: 2, workingHours: '08:00-18:00' }
     });
     mockCockpit.updateStatus = async () => {};
 
@@ -249,7 +249,7 @@ console.log('\n=== Heartbeat-Cockpit Integration Tests ===\n');
       persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
       guardrails: [],
       mode: null,
-      system: { searchProvider: 'searxng', llmTier: 'balanced', dailyDigest: '09:30', autoTagFiles: true, initiativeLevel: 2, workingHours: '08:00-18:00' }
+      system: { dailyDigest: '09:30', initiativeLevel: 2, workingHours: '08:00-18:00' }
     });
     mockCockpit.updateStatus = async () => {};
 
@@ -262,15 +262,15 @@ console.log('\n=== Heartbeat-Cockpit Integration Tests ===\n');
     assert.strictEqual(hb._cockpitDailyDigest, '09:30', 'Daily digest should be propagated');
   });
 
-  await asyncTest('pulse() propagates LLM tier to router when setTier exists', async () => {
-    let setTierCalled = null;
+  await asyncTest('pulse() propagates models preset to router when setPreset exists', async () => {
+    let setPresetCalled = null;
     const mockCockpit = createMockCockpitManager();
     mockCockpit.readConfig = async () => ({
       style: null,
       persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
       guardrails: [],
       mode: null,
-      system: { searchProvider: 'searxng', llmTier: 'local-only', dailyDigest: 'off', autoTagFiles: false, initiativeLevel: 2, workingHours: '08:00-18:00' }
+      system: { modelsConfig: { preset: 'all-local' }, dailyDigest: 'off', initiativeLevel: 2, workingHours: '08:00-18:00' }
     });
     mockCockpit.updateStatus = async () => {};
 
@@ -278,15 +278,15 @@ console.log('\n=== Heartbeat-Cockpit Integration Tests ===\n');
     const hb = new HeartbeatManager(config);
     stubHeartbeatMethods(hb);
 
-    // Mock llmRouter with setTier
+    // Mock llmRouter with setPreset
     hb.llmRouter = {
       route: async () => ({ result: 'ok', tokens: 10 }),
-      setTier: (tier) => { setTierCalled = tier; }
+      setPreset: (preset) => { setPresetCalled = preset; }
     };
 
     await hb.pulse();
 
-    assert.strictEqual(setTierCalled, 'local-only', 'setTier should be called with cockpit value');
+    assert.strictEqual(setPresetCalled, 'all-local', 'setPreset should be called with cockpit value');
   });
 
   test('_parseWorkingHours() parses valid HH:MM-HH:MM', () => {
@@ -438,6 +438,205 @@ console.log('\n=== Heartbeat-Cockpit Integration Tests ===\n');
 
     assert.strictEqual(setModeArg, 'out-of-office', 'setMode should be called with out-of-office');
     assert.strictEqual(hb._activeMode, 'out-of-office', '_activeMode should be set');
+  });
+
+  // ============================================================
+  // B2: Models card / _handleModelsUpdate tests
+  // ============================================================
+
+  console.log('\n--- B2: Models card / _handleModelsUpdate Tests ---\n');
+
+  await asyncTest('TC-MODELS-001: _handleModelsUpdate registers players and calls setRoster', async () => {
+    let registerProviderCalls = [];
+    let setRosterArg = null;
+
+    const config = createMockConfig({});
+    const hb = new HeartbeatManager(config);
+
+    // Mock llmRouter with tracking
+    hb.llmRouter = {
+      route: async () => ({ result: 'ok', tokens: 10 }),
+      registerProvider: (id, cfg) => { registerProviderCalls.push({ id, cfg }); },
+      setRoster: (r) => { setRosterArg = r; }
+    };
+
+    await hb._handleModelsUpdate({
+      players: {
+        'my-ollama': { type: 'ollama', model: 'llama3', local: true }
+      },
+      roster: { quick: ['my-ollama'] }
+    });
+
+    assert.ok(registerProviderCalls.some(c => c.id === 'my-ollama'), 'Should register my-ollama');
+    assert.deepStrictEqual(setRosterArg, { quick: ['my-ollama'] }, 'Should call setRoster with provided roster');
+  });
+
+  await asyncTest('TC-MODELS-002: _handleModelsUpdate skips players with missing API keys', async () => {
+    let registerProviderCalls = [];
+
+    const config = createMockConfig({});
+    const hb = new HeartbeatManager(config);
+
+    // credentialBroker returns null for all keys
+    hb.credentialBroker = { get: async () => null };
+    hb.llmRouter = {
+      registerProvider: (id) => { registerProviderCalls.push(id); },
+      setRoster: () => {}
+    };
+
+    await hb._handleModelsUpdate({
+      players: {
+        'perplexity-sonar': {
+          type: 'perplexity',
+          model: 'sonar-pro',
+          credentialLabel: 'perplexity-api-key'  // key doesn't exist
+        }
+      }
+    });
+
+    assert.strictEqual(registerProviderCalls.length, 0, 'Should not register player with missing API key');
+  });
+
+  await asyncTest('TC-MODELS-003: _handleModelsUpdate does not require credentialLabel for local providers', async () => {
+    let registerProviderCalls = [];
+
+    const config = createMockConfig({});
+    const hb = new HeartbeatManager(config);
+
+    hb.llmRouter = {
+      registerProvider: (id) => { registerProviderCalls.push(id); },
+      setRoster: () => {}
+    };
+
+    await hb._handleModelsUpdate({
+      players: {
+        'local-ollama': {
+          type: 'ollama',
+          model: 'qwen3:8b',
+          local: true
+          // No credentialLabel needed
+        }
+      }
+    });
+
+    assert.ok(registerProviderCalls.includes('local-ollama'), 'Local player without key should register');
+  });
+
+  await asyncTest('TC-MODELS-004: _handleModelsUpdate registers chat provider with routerChatBridge', async () => {
+    let registeredChatProviders = [];
+
+    const config = createMockConfig({});
+    const hb = new HeartbeatManager(config);
+
+    hb.llmRouter = {
+      registerProvider: () => {},
+      setRoster: () => {}
+    };
+
+    hb.routerChatBridge = {
+      registerChatProvider: (id, provider) => { registeredChatProviders.push({ id, provider }); }
+    };
+
+    await hb._handleModelsUpdate({
+      players: {
+        'local-llama': {
+          type: 'ollama',
+          model: 'llama3',
+          local: true
+        }
+      }
+    });
+
+    assert.ok(registeredChatProviders.some(e => e.id === 'local-llama'),
+      'Should register chat provider for local-llama');
+  });
+
+  await asyncTest('TC-MODELS-005: _handleModelsUpdate skips setRoster when no roster provided', async () => {
+    let setRosterCalled = false;
+
+    const config = createMockConfig({});
+    const hb = new HeartbeatManager(config);
+
+    hb.llmRouter = {
+      registerProvider: () => {},
+      setRoster: () => { setRosterCalled = true; }
+    };
+
+    await hb._handleModelsUpdate({
+      players: {
+        'local-llama': { type: 'ollama', model: 'llama3', local: true }
+      }
+      // no roster key
+    });
+
+    assert.strictEqual(setRosterCalled, false, 'setRoster should not be called when no roster provided');
+  });
+
+  await asyncTest('TC-MODELS-006: _handleModelsUpdate is a no-op when llmRouter is null', async () => {
+    const config = createMockConfig({});
+    const hb = new HeartbeatManager(config);
+    hb.llmRouter = null;
+
+    // Should not throw
+    await hb._handleModelsUpdate({
+      players: { 'local-llama': { type: 'ollama', model: 'llama3', local: true } }
+    });
+    assert.ok(true, 'Should complete without error');
+  });
+
+  await asyncTest('TC-MODELS-007: pulse() calls _handleModelsUpdate when modelsConfig.players is present', async () => {
+    let handleModelsUpdateArg = null;
+    const mockCockpit = createMockCockpitManager();
+    mockCockpit.readConfig = async () => ({
+      style: null,
+      persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
+      guardrails: [],
+      mode: null,
+      system: {
+        modelsConfig: {
+          players: { 'my-player': { type: 'ollama', model: 'llama3', local: true } },
+          roster: { quick: ['my-player'] }
+        },
+        dailyDigest: 'off',
+        initiativeLevel: 2,
+        workingHours: '08:00-18:00'
+      }
+    });
+    mockCockpit.updateStatus = async () => {};
+
+    const config = createMockConfig({ cockpitManager: mockCockpit });
+    config.llmRouter = {
+      route: async () => ({ result: 'ok', tokens: 10 }),
+      getStats: () => ({ totalCalls: 0 }),
+      registerProvider: () => {},
+      setRoster: () => {}
+    };
+    const hb = new HeartbeatManager(config);
+    stubHeartbeatMethods(hb);
+
+    // Spy on _handleModelsUpdate
+    const original = hb._handleModelsUpdate.bind(hb);
+    hb._handleModelsUpdate = async (mc) => { handleModelsUpdateArg = mc; return original(mc); };
+
+    await hb.pulse();
+
+    assert.ok(handleModelsUpdateArg !== null, '_handleModelsUpdate should have been called');
+    assert.ok(handleModelsUpdateArg.players, 'players should be passed to _handleModelsUpdate');
+  });
+
+  await asyncTest('TC-MODELS-008: routerChatBridge set from config', async () => {
+    const fakeBridge = { registerChatProvider: () => {}, unregisterChatProvider: () => {} };
+    const config = createMockConfig({});
+    config.routerChatBridge = fakeBridge;
+
+    const hb = new HeartbeatManager(config);
+    assert.strictEqual(hb.routerChatBridge, fakeBridge, 'routerChatBridge should be stored from config');
+  });
+
+  test('TC-MODELS-009: routerChatBridge defaults to null', () => {
+    const config = createMockConfig({});
+    const hb = new HeartbeatManager(config);
+    assert.strictEqual(hb.routerChatBridge, null);
   });
 
   summary();

@@ -154,10 +154,7 @@ function createSampleStacks() {
     {
       id: 105, title: '\ud83d\udd27 System', order: 4,
       cards: [
-        { id: 341, title: 'Search Provider', description: 'searxng/perplexity/custom', labels: [g3Label] },
-        { id: 342, title: 'LLM Tier', description: 'local-only/balanced/premium', labels: [g2Label] },
         { id: 343, title: 'Daily Digest', description: '08:00', labels: [g3Label] },
-        { id: 344, title: 'Auto-tag Files', description: 'off/on', labels: [g3Label] },
         { id: 345, title: 'Initiative Level', description: '1/2/3/4', labels: [g2Label] },
         { id: 346, title: 'Working Hours', description: '08:00-18:00', labels: [g4Label] }
       ]
@@ -295,12 +292,15 @@ test('DEFAULT_CARDS has 5 mode cards with Full Auto starred', () => {
   assert.strictEqual(starred[0].title, 'Full Auto');
 });
 
-test('DEFAULT_CARDS has 9 system cards (including Budget Limits + Voice + Infrastructure)', () => {
-  assert.strictEqual(DEFAULT_CARDS.system.length, 9);
+test('DEFAULT_CARDS has 6 system cards (Models, Daily Digest, Initiative Level, Working Hours, Budget Limits, Voice)', () => {
+  assert.strictEqual(DEFAULT_CARDS.system.length, 6);
   const titles = DEFAULT_CARDS.system.map(c => c.title);
+  assert.ok(titles.some(t => t.includes('Models')), 'Should include Models card');
   assert.ok(titles.some(t => t.includes('Budget')), 'Should include Budget Limits card');
   assert.ok(titles.some(t => t.includes('Voice')), 'Should include Voice card');
-  assert.ok(titles.some(t => t.includes('Infrastructure')), 'Should include Infrastructure card');
+  assert.ok(!titles.some(t => t.includes('Infrastructure')), 'Should NOT include Infrastructure card');
+  assert.ok(!titles.some(t => t === 'Search Provider'), 'Should NOT include Search Provider');
+  assert.ok(!titles.some(t => t === 'Auto-tag Files'), 'Should NOT include Auto-tag Files');
 });
 
 test('DEFAULT_CARDS has 3 status cards: Health, Costs, Model Usage', () => {
@@ -322,15 +322,22 @@ test('PERSONA_VALUE_MAP covers all option-based persona dimensions (off/moderate
 });
 
 test('SYSTEM_VALUE_MAP covers all option-based system settings', () => {
-  assert.ok(SYSTEM_VALUE_MAP['Search Provider']);
-  assert.ok(SYSTEM_VALUE_MAP['LLM Tier']);
   assert.ok(SYSTEM_VALUE_MAP['Daily Digest']);
-  assert.ok(SYSTEM_VALUE_MAP['Auto-tag Files']);
   assert.ok(SYSTEM_VALUE_MAP['Initiative Level']);
   assert.ok(SYSTEM_VALUE_MAP['\ud83d\udd0a Voice'], 'Voice entry should exist in SYSTEM_VALUE_MAP');
   assert.strictEqual(SYSTEM_VALUE_MAP['\ud83d\udd0a Voice'].off, 'off');
   assert.strictEqual(SYSTEM_VALUE_MAP['\ud83d\udd0a Voice'].moderate, 'listen');
   assert.strictEqual(SYSTEM_VALUE_MAP['\ud83d\udd0a Voice'].on, 'full');
+  assert.strictEqual(SYSTEM_VALUE_MAP['Daily Digest'].off, 'off', 'Daily Digest off should be off');
+  assert.strictEqual(SYSTEM_VALUE_MAP['Daily Digest'].moderate, '08:00', 'Daily Digest moderate (⚙2) should be 08:00');
+  assert.strictEqual(SYSTEM_VALUE_MAP['Daily Digest'].on, 'custom', 'Daily Digest on (⚙3) should be custom');
+  assert.ok(SYSTEM_VALUE_MAP['Working Hours'], 'Working Hours entry should exist in SYSTEM_VALUE_MAP');
+  assert.strictEqual(SYSTEM_VALUE_MAP['Working Hours'].off, '00:00-23:59', 'Working Hours off (⚙1) should be always-on range');
+  assert.strictEqual(SYSTEM_VALUE_MAP['Working Hours'].moderate, '09:00-18:00', 'Working Hours moderate (⚙2) should be business hours');
+  assert.strictEqual(SYSTEM_VALUE_MAP['Working Hours'].on, '07:00-22:00', 'Working Hours on (⚙3) should be extended hours');
+  assert.strictEqual(SYSTEM_VALUE_MAP['Search Provider'], undefined, 'Search Provider should be removed');
+  assert.strictEqual(SYSTEM_VALUE_MAP['LLM Tier'], undefined, 'LLM Tier should be removed');
+  assert.strictEqual(SYSTEM_VALUE_MAP['Auto-tag Files'], undefined, 'Auto-tag Files should be removed');
 });
 
 // --- Bootstrap tests ---
@@ -660,29 +667,87 @@ asyncTest('getSystemSettings() maps label colors to correct values', async () =>
   const deck = createMockDeckClient();
   const cm = new CockpitManager({ deckClient: deck });
 
-  const g1Label = { id: 2, title: '⚙️1', color: 'e9322d' };
-  const g2Label = { id: 3, title: '⚙️2', color: 'f0c400' };
-  const g3Label = { id: 4, title: '⚙️3', color: '00b600' };
-  const g4Label = { id: 5, title: '⚙️4', color: '0000ff' };
+  const g2Label = { id: 3, title: '\u2699\ufe0f2', color: 'f0c400' };
+  const g3Label = { id: 4, title: '\u2699\ufe0f3', color: '00b600' };
+  const g4Label = { id: 5, title: '\u2699\ufe0f4', color: '0000ff' };
 
   const cards = [
-    { id: 341, title: 'Search Provider', description: 'searxng/perplexity/custom', labels: [g3Label] },
-    { id: 342, title: 'LLM Tier', description: 'local-only/balanced/premium', labels: [g2Label] },
-    { id: 343, title: 'Daily Digest', description: '08:00', labels: [g3Label] },
-    { id: 344, title: 'Auto-tag Files', description: 'off/on', labels: [g3Label] },
+    // ⚙3 = custom for Daily Digest: reads time from description
+    { id: 343, title: 'Daily Digest', description: '09:30\n\n---\n\nCustom time', labels: [g3Label] },
     { id: 345, title: 'Initiative Level', description: '1/2/3/4', labels: [g2Label] },
-    { id: 346, title: 'Working Hours', description: '08:00-18:00', labels: [g4Label] }
+    // ⚙4 = custom for Working Hours: reads range from description
+    { id: 346, title: 'Working Hours', description: '08:00-18:00\n\n---\n\nCustom hours', labels: [g4Label] }
   ];
 
   const result = await cm.getSystemSettings(cards);
 
   assert.ok(result, 'Should return system settings object');
-  assert.strictEqual(result.searchProvider, 'searxng', 'On should map to searxng');
-  assert.strictEqual(result.llmTier, 'balanced', 'Moderate should map to balanced');
-  assert.strictEqual(result.dailyDigest, '08:00', 'Daily digest time should be read from description when on');
-  assert.strictEqual(result.autoTagFiles, true, 'Auto-tag should be enabled');
+  assert.strictEqual(result.dailyDigest, '09:30', 'Daily Digest ⚙3 custom should read time from description');
   assert.strictEqual(result.initiativeLevel, 2, 'Initiative level should be parsed from option');
-  assert.strictEqual(result.workingHours, '08:00-18:00', 'Custom label should read description');
+  assert.strictEqual(result.workingHours, '08:00-18:00', 'Working Hours ⚙4 custom should read range from description');
+  assert.strictEqual(result.searchProvider, undefined, 'searchProvider should not exist');
+  assert.strictEqual(result.llmTier, undefined, 'llmTier should not exist');
+  assert.strictEqual(result.autoTagFiles, undefined, 'autoTagFiles should not exist');
+});
+
+asyncTest('getSystemSettings() Daily Digest ⚙2 returns 08:00 preset', async () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const g2Label = { id: 3, title: '\u2699\ufe0f2', color: 'f0c400' };
+
+  const cards = [
+    { id: 343, title: 'Daily Digest', description: '\u2699\ufe0f1 off / \u2699\ufe0f2 morning (08:00) / \u2699\ufe0f3 custom\n\n---\n\nDescr', labels: [g2Label] }
+  ];
+
+  const result = await cm.getSystemSettings(cards);
+
+  assert.strictEqual(result.dailyDigest, '08:00', 'Daily Digest ⚙2 should return 08:00 preset value');
+});
+
+asyncTest('getSystemSettings() Daily Digest ⚙1 returns off', async () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const g1Label = { id: 2, title: '\u2699\ufe0f1', color: 'e9322d' };
+
+  const cards = [
+    { id: 343, title: 'Daily Digest', description: '\u2699\ufe0f1 off / \u2699\ufe0f2 morning (08:00) / \u2699\ufe0f3 custom\n\n---\n\nDescr', labels: [g1Label] }
+  ];
+
+  const result = await cm.getSystemSettings(cards);
+
+  assert.strictEqual(result.dailyDigest, 'off', 'Daily Digest ⚙1 should return off');
+});
+
+asyncTest('getSystemSettings() Working Hours ⚙2 returns business hours preset', async () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const g2Label = { id: 3, title: '\u2699\ufe0f2', color: 'f0c400' };
+
+  const cards = [
+    { id: 346, title: 'Working Hours', description: '\u2699\ufe0f1 always / \u2699\ufe0f2 business (09:00-18:00)\n\n---\n\nDescr', labels: [g2Label] }
+  ];
+
+  const result = await cm.getSystemSettings(cards);
+
+  assert.strictEqual(result.workingHours, '09:00-18:00', 'Working Hours ⚙2 should return business hours preset');
+});
+
+asyncTest('getSystemSettings() Working Hours ⚙1 returns always-on range', async () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const g1Label = { id: 2, title: '\u2699\ufe0f1', color: 'e9322d' };
+
+  const cards = [
+    { id: 346, title: 'Working Hours', description: '\u2699\ufe0f1 always / \u2699\ufe0f2 business\n\n---\n\nDescr', labels: [g1Label] }
+  ];
+
+  const result = await cm.getSystemSettings(cards);
+
+  assert.strictEqual(result.workingHours, '00:00-23:59', 'Working Hours ⚙1 should return always-on range');
 });
 
 // --- Write tests ---
@@ -914,7 +979,7 @@ test('buildStyleDirective() includes style name and description', () => {
     persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
     guardrails: [],
     mode: { name: 'Full Auto', description: 'Maximum initiative.' },
-    system: { searchProvider: 'searxng', llmTier: 'balanced' }
+    system: {}
   };
 
   const directive = cm.buildStyleDirective();
@@ -1038,7 +1103,7 @@ test('buildSystemPromptOverlay() does NOT include style (style is in directive)'
     persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
     guardrails: [],
     mode: { name: 'Full Auto', description: 'Maximum initiative.' },
-    system: { searchProvider: 'searxng', llmTier: 'balanced' }
+    system: {}
   };
 
   const overlay = cm.buildSystemPromptOverlay();
@@ -1059,7 +1124,7 @@ test('buildSystemPromptOverlay() includes all guardrails', () => {
       { title: 'Confirm before sending external comms', description: 'Requires HITL.' }
     ],
     mode: { name: 'Full Auto', description: 'Maximum initiative.' },
-    system: { searchProvider: 'searxng', llmTier: 'balanced' }
+    system: {}
   };
 
   const overlay = cm.buildSystemPromptOverlay();
@@ -1077,7 +1142,7 @@ test('buildSystemPromptOverlay() includes mode name and description', () => {
     persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
     guardrails: [],
     mode: { name: 'Full Auto', description: 'Maximum initiative.' },
-    system: { searchProvider: 'searxng', llmTier: 'balanced' }
+    system: {}
   };
 
   const overlay = cm.buildSystemPromptOverlay();
@@ -1095,7 +1160,7 @@ test('buildSystemPromptOverlay() does NOT include persona (moved to directive)',
     persona: { name: 'Molti', humor: 'light', emoji: 'none', language: 'EN', verbosity: 'concise', formality: 'balanced' },
     guardrails: [],
     mode: { name: 'Full Auto', description: 'Maximum initiative.' },
-    system: { searchProvider: 'searxng', llmTier: 'balanced' }
+    system: {}
   };
 
   const overlay = cm.buildSystemPromptOverlay();
@@ -1210,48 +1275,10 @@ test('TC-VOICE-CARD-004: Voice card exists in DEFAULT_CARDS.system with ⚙ labe
 });
 
 // ============================================================
-// Session 38: Infrastructure Card + Health Format Tests
+// Session 38: Health Format Tests (infra data from InfraMonitor)
 // ============================================================
 
-console.log('\n--- Infrastructure Card Tests (Session 38) ---\n');
-
-test('TC-INFRA-001: DEFAULT_CARDS has 9 system cards (including Infrastructure)', () => {
-  assert.strictEqual(DEFAULT_CARDS.system.length, 9);
-  const titles = DEFAULT_CARDS.system.map(c => c.title);
-  assert.ok(titles.some(t => t.includes('Infrastructure')), 'Should include Infrastructure card');
-});
-
-test('TC-INFRA-002: _parseInfraCard parses services and settings', () => {
-  const deck = createMockDeckClient();
-  const manager = new CockpitManager({ deckClient: deck });
-
-  const result = manager._parseInfraCard('Services:\n- ollama: http://localhost:11434\n- whisper: http://localhost:8178\n\nNotify on failure: on\nAuto-heal: off\nCheck interval: 5');
-  assert.strictEqual(result.services.ollama, 'http://localhost:11434');
-  assert.strictEqual(result.services.whisper, 'http://localhost:8178');
-  assert.strictEqual(result.notifyOnFailure, true);
-  assert.strictEqual(result.autoHeal, false);
-  assert.strictEqual(result.checkInterval, 5);
-});
-
-test('TC-INFRA-003: _parseInfraCard handles empty description', () => {
-  const deck = createMockDeckClient();
-  const manager = new CockpitManager({ deckClient: deck });
-
-  const result = manager._parseInfraCard('');
-  assert.deepStrictEqual(result.services, {});
-  assert.strictEqual(result.notifyOnFailure, true);
-  assert.strictEqual(result.autoHeal, true);
-  assert.strictEqual(result.checkInterval, 3);
-});
-
-test('TC-INFRA-004: _parseInfraCard handles auto URLs', () => {
-  const deck = createMockDeckClient();
-  const manager = new CockpitManager({ deckClient: deck });
-
-  const result = manager._parseInfraCard('Services:\n- ollama: auto\n- nextcloud: auto');
-  assert.strictEqual(result.services.ollama, 'auto');
-  assert.strictEqual(result.services.nextcloud, 'auto');
-});
+console.log('\n--- Health Format Tests (Session 38) ---\n');
 
 test('TC-INFRA-005: _formatHealthStatus with infra data renders per-service lines', () => {
   const deck = createMockDeckClient();

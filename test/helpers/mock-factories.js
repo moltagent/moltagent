@@ -291,10 +291,7 @@ function createMockCockpitManager(responses = {}) {
     ],
     mode: { name: 'Full Auto', description: 'Maximum initiative.' },
     system: {
-      searchProvider: 'searxng',
-      llmTier: 'balanced',
       dailyDigest: '08:00',
-      autoTagFiles: true,
       initiativeLevel: 2,
       workingHours: '08:00-18:00'
     }

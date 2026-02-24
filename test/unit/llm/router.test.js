@@ -1016,6 +1016,238 @@ asyncTest('TC-CALLBACK-004: Handle loop detected', async () => {
   assert.ok(notifications.some(n => n.type === 'loop_detected'));
 });
 
+// --- Dynamic Provider Registration Tests (B2: Models card wiring) ---
+console.log('\n--- Dynamic Provider Registration Tests ---\n');
+
+test('TC-REG-001: registerProvider adds provider to the Map', () => {
+  const router = new LLMRouter();
+
+  router.registerProvider('test-cloud', {
+    adapter: 'openai-compatible',
+    endpoint: 'https://api.example.com/v1',
+    model: 'gpt-4o',
+    type: 'api',
+    getCredential: async () => 'fake-key'
+  });
+
+  assert.ok(router.providers.has('test-cloud'), 'Provider should be in the map');
+});
+
+test('TC-REG-002: unregisterProvider removes provider from the Map', () => {
+  const router = new LLMRouter();
+
+  router.registerProvider('removable', {
+    adapter: 'openai-compatible',
+    endpoint: 'https://api.example.com/v1',
+    model: 'gpt-4o-mini',
+    getCredential: async () => 'fake-key'
+  });
+
+  assert.ok(router.providers.has('removable'), 'Should exist before removal');
+  router.unregisterProvider('removable');
+  assert.strictEqual(router.providers.has('removable'), false, 'Should not exist after removal');
+});
+
+test('TC-REG-003: unregisterProvider is a no-op for unknown id', () => {
+  const router = new LLMRouter();
+  // Should not throw
+  router.unregisterProvider('does-not-exist');
+  assert.ok(true, 'no-op — no error thrown');
+});
+
+test('TC-REG-004: getRegisteredProviders returns metadata for all providers', () => {
+  const router = new LLMRouter();
+
+  router.registerProvider('cloud-a', {
+    adapter: 'openai-compatible',
+    endpoint: 'https://api.example.com/v1',
+    model: 'model-a',
+    getCredential: async () => 'key-a'
+  });
+
+  const all = router.getRegisteredProviders();
+  assert.ok('cloud-a' in all, 'cloud-a should appear in result');
+  assert.ok('type' in all['cloud-a'], 'type field should be present');
+  assert.ok('model' in all['cloud-a'], 'model field should be present');
+  assert.ok('endpoint' in all['cloud-a'], 'endpoint field should be present');
+});
+
+test('TC-REG-005: getRegisteredProviders includes statically-initialized providers', () => {
+  const router = new LLMRouter({
+    providers: {
+      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'qwen3:8b' }
+    }
+  });
+
+  const all = router.getRegisteredProviders();
+  assert.ok('ollama-local' in all, 'statically-initialized provider should appear');
+});
+
+// --- setRoster with custom job names (B2: Any job accepted) ---
+console.log('\n--- setRoster Custom Job Name Tests ---\n');
+
+test('TC-ROSTER-001: setRoster accepts custom job names beyond VALID_JOBS', () => {
+  const router = new LLMRouter({
+    providers: {
+      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'qwen3:8b' }
+    }
+  });
+
+  // 'images' is not in VALID_JOBS but should NOT be silently dropped now
+  router.setRoster({
+    quick: ['ollama-local'],
+    images: ['ollama-local']   // custom job type
+  });
+
+  const roster = router.getRoster();
+  assert.ok(roster !== null, 'roster should be set');
+  assert.ok('quick' in roster, 'standard job should be in roster');
+  assert.ok('images' in roster, 'custom job should be accepted in roster');
+});
+
+test('TC-ROSTER-002: setRoster rejects credentials job (always enforced locally)', () => {
+  const router = new LLMRouter({
+    providers: {
+      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'qwen3:8b' }
+    }
+  });
+
+  router.setRoster({
+    quick: ['ollama-local'],
+    credentials: ['some-cloud-provider']  // should be rejected
+  });
+
+  const roster = router.getRoster();
+  // credentials entry should come from smart-mix preset (local-only), not our override
+  if ('credentials' in roster) {
+    const credChain = roster.credentials;
+    // All providers in credentials chain must be local-type (or undefined)
+    for (const id of credChain) {
+      const p = router.providers.get(id);
+      if (p) {
+        assert.strictEqual(p.type, 'local', `credentials chain must only contain local providers, got: ${p.type}`);
+      }
+    }
+  }
+});
+
+test('TC-ROSTER-003: setRoster with unknown provider IDs filters them out', () => {
+  const router = new LLMRouter({
+    providers: {
+      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'qwen3:8b' }
+    }
+  });
+
+  router.setRoster({
+    quick: ['ollama-local', 'nonexistent-provider']
+  });
+
+  const roster = router.getRoster();
+  assert.ok(!roster.quick.includes('nonexistent-provider'), 'Unknown provider IDs should be filtered');
+  assert.ok(roster.quick.includes('ollama-local'), 'Known provider should remain');
+});
+
+// --- buildProviderChain fallback for unknown jobs ---
+console.log('\n--- buildProviderChain Unknown Job Fallback Tests ---\n');
+
+test('TC-CHAIN-001: buildProviderChain falls back to local providers for unknown job', () => {
+  const router = new LLMRouter({
+    providers: {
+      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'qwen3:8b' }
+    }
+  });
+
+  // Activate a preset so _roster is set
+  router.setPreset('all-local');
+
+  const { chain } = router.buildProviderChain('video-generation');
+  // ollama-local should appear as the local fallback
+  const ids = chain.map(c => c.id);
+  assert.ok(ids.includes('ollama-local'), 'Local provider should appear as fallback for unknown job');
+});
+
+test('TC-CHAIN-002: buildProviderChain uses roster entry for known job', () => {
+  const router = new LLMRouter({
+    providers: {
+      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'qwen3:8b' }
+    }
+  });
+
+  router.setPreset('all-local');
+
+  const { chain } = router.buildProviderChain('quick');
+  const ids = chain.map(c => c.id);
+  assert.ok(ids.length > 0, 'Chain should not be empty for known job');
+  assert.ok(ids.includes('ollama-local'), 'Local provider should be in chain');
+});
+
+// --- LegacyLLMRouter proxy tests ---
+console.log('\n--- LegacyLLMRouter Proxy Tests ---\n');
+
+// Load the wrapper to test its proxy methods
+let LegacyLLMRouter;
+try {
+  LegacyLLMRouter = require('../../../src/lib/llm-router');
+} catch (e) {
+  // skip if load fails in CI — it requires config files
+  LegacyLLMRouter = null;
+}
+
+if (LegacyLLMRouter) {
+  test('TC-PROXY-001: setPreset proxy delegates to inner router', () => {
+    const wrapper = new LegacyLLMRouter({});
+    // Should not throw, and should set the preset on the inner router
+    wrapper.setPreset('all-local');
+    assert.strictEqual(wrapper.getPreset(), 'all-local', 'Preset should be accessible via proxy');
+  });
+
+  test('TC-PROXY-002: setRoster/getRoster proxy delegates to inner router', () => {
+    const wrapper = new LegacyLLMRouter({
+      ollama: { url: 'http://localhost:11434', model: 'qwen3:8b' }
+    });
+
+    wrapper.setRoster({ quick: ['ollama-local'] });
+    const roster = wrapper.getRoster();
+    assert.ok(roster !== null, 'Roster should be accessible via proxy');
+  });
+
+  test('TC-PROXY-003: registerProvider proxy delegates to inner router', () => {
+    const wrapper = new LegacyLLMRouter({
+      ollama: { url: 'http://localhost:11434', model: 'qwen3:8b' }
+    });
+
+    // Should not throw
+    assert.doesNotThrow(() => {
+      wrapper.registerProvider('test-provider', {
+        adapter: 'ollama',
+        endpoint: 'http://localhost:11434',
+        model: 'phi3',
+        getCredential: async () => null
+      });
+    });
+
+    const all = wrapper.getRegisteredProviders();
+    assert.ok('test-provider' in all, 'Registered provider should appear via proxy');
+  });
+
+  test('TC-PROXY-004: unregisterProvider proxy delegates to inner router', () => {
+    const wrapper = new LegacyLLMRouter({
+      ollama: { url: 'http://localhost:11434', model: 'qwen3:8b' }
+    });
+
+    wrapper.registerProvider('temp-provider', {
+      adapter: 'ollama',
+      endpoint: 'http://localhost:11434',
+      model: 'phi3',
+      getCredential: async () => null
+    });
+
+    assert.ok('temp-provider' in wrapper.getRegisteredProviders());
+    wrapper.unregisterProvider('temp-provider');
+    assert.ok(!('temp-provider' in wrapper.getRegisteredProviders()), 'Should be removed via proxy');
+  });
+}
+
 // Summary
 setTimeout(() => {
   summary();
