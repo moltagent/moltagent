@@ -1275,7 +1275,12 @@ class CockpitManager {
       const stackId = this.stacks.system;
       if (stackId) {
         const updatePath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${stackId}/cards/${card.id}`;
-        await this.deck._request('PUT', updatePath, { description: newDescription });
+        await this.deck._request('PUT', updatePath, {
+          title: card.title,
+          description: newDescription,
+          type: 'plain',
+          owner: card.owner || 'moltagent'
+        });
       }
     } catch (err) {
       console.warn(`[CockpitManager] Failed to write resolved state to Models card: ${err.message}`);
