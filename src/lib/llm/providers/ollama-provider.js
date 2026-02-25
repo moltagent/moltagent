@@ -40,12 +40,12 @@ class OllamaProvider extends BaseProvider {
       const timeout = setTimeout(() => controller.abort(), 120000); // 120 second timeout
 
       try {
-        const response = await fetch(`${this.endpoint}/api/generate`, {
+        const response = await fetch(`${this.endpoint}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: this.model,
-            prompt: prompt,
+            messages: [{ role: 'user', content: prompt }],
             stream: false,
             options: {
               temperature: options.temperature ?? 0.7,
@@ -70,7 +70,7 @@ class OllamaProvider extends BaseProvider {
         this.recordSuccess(tokens);
 
         return {
-          result: data.response,
+          result: data.message?.content || '',
           tokens,
           inputTokens: data.prompt_eval_count || 0,
           outputTokens: data.eval_count || 0,

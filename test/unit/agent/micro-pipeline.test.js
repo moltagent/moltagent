@@ -4,7 +4,7 @@ const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 const MicroPipeline = require('../../../src/lib/agent/micro-pipeline');
 
-const silentLogger = { log() {}, warn() {}, error() {} };
+const silentLogger = { log() {}, info() {}, warn() {}, error() {} };
 
 function createMockRouter(routeResponse) {
   return {
@@ -279,6 +279,76 @@ asyncTest('process() routes pre-classified deck intent to domain handler', async
   const result = await pipeline.process('do the thing', { intent: 'deck' });
   assert.ok(typeof result === 'string');
   assert.strictEqual(pipeline.getStats().byIntent.deck, 1);
+});
+
+// -- Test 18: _handleDomainTask() system prompt includes date/identity context --
+asyncTest('_handleDomainTask() system prompt includes Moltagent identity and current year', async () => {
+  let capturedSystem = '';
+  const mockToolsProvider = {
+    model: 'qwen3:8b',
+    chat: async ({ system }) => {
+      capturedSystem = system;
+      return { content: 'Done.', toolCalls: [], _inputTokens: 10, _outputTokens: 5 };
+    }
+  };
+  const mockToolRegistry = {
+    getToolSubset: () => [{ function: { name: 'cal_list', parameters: {} } }],
+    execute: async () => ({ success: true, result: 'OK' }),
+    setRequestContext: () => {}
+  };
+  const pipeline = new MicroPipeline({
+    llmRouter: createMockRouter(),
+    ollamaToolsProvider: mockToolsProvider,
+    toolRegistry: mockToolRegistry,
+    timezone: 'UTC',
+    logger: silentLogger
+  });
+  await pipeline._handleDomainTask('Create event tomorrow', 'calendar', { userName: 'Test' });
+  assert.ok(capturedSystem.includes('Moltagent'), `System prompt should include Moltagent identity, got: ${capturedSystem.substring(0, 80)}`);
+  const year = new Date().getFullYear().toString();
+  assert.ok(capturedSystem.includes(year), `System prompt should include current year ${year}`);
+  assert.ok(capturedSystem.includes('Calendar assistant'), 'System prompt should still include domain instruction');
+});
+
+// -- Test 19: _handleChat() prompt includes Moltagent identity --
+asyncTest('_handleChat() prompt includes Moltagent identity', async () => {
+  let capturedContent = '';
+  const router = {
+    route: async ({ content }) => { capturedContent = content; return { result: 'Hi!', provider: 'mock', tokens: 10 }; },
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+  const pipeline = new MicroPipeline({ llmRouter: router, timezone: 'Europe/Berlin', logger: silentLogger });
+  await pipeline._handleChat('What year is it?', {});
+  assert.ok(capturedContent.includes('Moltagent'), `Chat prompt should include Moltagent identity`);
+  assert.ok(capturedContent.includes('Europe/Berlin'), `Chat prompt should include timezone`);
+});
+
+// -- Test 20: _handleQuestion() synthesize prompt includes identity --
+asyncTest('_handleQuestion() synthesize prompt includes Moltagent identity', async () => {
+  let capturedContent = '';
+  const router = {
+    route: async ({ content }) => { capturedContent = content; return { result: 'Answer', provider: 'mock', tokens: 10 }; },
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+  const searcher = createMockMemorySearcher([
+    { title: 'Note', subline: 'Some info' }
+  ]);
+  const pipeline = new MicroPipeline({ llmRouter: router, memorySearcher: searcher, timezone: 'UTC', logger: silentLogger });
+  await pipeline._handleQuestion('What year is it?', {}, {});
+  assert.ok(capturedContent.includes('Moltagent'), `Synthesize prompt should include Moltagent identity`);
+});
+
+// -- Test 21: constructor stores timezone --
+test('constructor stores timezone from config', () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), timezone: 'America/New_York', logger: silentLogger });
+  assert.strictEqual(pipeline.timezone, 'America/New_York');
+});
+
+test('constructor defaults timezone to UTC', () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  assert.strictEqual(pipeline.timezone, 'UTC');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 100);

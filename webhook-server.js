@@ -1390,6 +1390,7 @@ async function initialize() {
         talkSendQueue: talkQueue,
         deferralQueue,
         costTracker,
+        timezone: appConfig.timezone,
         domainToolTimeout: appConfig.ollama.domainToolTimeout,
         logger: console
       });

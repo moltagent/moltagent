@@ -13,6 +13,8 @@
 
 'use strict';
 
+const { buildMicroContext } = require('./micro-pipeline-context');
+
 const INTENTS = Object.freeze({
   QUESTION: 'question',
   TASK: 'task',
@@ -73,6 +75,7 @@ class MicroPipeline {
     this.toolRegistry = config.toolRegistry || null;
     this.ollamaToolsProvider = config.ollamaToolsProvider || null;
     this.costTracker = config.costTracker || null;
+    this.timezone = config.timezone || 'UTC';
     this.domainToolTimeout = config.domainToolTimeout || 90000;
     this.logger = config.logger || console;
 
@@ -295,7 +298,9 @@ Category:`;
         `[${i + 1}] ${r.title || 'Untitled'}: ${r.subline || ''}`
       ).join('\n');
 
-      const synthesizePrompt = `Based on these notes, answer the user's question concisely.
+      const synthesizePrompt = `${buildMicroContext(this.timezone)}
+
+Based on these notes, answer the user's question concisely.
 
 Notes:
 ${snippets}
@@ -488,7 +493,8 @@ Sub-questions:`;
       return this._handleChat(message, context);
     }
 
-    const systemPrompt = DOMAIN_PROMPTS[intent] || DOMAIN_PROMPTS.search;
+    const domainInstruction = DOMAIN_PROMPTS[intent] || DOMAIN_PROMPTS.search;
+    const systemPrompt = buildMicroContext(this.timezone) + '\n\n' + domainInstruction;
     const userPrompt = context.warmMemory
       ? `Context: ${context.warmMemory.substring(0, 300)}\n\nUser (${context.userName || 'unknown'}): ${message}`
       : `User (${context.userName || 'unknown'}): ${message}`;
@@ -589,9 +595,10 @@ Sub-questions:`;
    */
   async _handleChat(message, context) {
     try {
+      const identity = buildMicroContext(this.timezone);
       const prompt = context.warmMemory
-        ? `Context: ${context.warmMemory.substring(0, 500)}\n\nUser: ${message.substring(0, 500)}\n\nRespond concisely:`
-        : `User: ${message.substring(0, 500)}\n\nRespond concisely:`;
+        ? `${identity}\n\nContext: ${context.warmMemory.substring(0, 500)}\n\nUser: ${message.substring(0, 500)}\n\nRespond concisely:`
+        : `${identity}\n\nUser: ${message.substring(0, 500)}\n\nRespond concisely:`;
 
       const result = await this.router.route({
         job: 'quick',
