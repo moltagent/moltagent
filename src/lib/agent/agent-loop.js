@@ -48,6 +48,7 @@ class AgentLoop {
     this.guardrailEnforcer = options.guardrailEnforcer || null;
     this.llmProvider = options.llmProvider;
     this.statusIndicator = options.statusIndicator || null;
+    this.activityLogger = options.activityLogger || null;
     this.config = options.config || {};
     this.logger = options.logger || console;
     this.maxIterations = this.config.maxIterations || 8;
@@ -221,6 +222,17 @@ class AgentLoop {
             this.logger.warn(`[AgentLoop] Tool ${toolCall.name} failed (${toolFailureCounts[toolCall.name]}x): ${toolResult.error}`);
           } else {
             toolFailureCounts[toolCall.name] = 0; // Reset on success
+
+            // Layer 1: Log successful tool execution to activity log
+            if (this.activityLogger) {
+              this.activityLogger.append({
+                action: toolCall.name,
+                summary: `[Cloud] ${toolCall.name}(${Object.keys(toolCall.arguments || {}).join(', ')})`,
+                details: toolCall.arguments,
+                user: options?.user,
+                room: roomToken
+              });
+            }
           }
 
           let resultContent = toolResult.success

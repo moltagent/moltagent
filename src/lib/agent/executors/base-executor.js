@@ -32,6 +32,7 @@ class BaseExecutor {
    * @param {Object} [config.guardrailEnforcer] - GuardrailEnforcer for HITL checks
    * @param {Object} [config.toolGuard] - ToolGuard for hardcoded security policy
    * @param {string} [config.timezone] - IANA timezone
+   * @param {Object} [config.activityLogger] - ActivityLogger for Layer 1 memory
    * @param {Object} [config.logger] - Logger instance
    */
   constructor(config = {}) {
@@ -39,8 +40,28 @@ class BaseExecutor {
     this.router = config.router;
     this.guardrailEnforcer = config.guardrailEnforcer || null;
     this.toolGuard = config.toolGuard || null;
+    this.activityLogger = config.activityLogger || null;
     this.timezone = config.timezone || 'UTC';
     this.logger = config.logger || console;
+  }
+
+  /**
+   * Log an activity to the Two-Layer Memory System (Layer 1).
+   * @param {string} action - Tool/action name
+   * @param {string} summary - Human-readable summary
+   * @param {Object} [details] - Structured data for extraction
+   * @param {Object} [context] - { userName, roomToken }
+   */
+  _logActivity(action, summary, details, context) {
+    if (this.activityLogger) {
+      this.activityLogger.append({
+        action,
+        summary,
+        details,
+        user: context?.userName,
+        room: context?.roomToken
+      });
+    }
   }
 
   /**

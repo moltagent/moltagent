@@ -89,6 +89,7 @@ class MicroPipeline {
     this.guardrailEnforcer = config.guardrailEnforcer || null;
     this.toolGuard = config.toolGuard || null;
     this.executors = config.executors || {};
+    this.activityLogger = config.activityLogger || null;
     this.timezone = config.timezone || 'UTC';
     this.domainToolTimeout = config.domainToolTimeout || 90000;
     this.logger = config.logger || console;
@@ -337,7 +338,20 @@ Answer:`;
           content: synthesizePrompt,
           requirements: { maxTokens: 300 }
         });
-        return result.result || 'I found some related information but couldn\'t form a clear answer.';
+        const answer = result.result || 'I found some related information but couldn\'t form a clear answer.';
+
+        // Layer 1: Log question with memory hit
+        if (this.activityLogger) {
+          this.activityLogger.append({
+            action: 'question',
+            summary: `Answered from memory: ${message.substring(0, 80)}`,
+            details: { memoryHits: searchResults.length },
+            user: context.userName,
+            room: context.roomToken
+          });
+        }
+
+        return answer;
       } catch (err) {
         this.logger.warn(`[MicroPipeline] Synthesis failed: ${err.message}`);
         // Fall through to simple chat
@@ -703,7 +717,19 @@ Sub-questions:`;
         requirements: { maxTokens: 300 }
       });
 
-      return result.result || 'I\'m not sure how to respond to that.';
+      const response = result.result || 'I\'m not sure how to respond to that.';
+
+      // Layer 1: Log conversation topic
+      if (this.activityLogger) {
+        this.activityLogger.append({
+          action: 'chat',
+          summary: `Answered: ${message.substring(0, 80)}`,
+          user: context.userName,
+          room: context.roomToken
+        });
+      }
+
+      return response;
     } catch (err) {
       this.logger.warn(`[MicroPipeline] Chat failed: ${err.message}`);
       return 'I\'m having trouble responding right now. Please try again.';

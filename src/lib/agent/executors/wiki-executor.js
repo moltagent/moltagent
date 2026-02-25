@@ -114,6 +114,13 @@ Return JSON with these fields (use null for missing):
       return `Wiki write failed: ${writeResult.error}`;
     }
 
+    // Layer 1: Log activity
+    this._logActivity('wiki_write',
+      `Updated wiki: ${pageTitle} — ${(content || '').substring(0, 80)}`,
+      { page: pageTitle, topic: params.topic, category: parent },
+      context
+    );
+
     // Step 6: Confirm
     const parentInfo = parent ? ` under "${parent}"` : '';
     return `Saved to wiki: "${pageTitle}"${parentInfo}. ${writeResult.result || ''}`.trim();

@@ -131,7 +131,15 @@ Return JSON with these fields (use null for missing):
     const uid = eventResult.uid || eventResult.id || 'unknown';
     const formattedDate = resolvedDate;
     const formattedTime = time;
+    const endTime = endDate.toISOString().slice(11, 16);
     const attendeeList = attendees.length > 0 ? ` with ${attendees.join(', ')}` : '';
+
+    // Layer 1: Log activity
+    this._logActivity('calendar_create',
+      `Created "${params.summary}" for ${formattedDate} ${formattedTime}–${endTime}`,
+      { title: params.summary, date: resolvedDate, attendees },
+      context
+    );
 
     return `Created event "${params.summary}" on ${formattedDate} at ${formattedTime} (${durationMinutes} min)${attendeeList}. Event ID: ${uid}`;
   }

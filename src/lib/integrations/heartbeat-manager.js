@@ -673,6 +673,16 @@ class HeartbeatManager {
         }
       }
 
+      // Layer 2: Extract knowledge from activity log
+      if (this.heartbeatExtractor) {
+        try {
+          await this.heartbeatExtractor.tick();
+        } catch (err) {
+          console.error('[Heartbeat] Extractor tick failed:', err.message);
+          results.errors.push({ component: 'extractor', error: err.message });
+        }
+      }
+
       // Persist budget state after cockpit update
       if (this.budgetEnforcer?.persist) {
         try {

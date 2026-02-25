@@ -909,6 +909,7 @@ class MessageProcessor {
     const toolGuardRef = this.microPipeline.toolGuard;
     const router = this.microPipeline.router;
     const tz = this.microPipeline.timezone;
+    const aLog = this.microPipeline.activityLogger;
 
     if (router && !this.microPipeline.executors.calendar && this.microPipeline.calendarClient) {
       try {
@@ -916,7 +917,7 @@ class MessageProcessor {
         this.microPipeline.executors.calendar = new CalendarExecutor({
           router, calendarClient: this.microPipeline.calendarClient,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
-          timezone: tz, logger: console
+          activityLogger: aLog, timezone: tz, logger: console
         });
         console.log('[Message] Wired CalendarExecutor into MicroPipeline');
       } catch (err) {
@@ -930,7 +931,7 @@ class MessageProcessor {
         this.microPipeline.executors.file = new FileExecutor({
           router, ncFilesClient: this.agentLoop.toolRegistry.clients.ncFilesClient,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
-          timezone: tz, logger: console
+          activityLogger: aLog, timezone: tz, logger: console
         });
         console.log('[Message] Wired FileExecutor into MicroPipeline');
       } catch (err) {
@@ -944,7 +945,7 @@ class MessageProcessor {
         this.microPipeline.executors.wiki = new WikiExecutor({
           router, toolRegistry,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
-          timezone: tz, logger: console
+          activityLogger: aLog, timezone: tz, logger: console
         });
         console.log('[Message] Wired WikiExecutor into MicroPipeline');
       } catch (err) {

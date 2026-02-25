@@ -454,6 +454,7 @@ let voiceManager = null; // Session V2: VoiceManager for mode-aware voice orches
 let infraMonitor = null; // Session 38: InfraMonitor for service health probing
 let selfHealClient = null; // Self-heal daemon client for remote service restarts
 let microPipeline = null; // Local Intelligence: MicroPipeline for local-only mode
+let activityLogger = null; // Two-Layer Memory: Layer 1 raw activity log
 let deferralQueue = null; // Local Intelligence: DeferralQueue for deferred complex tasks
 let intentRouter = null; // IntentRouter: LLM-powered intent classification
 
@@ -1311,6 +1312,7 @@ async function initialize() {
         secretsGuard,
         promptGuard,
         guardrailEnforcer,
+        activityLogger,
         llmProvider,
         statusIndicator: ncStatusIndicator,
         config: { soulPath: path.join(__dirname, 'config', 'SOUL.md'), timezone: appConfig.timezone }
@@ -1380,6 +1382,20 @@ async function initialize() {
     }
   }
 
+  // Two-Layer Memory: Create ActivityLogger (Layer 1)
+  if (collectivesClient) {
+    try {
+      const { ActivityLogger } = require('./src/lib/memory/activity-logger');
+      activityLogger = new ActivityLogger({
+        wikiClient: collectivesClient,
+        logger: console
+      });
+      console.log('[INIT] ActivityLogger ready (Layer 1 memory)');
+    } catch (err) {
+      console.warn(`[INIT] ActivityLogger failed: ${err.message}`);
+    }
+  }
+
   if (MicroPipeline && llmRouter) {
     try {
       microPipeline = new MicroPipeline({
@@ -1390,6 +1406,7 @@ async function initialize() {
         talkSendQueue: talkQueue,
         deferralQueue,
         costTracker,
+        activityLogger,
         timezone: appConfig.timezone,
         domainToolTimeout: appConfig.ollama.domainToolTimeout,
         logger: console
@@ -1680,6 +1697,23 @@ async function initialize() {
       if (dailyBriefing && heartbeatManager.caldavClient) {
         dailyBriefing.caldav = heartbeatManager.caldavClient;
         dailyBriefing.deck = heartbeatManager.deckClient;
+      }
+
+      // Two-Layer Memory: Wire HeartbeatExtractor (Layer 2)
+      if (activityLogger && collectivesClient && llmRouter) {
+        try {
+          const { HeartbeatExtractor } = require('./src/lib/memory/heartbeat-extractor');
+          heartbeatManager.heartbeatExtractor = new HeartbeatExtractor({
+            activityLogger,
+            wikiClient: collectivesClient,
+            llmRouter: llmRouter.router,
+            memorySearcher,
+            logger: console
+          });
+          console.log('[INIT] HeartbeatExtractor wired into HeartbeatManager (Layer 2 memory)');
+        } catch (err) {
+          console.warn(`[INIT] HeartbeatExtractor failed: ${err.message}`);
+        }
       }
 
       if (HeartbeatIntelligence && heartbeatManager.caldavClient) {

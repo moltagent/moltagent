@@ -122,6 +122,13 @@ Return JSON with these fields (use null for missing):
         }
       }
 
+      // Layer 1: Log activity
+      this._logActivity('file_write',
+        `Saved "${params.filename}" to ${folder}/, shared with ${context.userName || 'user'}`,
+        { filename: params.filename, folder, shared: true },
+        context
+      );
+
       return `File "${params.filename}" written to ${folder}/ and shared with ${context.userName || 'you'}.`;
     }
 
