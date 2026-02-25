@@ -60,7 +60,9 @@ const CLOUD_ESCALATION_PATTERNS = [
   /\b(plan|strategy|roadmap)\b.*\b(for|to|how)\b/i,
   /\b(research|investigate|deep dive)\b/i,
   /\b(write|draft|compose)\b.*\b(report|proposal|document|article)\b/i,
-  /\b(what if|what would happen|suppose)\b/i
+  /\b(what if|what would happen|suppose)\b/i,
+  /\bhow (do|can|should|would|could) (I|we|you)\b/i,
+  /\b(explain|walk me through|guide|tutorial|set up|setup)\b.*\b(how|step|process)\b/i
 ];
 
 class MicroPipeline {

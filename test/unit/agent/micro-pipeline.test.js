@@ -379,6 +379,15 @@ test('_shouldEscalateToCloud() does NOT escalate short messages (<= 20 chars)', 
   assert.strictEqual(pipeline._shouldEscalateToCloud('analyze vs compare'), false);
 });
 
+// -- Test 25b: _shouldEscalateToCloud() detects "how do I" questions --
+test('_shouldEscalateToCloud() detects "How do I set up a Workflow" pattern', () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  assert.strictEqual(pipeline._shouldEscalateToCloud('How do I set up a Workflow in Deck?'), true);
+  assert.strictEqual(pipeline._shouldEscalateToCloud('How can I configure email forwarding?'), true);
+  // Simple domain actions should NOT escalate
+  assert.strictEqual(pipeline._shouldEscalateToCloud('Set up a meeting for Monday'), false);
+});
+
 // -- Test 26: _handleDomainTask() throws DOMAIN_ESCALATE for matching message --
 asyncTest('_handleDomainTask() throws DOMAIN_ESCALATE for cloud-worthy message', async () => {
   const pipeline = new MicroPipeline({
