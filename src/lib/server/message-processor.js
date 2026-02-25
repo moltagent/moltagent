@@ -893,6 +893,64 @@ class MessageProcessor {
         }
       }
     }
+
+    // Wire guardrails into MicroPipeline
+    if (this.agentLoop.guardrailEnforcer && !this.microPipeline.guardrailEnforcer) {
+      this.microPipeline.guardrailEnforcer = this.agentLoop.guardrailEnforcer;
+      console.log('[Message] Wired GuardrailEnforcer into MicroPipeline');
+    }
+    if (this.agentLoop.toolGuard && !this.microPipeline.toolGuard) {
+      this.microPipeline.toolGuard = this.agentLoop.toolGuard;
+      console.log('[Message] Wired ToolGuard into MicroPipeline');
+    }
+
+    // Wire domain executors (structured parameter extraction)
+    const guardrailEnforcer = this.microPipeline.guardrailEnforcer;
+    const toolGuardRef = this.microPipeline.toolGuard;
+    const router = this.microPipeline.router;
+    const tz = this.microPipeline.timezone;
+
+    if (router && !this.microPipeline.executors.calendar && this.microPipeline.calendarClient) {
+      try {
+        const CalendarExecutor = require('../agent/executors/calendar-executor');
+        this.microPipeline.executors.calendar = new CalendarExecutor({
+          router, calendarClient: this.microPipeline.calendarClient,
+          guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
+          timezone: tz, logger: console
+        });
+        console.log('[Message] Wired CalendarExecutor into MicroPipeline');
+      } catch (err) {
+        console.warn(`[Message] CalendarExecutor skipped: ${err.message}`);
+      }
+    }
+
+    if (router && !this.microPipeline.executors.file && this.agentLoop.toolRegistry?.clients?.ncFilesClient) {
+      try {
+        const FileExecutor = require('../agent/executors/file-executor');
+        this.microPipeline.executors.file = new FileExecutor({
+          router, ncFilesClient: this.agentLoop.toolRegistry.clients.ncFilesClient,
+          guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
+          timezone: tz, logger: console
+        });
+        console.log('[Message] Wired FileExecutor into MicroPipeline');
+      } catch (err) {
+        console.warn(`[Message] FileExecutor skipped: ${err.message}`);
+      }
+    }
+
+    if (router && !this.microPipeline.executors.wiki && toolRegistry) {
+      try {
+        const WikiExecutor = require('../agent/executors/wiki-executor');
+        this.microPipeline.executors.wiki = new WikiExecutor({
+          router, toolRegistry,
+          guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
+          timezone: tz, logger: console
+        });
+        console.log('[Message] Wired WikiExecutor into MicroPipeline');
+      } catch (err) {
+        console.warn(`[Message] WikiExecutor skipped: ${err.message}`);
+      }
+    }
   }
 
   /**

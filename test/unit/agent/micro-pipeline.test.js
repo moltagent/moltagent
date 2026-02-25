@@ -351,4 +351,53 @@ test('constructor defaults timezone to UTC', () => {
   assert.strictEqual(pipeline.timezone, 'UTC');
 });
 
+// ---------------------------------------------------------------------------
+// Part C: Cloud Escalation Patterns
+// ---------------------------------------------------------------------------
+
+// -- Test 22: _shouldEscalateToCloud() detects "analyze and compare" --
+test('_shouldEscalateToCloud() detects "analyze and compare" pattern', () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  assert.strictEqual(pipeline._shouldEscalateToCloud('Please analyze and compare these two proposals'), true);
+});
+
+// -- Test 23: _shouldEscalateToCloud() detects "write a detailed report" --
+test('_shouldEscalateToCloud() detects "write a detailed report" pattern', () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  assert.strictEqual(pipeline._shouldEscalateToCloud('Write a detailed report about our quarterly results'), true);
+});
+
+// -- Test 24: _shouldEscalateToCloud() does NOT escalate simple domain actions --
+test('_shouldEscalateToCloud() does NOT escalate "create a card"', () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  assert.strictEqual(pipeline._shouldEscalateToCloud('Create a card for the new feature'), false);
+});
+
+// -- Test 25: _shouldEscalateToCloud() does NOT escalate short messages --
+test('_shouldEscalateToCloud() does NOT escalate short messages (<= 20 chars)', () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  assert.strictEqual(pipeline._shouldEscalateToCloud('analyze vs compare'), false);
+});
+
+// -- Test 26: _handleDomainTask() throws DOMAIN_ESCALATE for matching message --
+asyncTest('_handleDomainTask() throws DOMAIN_ESCALATE for cloud-worthy message', async () => {
+  const pipeline = new MicroPipeline({
+    llmRouter: createMockRouter(),
+    toolRegistry: {
+      getToolSubset: () => [{ function: { name: 'search_web', parameters: {} } }],
+      execute: async () => ({ success: true, result: 'OK' }),
+      setRequestContext: () => {}
+    },
+    ollamaToolsProvider: { model: 'test', chat: async () => ({ content: 'Done.', toolCalls: [] }) },
+    logger: silentLogger
+  });
+
+  try {
+    await pipeline._handleDomainTask('Research and investigate the market trends for our product category', 'search', {});
+    assert.fail('Should have thrown DOMAIN_ESCALATE');
+  } catch (err) {
+    assert.strictEqual(err.code, 'DOMAIN_ESCALATE');
+  }
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 100);

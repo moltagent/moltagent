@@ -52,6 +52,17 @@ const DOMAIN_PROMPTS = Object.freeze({
   search: `Search assistant. Use tools to find information. Summarize results concisely.`
 });
 
+// Patterns that indicate the request needs cloud-level reasoning.
+// Matched against the user message — if ANY pattern hits and message > 20 chars,
+// the request is escalated to cloud AgentLoop via DOMAIN_ESCALATE.
+const CLOUD_ESCALATION_PATTERNS = [
+  /\b(analyze|compare|evaluate|assess)\b.*\b(and|with|versus|vs)\b/i,
+  /\b(plan|strategy|roadmap)\b.*\b(for|to|how)\b/i,
+  /\b(research|investigate|deep dive)\b/i,
+  /\b(write|draft|compose)\b.*\b(report|proposal|document|article)\b/i,
+  /\b(what if|what would happen|suppose)\b/i
+];
+
 class MicroPipeline {
   /**
    * @param {Object} config
@@ -75,6 +86,9 @@ class MicroPipeline {
     this.toolRegistry = config.toolRegistry || null;
     this.ollamaToolsProvider = config.ollamaToolsProvider || null;
     this.costTracker = config.costTracker || null;
+    this.guardrailEnforcer = config.guardrailEnforcer || null;
+    this.toolGuard = config.toolGuard || null;
+    this.executors = config.executors || {};
     this.timezone = config.timezone || 'UTC';
     this.domainToolTimeout = config.domainToolTimeout || 90000;
     this.logger = config.logger || console;
@@ -282,6 +296,14 @@ Category:`;
    * @returns {Promise<string>}
    */
   async _handleQuestion(message, classification, context) {
+    // Cloud escalation check — complex questions belong in AgentLoop
+    if (this._shouldEscalateToCloud(message)) {
+      const err = new Error(`Cloud escalation: complex question`);
+      err.code = 'DOMAIN_ESCALATE';
+      err.intent = 'question';
+      throw err;
+    }
+
     // Step 1: Search memory for relevant context
     let searchResults = [];
     if (this.memorySearcher) {
@@ -481,6 +503,26 @@ Sub-questions:`;
    * @returns {Promise<string>} Response text
    */
   async _handleDomainTask(message, intent, context) {
+    // Try executor first (structured parameter extraction, no LLM tool-calling)
+    const executor = this.executors[intent];
+    if (executor && typeof executor.execute === 'function') {
+      try {
+        return await executor.execute(message, context);
+      } catch (err) {
+        if (err.code === 'DOMAIN_ESCALATE') throw err;
+        this.logger.warn(`[MicroPipeline] Executor ${intent} failed: ${err.message}`);
+        // Fall through to existing tool-calling loop
+      }
+    }
+
+    // Cloud escalation check — complex domain requests belong in AgentLoop
+    if (this._shouldEscalateToCloud(message)) {
+      const err = new Error(`Cloud escalation: complex ${intent} request`);
+      err.code = 'DOMAIN_ESCALATE';
+      err.intent = intent;
+      throw err;
+    }
+
     // Guard: need both toolRegistry and ollamaToolsProvider for tool-calling
     if (!this.toolRegistry || !this.ollamaToolsProvider) {
       this.logger.warn(`[MicroPipeline] Domain task "${intent}" but no toolRegistry/ollamaToolsProvider — falling back`);
@@ -560,7 +602,7 @@ Sub-questions:`;
             messages.push({ role: 'tool', content: `Error: Unknown tool "${toolCall.name}"` });
             continue;
           }
-          const toolResult = await this.toolRegistry.execute(toolCall.name, toolCall.arguments);
+          const toolResult = await this._executeWithGuards(toolCall, context.roomToken || null);
           messages.push({
             role: 'tool',
             content: toolResult.success
@@ -585,6 +627,61 @@ Sub-questions:`;
       escalationErr.intent = intent;
       throw escalationErr;
     }
+  }
+
+  /**
+   * Execute a tool call with ToolGuard + GuardrailEnforcer checks.
+   * Simplified version of AgentLoop._executeWithGuards() — no edit-request
+   * handling (MicroPipeline has no multi-turn revision loop).
+   *
+   * @param {Object} toolCall - { name, arguments }
+   * @param {string|null} roomToken - Talk room for HITL
+   * @returns {Promise<Object>} { success, result, error? }
+   * @private
+   */
+  async _executeWithGuards(toolCall, roomToken) {
+    // ToolGuard: hardcoded security policy
+    if (this.toolGuard) {
+      const guardResult = this.toolGuard.evaluate(toolCall.name);
+      if (!guardResult.allowed) {
+        if (guardResult.level === 'APPROVAL_REQUIRED' && this.guardrailEnforcer) {
+          const approvalResult = await this.guardrailEnforcer.checkApproval(
+            toolCall.name, toolCall.arguments, roomToken, []
+          );
+          if (!approvalResult.allowed) {
+            this.logger.info(`[MicroPipeline] ToolGuard approval denied: ${toolCall.name} — ${approvalResult.reason}`);
+            return { success: false, result: '', error: `Action blocked: ${approvalResult.reason}` };
+          }
+          // Approved — fall through to GuardrailEnforcer.check() and then execute
+        } else {
+          this.logger.warn(`[MicroPipeline] ToolGuard blocked: ${toolCall.name} — ${guardResult.reason}`);
+          return { success: false, result: '', error: `Tool call blocked by security policy: ${guardResult.reason}` };
+        }
+      }
+    }
+
+    // GuardrailEnforcer: dynamic Cockpit guardrails with HITL confirmation
+    if (this.guardrailEnforcer) {
+      const result = await this.guardrailEnforcer.check(toolCall.name, toolCall.arguments, roomToken);
+      if (!result.allowed) {
+        // Edit requests treated as blocks (MicroPipeline has no revision loop)
+        this.logger.info(`[MicroPipeline] GuardrailEnforcer blocked: ${toolCall.name} — ${result.reason}`);
+        return { success: false, result: '', error: `Action blocked: ${result.reason}` };
+      }
+    }
+
+    return this.toolRegistry.execute(toolCall.name, toolCall.arguments);
+  }
+
+  /**
+   * Check if a message should be escalated to cloud for complex reasoning.
+   * @param {string} message
+   * @returns {boolean}
+   * @private
+   */
+  _shouldEscalateToCloud(message) {
+    if (!message || message.length <= 20) return false;
+    return CLOUD_ESCALATION_PATTERNS.some(pattern => pattern.test(message));
   }
 
   /**
