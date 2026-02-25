@@ -1363,9 +1363,28 @@ class ToolRegistry {
       },
       handler: async (args) => {
         const startDate = new Date(args.start);
+        if (isNaN(startDate.getTime())) {
+          return `Invalid start date: "${args.start}". Use ISO 8601 format (e.g. 2026-02-26T14:00:00).`;
+        }
+
+        // Reject dates more than 24 hours in the past — likely an LLM date hallucination
+        const now = new Date();
+        const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        if (startDate < twentyFourHoursAgo) {
+          return `Rejected: start date ${startDate.toISOString()} is in the past. Current date/time is ${now.toISOString()}. Please use the correct date.`;
+        }
+
         const endDate = args.end
           ? new Date(args.end)
           : new Date(startDate.getTime() + 60 * 60 * 1000);
+
+        if (args.end && isNaN(endDate.getTime())) {
+          return `Invalid end date: "${args.end}". Use ISO 8601 format (e.g. 2026-02-26T15:00:00).`;
+        }
+
+        if (endDate <= startDate) {
+          return `Invalid time range: end (${endDate.toISOString()}) is not after start (${startDate.toISOString()}).`;
+        }
 
         const eventData = {
           summary: args.title,
@@ -1421,6 +1440,10 @@ class ToolRegistry {
 
         if (!event || !event.uid) {
           return `Calendar event "${args.title}" may not have been created — no event ID returned. Check the calendar to verify.`;
+        }
+
+        if (event.verified === false) {
+          return `Warning: "${args.title}" was sent to the server but could not be verified. The event may not have been saved. Event ID: ${event.uid}. Please check the calendar.`;
         }
 
         let msg = `Created "${args.title}" on ${startDate.toLocaleDateString()} at ${startDate.toLocaleTimeString()}. Event ID: ${event.uid}`;

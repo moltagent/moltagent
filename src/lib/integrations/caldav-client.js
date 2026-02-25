@@ -405,19 +405,36 @@ class CalDAVClient {
       throw new Error(`Failed to create event: ${response.status} - ${response.body}`);
     }
 
+    // Read-back verification: confirm the server actually stored the event
+    let verified = null;
+    try {
+      verified = await this.getEvent(calendarId, uid);
+    } catch (readbackErr) {
+      // Log but don't fail — the PUT succeeded
+      console.warn(`[CalDAV] Read-back verification failed for ${uid}: ${readbackErr.message}`);
+    }
+
+    if (!verified) {
+      console.warn(`[CalDAV] Event ${uid} not found on server after PUT 201 — possible server-side rejection`);
+    }
+
+    const serverUid = verified?.uid || uid;
+
     await this.auditLog('caldav_event_created', {
       calendar: calendarId,
-      uid,
+      uid: serverUid,
       summary: event.summary,
       start: event.start.toISOString(),
-      attendees: event.attendees?.length || 0
+      attendees: event.attendees?.length || 0,
+      verified: !!verified
     });
 
     return {
-      uid,
+      uid: serverUid,
       calendarId,
       ...event,
-      href: `/remote.php/dav/calendars/${this.username}/${calendarId}/${uid}.ics`
+      verified: !!verified,
+      href: `/remote.php/dav/calendars/${this.username}/${calendarId}/${serverUid}.ics`
     };
   }
 

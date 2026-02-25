@@ -391,13 +391,63 @@ asyncTest('calendar_create_event creates event', async () => {
     logger: silentLogger
   });
 
+  // Use a date 7 days in the future to avoid past-date validation rejection
+  const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   const result = await registry.execute('calendar_create_event', {
     title: 'Test meeting',
-    start: '2026-02-15T14:00:00Z'
+    start: futureDate.toISOString()
   });
 
   assert.ok(result.success);
   assert.ok(result.result.includes('Test meeting'));
+});
+
+asyncTest('calendar_create_event rejects invalid start date', async () => {
+  const registry = new ToolRegistry({
+    calDAVClient: createMockCalDAVClient(),
+    logger: silentLogger
+  });
+
+  const result = await registry.execute('calendar_create_event', {
+    title: 'Bad date meeting',
+    start: 'not-a-date'
+  });
+
+  assert.ok(result.success);
+  assert.ok(result.result.includes('Invalid start date'));
+});
+
+asyncTest('calendar_create_event rejects past date', async () => {
+  const registry = new ToolRegistry({
+    calDAVClient: createMockCalDAVClient(),
+    logger: silentLogger
+  });
+
+  const result = await registry.execute('calendar_create_event', {
+    title: 'Past meeting',
+    start: '2020-01-01T10:00:00Z'
+  });
+
+  assert.ok(result.success);
+  assert.ok(result.result.includes('in the past'));
+});
+
+asyncTest('calendar_create_event rejects end before start', async () => {
+  const registry = new ToolRegistry({
+    calDAVClient: createMockCalDAVClient(),
+    logger: silentLogger
+  });
+
+  const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const beforeFuture = new Date(futureDate.getTime() - 2 * 60 * 60 * 1000);
+  const result = await registry.execute('calendar_create_event', {
+    title: 'Backwards meeting',
+    start: futureDate.toISOString(),
+    end: beforeFuture.toISOString()
+  });
+
+  assert.ok(result.success);
+  assert.ok(result.result.includes('not after start'));
 });
 
 asyncTest('calendar_check_conflicts returns no conflicts', async () => {
