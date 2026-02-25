@@ -432,13 +432,27 @@ class MessageProcessor {
           if (this.agentLoop.llmProvider?.clearLocalSkip) {
             this.agentLoop.llmProvider.clearLocalSkip();
           }
-          response = await this.microPipeline.process(extracted.content, {
-            userName: extracted.user,
-            roomToken: extracted.token,
-            warmMemory: '',
-            intent  // Skip re-classification inside MicroPipeline
-          });
-          result = { intent: `smart_mix_local:${intent}`, provider: 'local' };
+          try {
+            response = await this.microPipeline.process(extracted.content, {
+              userName: extracted.user,
+              roomToken: extracted.token,
+              warmMemory: '',
+              intent  // Skip re-classification inside MicroPipeline
+            });
+            result = { intent: `smart_mix_local:${intent}`, provider: 'local' };
+          } catch (chatErr) {
+            console.warn(`[Message] Chitchat escalated to cloud: ${chatErr.message}`);
+            if (this.agentLoop.llmProvider?.skipLocalForConversation) {
+              this.agentLoop.llmProvider.skipLocalForConversation();
+            }
+            response = await this.agentLoop.process(extracted.content, extracted.token, {
+              messageId: extracted.messageId,
+              inputType: extracted._isVoice ? 'voice' : 'text',
+              user: extracted.user
+            });
+            result = { intent: `smart_mix_escalated:${intent}`, provider: 'agent' };
+            response = response || 'Sorry, I encountered an error processing your message.';
+          }
         } else {
           // Path 3: Question/task/complex — skip local, go straight to cloud via AgentLoop
           if (this.agentLoop.llmProvider?.skipLocalForConversation) {

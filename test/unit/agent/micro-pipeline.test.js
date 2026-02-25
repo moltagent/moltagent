@@ -409,4 +409,29 @@ asyncTest('_handleDomainTask() throws DOMAIN_ESCALATE for cloud-worthy message',
   }
 });
 
+// -- _handleChat throws DOMAIN_ESCALATE on LLM failure --
+asyncTest('_handleChat() throws DOMAIN_ESCALATE when LLM fails', async () => {
+  const failRouter = {
+    route: async () => { throw new Error('connection refused'); },
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+  const pipeline = new MicroPipeline({ llmRouter: failRouter, logger: silentLogger });
+
+  try {
+    await pipeline._handleChat('Hello!', {});
+    assert.fail('Should have thrown DOMAIN_ESCALATE');
+  } catch (err) {
+    assert.strictEqual(err.code, 'DOMAIN_ESCALATE');
+    assert.ok(err.message.includes('Chat provider unavailable'));
+  }
+});
+
+asyncTest('_handleChat() returns response on success (no escalation)', async () => {
+  const router = createMockRouter({ result: 'Hello back!', provider: 'mock', tokens: 10 });
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
+  const result = await pipeline._handleChat('Hello!', {});
+  assert.strictEqual(result, 'Hello back!');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 100);

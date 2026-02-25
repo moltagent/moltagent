@@ -138,9 +138,64 @@ test('constructor uses provided toolTimeout', () => {
   assert.strictEqual(provider.toolTimeout, 45000);
 });
 
+// --- _fetchWithRetry ---
+console.log('\n--- _fetchWithRetry ---\n');
+
+asyncTest('_fetchWithRetry succeeds on first try', async () => {
+  const provider = new OllamaToolsProvider({}, silentLogger);
+  let attempts = 0;
+  provider._fetch = async () => { attempts++; return { ok: true, json: async () => ({}) }; };
+  const res = await provider._fetchWithRetry('http://test', {});
+  assert.strictEqual(attempts, 1);
+  assert.strictEqual(res.ok, true);
+});
+
+asyncTest('_fetchWithRetry retries on connection error then succeeds', async () => {
+  const provider = new OllamaToolsProvider({}, silentLogger);
+  let attempts = 0;
+  provider._fetch = async () => {
+    attempts++;
+    if (attempts === 1) throw new Error('ECONNREFUSED');
+    return { ok: true, json: async () => ({}) };
+  };
+  const res = await provider._fetchWithRetry('http://test', {}, 1, 10);
+  assert.strictEqual(attempts, 2);
+  assert.strictEqual(res.ok, true);
+});
+
+asyncTest('_fetchWithRetry throws after all retries exhausted', async () => {
+  const provider = new OllamaToolsProvider({}, silentLogger);
+  let attempts = 0;
+  provider._fetch = async () => { attempts++; throw new Error('ECONNREFUSED'); };
+  try {
+    await provider._fetchWithRetry('http://test', {}, 1, 10);
+    assert.fail('Should have thrown');
+  } catch (err) {
+    assert.strictEqual(attempts, 2);
+    assert.ok(err.message.includes('ECONNREFUSED'));
+  }
+});
+
+asyncTest('_fetchWithRetry does not retry HTTP errors (err.status set)', async () => {
+  const provider = new OllamaToolsProvider({}, silentLogger);
+  let attempts = 0;
+  provider._fetch = async () => {
+    attempts++;
+    const err = new Error('Bad Request');
+    err.status = 400;
+    throw err;
+  };
+  try {
+    await provider._fetchWithRetry('http://test', {}, 1, 10);
+    assert.fail('Should have thrown');
+  } catch (err) {
+    assert.strictEqual(attempts, 1, 'Should not retry HTTP errors');
+    assert.strictEqual(err.status, 400);
+  }
+});
+
 // ============================================================
 // Summary
 // ============================================================
 
-const results = summary();
-exitWithCode(results);
+setTimeout(() => { const results = summary(); exitWithCode(results); }, 500);

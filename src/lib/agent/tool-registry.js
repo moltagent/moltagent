@@ -1394,44 +1394,44 @@ class ToolRegistry {
           location: args.location || ''
         };
 
-        if (args.attendees && args.attendees.length > 0) {
-          eventData.attendees = [...args.attendees];
-
-          // Auto-add requesting user as ATTENDEE so the event appears in their calendar.
-          // If they're already in the list (e.g. their NC email matches an explicit attendee),
-          // upgrade their PARTSTAT to ACCEPTED (they requested the event).
-          const reqUser = this.getRequestContext().user;
-          if (reqUser && ncMgr) {
-            try {
-              const userEmail = await ncMgr.getUserEmail(reqUser);
-              if (userEmail) {
-                const existingIdx = eventData.attendees.findIndex(
-                  a => (typeof a === 'string' ? a : a.email).toLowerCase() === userEmail.toLowerCase()
-                );
-                if (existingIdx >= 0) {
-                  // Already listed — upgrade to ACCEPTED since they requested it
-                  const existing = eventData.attendees[existingIdx];
-                  eventData.attendees[existingIdx] = typeof existing === 'string'
-                    ? { email: existing, name: reqUser, status: 'ACCEPTED' }
-                    : { ...existing, status: 'ACCEPTED' };
-                } else {
-                  eventData.attendees.push({ email: userEmail, name: reqUser, status: 'ACCEPTED' });
-                }
+        // Always auto-add requesting user as ATTENDEE so the event appears in their calendar.
+        // If they're already in the list, upgrade their PARTSTAT to ACCEPTED.
+        const reqUser = this.getRequestContext().user;
+        if (reqUser && ncMgr) {
+          try {
+            const userEmail = await ncMgr.getUserEmail(reqUser);
+            if (userEmail) {
+              if (!eventData.attendees) eventData.attendees = [];
+              const existingIdx = eventData.attendees.findIndex(
+                a => (typeof a === 'string' ? a : a.email).toLowerCase() === userEmail.toLowerCase()
+              );
+              if (existingIdx >= 0) {
+                const existing = eventData.attendees[existingIdx];
+                eventData.attendees[existingIdx] = typeof existing === 'string'
+                  ? { email: existing, name: reqUser, status: 'ACCEPTED' }
+                  : { ...existing, status: 'ACCEPTED' };
+              } else {
+                eventData.attendees.push({ email: userEmail, name: reqUser, status: 'ACCEPTED' });
               }
-            } catch (err) {
-              this.logger.warn(`[ToolRegistry] Could not resolve email for ${reqUser}: ${err.message}`);
-            }
-          }
 
-          // Set organizer to Moltagent's NC identity so NC can send invitations
-          if (ncMgr) {
-            try {
+              // Set organizer to Moltagent's NC identity so NC can send invitations
               const orgEmail = await ncMgr.getUserEmail(ncMgr.ncUser);
               if (orgEmail) {
                 eventData.organizer = { email: orgEmail, name: ncMgr.ncUser };
               }
-            } catch (err) {
-              this.logger.warn(`[ToolRegistry] Could not resolve organizer email: ${err.message}`);
+            }
+          } catch (err) {
+            this.logger.warn(`[ToolRegistry] Could not resolve email for ${reqUser}: ${err.message}`);
+          }
+        }
+
+        // Merge any explicit attendees (dedup against auto-added user)
+        if (args.attendees && args.attendees.length > 0) {
+          if (!eventData.attendees) eventData.attendees = [];
+          for (const att of args.attendees) {
+            const email = (typeof att === 'string' ? att : att.email || '').toLowerCase();
+            if (!eventData.attendees.some(a => (typeof a === 'string' ? a : a.email).toLowerCase() === email)) {
+              eventData.attendees.push(att);
             }
           }
         }
@@ -1931,6 +1931,17 @@ class ToolRegistry {
             await files.mkdir(parentDir);
           }
           await files.writeFile(args.path, args.content);
+
+          // Auto-share with requesting user (best-effort)
+          const reqUser = this.getRequestContext().user;
+          if (reqUser && files.shareFile) {
+            try {
+              await files.shareFile(args.path, reqUser);
+            } catch (shareErr) {
+              this.logger.warn(`[ToolRegistry] file_write auto-share failed for ${reqUser}: ${shareErr.message}`);
+            }
+          }
+
           return `Wrote ${this._formatSize(Buffer.byteLength(args.content, 'utf-8'))} to "${args.path}".`;
         } catch (err) {
           if (err.statusCode === 403) {

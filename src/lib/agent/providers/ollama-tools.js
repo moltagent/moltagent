@@ -22,6 +22,26 @@ class OllamaToolsProvider {
     this.timeout = config.timeout || 300000;
     this.toolTimeout = config.toolTimeout || 60000;
     this.logger = logger || console;
+    this._fetch = globalThis.fetch;
+  }
+
+  /**
+   * Fetch with retry for transient connection errors.
+   * Only retries on network-level failures (!err.status), not HTTP errors.
+   */
+  async _fetchWithRetry(url, fetchOptions, retries = 1, delayMs = 2000) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await this._fetch(url, fetchOptions);
+      } catch (err) {
+        if (attempt < retries && !err.status) {
+          this.logger.warn(`[OllamaToolsProvider] fetch failed (attempt ${attempt + 1}), retrying in ${delayMs}ms`);
+          await new Promise(r => setTimeout(r, delayMs));
+          continue;
+        }
+        throw err;
+      }
+    }
   }
 
   /**
@@ -100,7 +120,7 @@ class OllamaToolsProvider {
 
     try {
       const fetchPromise = (async () => {
-        const response = await fetch(`${this.endpoint}/api/chat`, {
+        const response = await this._fetchWithRetry(`${this.endpoint}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),

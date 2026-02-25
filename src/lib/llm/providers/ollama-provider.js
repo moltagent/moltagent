@@ -25,6 +25,26 @@ class OllamaProvider extends BaseProvider {
       model: config.model || 'qwen3:8b',
       costModel: { type: 'free' }
     });
+    this._fetch = globalThis.fetch;
+  }
+
+  /**
+   * Fetch with retry for transient connection errors.
+   * Only retries on network-level failures (!err.status), not HTTP errors.
+   */
+  async _fetchWithRetry(url, fetchOptions, retries = 1, delayMs = 2000) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await this._fetch(url, fetchOptions);
+      } catch (err) {
+        if (attempt < retries && !err.status) {
+          this.logger.warn(`[OllamaProvider] fetch failed (attempt ${attempt + 1}), retrying in ${delayMs}ms`);
+          await new Promise(r => setTimeout(r, delayMs));
+          continue;
+        }
+        throw err;
+      }
+    }
   }
 
   /**
@@ -40,7 +60,7 @@ class OllamaProvider extends BaseProvider {
       const timeout = setTimeout(() => controller.abort(), 120000); // 120 second timeout
 
       try {
-        const response = await fetch(`${this.endpoint}/api/chat`, {
+        const response = await this._fetchWithRetry(`${this.endpoint}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

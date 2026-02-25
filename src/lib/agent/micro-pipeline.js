@@ -734,7 +734,9 @@ Sub-questions:`;
       return response;
     } catch (err) {
       this.logger.warn(`[MicroPipeline] Chat failed: ${err.message}`);
-      return 'I\'m having trouble responding right now. Please try again.';
+      const escalateErr = new Error(`Chat provider unavailable: ${err.message}`);
+      escalateErr.code = 'DOMAIN_ESCALATE';
+      throw escalateErr;
     }
   }
 }
