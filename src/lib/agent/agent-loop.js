@@ -139,6 +139,7 @@ class AgentLoop {
     const toolFailureCounts = {};  // toolName -> consecutive failure count
     let cumulativeToolResultChars = 0;
     const toolResultIndices = [];  // indices into messages[] of tool results
+    const failedCallIds = new Set();  // tool_call_ids that returned errors
 
     while (iteration < maxIter) {
       iteration++;
@@ -154,7 +155,16 @@ class AgentLoop {
           job: this._classifyJob(messages, tools)
         });
       } catch (llmErr) {
-        // Friendly message on rate limit / overload instead of surfacing raw error
+        // Salvage: if previous iterations completed tool calls successfully,
+        // return confirmed results instead of discarding them.
+        const salvaged = this._salvageToolResults(messages, failedCallIds);
+        if (salvaged) {
+          this.logger.info('[AgentLoop] Salvaged tool results after LLM failure');
+          lastResponse = salvaged;
+          break;
+        }
+
+        // No tool results to salvage — handle error normally
         if (this._isRateLimitError(llmErr)) {
           this.logger.warn(`[AgentLoop] LLM provider rate limited: ${llmErr.message}`);
           lastResponse = this._buildFriendlyLLMError(llmErr);
@@ -205,6 +215,7 @@ class AgentLoop {
           // Check if tool is disabled due to consecutive failures
           if ((toolFailureCounts[toolCall.name] || 0) >= MAX_CONSECUTIVE_TOOL_FAILURES) {
             this.logger.warn(`[AgentLoop] Skipping ${toolCall.name} — failed ${toolFailureCounts[toolCall.name]}x consecutively`);
+            failedCallIds.add(callId);
             messages.push({
               role: 'tool',
               tool_call_id: callId,
@@ -219,6 +230,7 @@ class AgentLoop {
           // Track tool failures (don't count errors toward maxIterations)
           if (!toolResult.success) {
             toolFailureCounts[toolCall.name] = (toolFailureCounts[toolCall.name] || 0) + 1;
+            failedCallIds.add(callId);
             this.logger.warn(`[AgentLoop] Tool ${toolCall.name} failed (${toolFailureCounts[toolCall.name]}x): ${toolResult.error}`);
           } else {
             toolFailureCounts[toolCall.name] = 0; // Reset on success
@@ -379,6 +391,7 @@ class AgentLoop {
     const toolFailureCounts = {};
     let cumulativeToolResultChars = 0;
     const toolResultIndices = [];
+    const failedCallIds = new Set();
 
     while (iteration < iterLimit) {
       iteration++;
@@ -394,6 +407,16 @@ class AgentLoop {
           job: this._classifyJob(messages, tools)
         });
       } catch (llmErr) {
+        // Salvage: if previous iterations completed tool calls successfully,
+        // return confirmed results instead of discarding them.
+        const salvaged = this._salvageToolResults(messages, failedCallIds);
+        if (salvaged) {
+          this.logger.info('[AgentLoop] Workflow salvaged tool results after LLM failure');
+          lastResponse = salvaged;
+          break;
+        }
+
+        // No tool results to salvage — handle error normally
         if (this._isRateLimitError(llmErr)) {
           this.logger.warn(`[AgentLoop] Workflow LLM rate limited: ${llmErr.message}`);
           lastResponse = 'Workflow processing paused — ' + this._buildFriendlyLLMError(llmErr);
@@ -428,6 +451,7 @@ class AgentLoop {
           const callId = toolCall.id || `wf_${iteration}_${toolCall.name}`;
 
           if ((toolFailureCounts[toolCall.name] || 0) >= MAX_CONSECUTIVE_TOOL_FAILURES) {
+            failedCallIds.add(callId);
             messages.push({
               role: 'tool', tool_call_id: callId,
               content: `Tool ${toolCall.name} is temporarily unavailable after repeated failures.`
@@ -439,6 +463,7 @@ class AgentLoop {
 
           if (!toolResult.success) {
             toolFailureCounts[toolCall.name] = (toolFailureCounts[toolCall.name] || 0) + 1;
+            failedCallIds.add(callId);
           } else {
             toolFailureCounts[toolCall.name] = 0;
           }
@@ -814,6 +839,36 @@ class AgentLoop {
     }
     return "I'm a bit busy right now — the AI service is temporarily " +
            'at capacity. Please try again in a minute or two.';
+  }
+
+  /**
+   * Salvage successful tool results from the messages array when an LLM call fails.
+   * Tool results are already human-readable strings (e.g., 'Created "Test 9" on ...').
+   * Uses failedCallIds set for robust error detection — avoids fragile string matching
+   * that can be fooled by content provenance wrapping on external tool results.
+   *
+   * @param {Array<Object>} messages - The conversation messages array
+   * @param {Set<string>} failedCallIds - tool_call_ids that returned errors
+   * @returns {string|null} Salvaged response or null
+   * @private
+   */
+  _salvageToolResults(messages, failedCallIds) {
+    const successResults = [];
+    for (const msg of messages) {
+      if (msg.role === 'tool' && msg.content &&
+          !failedCallIds.has(msg.tool_call_id)) {
+        successResults.push(msg.content);
+      }
+    }
+    if (successResults.length === 0) return null;
+
+    // Tool results are already human-readable — trim each to avoid giant outputs
+    const summary = successResults
+      .map(r => r.substring(0, 500))
+      .join('\n\n');
+
+    return summary +
+      '\n\n_(Note: I had trouble generating a full response, but the action above completed successfully.)_';
   }
 
   /**
