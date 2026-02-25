@@ -1108,6 +1108,39 @@ async function runTests() {
     assert.ok(!msg.includes('file_delete'));
   });
 
+  // ── isPendingConfirmation (HITL duplicate prevention) ──────────
+
+  test('TC-PENDING-001: isPendingConfirmation defaults to false', () => {
+    const enforcer = makeEnforcer({});
+    assert.strictEqual(enforcer.isPendingConfirmation(), false);
+  });
+
+  test('TC-PENDING-002: _pendingConfirmation flag is set true after enqueue', () => {
+    const enforcer = makeEnforcer({});
+    // Simulate what _requestConfirmation does after enqueue
+    enforcer._pendingConfirmation = true;
+    assert.strictEqual(enforcer.isPendingConfirmation(), true);
+    enforcer._pendingConfirmation = false;
+    assert.strictEqual(enforcer.isPendingConfirmation(), false);
+  });
+
+  await asyncTest('TC-PENDING-003: _pendingConfirmation resets after yes response', async () => {
+    const nowSec = Math.floor(Date.now() / 1000) + 1;
+    const enforcer = makeEnforcer({
+      cockpitManager: createMockCockpit([{ title: 'Confirm emails', gate: true }]),
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([
+        { role: 'user', content: 'yes', timestamp: nowSec }
+      ]),
+      ollamaProvider: createMockOllama('YES'),
+      pollIntervalMs: 10,
+    });
+
+    const result = await enforcer.check('mail_send', { to: 'a@b.com', subject: 'hi', body: 'test' }, 'room1');
+    assert.strictEqual(result.allowed, true);
+    assert.strictEqual(enforcer.isPendingConfirmation(), false);
+  });
+
   const { passed, failed } = summary();
   exitWithCode();
 }

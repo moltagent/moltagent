@@ -155,6 +155,10 @@ class GuardrailEnforcer {
     // Tracks the timestamp of the last consumed HITL response so subsequent
     // polls don't re-match the same message
     this._lastConsumedTimestamp = 0;
+
+    // True while waiting for a HITL confirmation reply — used by
+    // MessageProcessor to skip webhook-delivered duplicates of the reply
+    this._pendingConfirmation = false;
   }
 
   /**
@@ -401,6 +405,7 @@ class GuardrailEnforcer {
 
     try {
       this.talkSendQueue.enqueue(roomToken, message);
+      this._pendingConfirmation = true;
     } catch (err) {
       this.logger.warn(`[GuardrailEnforcer] Failed to send confirmation: ${err.message}`);
       return { decision: 'no' };
@@ -421,14 +426,17 @@ class GuardrailEnforcer {
           const content = (msg.content || '').trim().toLowerCase();
           if (this._isAffirmative(content)) {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._pendingConfirmation = false;
             return { decision: 'yes' };
           }
           if (this._isNegative(content)) {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._pendingConfirmation = false;
             return { decision: 'no' };
           }
           if (this._isEditRequest(content) && EDITABLE_TOOLS.has(toolName)) {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._pendingConfirmation = false;
             return { decision: 'edit', message: (msg.content || '').trim() };
           }
         }
@@ -438,6 +446,7 @@ class GuardrailEnforcer {
     }
 
     this.logger.info('[GuardrailEnforcer] Confirmation timed out — blocking action');
+    this._pendingConfirmation = false;
     return { decision: 'timeout' };
   }
 
@@ -829,6 +838,7 @@ class GuardrailEnforcer {
 
     try {
       this.talkSendQueue.enqueue(roomToken, message);
+      this._pendingConfirmation = true;
     } catch (err) {
       this.logger.warn(`[GuardrailEnforcer] Failed to send approval request: ${err.message}`);
       return { decision: 'no' };
@@ -847,14 +857,17 @@ class GuardrailEnforcer {
           const content = (msg.content || '').trim().toLowerCase();
           if (this._isAffirmative(content)) {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._pendingConfirmation = false;
             return { decision: 'yes' };
           }
           if (this._isNegative(content)) {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._pendingConfirmation = false;
             return { decision: 'no' };
           }
           if (this._isEditRequest(content) && EDITABLE_TOOLS.has(toolName)) {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._pendingConfirmation = false;
             return { decision: 'edit', message: (msg.content || '').trim() };
           }
         }
@@ -864,6 +877,7 @@ class GuardrailEnforcer {
     }
 
     this.logger.info('[GuardrailEnforcer] Tool approval timed out — blocking action');
+    this._pendingConfirmation = false;
     return { decision: 'timeout' };
   }
 
@@ -930,6 +944,27 @@ class GuardrailEnforcer {
 
     lines.push('\nReply **yes** to approve or **no** to deny.');
     return lines.join('\n');
+  }
+
+  /**
+   * Whether a HITL confirmation is currently being polled for.
+   * Used by MessageProcessor to avoid double-processing the user's reply.
+   * @returns {boolean}
+   */
+  isPendingConfirmation() {
+    return this._pendingConfirmation === true;
+  }
+
+  /**
+   * Check if text looks like a HITL confirmation response (yes/no/edit).
+   * Used by MessageProcessor to skip webhook-delivered duplicates.
+   * @param {string} text - Raw message content
+   * @returns {boolean}
+   */
+  isConfirmationResponse(text) {
+    const trimmed = (text || '').trim().toLowerCase();
+    if (trimmed.length === 0 || trimmed.length > 50) return false;
+    return this._isAffirmative(trimmed) || this._isNegative(trimmed) || this._isEditRequest(trimmed);
   }
 
   // ── Helpers ─────────────────────────────────────────────────────

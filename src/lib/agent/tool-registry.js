@@ -2315,6 +2315,9 @@ class ToolRegistry {
           output += result.body;
           return output;
         } catch (err) {
+          if (err.statusCode >= 500) {
+            return `Wiki service is temporarily unavailable (HTTP ${err.statusCode}). Cannot read "${args.page_title}" right now.`;
+          }
           this.logger.error(`[wiki_read] ${err.message}`);
           return `Failed to read wiki page: ${err.message}`;
         }
@@ -2335,119 +2338,127 @@ class ToolRegistry {
         required: ['page_title', 'content']
       },
       handler: async (args) => {
-        // Parse slash-separated title: "People/John Smith" → parent "People", leaf "John Smith"
-        const titleParts = args.page_title.split('/');
-        const leafTitle = titleParts[titleParts.length - 1];
-        const impliedParent = titleParts.length > 1 ? titleParts[titleParts.length - 2] : null;
-        const parentHint = args.parent || impliedParent;
+        try {
+          // Parse slash-separated title: "People/John Smith" → parent "People", leaf "John Smith"
+          const titleParts = args.page_title.split('/');
+          const leafTitle = titleParts[titleParts.length - 1];
+          const impliedParent = titleParts.length > 1 ? titleParts[titleParts.length - 2] : null;
+          const parentHint = args.parent || impliedParent;
 
-        // Check if page exists
-        const existing = await wiki.findPageByTitle(args.page_title);
-        let writeContent = args.content;
+          // Check if page exists
+          const existing = await wiki.findPageByTitle(args.page_title);
+          let writeContent = args.content;
 
-        // Apply template for new pages with a type specified
-        if (!existing && args.type) {
-          try {
-            const { applyTemplate } = require('../knowledge/page-templates');
-            const templated = applyTemplate(args.type, { title: leafTitle });
-            if (templated) {
-              if (args.content.length < 100) {
-                writeContent = templated + '\n' + args.content;
+          // Apply template for new pages with a type specified
+          if (!existing && args.type) {
+            try {
+              const { applyTemplate } = require('../knowledge/page-templates');
+              const templated = applyTemplate(args.type, { title: leafTitle });
+              if (templated) {
+                if (args.content.length < 100) {
+                  writeContent = templated + '\n' + args.content;
+                }
               }
+            } catch (err) {
+              // Template module not available, use raw content
             }
-          } catch (err) {
-            // Template module not available, use raw content
           }
-        }
 
-        if (existing) {
-          // Update existing page
-          await wiki.writePageContent(existing.path, writeContent);
+          if (existing) {
+            // Update existing page
+            await wiki.writePageContent(existing.path, writeContent);
+
+            // Touch page to invalidate NC Text editor cache
+            if (existing.page && existing.page.id) {
+              const cId = await wiki.resolveCollective();
+              await wiki.touchPage(cId, existing.page.id);
+            }
+
+            // Log to learning log
+            if (this.clients.learningLog) {
+              try {
+                const { parseFrontmatter } = require('../knowledge/frontmatter');
+                const { frontmatter: fm } = parseFrontmatter(writeContent);
+                this.clients.learningLog.logKnowledgeChange('updated', args.page_title, { confidence: fm.confidence });
+              } catch { /* best effort */ }
+            }
+
+            const updateUrl = wiki._collectivesPageUrl(args.page_title.split('/').map(s => encodeURIComponent(s)).join('/'));
+            return `Updated wiki page "${args.page_title}" at ${existing.path}. [View](${updateUrl})`;
+          }
+
+          // Create new page: need collective ID and parent
+          const collectiveId = await wiki.resolveCollective();
+          if (!collectiveId) return 'Could not find the knowledge wiki collective.';
+          const pages = await wiki.listPages(collectiveId);
+          const allPages = Array.isArray(pages) ? pages : [];
+
+          // Resolve parent page ID (landing page is the root for top-level pages)
+          const landingPage = allPages.find(p => p.parentId === 0);
+          let parentId = landingPage ? landingPage.id : 0;
+
+          if (parentHint) {
+            const parentPage = allPages.find(p =>
+              (p.title || '').toLowerCase() === parentHint.toLowerCase()
+            );
+            if (parentPage) {
+              parentId = parentPage.id;
+            }
+          }
+
+          // Final dedup check: listPages may reveal a page that findPageByTitle missed
+          const existingByList = allPages.find(p =>
+            (p.title || '').toLowerCase() === leafTitle.toLowerCase()
+          );
+          if (existingByList) {
+            const fallbackPath = existingByList.filePath
+              ? `${existingByList.filePath}/${existingByList.fileName}`
+              : existingByList.fileName || `${leafTitle}.md`;
+            await wiki.writePageContent(fallbackPath, writeContent);
+            // Touch page to invalidate NC Text editor cache
+            if (existingByList.id) {
+              await wiki.touchPage(collectiveId, existingByList.id);
+            }
+            const dedupUrl = wiki._collectivesPageUrl(args.page_title.split('/').map(s => encodeURIComponent(s)).join('/'));
+            return `Updated wiki page "${leafTitle}" (dedup: found via list scan). [View](${dedupUrl})`;
+          }
+
+          // Create the page with just the leaf title
+          const created = await wiki.createPage(collectiveId, parentId, leafTitle);
+
+          if (!created || !created.id) {
+            return `Failed to create wiki page "${leafTitle}" — no page ID returned.`;
+          }
+
+          // Use API-returned path for WebDAV write
+          const pagePath = created.filePath
+            ? `${created.filePath}/${created.fileName}`
+            : created.fileName || `${leafTitle}.md`;
+
+          // Write content
+          await wiki.writePageContent(pagePath, writeContent);
 
           // Touch page to invalidate NC Text editor cache
-          if (existing.page && existing.page.id) {
-            const cId = await wiki.resolveCollective();
-            await wiki.touchPage(cId, existing.page.id);
-          }
+          await wiki.touchPage(collectiveId, created.id);
 
           // Log to learning log
           if (this.clients.learningLog) {
             try {
               const { parseFrontmatter } = require('../knowledge/frontmatter');
               const { frontmatter: fm } = parseFrontmatter(writeContent);
-              this.clients.learningLog.logKnowledgeChange('updated', args.page_title, { confidence: fm.confidence });
+              this.clients.learningLog.logKnowledgeChange('created', args.page_title, { confidence: fm.confidence });
             } catch { /* best effort */ }
           }
 
-          const updateUrl = wiki._collectivesPageUrl(args.page_title.split('/').map(s => encodeURIComponent(s)).join('/'));
-          return `Updated wiki page "${args.page_title}" at ${existing.path}. [View](${updateUrl})`;
-        }
-
-        // Create new page: need collective ID and parent
-        const collectiveId = await wiki.resolveCollective();
-        if (!collectiveId) return 'Could not find the knowledge wiki collective.';
-        const pages = await wiki.listPages(collectiveId);
-        const allPages = Array.isArray(pages) ? pages : [];
-
-        // Resolve parent page ID (landing page is the root for top-level pages)
-        const landingPage = allPages.find(p => p.parentId === 0);
-        let parentId = landingPage ? landingPage.id : 0;
-
-        if (parentHint) {
-          const parentPage = allPages.find(p =>
-            (p.title || '').toLowerCase() === parentHint.toLowerCase()
-          );
-          if (parentPage) {
-            parentId = parentPage.id;
+          const createUrl = wiki._collectivesPageUrl(args.page_title.split('/').map(s => encodeURIComponent(s)).join('/'));
+          return `Created wiki page "${leafTitle}" (page #${created.id})${parentHint ? ` under ${parentHint}` : ''}. [View](${createUrl})`;
+        } catch (err) {
+          if (err.statusCode >= 500) {
+            return `Wiki service is temporarily unavailable (HTTP ${err.statusCode}). Your content was NOT saved. Please try again later.`;
           }
+          this.logger.error(`[wiki_write] ${err.message}`);
+          return `Failed to write wiki page: ${err.message}`;
         }
-
-        // Final dedup check: listPages may reveal a page that findPageByTitle missed
-        const existingByList = allPages.find(p =>
-          (p.title || '').toLowerCase() === leafTitle.toLowerCase()
-        );
-        if (existingByList) {
-          const fallbackPath = existingByList.filePath
-            ? `${existingByList.filePath}/${existingByList.fileName}`
-            : existingByList.fileName || `${leafTitle}.md`;
-          await wiki.writePageContent(fallbackPath, writeContent);
-          // Touch page to invalidate NC Text editor cache
-          if (existingByList.id) {
-            await wiki.touchPage(collectiveId, existingByList.id);
-          }
-          const dedupUrl = wiki._collectivesPageUrl(args.page_title.split('/').map(s => encodeURIComponent(s)).join('/'));
-          return `Updated wiki page "${leafTitle}" (dedup: found via list scan). [View](${dedupUrl})`;
-        }
-
-        // Create the page with just the leaf title
-        const created = await wiki.createPage(collectiveId, parentId, leafTitle);
-
-        if (!created || !created.id) {
-          return `Failed to create wiki page "${leafTitle}" — no page ID returned.`;
-        }
-
-        // Use API-returned path for WebDAV write
-        const pagePath = created.filePath
-          ? `${created.filePath}/${created.fileName}`
-          : created.fileName || `${leafTitle}.md`;
-
-        // Write content
-        await wiki.writePageContent(pagePath, writeContent);
-
-        // Touch page to invalidate NC Text editor cache
-        await wiki.touchPage(collectiveId, created.id);
-
-        // Log to learning log
-        if (this.clients.learningLog) {
-          try {
-            const { parseFrontmatter } = require('../knowledge/frontmatter');
-            const { frontmatter: fm } = parseFrontmatter(writeContent);
-            this.clients.learningLog.logKnowledgeChange('created', args.page_title, { confidence: fm.confidence });
-          } catch { /* best effort */ }
-        }
-
-        const createUrl = wiki._collectivesPageUrl(args.page_title.split('/').map(s => encodeURIComponent(s)).join('/'));
-        return `Created wiki page "${leafTitle}" (page #${created.id})${parentHint ? ` under ${parentHint}` : ''}. [View](${createUrl})`;
       }
     });
 

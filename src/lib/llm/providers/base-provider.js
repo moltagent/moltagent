@@ -50,6 +50,7 @@ class BaseProvider {
     this.costModel = config.costModel || { type: 'free' };
     this.rateLimits = config.rateLimits || {};
     this.getCredential = config.getCredential || (async () => null);
+    this.logger = config.logger || console;
 
     // Stats
     this.stats = {

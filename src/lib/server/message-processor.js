@@ -225,6 +225,13 @@ class MessageProcessor {
       return { skipped: true };
     }
 
+    // Skip messages consumed by HITL guardrail confirmation polling
+    const enforcer = this.agentLoop?.guardrailEnforcer;
+    if (enforcer?.isPendingConfirmation() && enforcer.isConfirmationResponse(extracted.content)) {
+      console.log(`[Message] Skipping HITL confirmation response from ${extracted.user}`);
+      return { skipped: true, reason: 'hitl_confirmation' };
+    }
+
     // OOO auto-responder: reply with away notice, skip processing
     if (this.activeMode === MODES.OUT_OF_OFFICE && !extracted.isBotMessage) {
       const oooMessage = "I'm currently out of office. Your message has been noted and will be reviewed on my return.";
