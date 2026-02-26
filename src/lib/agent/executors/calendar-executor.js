@@ -17,14 +17,16 @@
  * - Problem: Local models hallucinate tool calls for calendar operations
  * - Pattern: Extract params via LLM → resolve dates in code → guardrail → execute
  * - Key Dependencies: BaseExecutor, CalDAVClient
- * - Data Flow: message → extract → route(create|list) → resolveDate → validate → guard → execute → confirm
+ * - Data Flow: message → extract → route(create|list|update|delete) → resolveDate → validate → guard → execute → confirm
  *
  * @module agent/executors/calendar-executor
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 const BaseExecutor = require('./base-executor');
 const { extractAttendees, mergeAttendees } = require('./attendee-extractor');
+
+const MAX_DISPLAY_EVENTS = 15;
 
 class CalendarExecutor extends BaseExecutor {
   /**
@@ -34,6 +36,7 @@ class CalendarExecutor extends BaseExecutor {
   constructor(config = {}) {
     super(config);
     this.calendarClient = config.calendarClient;
+    this._lastCreatedEvent = null;
   }
 
   /**
@@ -49,7 +52,7 @@ class CalendarExecutor extends BaseExecutor {
     const CALENDAR_SCHEMA = {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['create', 'list', 'delete'] },
+        action: { type: 'string', enum: ['create', 'list', 'update', 'delete'] },
         query_type: { type: 'string', enum: ['today', 'tomorrow', 'this_week', 'specific_date', 'upcoming', 'free_slots'] },
         summary: { type: 'string' },
         date: { type: 'string' },
@@ -57,6 +60,13 @@ class CalendarExecutor extends BaseExecutor {
         duration_minutes: { type: 'number' },
         attendees: { type: 'array', items: { type: 'string' } },
         location: { type: 'string' },
+        update_type: { type: 'string', enum: ['add_attendee', 'remove_attendee', 'change_time', 'change_title', 'change_location'] },
+        event_title: { type: 'string' },
+        event_reference: { type: 'string' },
+        attendee: { type: 'string' },
+        new_time: { type: 'string' },
+        new_title: { type: 'string' },
+        new_location: { type: 'string' },
         requires_clarification: { type: 'boolean' },
         missing_fields: { type: 'array', items: { type: 'string' } }
       },
@@ -74,8 +84,28 @@ Action rules:
 - "Am I free at 3pm?" → action: list
 - "Any meetings this week?" → action: list
 - "When is my next meeting?" → action: list
-The difference: if the user wants to ADD something → action: create.
-If the user wants to SEE what's already there → action: list.
+- "Assign me to/Add me to/Invite X to an event" → action: update
+- "Reschedule/move/change time of event" → action: update
+- "Rename event X to Y" → action: update
+- "Change location of event" → action: update
+- "Remove me from event" → action: update
+- "Delete/cancel/remove event X" → action: delete
+
+The difference:
+- ADD a new event → action: create
+- SEE what's already there → action: list
+- MODIFY an existing event → action: update
+- REMOVE an existing event → action: delete
+
+For action=update, set update_type:
+- "assign me to X" / "add me to X" / "invite Bob" → update_type: add_attendee
+- "remove me from X" → update_type: remove_attendee
+- "reschedule X to 3pm" / "move X to tomorrow" → update_type: change_time
+- "rename X to Y" → update_type: change_title
+- "change location of X to Room 5" → update_type: change_location
+Set event_title or event_reference to identify the target event.
+Use "last_created" for references like "the event you just created" or "that event".
+Set attendee to "self" when the user refers to themselves ("me", "I").
 
 For action=list, set query_type:
 - "what's on my calendar today" → query_type: today
@@ -125,11 +155,14 @@ Message: "${message.substring(0, 300)}"`;
       return await this.queryEvents(params, context);
     }
 
-    // Unsupported actions → escalate to cloud where full tools exist
-    if (params.action && params.action !== 'create') {
-      const err = new Error(`Calendar ${params.action} not yet supported by executor`);
-      err.code = 'DOMAIN_ESCALATE';
-      throw err;
+    // Update → modify existing event
+    if (params.action === 'update') {
+      return await this.updateEvent(params, context);
+    }
+
+    // Delete → remove existing event
+    if (params.action === 'delete') {
+      return await this.deleteEvent(params, context);
     }
 
     // Step 3: Resolve date via code (not LLM)
@@ -188,8 +221,19 @@ Message: "${message.substring(0, 300)}"`;
       description: `Created by Moltagent for ${context.userName || 'user'}`
     });
 
-    // Step 9: Confirm with real data
+    // Track last created event for "the event you just created" references
     const uid = eventResult.uid || eventResult.id || 'unknown';
+    this._lastCreatedEvent = {
+      uid,
+      calendarId: 'personal',
+      summary: params.summary,
+      start: startDate,
+      end: endDate,
+      attendees,
+      location: params.location || undefined
+    };
+
+    // Step 9: Confirm with real data
     const formattedDate = resolvedDate;
     const formattedTime = time;
     const endTime = endDate.toISOString().slice(11, 16);
@@ -203,6 +247,237 @@ Message: "${message.substring(0, 300)}"`;
     );
 
     return `Created event "${params.summary}" on ${formattedDate} at ${formattedTime} (${durationMinutes} min)${attendeeList}. Event ID: ${uid}`;
+  }
+
+  /**
+   * Update an existing calendar event.
+   *
+   * @param {Object} params - Extracted parameters including update_type, event_title/event_reference
+   * @param {Object} context - { userName, roomToken }
+   * @returns {Promise<string>} Confirmation text
+   */
+  async updateEvent(params, context) {
+    // Validation: need to know which event
+    const searchTerm = params.event_title || params.event_reference || '';
+    if (!searchTerm) {
+      return 'Which event would you like me to update? Please provide the event name.';
+    }
+
+    // Validation: update_type-specific missing fields
+    if (params.update_type === 'change_time' && !params.new_time && !params.date) {
+      return 'What time should I reschedule this event to?';
+    }
+    if (params.update_type === 'change_title' && !params.new_title) {
+      return 'What should I rename this event to?';
+    }
+
+    // Find the event
+    let found;
+    try {
+      found = await this._findEventByTitle(searchTerm);
+    } catch (err) {
+      this.logger.warn(`[CalendarExecutor] Event search failed: ${err.message}`);
+      return "I couldn't search your calendar right now. Want me to try again?";
+    }
+
+    if (!found) {
+      return `I couldn't find an event matching "${searchTerm}". Could you check the name?`;
+    }
+
+    const { event, calendarId } = found;
+
+    // Build updates based on update_type
+    const updates = {};
+    let description = '';
+
+    switch (params.update_type) {
+      case 'add_attendee': {
+        const attendee = params.attendee === 'self' ? (context.userName || 'user') : (params.attendee || '');
+        if (!attendee) {
+          return 'Who should I add to this event?';
+        }
+        const currentAttendees = Array.isArray(event.attendees) ? [...event.attendees] : [];
+        if (!currentAttendees.some(a => a.toLowerCase() === attendee.toLowerCase())) {
+          currentAttendees.push(attendee);
+        }
+        updates.attendees = currentAttendees;
+        description = `Added ${attendee} to "${event.summary}"`;
+        break;
+      }
+      case 'remove_attendee': {
+        const attendee = params.attendee === 'self' ? (context.userName || 'user') : (params.attendee || '');
+        if (!attendee) {
+          return 'Who should I remove from this event?';
+        }
+        const currentAttendees = Array.isArray(event.attendees) ? [...event.attendees] : [];
+        updates.attendees = currentAttendees.filter(a => a.toLowerCase() !== attendee.toLowerCase());
+        description = `Removed ${attendee} from "${event.summary}"`;
+        break;
+      }
+      case 'change_time': {
+        const newTime = params.new_time || params.time || '';
+        const newDate = params.date ? this._resolveDate(params.date) : null;
+        const eventDur = event.end && event.start
+          ? new Date(event.end).getTime() - new Date(event.start).getTime()
+          : 60 * 60000;
+        if (newTime) {
+          const [h, m] = newTime.split(':').map(Number);
+          if (Number.isFinite(h) && Number.isFinite(m)) {
+            const base = newDate ? new Date(`${newDate}T00:00:00`) : new Date(event.start);
+            base.setHours(h, m, 0, 0);
+            updates.start = base;
+            updates.end = new Date(base.getTime() + eventDur);
+          }
+        } else if (newDate) {
+          const oldStart = new Date(event.start);
+          const base = new Date(`${newDate}T${String(oldStart.getHours()).padStart(2, '0')}:${String(oldStart.getMinutes()).padStart(2, '0')}:00`);
+          updates.start = base;
+          updates.end = new Date(base.getTime() + eventDur);
+        }
+        if (!updates.start) {
+          return "I couldn't understand the new time. Could you specify it as HH:MM?";
+        }
+        description = `Rescheduled "${event.summary}"`;
+        break;
+      }
+      case 'change_title':
+        updates.summary = params.new_title;
+        description = `Renamed "${event.summary}" to "${params.new_title}"`;
+        break;
+      case 'change_location':
+        updates.location = params.new_location || params.location || '';
+        description = `Changed location of "${event.summary}" to "${updates.location}"`;
+        break;
+      default:
+        description = `Updated "${event.summary}"`;
+        break;
+    }
+
+    // Guardrail check
+    const guardResult = await this._checkGuardrails('calendar_update_event', {
+      uid: event.uid,
+      summary: event.summary,
+      updates
+    }, context.roomToken || null);
+
+    if (!guardResult.allowed) {
+      return `Action blocked: ${guardResult.reason}`;
+    }
+
+    // Execute update
+    try {
+      await this.calendarClient.updateEvent(calendarId, event.uid, updates);
+    } catch (err) {
+      this.logger.warn(`[CalendarExecutor] Update failed: ${err.message}`);
+      return "I couldn't update that event right now. Want me to try again?";
+    }
+
+    // Log activity
+    this._logActivity('calendar_update', description,
+      { uid: event.uid, updateType: params.update_type, updates },
+      context
+    );
+
+    return description + '.';
+  }
+
+  /**
+   * Delete an existing calendar event.
+   *
+   * @param {Object} params - Extracted parameters including event_title/event_reference
+   * @param {Object} context - { userName, roomToken }
+   * @returns {Promise<string>} Confirmation text
+   */
+  async deleteEvent(params, context) {
+    const searchTerm = params.event_title || params.event_reference || params.summary || '';
+    if (!searchTerm) {
+      return 'Which event would you like me to delete? Please provide the event name.';
+    }
+
+    // Find the event
+    let found;
+    try {
+      found = await this._findEventByTitle(searchTerm);
+    } catch (err) {
+      this.logger.warn(`[CalendarExecutor] Event search failed: ${err.message}`);
+      return "I couldn't search your calendar right now. Want me to try again?";
+    }
+
+    if (!found) {
+      return `I couldn't find an event matching "${searchTerm}". Could you check the name?`;
+    }
+
+    const { event, calendarId } = found;
+
+    // Always require guardrail approval for deletes
+    const guardResult = await this._checkGuardrails('calendar_delete_event', {
+      uid: event.uid,
+      summary: event.summary
+    }, context.roomToken || null);
+
+    if (!guardResult.allowed) {
+      return `Action blocked: ${guardResult.reason}`;
+    }
+
+    // Execute delete
+    try {
+      await this.calendarClient.deleteEvent(calendarId, event.uid);
+    } catch (err) {
+      this.logger.warn(`[CalendarExecutor] Delete failed: ${err.message}`);
+      return "I couldn't delete that event right now. Want me to try again?";
+    }
+
+    // Clear lastCreatedEvent if it was the deleted one
+    if (this._lastCreatedEvent && this._lastCreatedEvent.uid === event.uid) {
+      this._lastCreatedEvent = null;
+    }
+
+    // Log activity
+    this._logActivity('calendar_delete',
+      `Deleted "${event.summary}"`,
+      { uid: event.uid, summary: event.summary },
+      context
+    );
+
+    return `Deleted event "${event.summary}".`;
+  }
+
+  /**
+   * Find a calendar event by title or reference.
+   * Searches -7 to +14 days across all event calendars.
+   *
+   * @param {string} searchTerm - Event title, UID, or "last_created"
+   * @returns {Promise<{event: Object, calendarId: string}|null>}
+   */
+  async _findEventByTitle(searchTerm) {
+    if (!searchTerm) return null;
+
+    // Handle "last_created" reference
+    if (searchTerm === 'last_created' && this._lastCreatedEvent) {
+      return {
+        event: this._lastCreatedEvent,
+        calendarId: this._lastCreatedEvent.calendarId || 'personal'
+      };
+    }
+
+    const now = new Date();
+    const searchStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const searchEnd = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+
+    const calendars = await this.calendarClient.getEventCalendars();
+    for (const calendar of calendars) {
+      const events = await this.calendarClient.getEvents(calendar.id, searchStart, searchEnd);
+      if (!events) continue;
+      for (const event of events) {
+        const matchByUid = event.uid === searchTerm;
+        const matchByTitle = event.summary &&
+          event.summary.toLowerCase().includes(searchTerm.toLowerCase());
+        if (matchByUid || matchByTitle) {
+          return { event, calendarId: calendar.id };
+        }
+      }
+    }
+    return null;
   }
 
   /**
@@ -322,25 +597,66 @@ Message: "${message.substring(0, 300)}"`;
 
   /**
    * Format an event list for display.
+   * Single-day queries (today, tomorrow, specific_date, free_slots): flat list, no date headers.
+   * Multi-day queries (this_week, upcoming): grouped by date with headers.
+   * Capped at MAX_DISPLAY_EVENTS with truncation notice.
+   *
    * @param {Array} events - Calendar events
    * @param {string} queryType
    * @returns {string}
    */
   _formatEventList(events, queryType) {
+    const isSingleDay = ['today', 'tomorrow', 'specific_date', 'free_slots'].includes(queryType);
     const label = queryType === 'today' ? 'Today' :
                   queryType === 'tomorrow' ? 'Tomorrow' :
                   queryType === 'this_week' ? 'This week' :
                   queryType === 'upcoming' ? 'Upcoming' : 'Events';
 
-    const lines = events.map(e => {
-      const time = e.start ? new Date(e.start).toLocaleTimeString('en-US', {
-        hour: '2-digit', minute: '2-digit', hour12: false
-      }) : '??:??';
-      const duration = e.duration ? ` (${e.duration} min)` : '';
-      return `• ${time} — ${e.summary || 'Untitled'}${duration}`;
-    });
+    const totalCount = events.length;
+    const capped = events.slice(0, MAX_DISPLAY_EVENTS);
 
-    return `${label}:\n${lines.join('\n')}`;
+    if (isSingleDay) {
+      const lines = capped.map(e => {
+        const time = e.start ? new Date(e.start).toLocaleTimeString('en-US', {
+          hour: '2-digit', minute: '2-digit', hour12: false
+        }) : '??:??';
+        const duration = e.duration ? ` (${e.duration} min)` : '';
+        return `• ${time} — ${e.summary || 'Untitled'}${duration}`;
+      });
+      let result = `${label}:\n${lines.join('\n')}`;
+      if (totalCount > MAX_DISPLAY_EVENTS) {
+        result += `\n\n(Showing ${MAX_DISPLAY_EVENTS} of ${totalCount} events)`;
+      }
+      return result;
+    }
+
+    // Multi-day: group by date
+    const groups = new Map();
+    for (const e of capped) {
+      const dateKey = e.start
+        ? new Date(e.start).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+        : 'Unknown date';
+      if (!groups.has(dateKey)) groups.set(dateKey, []);
+      groups.get(dateKey).push(e);
+    }
+
+    const sections = [];
+    for (const [dateHeader, dayEvents] of groups) {
+      const lines = dayEvents.map(e => {
+        const time = e.start ? new Date(e.start).toLocaleTimeString('en-US', {
+          hour: '2-digit', minute: '2-digit', hour12: false
+        }) : '??:??';
+        const duration = e.duration ? ` (${e.duration} min)` : '';
+        return `  • ${time} — ${e.summary || 'Untitled'}${duration}`;
+      });
+      sections.push(`${dateHeader}:\n${lines.join('\n')}`);
+    }
+
+    let result = `${label}:\n${sections.join('\n')}`;
+    if (totalCount > MAX_DISPLAY_EVENTS) {
+      result += `\n\n(Showing ${MAX_DISPLAY_EVENTS} of ${totalCount} events)`;
+    }
+    return result;
   }
 }
 
