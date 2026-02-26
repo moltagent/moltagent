@@ -1656,6 +1656,7 @@ async function initialize() {
         deck: CONFIG.deck,
         heartbeat: {
           ...CONFIG.heartbeat,
+          ollamaUrl: CONFIG.ollama.url,
           initiativeLevel: appConfig.proactive.initiativeLevel
         },
         llmRouter,
