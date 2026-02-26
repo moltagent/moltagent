@@ -251,7 +251,7 @@ class PromptGuard {
    * @param {string} [options.ollamaUrl] - Ollama API URL for ML layer (e.g. 'http://localhost:11434')
    * @param {boolean} [options.enableML=false] - Enable Layer 3 ML classification
    * @param {boolean} [options.enableLLMJudge=false] - Enable Layer 4 LLM-as-Judge
-   * @param {string} [options.mlModel='qwen3'] - Ollama model for classification
+   * @param {string} [options.mlModel='phi4-mini'] - Ollama model for classification
    * @param {string} [options.claudeApiKey] - Anthropic API key for Layer 4 LLM-as-Judge
    * @param {number} [options.blockThreshold=0.5] - Score threshold for BLOCK decision
    * @param {number} [options.reviewThreshold=0.3] - Score threshold for REVIEW decision
@@ -261,7 +261,7 @@ class PromptGuard {
     this.ollamaUrl = options.ollamaUrl || null;
     this.enableML = options.enableML || false;
     this.enableLLMJudge = options.enableLLMJudge || false;
-    this.mlModel = options.mlModel || 'qwen3';
+    this.mlModel = options.mlModel || 'phi4-mini';
     this.claudeApiKey = options.claudeApiKey || null;
     this.blockThreshold = options.blockThreshold ?? DEFAULT_THRESHOLDS.block;
     this.reviewThreshold = options.reviewThreshold ?? DEFAULT_THRESHOLDS.review;
@@ -586,7 +586,7 @@ class PromptGuard {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: this.mlModel || 'qwen3',
+          model: this.mlModel || 'phi4-mini',
           prompt: this.buildClassificationPrompt(truncated),
           stream: false,
           options: {

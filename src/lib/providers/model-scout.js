@@ -29,6 +29,7 @@ const JOB_AFFINITY_MAP = Object.freeze({
   tools: {
     description: 'Tool calling and structured output',
     preferred: [
+      { family: 'phi', maxParams: 14 },
       { family: 'qwen3' },
       { family: 'qwen2.5' },
       { family: 'mistral' },

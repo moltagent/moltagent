@@ -46,6 +46,7 @@ const PRICING = {
   'sonar-pro':                  { input: 3.00,  output: 15.00 },
 
   // Local models — zero cost
+  'phi4-mini':                  { input: 0, output: 0 },
   'qwen3:8b':                   { input: 0, output: 0 },
   'qwen3:14b':                  { input: 0, output: 0 },
   'qwen3:14b-fast':             { input: 0, output: 0 },

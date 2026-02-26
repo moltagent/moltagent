@@ -11,14 +11,14 @@ class OllamaToolsProvider {
   /**
    * @param {Object} config
    * @param {string} config.endpoint - Ollama API URL (e.g., http://localhost:11434)
-   * @param {string} config.model - Model name (e.g., qwen3:8b)
+   * @param {string} config.model - Model name (e.g., phi4-mini)
    * @param {number} [config.timeout=300000] - Default timeout for simple requests
    * @param {number} [config.toolTimeout=60000] - Timeout when tools are present (tool-heavy prompts)
    * @param {Object} [logger]
    */
   constructor(config, logger) {
     this.endpoint = (config.endpoint || 'http://localhost:11434').replace(/\/$/, '');
-    this.model = config.model || 'qwen3:8b';
+    this.model = config.model || 'phi4-mini';
     this.timeout = config.timeout || 300000;
     this.toolTimeout = config.toolTimeout || 60000;
     this.logger = logger || console;
@@ -54,7 +54,7 @@ class OllamaToolsProvider {
    * @param {number} [params.timeout] - Override timeout (ms). If not set, uses toolTimeout for tool requests, default timeout otherwise.
    * @returns {Promise<{content: string|null, toolCalls: Array|null}>}
    */
-  async chat({ system, messages, tools, timeout }) {
+  async chat({ system, messages, tools, timeout, format }) {
     const ollamaMessages = [];
 
     if (system) {
@@ -100,6 +100,10 @@ class OllamaToolsProvider {
 
     if (tools && tools.length > 0) {
       body.tools = tools;
+    }
+
+    if (format) {
+      body.format = format;
     }
 
     // Timeout priority: explicit override > toolTimeout (when tools present) > default

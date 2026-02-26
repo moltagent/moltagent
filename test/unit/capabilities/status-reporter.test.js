@@ -45,7 +45,7 @@ function createTestRegistry() {
   registry.initialize();
   registry.registerIntegration({ name: 'deck', description: 'Deck' });
   registry.registerIntegration({ name: 'calendar', description: 'Calendar', enabled: false });
-  registry.setProviderStatus('ollama', 'online', 'qwen3:8b loaded');
+  registry.setProviderStatus('ollama', 'online', 'phi4-mini loaded');
   registry.setProviderStatus('nextcloud', 'online');
   return registry;
 }

@@ -114,7 +114,7 @@ console.log('\n=== ProviderChain Tests ===\n');
   await asyncTest('fallback also fails — chained error with both reasons', async () => {
     const primary = tracked(failingProvider('Claude API rate limited after 3 retries: overloaded'));
     const fallback = tracked(failingProvider('Ollama request timed out after 300000ms'));
-    fallback.model = 'qwen3:8b';
+    fallback.model = 'phi4-mini';
 
     const chain = new ProviderChain(primary, fallback, silentLogger);
 

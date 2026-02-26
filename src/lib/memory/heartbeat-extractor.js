@@ -115,10 +115,22 @@ Rules:
 - "Searched for Project Phoenix, found nothing" IS useful — extract as gap
 - If nothing worth extracting, respond: {"nothing": true}`;
 
+    const MEMORY_SCHEMA = {
+      type: 'object',
+      properties: {
+        people: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, fact: { type: 'string' } }, required: ['name', 'fact'] } },
+        decisions: { type: 'array', items: { type: 'object', properties: { topic: { type: 'string' }, decision: { type: 'string' } }, required: ['topic', 'decision'] } },
+        preferences: { type: 'array', items: { type: 'object', properties: { who: { type: 'string' }, preference: { type: 'string' } }, required: ['who', 'preference'] } },
+        gaps: { type: 'array', items: { type: 'object', properties: { topic: { type: 'string' }, context: { type: 'string' } }, required: ['topic', 'context'] } },
+        nothing: { type: 'boolean' }
+      },
+      required: []
+    };
+
     const rawResponse = await this.router.route({
       job: 'quick',
       content: prompt,
-      requirements: { maxTokens: 500, role: 'sovereign' }
+      requirements: { maxTokens: 500, role: 'sovereign', format: MEMORY_SCHEMA }
     });
 
     const extracted = this._parseJson(rawResponse.result || rawResponse);

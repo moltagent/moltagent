@@ -85,6 +85,41 @@ asyncTest('_fetchWithRetry throws after all retries exhausted', async () => {
   }
 });
 
+test('constructor defaults model to phi4-mini', () => {
+  const provider = new OllamaProvider({ id: 'test', logger: silentLogger });
+  assert.strictEqual(provider.model, 'phi4-mini');
+});
+
+asyncTest('generate passes format to Ollama request body when provided', async () => {
+  const provider = new OllamaProvider({ id: 'test', logger: silentLogger });
+
+  let capturedBody;
+  provider._fetch = async (url, opts) => {
+    capturedBody = JSON.parse(opts.body);
+    return { ok: true, json: async () => ({ message: { content: '{"intent":"calendar"}' }, prompt_eval_count: 10, eval_count: 5 }) };
+  };
+
+  const schema = { type: 'object', properties: { intent: { type: 'string' } }, required: ['intent'] };
+  await provider.generate('classify', 'test message', { format: schema });
+
+  assert.ok(capturedBody.format, 'format should be present in request body');
+  assert.deepStrictEqual(capturedBody.format, schema);
+});
+
+asyncTest('generate omits format from request body when not provided', async () => {
+  const provider = new OllamaProvider({ id: 'test', logger: silentLogger });
+
+  let capturedBody;
+  provider._fetch = async (url, opts) => {
+    capturedBody = JSON.parse(opts.body);
+    return { ok: true, json: async () => ({ message: { content: 'hello' }, prompt_eval_count: 10, eval_count: 5 }) };
+  };
+
+  await provider.generate('chat', 'test message', {});
+
+  assert.strictEqual(capturedBody.format, undefined, 'format should not be in request body');
+});
+
 asyncTest('_fetchWithRetry does not retry HTTP errors (err.status set)', async () => {
   const provider = new OllamaProvider({ id: 'test', logger: silentLogger });
 

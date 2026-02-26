@@ -22,7 +22,7 @@ const ADAPTERS = {
     class: OllamaProvider,
     defaults: {
       endpoint: 'http://localhost:11434',
-      model: 'qwen3:8b'
+      model: 'phi4-mini'
     }
   },
   openai: {

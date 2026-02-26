@@ -45,16 +45,29 @@ class CalendarExecutor extends BaseExecutor {
   async execute(message, context) {
     // Step 1: Extract parameters via focused LLM prompt
     const dateContext = this._dateContext();
+    const CALENDAR_SCHEMA = {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['create', 'list', 'delete'] },
+        summary: { type: 'string' },
+        date: { type: 'string' },
+        time: { type: 'string' },
+        duration_minutes: { type: 'number' },
+        attendees: { type: 'array', items: { type: 'string' } },
+        location: { type: 'string' }
+      },
+      required: ['action']
+    };
+
     const extractionPrompt = `${dateContext}
 
-Extract calendar event parameters from this message. Return ONLY valid JSON, no other text.
+Extract calendar event parameters from this message.
+Use literal strings for dates and times (e.g. "tomorrow", "2pm") — do not convert them.
+Leave fields as empty strings if not mentioned.
 
-Message: "${message.substring(0, 300)}"
+Message: "${message.substring(0, 300)}"`;
 
-Return JSON with these fields (use null for missing):
-{"action": "create|list|delete", "summary": "event title", "date": "relative or absolute date", "time": "HH:MM in 24h format", "duration_minutes": number, "attendees": ["email1"], "location": "place or null"}`;
-
-    const params = await this._extractJSON(message, extractionPrompt);
+    const params = await this._extractJSON(message, extractionPrompt, CALENDAR_SCHEMA);
 
     if (!params) {
       const err = new Error('Could not extract calendar parameters');

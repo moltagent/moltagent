@@ -7,11 +7,11 @@ const { ModelScout, JOB_AFFINITY_MAP } = require('../../../src/lib/providers/mod
 const MOCK_TAGS_RESPONSE = {
   models: [
     {
-      name: 'qwen3:8b',
-      model: 'qwen3:8b',
+      name: 'phi4-mini',
+      model: 'phi4-mini',
       size: 4915200000,
       modified_at: '2025-01-15T10:00:00Z',
-      details: { family: 'qwen3', parameter_size: '8B', format: 'gguf' }
+      details: { family: 'phi3', parameter_size: '4B', format: 'gguf' }
     },
     {
       name: 'deepseek-coder:6.7b',
@@ -46,9 +46,9 @@ asyncTest('discover() parses Ollama /api/tags response', async () => {
     const result = await scout.discover();
 
     assert.strictEqual(result.length, 3);
-    assert.strictEqual(result[0].name, 'qwen3:8b');
-    assert.strictEqual(result[0].family, 'qwen3');
-    assert.strictEqual(result[0].paramSize, 8);
+    assert.strictEqual(result[0].name, 'phi4-mini');
+    assert.strictEqual(result[0].family, 'phi3');
+    assert.strictEqual(result[0].paramSize, 4);
     assert.strictEqual(result[1].name, 'deepseek-coder:6.7b');
     assert.strictEqual(result[1].paramSize, 6.7);
     assert.strictEqual(result[2].paramSize, 70);
@@ -117,8 +117,8 @@ asyncTest('generateLocalRoster() assigns models to jobs based on affinity', asyn
     const roster = scout.generateLocalRoster();
 
     assert.ok(roster !== null);
-    // quick should include qwen3:8b (preferred for quick)
-    assert.ok(roster.quick.includes('qwen3:8b'), `quick roster should include qwen3:8b, got: ${roster.quick}`);
+    // quick should include phi4-mini (preferred for quick via phi family)
+    assert.ok(roster.quick.includes('phi4-mini'), `quick roster should include phi4-mini, got: ${roster.quick}`);
     // coding should include deepseek-coder
     assert.ok(roster.coding.includes('deepseek-coder:6.7b'), `coding roster should include deepseek-coder:6.7b, got: ${roster.coding}`);
     // thinking should include the large model
@@ -168,10 +168,10 @@ asyncTest('generateLocalRoster() handles single-model scenario', async () => {
     ok: true,
     json: async () => ({
       models: [{
-        name: 'qwen3:8b',
-        model: 'qwen3:8b',
+        name: 'phi4-mini',
+        model: 'phi4-mini',
         size: 4915200000,
-        details: { family: 'qwen3', parameter_size: '8B' }
+        details: { family: 'phi3', parameter_size: '4B' }
       }]
     })
   });
@@ -182,9 +182,9 @@ asyncTest('generateLocalRoster() handles single-model scenario', async () => {
     const roster = scout.generateLocalRoster();
 
     assert.ok(roster !== null);
-    // qwen3 matches several affinities
-    assert.ok(roster.quick.includes('qwen3:8b'));
-    assert.ok(roster.tools.includes('qwen3:8b'));
+    // phi3/phi4-mini matches quick and tools affinities
+    assert.ok(roster.quick.includes('phi4-mini'));
+    assert.ok(roster.tools.includes('phi4-mini'));
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -203,14 +203,14 @@ asyncTest('hasModel() matches by name and family', async () => {
     await scout.discover();
 
     // Exact name match
-    assert.strictEqual(scout.hasModel('qwen3:8b'), true);
+    assert.strictEqual(scout.hasModel('phi4-mini'), true);
     // Family match
-    assert.strictEqual(scout.hasModel('qwen3'), true);
+    assert.strictEqual(scout.hasModel('phi3'), true);
     // Non-existent model
     assert.strictEqual(scout.hasModel('gpt-4'), false);
     // Before discover
     const scout2 = new ModelScout({ logger: silentLogger });
-    assert.strictEqual(scout2.hasModel('qwen3:8b'), false);
+    assert.strictEqual(scout2.hasModel('phi4-mini'), false);
   } finally {
     globalThis.fetch = originalFetch;
   }

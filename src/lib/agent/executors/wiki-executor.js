@@ -67,16 +67,28 @@ class WikiExecutor extends BaseExecutor {
   async execute(message, context) {
     // Step 1: Extract parameters
     const dateContext = this._dateContext();
+    const WIKI_SCHEMA = {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['write', 'read', 'append', 'remember'] },
+        topic: { type: 'string' },
+        fact: { type: 'string' },
+        page_title: { type: 'string' },
+        content: { type: 'string' },
+        parent: { type: 'string' },
+        category: { type: 'string' }
+      },
+      required: ['action']
+    };
+
     const extractionPrompt = `${dateContext}
 
-Extract wiki/knowledge operation parameters from this message. Return ONLY valid JSON, no other text.
+Extract wiki/knowledge operation parameters from this message.
+Leave fields as empty strings if not mentioned.
 
-Message: "${message.substring(0, 300)}"
+Message: "${message.substring(0, 300)}"`;
 
-Return JSON with these fields (use null for missing):
-{"action": "write|read|append|remember", "topic": "main topic", "fact": "the fact to remember", "page_title": "explicit page title or null", "content": "explicit content or null", "parent": "parent section or null", "category": "keyword hint for categorization"}`;
-
-    const params = await this._extractJSON(message, extractionPrompt);
+    const params = await this._extractJSON(message, extractionPrompt, WIKI_SCHEMA);
 
     if (!params) {
       const err = new Error('Could not extract wiki parameters');

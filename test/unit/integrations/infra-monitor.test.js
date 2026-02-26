@@ -31,7 +31,7 @@ function restoreFetch() {
 function createAllUpHandler() {
   return async (url) => {
     if (url.includes('/api/tags')) {
-      return { ok: true, json: async () => ({ models: [{ name: 'qwen3:8b' }] }) };
+      return { ok: true, json: async () => ({ models: [{ name: 'phi4-mini' }] }) };
     }
     if (url.includes('/health')) {
       return { ok: true, json: async () => ({ status: 'ok' }) };
@@ -64,7 +64,7 @@ function createDefaultConfig(overrides = {}) {
     probeTimeoutMs: 5000,
     selfHealEnabled: true,
     notifyOnFailure: true,
-    ollamaModel: 'qwen3:8b',
+    ollamaModel: 'phi4-mini',
     notifyUser: null,
     auditLog: async () => {},
     ...overrides
@@ -420,7 +420,7 @@ asyncTest('_selfHealOllama() success', async () => {
   mockFetch(async () => ({ ok: true, json: async () => ({ response: '' }) }));
   const monitor = new InfraMonitor(createDefaultConfig());
   try {
-    const result = await monitor._selfHealOllama('qwen3:8b');
+    const result = await monitor._selfHealOllama('phi4-mini');
     assert.strictEqual(result, true);
   } finally {
     restoreFetch();
@@ -431,7 +431,7 @@ asyncTest('_selfHealOllama() failure', async () => {
   mockFetch(async () => { throw new Error('Connection refused'); });
   const monitor = new InfraMonitor(createDefaultConfig());
   try {
-    await monitor._selfHealOllama('qwen3:8b');
+    await monitor._selfHealOllama('phi4-mini');
     assert.fail('Should have thrown');
   } catch (err) {
     assert.ok(err.message.includes('Connection refused'));
@@ -453,7 +453,7 @@ test('getSystemStats() returns correct shape', async () => {
 });
 
 asyncTest('getOllamaStats() returns models on success', async () => {
-  mockFetch(async () => ({ ok: true, json: async () => ({ models: [{ name: 'qwen3:8b' }] }) }));
+  mockFetch(async () => ({ ok: true, json: async () => ({ models: [{ name: 'phi4-mini' }] }) }));
   const monitor = new InfraMonitor(createDefaultConfig());
   try {
     const stats = await monitor.getOllamaStats();

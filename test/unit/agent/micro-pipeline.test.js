@@ -285,7 +285,7 @@ asyncTest('process() routes pre-classified deck intent to domain handler', async
 asyncTest('_handleDomainTask() system prompt includes Moltagent identity and current year', async () => {
   let capturedSystem = '';
   const mockToolsProvider = {
-    model: 'qwen3:8b',
+    model: 'phi4-mini',
     chat: async ({ system }) => {
       capturedSystem = system;
       return { content: 'Done.', toolCalls: [], _inputTokens: 10, _outputTokens: 5 };

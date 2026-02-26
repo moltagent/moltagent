@@ -31,10 +31,10 @@ test('Records cloud call with correct cost computation (claude-sonnet-4-20250514
   assert.strictEqual(totals.daily.localCalls, 0);
 });
 
-test('Records local call with zero cost (qwen3:8b)', () => {
+test('Records local call with zero cost (phi4-mini)', () => {
   const tracker = new CostTracker();
   tracker.record({
-    model: 'qwen3:8b',
+    model: 'phi4-mini',
     job: 'quick',
     trigger: 'user_message',
     inputTokens: 2000,
@@ -168,9 +168,9 @@ test('topSpending returns top 5 jobs sorted by cost', () => {
 test('localRatio computes correctly', () => {
   const tracker = new CostTracker();
   // 3 local + 1 cloud = 75% local
-  tracker.record({ model: 'qwen3:8b', job: 'quick', inputTokens: 100, outputTokens: 50 });
-  tracker.record({ model: 'qwen3:8b', job: 'quick', inputTokens: 100, outputTokens: 50 });
-  tracker.record({ model: 'qwen3:8b', job: 'quick', inputTokens: 100, outputTokens: 50 });
+  tracker.record({ model: 'phi4-mini', job: 'quick', inputTokens: 100, outputTokens: 50 });
+  tracker.record({ model: 'phi4-mini', job: 'quick', inputTokens: 100, outputTokens: 50 });
+  tracker.record({ model: 'phi4-mini', job: 'quick', inputTokens: 100, outputTokens: 50 });
   tracker.record({ model: 'claude-sonnet-4-20250514', job: 'thinking', inputTokens: 100, outputTokens: 50 });
   const totals = tracker.getTotals();
   assert.strictEqual(totals.localRatio, 75);
@@ -198,10 +198,10 @@ test('Cache tokens computed with correct pricing', () => {
 
 test('Buffer accumulates entries for flush', () => {
   const tracker = new CostTracker();
-  tracker.record({ model: 'qwen3:8b', job: 'quick', inputTokens: 100, outputTokens: 50 });
-  tracker.record({ model: 'qwen3:8b', job: 'quick', inputTokens: 200, outputTokens: 100 });
+  tracker.record({ model: 'phi4-mini', job: 'quick', inputTokens: 100, outputTokens: 50 });
+  tracker.record({ model: 'phi4-mini', job: 'quick', inputTokens: 200, outputTokens: 100 });
   assert.strictEqual(tracker._buffer.length, 2);
-  assert.strictEqual(tracker._buffer[0].model, 'qwen3:8b');
+  assert.strictEqual(tracker._buffer[0].model, 'phi4-mini');
   assert.strictEqual(tracker._buffer[1].input_tokens, 200);
 });
 
@@ -211,7 +211,7 @@ test('Buffer accumulates entries for flush', () => {
 
 await asyncTest('Flush is no-op when no ncFilesClient', async () => {
   const tracker = new CostTracker();
-  tracker.record({ model: 'qwen3:8b', job: 'quick', inputTokens: 100, outputTokens: 50 });
+  tracker.record({ model: 'phi4-mini', job: 'quick', inputTokens: 100, outputTokens: 50 });
   await tracker.flush();
   // Buffer should still be full since no client to write to
   // flush returns early without clearing when no files client
@@ -227,7 +227,7 @@ await asyncTest('Flush writes to ncFilesClient and clears buffer', async () => {
     writeFile: async (path, content) => { writtenPath = path; writtenContent = content; },
   };
   const tracker = new CostTracker({ ncFilesClient: mockFiles });
-  tracker.record({ model: 'qwen3:8b', job: 'quick', inputTokens: 100, outputTokens: 50 });
+  tracker.record({ model: 'phi4-mini', job: 'quick', inputTokens: 100, outputTokens: 50 });
   tracker.record({ model: 'claude-sonnet-4-20250514', job: 'thinking', inputTokens: 500, outputTokens: 200 });
   await tracker.flush();
   assert.strictEqual(tracker._buffer.length, 0);
@@ -237,7 +237,7 @@ await asyncTest('Flush writes to ncFilesClient and clears buffer', async () => {
   const lines = writtenContent.trim().split('\n');
   assert.strictEqual(lines.length, 2);
   const parsed = JSON.parse(lines[0]);
-  assert.strictEqual(parsed.model, 'qwen3:8b');
+  assert.strictEqual(parsed.model, 'phi4-mini');
   assert.strictEqual(parsed.is_local, true);
 });
 

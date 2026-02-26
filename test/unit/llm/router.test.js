@@ -1075,7 +1075,7 @@ test('TC-REG-004: getRegisteredProviders returns metadata for all providers', ()
 test('TC-REG-005: getRegisteredProviders includes statically-initialized providers', () => {
   const router = new LLMRouter({
     providers: {
-      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'qwen3:8b' }
+      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'phi4-mini' }
     }
   });
 
@@ -1089,7 +1089,7 @@ console.log('\n--- setRoster Custom Job Name Tests ---\n');
 test('TC-ROSTER-001: setRoster accepts custom job names beyond VALID_JOBS', () => {
   const router = new LLMRouter({
     providers: {
-      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'qwen3:8b' }
+      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'phi4-mini' }
     }
   });
 
@@ -1108,7 +1108,7 @@ test('TC-ROSTER-001: setRoster accepts custom job names beyond VALID_JOBS', () =
 test('TC-ROSTER-002: setRoster rejects credentials job (always enforced locally)', () => {
   const router = new LLMRouter({
     providers: {
-      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'qwen3:8b' }
+      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'phi4-mini' }
     }
   });
 
@@ -1134,7 +1134,7 @@ test('TC-ROSTER-002: setRoster rejects credentials job (always enforced locally)
 test('TC-ROSTER-003: setRoster with unknown provider IDs filters them out', () => {
   const router = new LLMRouter({
     providers: {
-      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'qwen3:8b' }
+      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'phi4-mini' }
     }
   });
 
@@ -1153,7 +1153,7 @@ console.log('\n--- buildProviderChain Unknown Job Fallback Tests ---\n');
 test('TC-CHAIN-001: buildProviderChain falls back to local providers for unknown job', () => {
   const router = new LLMRouter({
     providers: {
-      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'qwen3:8b' }
+      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'phi4-mini' }
     }
   });
 
@@ -1169,7 +1169,7 @@ test('TC-CHAIN-001: buildProviderChain falls back to local providers for unknown
 test('TC-CHAIN-002: buildProviderChain uses roster entry for known job', () => {
   const router = new LLMRouter({
     providers: {
-      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'qwen3:8b' }
+      'ollama-local': { adapter: 'ollama', endpoint: 'http://localhost:11434', model: 'phi4-mini' }
     }
   });
 
@@ -1203,7 +1203,7 @@ if (LegacyLLMRouter) {
 
   test('TC-PROXY-002: setRoster/getRoster proxy delegates to inner router', () => {
     const wrapper = new LegacyLLMRouter({
-      ollama: { url: 'http://localhost:11434', model: 'qwen3:8b' }
+      ollama: { url: 'http://localhost:11434', model: 'phi4-mini' }
     });
 
     wrapper.setRoster({ quick: ['ollama-local'] });
@@ -1213,7 +1213,7 @@ if (LegacyLLMRouter) {
 
   test('TC-PROXY-003: registerProvider proxy delegates to inner router', () => {
     const wrapper = new LegacyLLMRouter({
-      ollama: { url: 'http://localhost:11434', model: 'qwen3:8b' }
+      ollama: { url: 'http://localhost:11434', model: 'phi4-mini' }
     });
 
     // Should not throw
@@ -1232,7 +1232,7 @@ if (LegacyLLMRouter) {
 
   test('TC-PROXY-004: unregisterProvider proxy delegates to inner router', () => {
     const wrapper = new LegacyLLMRouter({
-      ollama: { url: 'http://localhost:11434', model: 'qwen3:8b' }
+      ollama: { url: 'http://localhost:11434', model: 'phi4-mini' }
     });
 
     wrapper.registerProvider('temp-provider', {

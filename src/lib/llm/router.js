@@ -178,7 +178,8 @@ class LLMRouter {
     const role = requirements.role || 'value';
     const options = {
       maxTokens: requirements.maxTokens,
-      temperature: requirements.temperature
+      temperature: requirements.temperature,
+      format: requirements.format
     };
 
     // Track role usage

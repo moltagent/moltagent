@@ -56,8 +56,8 @@ test('config.ollama.modelCredential falls back to OLLAMA_MODEL when OLLAMA_MODEL
 
 test('config.ollama.modelCredential falls back to default when both env vars unset', () => {
   const config = loadConfigWithEnv({});
-  assert.strictEqual(config.ollama.modelCredential, 'qwen3:8b',
-    'Should fall back to hardcoded default qwen3:8b');
+  assert.strictEqual(config.ollama.modelCredential, 'phi4-mini',
+    'Should fall back to hardcoded default phi4-mini');
 });
 
 test('config.ollama.modelCredential uses OLLAMA_MODEL_CREDENTIAL when set', () => {
@@ -99,10 +99,10 @@ test('llm-router registers ollama-credential provider when credential model diff
   providers['ollama-local'] = {
     adapter: 'ollama',
     endpoint: config.ollama.url || 'http://localhost:11434',
-    model: config.ollama.model || 'qwen3:8b'
+    model: config.ollama.model || 'phi4-mini'
   };
-  const credModel = config.ollama.modelCredential || config.ollama.model || 'qwen3:8b';
-  if (credModel !== (config.ollama.model || 'qwen3:8b')) {
+  const credModel = config.ollama.modelCredential || config.ollama.model || 'phi4-mini';
+  if (credModel !== (config.ollama.model || 'phi4-mini')) {
     providers['ollama-credential'] = {
       adapter: 'ollama',
       endpoint: config.ollama.url || 'http://localhost:11434',
@@ -129,10 +129,10 @@ test('llm-router does NOT register ollama-credential when models are identical',
   providers['ollama-local'] = {
     adapter: 'ollama',
     endpoint: config.ollama.url || 'http://localhost:11434',
-    model: config.ollama.model || 'qwen3:8b'
+    model: config.ollama.model || 'phi4-mini'
   };
-  const credModel = config.ollama.modelCredential || config.ollama.model || 'qwen3:8b';
-  if (credModel !== (config.ollama.model || 'qwen3:8b')) {
+  const credModel = config.ollama.modelCredential || config.ollama.model || 'phi4-mini';
+  if (credModel !== (config.ollama.model || 'phi4-mini')) {
     providers['ollama-credential'] = {
       adapter: 'ollama',
       endpoint: config.ollama.url || 'http://localhost:11434',
@@ -156,10 +156,10 @@ test('llm-router does NOT register ollama-credential when modelCredential is abs
   providers['ollama-local'] = {
     adapter: 'ollama',
     endpoint: config.ollama.url || 'http://localhost:11434',
-    model: config.ollama.model || 'qwen3:8b'
+    model: config.ollama.model || 'phi4-mini'
   };
-  const credModel = config.ollama.modelCredential || config.ollama.model || 'qwen3:8b';
-  if (credModel !== (config.ollama.model || 'qwen3:8b')) {
+  const credModel = config.ollama.modelCredential || config.ollama.model || 'phi4-mini';
+  if (credModel !== (config.ollama.model || 'phi4-mini')) {
     providers['ollama-credential'] = {
       adapter: 'ollama',
       endpoint: config.ollama.url || 'http://localhost:11434',

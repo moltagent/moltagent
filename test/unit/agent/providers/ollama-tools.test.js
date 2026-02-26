@@ -24,7 +24,7 @@ console.log('\n=== OllamaToolsProvider Tests ===\n');
 test('constructor sets defaults', () => {
   const provider = new OllamaToolsProvider({}, silentLogger);
   assert.strictEqual(provider.endpoint, 'http://localhost:11434');
-  assert.strictEqual(provider.model, 'qwen3:8b');
+  assert.strictEqual(provider.model, 'phi4-mini');
   assert.strictEqual(provider.timeout, 300000);
 });
 

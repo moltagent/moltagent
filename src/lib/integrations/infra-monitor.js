@@ -27,7 +27,7 @@ class InfraMonitor {
    * @param {number} [config.probeTimeoutMs=8000]  - Per-probe HTTP timeout
    * @param {boolean} [config.selfHealEnabled=true]
    * @param {boolean} [config.notifyOnFailure=true]
-   * @param {string}  [config.ollamaModel='qwen3:8b']
+   * @param {string}  [config.ollamaModel='phi4-mini']
    * @param {Function} [config.notifyUser]  - async (notification) => void
    * @param {Function} [config.auditLog]    - async (event, data) => void
    * @param {Object}  [config.services]     - {ollama:{url,selfHeal?}, whisper:{url}, ...}
@@ -38,7 +38,7 @@ class InfraMonitor {
     this.selfHealEnabled = config.selfHealEnabled !== false;
     this.notifyOnFailure = config.notifyOnFailure !== false;
     this.ollamaUrl = null;
-    this.ollamaModel = config.ollamaModel || 'qwen3:8b';
+    this.ollamaModel = config.ollamaModel || 'phi4-mini';
     this.notifyUser = config.notifyUser || null;
     this.auditLog = config.auditLog || (async () => {});
     this.selfHealClient = config.selfHealClient || null;

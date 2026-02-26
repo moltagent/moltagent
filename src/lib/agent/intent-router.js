@@ -23,6 +23,14 @@ const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'se
 
 const COMPLEX_FALLBACK = Object.freeze({ intent: 'complex', domain: null, needsHistory: true, confidence: 0 });
 
+const INTENT_FORMAT = Object.freeze({
+  type: 'object',
+  properties: {
+    intent: { type: 'string' }
+  },
+  required: ['intent']
+});
+
 class IntentRouter {
   /**
    * @param {Object} opts
@@ -48,7 +56,8 @@ class IntentRouter {
 
       const result = await this.provider.chat({
         messages: [{ role: 'user', content: prompt }],
-        timeout: this.timeout
+        timeout: this.timeout,
+        format: INTENT_FORMAT
       });
 
       return this._parseClassification(result.content || '');
@@ -72,8 +81,7 @@ class IntentRouter {
         ).join('\n') + '\n'
       : '';
 
-    return `/no_think
-Classify this message into exactly ONE intent. Reply with JSON only.
+    return `Classify this message into exactly ONE intent.
 
 Intents:
 - greeting: hello, hi, good morning
@@ -96,7 +104,7 @@ Rules:
 ${contextBlock}
 Message: "${message.substring(0, 300)}"
 
-Reply ONLY with: {"intent":"<intent>"}`;
+Set intent to the matching category.`;
   }
 
   /**

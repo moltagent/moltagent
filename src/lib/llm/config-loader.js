@@ -28,7 +28,7 @@ const DEFAULT_CONFIG = {
     'ollama-local': {
       adapter: 'ollama',
       endpoint: 'http://localhost:11434',
-      model: 'qwen3:8b'
+      model: 'phi4-mini'
     }
   },
   roles: {
@@ -238,7 +238,7 @@ providers:
   ollama-local:
     adapter: ollama
     endpoint: http://localhost:11434
-    model: qwen3:8b
+    model: phi4-mini
 
   # Value tier - uncomment and configure as needed
   # deepseek:

@@ -512,7 +512,7 @@ console.log('\n=== Heartbeat-Cockpit Integration Tests ===\n');
       players: {
         'local-ollama': {
           type: 'ollama',
-          model: 'qwen3:8b',
+          model: 'phi4-mini',
           local: true
           // No credentialLabel needed
         }

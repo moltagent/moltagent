@@ -15,14 +15,14 @@ class OllamaProvider extends BaseProvider {
    * @param {Object} config
    * @param {string} config.id - Provider identifier
    * @param {string} [config.endpoint] - Ollama API URL (default: http://localhost:11434)
-   * @param {string} [config.model] - Model to use (default: qwen3:8b)
+   * @param {string} [config.model] - Model to use (default: phi4-mini)
    */
   constructor(config) {
     super({
       ...config,
       type: 'local',
       endpoint: config.endpoint || 'http://localhost:11434',
-      model: config.model || 'qwen3:8b',
+      model: config.model || 'phi4-mini',
       costModel: { type: 'free' }
     });
     this._fetch = globalThis.fetch;
@@ -60,10 +60,7 @@ class OllamaProvider extends BaseProvider {
       const timeout = setTimeout(() => controller.abort(), 120000); // 120 second timeout
 
       try {
-        const response = await this._fetchWithRetry(`${this.endpoint}/api/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        const requestBody = {
             model: this.model,
             messages: [{ role: 'user', content: prompt }],
             stream: false,
@@ -71,7 +68,13 @@ class OllamaProvider extends BaseProvider {
               temperature: options.temperature ?? 0.7,
               num_predict: options.maxTokens || 1024
             }
-          }),
+          };
+        if (options.format) requestBody.format = options.format;
+
+        const response = await this._fetchWithRetry(`${this.endpoint}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
           signal: controller.signal
         });
         clearTimeout(timeout);

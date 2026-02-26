@@ -45,16 +45,26 @@ class FileExecutor extends BaseExecutor {
   async execute(message, context) {
     // Step 1: Extract parameters
     const dateContext = this._dateContext();
+    const FILE_SCHEMA = {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['write', 'read', 'delete', 'list', 'share'] },
+        filename: { type: 'string' },
+        content: { type: 'string' },
+        folder: { type: 'string' },
+        generate_content: { type: 'boolean' }
+      },
+      required: ['action']
+    };
+
     const extractionPrompt = `${dateContext}
 
-Extract file operation parameters from this message. Return ONLY valid JSON, no other text.
+Extract file operation parameters from this message.
+Leave fields as empty strings if not mentioned. Set generate_content to true if the user wants content created.
 
-Message: "${message.substring(0, 300)}"
+Message: "${message.substring(0, 300)}"`;
 
-Return JSON with these fields (use null for missing):
-{"action": "write|read|delete|list|share", "filename": "name.ext", "content": "file content or null if needs generation", "folder": "folder path or null", "generate_content": true/false}`;
-
-    const params = await this._extractJSON(message, extractionPrompt);
+    const params = await this._extractJSON(message, extractionPrompt, FILE_SCHEMA);
 
     if (!params) {
       const err = new Error('Could not extract file parameters');
