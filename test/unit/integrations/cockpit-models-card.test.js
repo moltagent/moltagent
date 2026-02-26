@@ -142,4 +142,47 @@ test('_findLocalDefault returns first local player', () => {
   assert.strictEqual(result, 'phi4-mini', 'First local player should be phi4-mini');
 });
 
+// -- Test 6: Per-model provider annotations stripped correctly --
+test('_parsePlayersSection strips per-model (provider) annotations', () => {
+  const mgr = makeManager();
+  const lines = [
+    'local: phi4-mini (ollama), qwen3:8b (ollama)',
+    'cloud: claude-sonnet-4-6 (anthropic, key: claude-api-key)'
+  ];
+  const players = mgr._parsePlayersSection(lines);
+
+  assert.ok(players['phi4-mini'], 'Should have phi4-mini (not phi4-mini (ollama))');
+  assert.ok(players['qwen3:8b'], 'Should have qwen3:8b');
+  assert.ok(!players['phi4-mini (ollama)'], 'Should NOT have phi4-mini (ollama) as key');
+
+  assert.strictEqual(players['phi4-mini'].type, 'ollama');
+  assert.strictEqual(players['phi4-mini'].local, true);
+  assert.strictEqual(players['phi4-mini'].model, 'phi4-mini');
+  assert.strictEqual(players['qwen3:8b'].type, 'ollama');
+  assert.strictEqual(players['qwen3:8b'].model, 'qwen3:8b');
+});
+
+// -- Test 7: Per-model annotations in full card → roster matches --
+test('per-model annotations: roster resolves correctly', () => {
+  const mgr = makeManager();
+  const description = `Players:
+local: phi4-mini (ollama), qwen3:8b (ollama)
+cloud: claude-sonnet-4-6 (anthropic, key: claude-api-key)
+
+Roster:
+quick: phi4-mini \u2192 qwen3:8b \u2192 claude-sonnet-4-6
+tools: qwen3:8b \u2192 phi4-mini \u2192 claude-sonnet-4-6
+
+---
+
+Explanation text.`;
+
+  const result = mgr._parseCustomModelsCard(description);
+  assert.ok(result, 'Should parse successfully');
+  assert.deepStrictEqual(result.roster.quick, ['phi4-mini', 'qwen3:8b', 'claude-sonnet-4-6'],
+    'phi4-mini should be in quick roster (not skipped)');
+  assert.deepStrictEqual(result.roster.tools, ['qwen3:8b', 'phi4-mini', 'claude-sonnet-4-6'],
+    'phi4-mini should be in tools roster');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 100);

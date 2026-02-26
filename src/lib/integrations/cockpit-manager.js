@@ -1221,7 +1221,8 @@ class CockpitManager {
       }
 
       const isLocal = trimmed.toLowerCase().startsWith('local');
-      const modelNames = modelsStr.split(',').map(m => m.trim()).filter(Boolean);
+      // Strip per-model provider annotations: "phi4-mini (ollama), qwen3:8b (ollama)" → ["phi4-mini", "qwen3:8b"]
+      const modelNames = modelsStr.split(',').map(m => m.trim().replace(/\s*\([^)]*\)\s*$/, '')).filter(Boolean);
 
       for (const modelName of modelNames) {
         players[modelName] = {

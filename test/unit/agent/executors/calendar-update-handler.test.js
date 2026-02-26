@@ -213,6 +213,19 @@ asyncTest('lastCreatedEvent reference works for update', async () => {
   assert.strictEqual(updateCalledWith.uid, 'last-uid');
 });
 
+asyncTest('last_created with no tracked event → helpful message', async () => {
+  const executor = makeExecutor({
+    action: 'update', update_type: 'add_attendee',
+    event_reference: 'last_created', attendee: 'self'
+  }, {
+    getEvents: async () => []
+  });
+  // Do NOT set _lastCreatedEvent — simulates cloud-created event
+  const result = await executor.execute('Add me to the event you just created', context);
+  assert.ok(result.includes("don't remember"), `Expected helpful message, got: ${result}`);
+  assert.ok(!result.includes('last_created'), 'Should NOT show literal "last_created" to user');
+});
+
 asyncTest('calendarClient error in update → friendly error', async () => {
   const executor = makeExecutor({
     action: 'update', update_type: 'add_attendee',

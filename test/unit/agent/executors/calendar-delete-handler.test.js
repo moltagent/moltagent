@@ -109,6 +109,17 @@ asyncTest('guardrail denied → event preserved', async () => {
   assert.ok(!deleteWasCalled, 'deleteEvent should not have been called');
 });
 
+asyncTest('last_created with no tracked event → helpful message', async () => {
+  const executor = makeExecutor({
+    action: 'delete', event_reference: 'last_created'
+  }, {
+    getEvents: async () => []
+  });
+  const result = await executor.execute('Delete the event you just created', context);
+  assert.ok(result.includes("don't remember"), `Expected helpful message, got: ${result}`);
+  assert.ok(!result.includes('last_created'), 'Should NOT show literal "last_created" to user');
+});
+
 asyncTest('calendarClient error → friendly error', async () => {
   const executor = makeExecutor({
     action: 'delete', event_title: 'standup'

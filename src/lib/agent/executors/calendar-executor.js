@@ -281,6 +281,9 @@ Message: "${message.substring(0, 300)}"`;
     }
 
     if (!found) {
+      if (searchTerm === 'last_created') {
+        return "I don't remember which event was created last. Could you tell me the event name?";
+      }
       return `I couldn't find an event matching "${searchTerm}". Could you check the name?`;
     }
 
@@ -404,6 +407,9 @@ Message: "${message.substring(0, 300)}"`;
     }
 
     if (!found) {
+      if (searchTerm === 'last_created') {
+        return "I don't remember which event was created last. Could you tell me the event name?";
+      }
       return `I couldn't find an event matching "${searchTerm}". Could you check the name?`;
     }
 
@@ -453,11 +459,14 @@ Message: "${message.substring(0, 300)}"`;
     if (!searchTerm) return null;
 
     // Handle "last_created" reference
-    if (searchTerm === 'last_created' && this._lastCreatedEvent) {
-      return {
-        event: this._lastCreatedEvent,
-        calendarId: this._lastCreatedEvent.calendarId || 'personal'
-      };
+    if (searchTerm === 'last_created') {
+      if (this._lastCreatedEvent) {
+        return {
+          event: this._lastCreatedEvent,
+          calendarId: this._lastCreatedEvent.calendarId || 'personal'
+        };
+      }
+      return null; // Don't search for literal "last_created" as a title
     }
 
     const now = new Date();
