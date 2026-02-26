@@ -71,15 +71,16 @@ class BaseExecutor {
    * @param {string} message - User message
    * @param {string} extractionPrompt - Focused extraction prompt
    * @param {Object} [format] - JSON Schema for Ollama constrained decoding
+   * @param {string} [job='tools'] - Router job name (defaults to 'tools' per roster)
    * @returns {Promise<Object|null>} Parsed JSON or null on failure
    */
-  async _extractJSON(message, extractionPrompt, format) {
+  async _extractJSON(message, extractionPrompt, format, job = 'tools') {
     try {
       const requirements = { maxTokens: 300, temperature: 0 };
       if (format) requirements.format = format;
 
       const result = await this.router.route({
-        job: 'quick',
+        job,
         content: extractionPrompt,
         requirements
       });

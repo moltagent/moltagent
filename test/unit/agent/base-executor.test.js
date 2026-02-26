@@ -99,4 +99,30 @@ test('Constructor throws without router', () => {
   );
 });
 
+// -- Test 9: _extractJSON() defaults to job='tools' --
+asyncTest('_extractJSON() defaults to job=tools for roster routing', async () => {
+  let capturedJob = null;
+  const executor = new BaseExecutor({
+    router: {
+      route: async (req) => { capturedJob = req.job; return { result: '{"ok":true}', provider: 'mock', tokens: 5 }; }
+    },
+    logger: silentLogger
+  });
+  await executor._extractJSON('test', 'Extract');
+  assert.strictEqual(capturedJob, 'tools', 'Should route extraction to tools job');
+});
+
+// -- Test 10: _extractJSON() accepts custom job override --
+asyncTest('_extractJSON() accepts custom job override', async () => {
+  let capturedJob = null;
+  const executor = new BaseExecutor({
+    router: {
+      route: async (req) => { capturedJob = req.job; return { result: '{"ok":true}', provider: 'mock', tokens: 5 }; }
+    },
+    logger: silentLogger
+  });
+  await executor._extractJSON('test', 'Extract', null, 'quick');
+  assert.strictEqual(capturedJob, 'quick', 'Should use the overridden job');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);
