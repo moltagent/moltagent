@@ -150,8 +150,8 @@ class BaseExecutor {
 
     const cleaned = dateStr.trim().toLowerCase();
 
-    // ISO format passthrough
-    if (/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) return cleaned;
+    // ISO format passthrough (YYYY-MM-DD or YYYY-MM-DDT...)
+    if (/^\d{4}-\d{2}-\d{2}/.test(cleaned)) return cleaned.substring(0, 10);
 
     // European DD.MM.YYYY format
     const euroMatch = cleaned.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
