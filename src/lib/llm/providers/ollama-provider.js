@@ -71,6 +71,10 @@ class OllamaProvider extends BaseProvider {
           };
         if (options.format) requestBody.format = options.format;
 
+        // Disable thinking mode for structured extraction (temperature 0).
+        // Qwen3 thinking burns num_predict tokens on reasoning, returning empty content.
+        if (options.temperature === 0) requestBody.think = false;
+
         const response = await this._fetchWithRetry(`${this.endpoint}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
