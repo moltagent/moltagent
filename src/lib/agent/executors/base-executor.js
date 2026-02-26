@@ -76,7 +76,7 @@ class BaseExecutor {
    */
   async _extractJSON(message, extractionPrompt, format, job = 'tools') {
     try {
-      const requirements = { maxTokens: 300, temperature: 0 };
+      const requirements = { maxTokens: 500, temperature: 0 };
       if (format) requirements.format = format;
 
       const result = await this.router.route({
