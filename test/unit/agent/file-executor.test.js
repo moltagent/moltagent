@@ -114,4 +114,46 @@ asyncTest('Defaults folder to Outbox when not specified', async () => {
   assert.strictEqual(filesClient.getFiles()[0].path, 'Outbox/test.txt');
 });
 
+// -- Validation gate tests --
+
+asyncTest('requires_clarification returns friendly message', async () => {
+  const executor = new FileExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'write', requires_clarification: true, missing_fields: ['filename'] })
+    }),
+    ncFilesClient: createMockFilesClient(),
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('Do something with a file', { userName: 'alice' });
+  assert.ok(result.includes('clarify'), `expected clarify message, got: ${result}`);
+  assert.ok(result.includes('filename'), `expected filename in missing fields, got: ${result}`);
+});
+
+asyncTest('rejects empty filename for write action', async () => {
+  const executor = new FileExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'write', filename: '' })
+    }),
+    ncFilesClient: createMockFilesClient(),
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('Write a file', { userName: 'alice' });
+  assert.ok(result.includes('filename'), `expected filename prompt, got: ${result}`);
+});
+
+asyncTest('rejects filename > 100 chars', async () => {
+  const executor = new FileExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'write', filename: 'A'.repeat(101) })
+    }),
+    ncFilesClient: createMockFilesClient(),
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('Write something', { userName: 'alice' });
+  assert.ok(result.includes('file name'), `expected file name prompt, got: ${result}`);
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

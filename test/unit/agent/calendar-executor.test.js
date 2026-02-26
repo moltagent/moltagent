@@ -114,7 +114,7 @@ asyncTest('Defaults time to 09:00 when not specified', async () => {
   assert.ok(result.includes('09:00'), 'Should default to 09:00');
 });
 
-// -- Test 6: Validates required fields (summary) --
+// -- Test 6: Validates required fields (summary) — returns friendly prompt --
 asyncTest('Validates summary is required for create', async () => {
   const executor = new CalendarExecutor({
     router: createMockRouter({
@@ -124,13 +124,9 @@ asyncTest('Validates summary is required for create', async () => {
     logger: silentLogger
   });
 
-  try {
-    await executor.execute('Create event tomorrow', { userName: 'alice' });
-    assert.fail('Should have thrown DOMAIN_ESCALATE');
-  } catch (err) {
-    assert.strictEqual(err.code, 'DOMAIN_ESCALATE');
-    assert.ok(err.message.includes('summary'));
-  }
+  const result = await executor.execute('Create event tomorrow', { userName: 'alice' });
+  assert.ok(typeof result === 'string', 'Should return clarification string');
+  assert.ok(result.includes('title'), 'Should ask for event title');
 });
 
 // -- Test 7: Guardrail blocks when denied --

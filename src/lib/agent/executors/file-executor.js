@@ -52,7 +52,9 @@ class FileExecutor extends BaseExecutor {
         filename: { type: 'string' },
         content: { type: 'string' },
         folder: { type: 'string' },
-        generate_content: { type: 'boolean' }
+        generate_content: { type: 'boolean' },
+        requires_clarification: { type: 'boolean' },
+        missing_fields: { type: 'array', items: { type: 'string' } }
       },
       required: ['action']
     };
@@ -61,6 +63,7 @@ class FileExecutor extends BaseExecutor {
 
 Extract file operation parameters from this message.
 Leave fields as empty strings if not mentioned. Set generate_content to true if the user wants content created.
+If the message is NOT about a file operation, set requires_clarification to true.
 
 Message: "${message.substring(0, 300)}"`;
 
@@ -72,11 +75,20 @@ Message: "${message.substring(0, 300)}"`;
       throw err;
     }
 
-    // Step 2: Validate
-    if (params.action === 'write' && !params.filename) {
-      const err = new Error('Missing required field: filename');
-      err.code = 'DOMAIN_ESCALATE';
-      throw err;
+    // Step 2: Validation gates
+    if (params.requires_clarification) {
+      const missing = Array.isArray(params.missing_fields) && params.missing_fields.length > 0
+        ? params.missing_fields.join(', ')
+        : 'some details';
+      return `Could you clarify: ${missing}?`;
+    }
+
+    if (params.action === 'write' && (!params.filename || params.filename.trim() === '')) {
+      return 'I need a filename. What should I call the file?';
+    }
+
+    if (params.filename && params.filename.length > 100) {
+      return "I couldn't extract a clear filename. Could you tell me just the file name?";
     }
 
     // Step 3: Defaults + path sanitization

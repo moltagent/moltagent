@@ -24,6 +24,7 @@
  */
 
 const BaseExecutor = require('./base-executor');
+const { extractAttendees, mergeAttendees } = require('./attendee-extractor');
 
 class CalendarExecutor extends BaseExecutor {
   /**
@@ -54,7 +55,9 @@ class CalendarExecutor extends BaseExecutor {
         time: { type: 'string' },
         duration_minutes: { type: 'number' },
         attendees: { type: 'array', items: { type: 'string' } },
-        location: { type: 'string' }
+        location: { type: 'string' },
+        requires_clarification: { type: 'boolean' },
+        missing_fields: { type: 'array', items: { type: 'string' } }
       },
       required: ['action']
     };
@@ -63,7 +66,9 @@ class CalendarExecutor extends BaseExecutor {
 
 Extract calendar event parameters from this message.
 Use literal strings for dates and times (e.g. "tomorrow", "2pm") — do not convert them.
-Leave fields as empty strings if not mentioned.
+Leave fields as empty strings if not mentioned. Do NOT guess values.
+If the message is NOT about creating/scheduling an event, set requires_clarification to true.
+If date or time is unclear, set requires_clarification to true and list missing_fields.
 
 Message: "${message.substring(0, 300)}"`;
 
@@ -75,19 +80,24 @@ Message: "${message.substring(0, 300)}"`;
       throw err;
     }
 
-    // Step 2: Resolve date via code (not LLM)
-    const resolvedDate = this._resolveDate(params.date);
-    if (!resolvedDate && params.action === 'create') {
-      const err = new Error(`Could not resolve date: ${params.date}`);
-      err.code = 'DOMAIN_ESCALATE';
-      throw err;
+    // Step 2: Validation gates — reject bad extractions before hitting APIs
+    if (params.requires_clarification) {
+      const missing = Array.isArray(params.missing_fields) && params.missing_fields.length > 0
+        ? params.missing_fields.join(', ')
+        : 'some details';
+      return `I'd like to help schedule this, but could you clarify: ${missing}?`;
     }
 
-    // Step 3: Validate required fields
-    if (params.action === 'create' && !params.summary) {
-      const err = new Error('Missing required field: summary');
-      err.code = 'DOMAIN_ESCALATE';
-      throw err;
+    if (params.action === 'create') {
+      if (!params.summary || params.summary.trim() === '') {
+        return 'I need a title for the event. What should I call it?';
+      }
+      if (params.summary.length > 80) {
+        return "I couldn't extract a clear event title. Could you tell me just the event name?";
+      }
+      if (!params.date && !params.time) {
+        return 'When should I schedule this? I need at least a date or time.';
+      }
     }
 
     // Unsupported actions → escalate to cloud where full tools exist
@@ -97,13 +107,26 @@ Message: "${message.substring(0, 300)}"`;
       throw err;
     }
 
+    // Step 3: Resolve date via code (not LLM)
+    const resolvedDate = this._resolveDate(params.date);
+    if (!resolvedDate && params.action === 'create') {
+      const err = new Error(`Could not resolve date: ${params.date}`);
+      err.code = 'DOMAIN_ESCALATE';
+      throw err;
+    }
+
     // Step 4: Apply defaults
     const time = params.time || '09:00';
     const durationMinutes = params.duration_minutes || 60;
 
-    // Step 5: Add requesting user as attendee
-    const attendees = Array.isArray(params.attendees) ? [...params.attendees] : [];
-    if (context.userName && !attendees.includes(context.userName)) {
+    // Step 5: Code-side attendee supplement — catches what LLM might drop
+    const codeAttendees = extractAttendees(message);
+    const attendees = mergeAttendees(
+      Array.isArray(params.attendees) ? params.attendees : [],
+      codeAttendees
+    );
+    // Add requesting user as attendee
+    if (context.userName && !attendees.some(a => a.toLowerCase() === context.userName.toLowerCase())) {
       attendees.push(context.userName);
     }
 

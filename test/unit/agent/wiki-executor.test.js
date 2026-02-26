@@ -107,4 +107,34 @@ asyncTest('Handles append action with correct type', async () => {
   assert.strictEqual(call.args.type, 'append', 'Should use append type');
 });
 
+// -- Validation gate tests --
+
+asyncTest('requires_clarification returns friendly message', async () => {
+  const executor = new WikiExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'write', requires_clarification: true, missing_fields: ['topic'] })
+    }),
+    toolRegistry: createMockToolRegistry(),
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('Do something with wiki', { userName: 'alice' });
+  assert.ok(result.includes('clarify'), `expected clarify message, got: ${result}`);
+  assert.ok(result.includes('topic'), `expected topic in missing fields, got: ${result}`);
+});
+
+asyncTest('requires_clarification without missing_fields returns generic message', async () => {
+  const executor = new WikiExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'write', requires_clarification: true })
+    }),
+    toolRegistry: createMockToolRegistry(),
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('Something wiki', { userName: 'alice' });
+  assert.ok(result.includes('clarify'), `expected clarify message, got: ${result}`);
+  assert.ok(result.includes('some details'), `expected generic prompt, got: ${result}`);
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

@@ -76,7 +76,9 @@ class WikiExecutor extends BaseExecutor {
         page_title: { type: 'string' },
         content: { type: 'string' },
         parent: { type: 'string' },
-        category: { type: 'string' }
+        category: { type: 'string' },
+        requires_clarification: { type: 'boolean' },
+        missing_fields: { type: 'array', items: { type: 'string' } }
       },
       required: ['action']
     };
@@ -84,7 +86,8 @@ class WikiExecutor extends BaseExecutor {
     const extractionPrompt = `${dateContext}
 
 Extract wiki/knowledge operation parameters from this message.
-Leave fields as empty strings if not mentioned.
+Leave fields as empty strings if not mentioned. Do NOT guess values.
+If the message is NOT about wiki/knowledge, set requires_clarification to true.
 
 Message: "${message.substring(0, 300)}"`;
 
@@ -96,10 +99,18 @@ Message: "${message.substring(0, 300)}"`;
       throw err;
     }
 
-    // Step 2: Auto-categorize into parent section
+    // Step 2: Validation gates
+    if (params.requires_clarification) {
+      const missing = Array.isArray(params.missing_fields) && params.missing_fields.length > 0
+        ? params.missing_fields.join(', ')
+        : 'some details';
+      return `Could you clarify: ${missing}?`;
+    }
+
+    // Step 3: Auto-categorize into parent section
     const parent = params.parent || this._autoCategory(params.topic, params.category, params.fact);
 
-    // Step 3: Determine page title and content
+    // Step 4: Determine page title and content
     const pageTitle = params.page_title || params.topic || 'Notes';
     let content = params.content || params.fact || '';
 
@@ -108,13 +119,13 @@ Message: "${message.substring(0, 300)}"`;
       content = params.fact;
     }
 
-    // Step 4: Guardrail check
+    // Step 5: Guardrail check
     const guardResult = await this._checkGuardrails('wiki_write', { page_title: pageTitle }, context.roomToken || null);
     if (!guardResult.allowed) {
       return `Action blocked: ${guardResult.reason}`;
     }
 
-    // Step 5: Execute via ToolRegistry
+    // Step 6: Execute via ToolRegistry
     const writeResult = await this.toolRegistry.execute('wiki_write', {
       page_title: pageTitle,
       content,
