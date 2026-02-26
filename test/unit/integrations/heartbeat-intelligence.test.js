@@ -37,7 +37,17 @@ function createMockWiki(pages = [], contentMap = {}) {
     },
     readPageContent: async (path) => {
       return contentMap[path] || null;
-    }
+    },
+    readPageWithFrontmatter: async (title) => {
+      const page = pages.find(p => p.title === title);
+      if (!page) return null;
+      const content = contentMap[page.fileName] || contentMap[`${page.title}/Readme.md`];
+      if (!content) return null;
+      const { parseFrontmatter } = require('../../../src/lib/knowledge/frontmatter');
+      const { frontmatter, body } = parseFrontmatter(content);
+      return { frontmatter, body, path: page.fileName || `${page.title}.md` };
+    },
+    writePageWithFrontmatter: async () => {},
   };
 }
 
@@ -357,7 +367,7 @@ function createMockNotify() {
     assert.strictEqual(result.checked, 1);
     assert.strictEqual(result.flagged, 1);
     assert.strictEqual(notifyUser._messages.length, 1);
-    assert.ok(notifyUser._messages[0].message.includes('Stale Page'));
+    assert.ok(notifyUser._messages[0].message.includes('verification'), 'Should mention verification');
     assert.strictEqual(deck._createdCards.length, 1);
     assert.ok(deck._createdCards[0].title.includes('Verify: Stale Page'));
   });

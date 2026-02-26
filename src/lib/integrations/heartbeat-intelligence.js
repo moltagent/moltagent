@@ -21,7 +21,7 @@
 
 'use strict';
 
-const { parseFrontmatter } = require('../knowledge/frontmatter');
+const { parseFrontmatter, mergeFrontmatter } = require('../knowledge/frontmatter');
 const { JOBS } = require('../llm/router');
 
 // ============================================================================
@@ -219,7 +219,7 @@ class FreshnessChecker {
 
   /**
    * Run check if not already done today.
-   * @returns {Promise<{checked: boolean}|{checked: number, flagged: number}>}
+   * @returns {Promise<{checked: boolean}|{checked: number, strengthened: number, composted: number, flagged: number}>}
    */
   async maybeCheck() {
     const today = new Date().toISOString().split('T')[0];
@@ -231,13 +231,22 @@ class FreshnessChecker {
   }
 
   /**
-   * Scan all wiki pages and flag stale ones.
-   * @returns {Promise<{checked: number, flagged: number}>}
+   * Biological triage: scan all wiki pages with three-outcome decay.
+   *
+   * - COMPOST: Never accessed + past decay + low confidence → compress to archive
+   * - STRENGTHEN: Accessed within 30 days but technically past decay → auto-refresh
+   * - VERIFY: Past decay with some history but not recent use → Deck card for human
+   *
+   * Core memories (decay_days: -1) and already-archived pages are skipped.
+   *
+   * @returns {Promise<{checked: number, strengthened: number, composted: number, flagged: number}>}
    */
   async checkAll() {
     const collectiveId = await this.wiki.resolveCollective();
     const pages = await this.wiki.listPages(collectiveId);
     const pageList = Array.isArray(pages) ? pages : [];
+    const strengthened = [];
+    const composted = [];
     const flagged = [];
 
     for (const page of pageList) {
@@ -249,39 +258,186 @@ class FreshnessChecker {
         const content = await this.wiki.readPageContent(pagePath);
         if (!content) continue;
 
-        const { frontmatter } = parseFrontmatter(content);
+        const { frontmatter, body } = parseFrontmatter(content);
         if (!frontmatter || Object.keys(frontmatter).length === 0) continue;
 
+        // Skip already-archived pages
+        if (frontmatter.type === 'archive') continue;
+
         const decayDays = parseInt(frontmatter.decay_days || this.DEFAULT_DECAY_DAYS, 10);
-        const lastUpdated = frontmatter.last_verified || frontmatter.last_updated || frontmatter.created;
-        if (!lastUpdated) continue;
 
-        const age = this._daysSince(lastUpdated);
+        // Rule 5: Core memories never decay
+        if (decayDays < 0) continue;
 
-        if (age > decayDays) {
-          flagged.push({ page, frontmatter, age, decayDays });
-          await this._createVerificationCard(page, frontmatter, age);
+        // Rule 2: Content staleness uses verified/updated dates only.
+        // Access events are checked separately in the STRENGTHEN branch —
+        // they indicate the page is useful but don't validate content accuracy.
+        const contentDate = this._mostRecent(
+          frontmatter.last_verified,
+          frontmatter.last_updated || frontmatter.created
+        );
+        if (!contentDate) continue;
+
+        const effectiveAge = this._daysSince(contentDate);
+        if (effectiveAge <= decayDays) continue; // Content still fresh
+
+        // Past decay threshold — triage
+        const accessCount = parseInt(frontmatter.access_count || '0', 10);
+        const confidence = frontmatter.confidence || 'medium';
+
+        // Outcome 1: COMPOST — never accessed + past decay + low confidence
+        if (accessCount === 0 && confidence === 'low') {
+          await this._compostPage(page, frontmatter, body);
+          composted.push(page);
+          continue;
+        }
+
+        // Outcome 2: STRENGTHEN — accessed within 30 days but technically past decay
+        if (frontmatter.last_accessed && this._daysSince(frontmatter.last_accessed) < 30) {
+          await this._strengthenPage(page, frontmatter, body);
+          strengthened.push(page);
+          continue;
+        }
+
+        // Outcome 3: VERIFY — past decay, some history but not recent use
+        if (!frontmatter.needs_verification) {
+          await this._flagForVerification(page, frontmatter, effectiveAge);
+          flagged.push(page);
         }
       } catch (err) {
         console.warn(`[Freshness] Error checking page ${page.title}:`, err.message);
       }
     }
 
-    if (flagged.length > 0) {
+    // Notify summary
+    if (composted.length > 0 || flagged.length > 0 || strengthened.length > 0) {
+      const parts = [];
+      if (strengthened.length > 0) parts.push(`${strengthened.length} reinforced (active use)`);
+      if (flagged.length > 0) parts.push(`${flagged.length} need verification`);
+      if (composted.length > 0) parts.push(`${composted.length} archived (unused)`);
       await this.notifyUser({
         type: 'freshness_check',
-        message: `Knowledge freshness check: ${flagged.length} page(s) may need updating:\n${flagged.slice(0, 5).map(f => `- "${f.page.title}" (${f.age} days old, limit: ${f.decayDays})`).join('\n')}`
+        message: `Knowledge review: ${parts.join(', ')}.`
       });
     }
 
-    return { checked: pageList.length, flagged: flagged.length };
+    return {
+      checked: pageList.length,
+      strengthened: strengthened.length,
+      composted: composted.length,
+      flagged: flagged.length,
+    };
+  }
+
+  /**
+   * Find the most recent date from multiple optional date strings.
+   * @param {...string} dateStrings - Optional ISO date strings
+   * @returns {Date|null} Most recent valid date, or null
+   */
+  _mostRecent(...dateStrings) {
+    let latest = null;
+    for (const ds of dateStrings) {
+      if (!ds) continue;
+      const d = new Date(ds);
+      if (isNaN(d.getTime())) continue;
+      if (!latest || d > latest) latest = d;
+    }
+    return latest;
+  }
+
+  /**
+   * Compost a dead knowledge page: overwrite with compressed archive content.
+   * The form dies, the information persists as substrate.
+   * @param {Object} page - Page metadata
+   * @param {Object} frontmatter - Parsed frontmatter
+   * @param {string} body - Page body (without frontmatter)
+   */
+  async _compostPage(page, frontmatter, body) {
+    try {
+      // Compress to first sentence or first 200 chars
+      const trimmed = (body || '').replace(/^#[^\n]*\n+/, '').trim();
+      const firstSentence = trimmed.match(/^[^.!?\n]+[.!?]/)?.[0] || trimmed.slice(0, 200);
+
+      const archiveFm = {
+        type: 'archive',
+        original_type: frontmatter.type || 'unknown',
+        created: frontmatter.created || 'unknown',
+        archived: new Date().toISOString(),
+        original_confidence: frontmatter.confidence || 'unknown',
+        access_count: frontmatter.access_count || 0,
+        reason: 'unused_past_decay',
+      };
+
+      const archiveBody = `# ${page.title} (Archived)\n\n${firstSentence}\n\n---\n*Archived by FreshnessChecker. Original had ${frontmatter.access_count || 0} accesses, confidence: ${frontmatter.confidence || 'unknown'}. Composted: never retrieved, past decay period.*\n`;
+
+      await this.wiki.writePageWithFrontmatter(page.title, archiveFm, archiveBody);
+
+      console.log(`[Freshness] Composted: ${page.title} (0 accesses, ${frontmatter.confidence} confidence)`);
+    } catch (err) {
+      console.warn(`[Freshness] Failed to compost ${page.title}:`, err.message);
+    }
+  }
+
+  /**
+   * Strengthen a page that's technically past decay but clearly still alive.
+   * Resets the decay clock and may boost confidence.
+   * @param {Object} page - Page metadata
+   * @param {Object} frontmatter - Parsed frontmatter
+   * @param {string} body - Page body (without frontmatter)
+   */
+  async _strengthenPage(page, frontmatter, body) {
+    try {
+      const accessCount = parseInt(frontmatter.access_count || '0', 10);
+      const updates = {
+        last_verified: new Date().toISOString(),
+        verified_by: 'system:usage_pattern',
+      };
+
+      // Boost confidence for actively used pages
+      if (accessCount >= 5 && frontmatter.confidence !== 'high') {
+        updates.confidence = 'high';
+      }
+
+      const merged = mergeFrontmatter(frontmatter, updates);
+      await this.wiki.writePageWithFrontmatter(page.title, merged, body);
+
+      console.log(`[Freshness] Strengthened: ${page.title} (${accessCount} accesses, recently used)`);
+    } catch (err) {
+      console.warn(`[Freshness] Failed to strengthen ${page.title}:`, err.message);
+    }
+  }
+
+  /**
+   * Flag a page for human verification: create Deck card + set needs_verification.
+   * @param {Object} page - Page metadata
+   * @param {Object} frontmatter - Parsed frontmatter
+   * @param {number} effectiveAge - Effective age in days
+   */
+  async _flagForVerification(page, frontmatter, effectiveAge) {
+    // Set needs_verification in frontmatter
+    try {
+      const pageData = await this.wiki.readPageWithFrontmatter(page.title);
+      if (pageData) {
+        const updates = {
+          needs_verification: true,
+          confidence: frontmatter.confidence === 'high' ? 'medium' : 'low',
+        };
+        const merged = mergeFrontmatter(pageData.frontmatter, updates);
+        await this.wiki.writePageWithFrontmatter(page.title, merged, pageData.body);
+      }
+    } catch (err) {
+      console.warn(`[Freshness] Could not set needs_verification for ${page.title}:`, err.message);
+    }
+
+    // Create Deck verification card (skip duplicates)
+    await this._createVerificationCard(page, frontmatter, effectiveAge);
   }
 
   /**
    * Create a verification Deck card for a stale page, skipping duplicates.
    * @param {Object} page - Page metadata
    * @param {Object} frontmatter - Parsed frontmatter
-   * @param {number} age - Age in days
+   * @param {number} age - Effective age in days
    */
   async _createVerificationCard(page, frontmatter, age) {
     const cardTitle = `Verify: ${page.title}`;
@@ -289,14 +445,14 @@ class FreshnessChecker {
     // Check for existing card to avoid duplicates
     try {
       const inboxCards = await this.deck.getCardsInStack('inbox');
-      const exists = inboxCards.some(c => c.title === cardTitle || c.title === `Verify: ${page.title}`);
+      const exists = inboxCards.some(c => c.title === cardTitle);
       if (exists) return;
     } catch (err) { /* proceed to create */ }
 
     try {
       await this.deck.createCard('inbox', {
         title: cardTitle,
-        description: `This knowledge page is ${age} days old (limit: ${frontmatter.decay_days || this.DEFAULT_DECAY_DAYS} days).\n\nLast updated: ${frontmatter.last_verified || frontmatter.last_updated || 'unknown'}\nConfidence: ${frontmatter.confidence || 'unknown'}\n\nPlease review and confirm this information is still accurate.`
+        description: `This knowledge page is ${age} days past its effective freshness limit (decay: ${frontmatter.decay_days || this.DEFAULT_DECAY_DAYS} days).\n\nAccess count: ${frontmatter.access_count || 0}\nLast accessed: ${frontmatter.last_accessed || 'never'}\nLast verified: ${frontmatter.last_verified || 'never'}\nConfidence: ${frontmatter.confidence || 'unknown'}\n\nPlease review and confirm this information is still accurate.`
       });
     } catch (err) {
       console.warn(`[Freshness] Could not create verification card for ${page.title}:`, err.message);
@@ -304,14 +460,14 @@ class FreshnessChecker {
   }
 
   /**
-   * Compute days since a date string.
-   * @param {string} dateStr - ISO date string
+   * Compute days since a date string or Date object.
+   * @param {string|Date} dateInput - ISO date string or Date
    * @returns {number} Days since the date
    */
-  _daysSince(dateStr) {
-    const date = new Date(dateStr);
+  _daysSince(dateInput) {
+    const date = dateInput instanceof Date ? dateInput : new Date(dateInput);
     const now = new Date();
-    return Math.floor((now - date) / (1000 * 60 * 60 * 24));
+    return Math.max(0, Math.floor((now - date) / (1000 * 60 * 60 * 24)));
   }
 }
 

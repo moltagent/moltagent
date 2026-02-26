@@ -10,6 +10,8 @@
 
 'use strict';
 
+const { serializeFrontmatter } = require('../knowledge/frontmatter');
+
 /**
  * HeartbeatExtractor — Layer 2 of the Two-Layer Memory System.
  *
@@ -159,7 +161,8 @@ Rules:
         try {
           await this._appendToWikiPage(
             `People/${person.name.replace(/[^a-zA-Z0-9 ]/g, '')}`,
-            `- ${person.fact} _(${dateTag})_`
+            `- ${person.fact} _(${dateTag})_`,
+            'person'
           );
           writesAttempted++;
         } catch (err) {
@@ -178,7 +181,8 @@ Rules:
             : 'General/Preferences';
           await this._appendToWikiPage(
             page,
-            `- **Preference:** ${pref.preference} _(${dateTag})_`
+            `- **Preference:** ${pref.preference} _(${dateTag})_`,
+            'preference'
           );
           writesAttempted++;
         } catch (err) {
@@ -194,7 +198,8 @@ Rules:
         try {
           await this._appendToWikiPage(
             'Decisions Index',
-            `- **${dec.topic}:** ${dec.decision} _(${dateTag})_`
+            `- **${dec.topic}:** ${dec.decision} _(${dateTag})_`,
+            'decision'
           );
           writesAttempted++;
         } catch (err) {
@@ -210,7 +215,8 @@ Rules:
         try {
           await this._appendToWikiPage(
             'Meta/Pending Questions',
-            `- **${gap.topic}** — ${gap.context || 'no context'} _(${dateTag})_`
+            `- **${gap.topic}** — ${gap.context || 'no context'} _(${dateTag})_`,
+            'gap'
           );
           writesAttempted++;
         } catch (err) {
@@ -231,20 +237,39 @@ Rules:
   }
 
   /**
-   * Append content to a wiki page, creating it if needed.
+   * Append content to a wiki page, creating it with biological frontmatter if needed.
    * @param {string} pagePath - Wiki page path
    * @param {string} content - Markdown line to append
+   * @param {string} [category] - Knowledge category for decay defaults (person, decision, etc.)
    * @private
    */
-  async _appendToWikiPage(pagePath, content) {
+  async _appendToWikiPage(pagePath, content, category) {
     let existing = '';
+    let isNewPage = false;
     try {
       const page = await this.wiki.readPageContent(pagePath);
-      if (page) existing = page;
+      if (page) {
+        existing = page;
+      } else {
+        isNewPage = true;
+      }
     } catch (_e) {
-      // Page doesn't exist — create with minimal header
+      isNewPage = true;
+    }
+
+    if (isNewPage) {
+      // Create with biological frontmatter and header
       const title = pagePath.split('/').pop();
-      existing = `# ${title}\n\n`;
+      const now = new Date().toISOString();
+      const fm = {
+        type: category || 'unknown',
+        created: now,
+        last_updated: now,
+        confidence: 'medium',
+        decay_days: this._defaultDecayForType(category),
+        access_count: 0,
+      };
+      existing = serializeFrontmatter(fm, `# ${title}\n\n`);
     }
 
     // Ensure trailing newline before appending
@@ -253,6 +278,24 @@ Rules:
     }
 
     await this.wiki.writePageContent(pagePath, existing + content + '\n');
+  }
+
+  /**
+   * Default decay period by knowledge type. Different types age at different rates.
+   * @param {string} type - Knowledge category
+   * @returns {number} Decay days
+   * @private
+   */
+  _defaultDecayForType(type) {
+    const defaults = {
+      person: 90,
+      decision: 180,
+      preference: 365,
+      project: 60,
+      procedure: 180,
+      gap: 30,
+    };
+    return defaults[type] || 90;
   }
 
   /**

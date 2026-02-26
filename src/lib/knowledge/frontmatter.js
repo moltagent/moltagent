@@ -233,4 +233,15 @@ function _serializeValue(value) {
   return str;
 }
 
-module.exports = { parseFrontmatter, serializeFrontmatter };
+/**
+ * Merge updates into existing frontmatter, preserving untouched fields.
+ * Returns new object — does not mutate inputs.
+ * @param {Object} existing - Current frontmatter key-value pairs
+ * @param {Object} updates - Fields to add or overwrite
+ * @returns {Object} Merged frontmatter
+ */
+function mergeFrontmatter(existing, updates) {
+  return { ...(existing || {}), ...(updates || {}) };
+}
+
+module.exports = { parseFrontmatter, serializeFrontmatter, mergeFrontmatter };
