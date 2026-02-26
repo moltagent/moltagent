@@ -1148,9 +1148,13 @@ async function initialize() {
       const IntentRouter = require('./src/lib/agent/intent-router');
       intentRouter = ollamaProvider ? new IntentRouter({
         provider: ollamaProvider,
-        config: { classifyTimeout: appConfig.ollama.classifyTimeout }
+        config: {
+          classifyTimeout: appConfig.ollama.classifyTimeout,
+          fastModel: appConfig.ollama.model || 'phi4-mini',
+          smartModel: appConfig.ollama.smartModel || 'qwen3:8b'
+        }
       }) : null;
-      if (intentRouter) console.log(`[INIT] IntentRouter ready (${appConfig.ollama.classifyTimeout}ms timeout)`);
+      if (intentRouter) console.log(`[INIT] IntentRouter ready (fast: ${appConfig.ollama.model || 'phi4-mini'}, smart: ${appConfig.ollama.smartModel || 'qwen3:8b'}, timeout: ${appConfig.ollama.classifyTimeout}ms)`);
 
       const claudeProvider = new ClaudeToolsProvider({
         model: claudeConfig.model || CONFIG.claude.modelPremium,

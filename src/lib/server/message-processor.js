@@ -388,7 +388,7 @@ class MessageProcessor {
         result = { intent: 'micro_pipeline', provider: 'local' };
       } else if (this.microPipeline && this.agentLoop && this._isSmartMixMode()) {
         // Smart-mix: three-path routing (local text / local tools / cloud)
-        const { useLocal, useDomainTools, intent } = await this._smartMixClassify(extracted.content, session);
+        const { useLocal, useDomainTools, intent } = await this._smartMixClassify(extracted.content, session, extracted.token);
         console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}`);
 
         if (flushPrompt) {
@@ -1024,7 +1024,7 @@ class MessageProcessor {
    * @returns {Promise<{useLocal: boolean, useDomainTools: boolean, intent: string}>}
    * @private
    */
-  async _smartMixClassify(message, session) {
+  async _smartMixClassify(message, session, roomToken) {
     try {
       // Get recent conversation context from session (last 2 exchanges)
       const recentContext = (session?.context || [])
@@ -1034,7 +1034,9 @@ class MessageProcessor {
       // Use IntentRouter if available, fall back to MicroPipeline regex
       let classification;
       if (this.intentRouter) {
-        classification = await this.intentRouter.classify(message, recentContext);
+        classification = await this.intentRouter.classify(message, recentContext, {
+          replyFn: roomToken ? (text) => this.sendTalkReply(roomToken, text) : null
+        });
       } else {
         const fallback = await this.microPipeline._classifyFallback(message);
         // Map fallback domain intents to IntentRouter format

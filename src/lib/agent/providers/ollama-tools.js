@@ -54,7 +54,7 @@ class OllamaToolsProvider {
    * @param {number} [params.timeout] - Override timeout (ms). If not set, uses toolTimeout for tool requests, default timeout otherwise.
    * @returns {Promise<{content: string|null, toolCalls: Array|null}>}
    */
-  async chat({ system, messages, tools, timeout, format }) {
+  async chat({ system, messages, tools, timeout, format, model, options }) {
     const ollamaMessages = [];
 
     if (system) {
@@ -89,12 +89,13 @@ class OllamaToolsProvider {
     }
 
     const body = {
-      model: this.model,
+      model: model || this.model,
       messages: ollamaMessages,
       stream: false,
       think: false,
       options: {
-        num_predict: 1024
+        num_predict: 1024,
+        ...(options || {})
       }
     };
 

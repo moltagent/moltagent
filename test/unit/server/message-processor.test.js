@@ -592,7 +592,7 @@ asyncTest('TC-SMIX-004: Greeting routed to MicroPipeline via IntentRouter LLM, A
   assert.strictEqual(agentLoopCalled, false, 'AgentLoop.process should NOT be called');
 });
 
-asyncTest('TC-SMIX-004b: Substantive greeting (>4 words) routed to cloud for full system prompt', async () => {
+asyncTest('TC-SMIX-004b: Greeting classified by IntentRouter always routes local (no word-count gate)', async () => {
   let agentLoopCalled = false;
   let microPipelineCalled = false;
 
@@ -602,7 +602,7 @@ asyncTest('TC-SMIX-004b: Substantive greeting (>4 words) routed to cloud for ful
     },
     microPipeline: {
       _classifyFallback: async () => ({ intent: 'chitchat' }),
-      process: async () => { microPipelineCalled = true; return 'Local greeting'; }
+      process: async () => { microPipelineCalled = true; return 'Hi there! What can I help with?'; }
     },
     agentLoop: {
       llmProvider: {
@@ -612,7 +612,7 @@ asyncTest('TC-SMIX-004b: Substantive greeting (>4 words) routed to cloud for ful
       },
       process: async () => {
         agentLoopCalled = true;
-        return 'I am currently in Focus Mode.';
+        return 'Cloud response';
       }
     }
   });
@@ -620,9 +620,11 @@ asyncTest('TC-SMIX-004b: Substantive greeting (>4 words) routed to cloud for ful
   const data = createActivityStreamsData('Hey Molti, what mode are you in?');
   const result = await processor.process(data);
 
-  assert.strictEqual(agentLoopCalled, true, 'AgentLoop SHOULD be called for substantive greeting (>4 words)');
-  assert.strictEqual(microPipelineCalled, false, 'MicroPipeline should NOT be called');
-  assert.ok(result.response.includes('Focus Mode'), 'Response should come from AgentLoop with full system prompt');
+  // LLM classified as greeting → routes local regardless of word count
+  // (word-count gate intentionally removed — classification accuracy handles this)
+  assert.strictEqual(microPipelineCalled, true, 'MicroPipeline SHOULD be called (greeting → local)');
+  assert.strictEqual(agentLoopCalled, false, 'AgentLoop should NOT be called');
+  assert.ok(result.response.includes('Hi there'), 'Response should come from MicroPipeline');
 });
 
 asyncTest('TC-SMIX-005: Complex intent routed to AgentLoop with skipLocal via IntentRouter', async () => {

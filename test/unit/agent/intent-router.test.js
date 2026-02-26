@@ -187,36 +187,38 @@ asyncTest('classify() succeeds on retry after first timeout', async () => {
   assert.strictEqual(result.confidence, 0.9);
 });
 
-// -- Test 11c: Non-timeout error → regex fallback (no retry) --
-asyncTest('classify() uses regex fallback on non-timeout error (no retry)', async () => {
+// -- Test 11c: Non-timeout error → tries other model, then regex fallback --
+asyncTest('classify() tries other model on error, then regex fallback', async () => {
   let callCount = 0;
   const router = new IntentRouter({
     provider: { chat: async () => { callCount++; throw new Error('Connection refused'); } },
     config: { classifyTimeout: 100 }
   });
   const result = await router.classify('check my email');
-  assert.strictEqual(callCount, 1, 'Should NOT retry on non-timeout error');
+  assert.strictEqual(callCount, 2, 'Should try both models before regex fallback');
   assert.strictEqual(result.intent, 'domain');
   assert.strictEqual(result.domain, 'email');
 });
 
-// -- Test 11d: Retry uses 2× timeout --
-asyncTest('classify() retries with doubled timeout', async () => {
-  const timeouts = [];
+// -- Test 11d: Fallback model uses different timeout tier --
+asyncTest('classify() fallback model uses appropriate timeout', async () => {
+  const calls = [];
   const router = new IntentRouter({
     provider: {
-      chat: async ({ timeout }) => {
-        timeouts.push(timeout);
-        if (timeouts.length === 1) throw new Error('timeout');
+      chat: async ({ model, timeout }) => {
+        calls.push({ model, timeout });
+        if (calls.length === 1) throw new Error('timeout');
         return { content: '{"intent":"deck"}' };
       }
     },
     config: { classifyTimeout: 5000 }
   });
   await router.classify('create a card');
-  assert.strictEqual(timeouts.length, 2);
-  assert.strictEqual(timeouts[0], 5000, 'First attempt uses base timeout');
-  assert.strictEqual(timeouts[1], 10000, 'Retry uses 2× timeout');
+  assert.strictEqual(calls.length, 2);
+  assert.strictEqual(calls[0].model, 'phi4-mini', 'First call is fast model (explicit message)');
+  assert.strictEqual(calls[0].timeout, 5000, 'Fast model uses base timeout');
+  assert.strictEqual(calls[1].model, 'qwen3:8b', 'Fallback is smart model');
+  assert.strictEqual(calls[1].timeout, 20000, 'Smart model uses 4× timeout');
 });
 
 // -- Test 12: LLM returns {"intent":"deck"} wrapped in think tags → parsed correctly --
@@ -321,38 +323,24 @@ test('_regexFallback returns complex for long ambiguous messages', () => {
   assert.strictEqual(result.confidence, 0.3);
 });
 
-// -- _isTimeoutError tests --
+// -- Prompt tests --
 
-test('_isTimeoutError detects timeout variants', () => {
-  const router = createRouter('');
-  assert.strictEqual(router._isTimeoutError(new Error('Request timed out')), true);
-  assert.strictEqual(router._isTimeoutError(new Error('timeout')), true);
-  assert.strictEqual(router._isTimeoutError(new Error('The operation was aborted')), true);
-  assert.strictEqual(router._isTimeoutError(new Error('Connection refused')), false);
-  assert.strictEqual(router._isTimeoutError(new Error('ECONNRESET')), false);
-  assert.strictEqual(router._isTimeoutError(new Error('')), false);
-});
-
-// -- Prompt improvement: calendar schedule keywords --
-
-asyncTest('_buildPrompt includes schedule/agenda hints for calendar', async () => {
-  let capturedPrompt = '';
+asyncTest('Path C system prompt has calendar intents (no rules)', async () => {
+  let capturedSystem = '';
   const router = new IntentRouter({
     provider: {
-      chat: async ({ messages }) => {
-        capturedPrompt = messages[0].content;
-        return { content: '{"intent":"calendar"}' };
+      chat: async ({ system }) => {
+        capturedSystem = system;
+        return { content: '{"intent":"calendar_query"}' };
       }
     },
     config: { classifyTimeout: 5000 }
   });
   await router.classify("What's on my schedule for today?");
-  assert.ok(capturedPrompt.includes('schedule'), 'Prompt should mention schedule in calendar hints');
-  assert.ok(capturedPrompt.includes('agenda'), 'Prompt should mention agenda in calendar hints');
-  assert.ok(
-    capturedPrompt.includes('schedule, agenda, or what'),
-    'Prompt should have rule about schedule → calendar'
-  );
+  assert.ok(capturedSystem.includes('calendar_create'), 'System prompt should have calendar_create');
+  assert.ok(capturedSystem.includes('calendar_query'), 'System prompt should have calendar_query');
+  assert.ok(capturedSystem.includes('calendar_update'), 'System prompt should have calendar_update');
+  assert.ok(!capturedSystem.includes('Rules:'), 'Path C prompt should NOT have Rules section');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 100);

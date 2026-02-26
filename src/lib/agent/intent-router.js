@@ -1,15 +1,14 @@
 /**
- * IntentRouter — LLM-powered intent classification with conversation context.
+ * IntentRouter — Dual-model intent classification with regex pre-router.
  *
- * Replaces regex-based classification in MicroPipeline's _classify() with a
- * single LLM call that receives the last 2 exchanges of conversation context.
- * All intents (including greetings) go through the LLM for accurate
- * classification. On timeout the router retries once (cold-start grace),
- * then falls back to a lightweight regex classifier that keeps most messages
- * local instead of routing to cloud.
+ * Regex pre-router (~0ms) sends ~70% of messages to phi4-mini (~1s)
+ * and ~30% ambiguous messages to qwen3:8b (~20-30s). If phi4-mini
+ * returns 'unknown', auto-escalates to qwen3:8b before cloud. If
+ * either model times out, falls back to the other. If both fail,
+ * regex fallback keeps most messages local.
  *
  * @module agent/intent-router
- * @version 1.2.0
+ * @version 2.0.0
  */
 
 'use strict';
@@ -17,14 +16,31 @@
 const VALID_INTENTS = new Set([
   'greeting', 'chitchat', 'confirmation', 'selection',
   'deck', 'calendar', 'email', 'wiki', 'file', 'search',
-  'complex'
+  'complex',
+  // Fine-grained intents from Path C prompt (mapped to broad domains)
+  'calendar_create', 'calendar_query', 'calendar_update', 'calendar_delete',
+  'deck_create', 'deck_move', 'deck_query',
+  'wiki_write', 'wiki_read',
+  'email_send', 'email_read',
+  'file_upload', 'file_query',
+  'unknown'
 ]);
+
+// Map fine-grained intents to domain routing
+const INTENT_TO_DOMAIN = {
+  calendar_create: 'calendar', calendar_query: 'calendar',
+  calendar_update: 'calendar', calendar_delete: 'calendar',
+  deck_create: 'deck', deck_move: 'deck', deck_query: 'deck',
+  wiki_write: 'wiki', wiki_read: 'wiki',
+  email_send: 'email', email_read: 'email',
+  file_upload: 'file', file_query: 'file',
+};
 
 const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search']);
 
 const COMPLEX_FALLBACK = Object.freeze({ intent: 'complex', domain: null, needsHistory: true, confidence: 0 });
 
-const INTENT_FORMAT = Object.freeze({
+const INTENT_SCHEMA = Object.freeze({
   type: 'object',
   properties: {
     intent: { type: 'string' }
@@ -32,78 +48,168 @@ const INTENT_FORMAT = Object.freeze({
   required: ['intent']
 });
 
+/**
+ * Path C classification prompt — description-only, no rules.
+ * Constrained decoding + schema handle output format.
+ * Scored 12/15 on phi4-mini and 15/15 on qwen3:8b.
+ */
+const CLASSIFICATION_SYSTEM_PROMPT = `Classify the user message into one intent.
+
+Available intents:
+- calendar_create: Create a new calendar event or meeting
+- calendar_query: List or check existing events
+- calendar_update: Modify, reschedule, or add people to an existing event
+- calendar_delete: Cancel or remove an event
+- deck_create: Create a new task card
+- deck_move: Move a task card to a different column or mark complete
+- deck_query: List or check existing tasks
+- wiki_write: Store or remember information for later
+- wiki_read: Recall or look up previously stored information
+- email_send: Compose or send an email
+- email_read: Check or search emails
+- file_upload: Upload or save a file
+- file_query: Find or list files
+- search: Find information, look up, research a topic
+- chitchat: Greetings, small talk, casual conversation
+- unknown: Unclear or doesn't match any intent
+
+Respond with JSON only.`;
+
+/**
+ * Detect messages that require deeper comprehension (qwen3:8b)
+ * vs messages with explicit verbs that phi4-mini handles fine.
+ *
+ * Two failure clusters identified in benchmarking:
+ * 1. Wiki/memory language — conversational verbs phi misclassifies
+ * 2. Contextual references — pronouns/references to prior actions
+ *
+ * @param {string} message - User message text
+ * @returns {boolean} true → route to smart model, false → route to fast model
+ */
+function needsSmartClassifier(message) {
+  if (!message) return false;
+  const lower = message.toLowerCase();
+
+  // Wiki/memory language — phi confuses these with chitchat or swaps read/write
+  if (/\b(remember|forget|forgot|don't forget|told you|asked you|stored|decide[d]?|decision)\b/.test(lower)) return true;
+
+  // Contextual references — phi can't resolve "that one", "you just created"
+  if (/\b(you just|that one|that event|that meeting|that task|the last one|never mind)\b/.test(lower)) return true;
+
+  return false;
+}
+
 class IntentRouter {
   /**
    * @param {Object} opts
-   * @param {Object} opts.provider - OllamaToolsProvider (uses .chat() without tools)
+   * @param {Object} opts.provider - OllamaToolsProvider (uses .chat() with model override)
    * @param {Object} [opts.config]
    * @param {number} [opts.config.classifyTimeout=10000]
+   * @param {string} [opts.config.fastModel='phi4-mini'] - Fast model for explicit intents
+   * @param {string} [opts.config.smartModel='qwen3:8b'] - Smart model for ambiguous intents
    */
   constructor({ provider, config = {} } = {}) {
     this.provider = provider;
     this.timeout = config.classifyTimeout || 10000;
+    this.fastModel = config.fastModel || 'phi4-mini';
+    this.smartModel = config.smartModel || 'qwen3:8b';
   }
 
   /**
-   * Classify a user message into an intent.
-   * Retries once on timeout (cold-start grace), then falls back to regex.
+   * Classify a user message into an intent using dual-model routing.
+   *
+   * 1. Regex pre-router picks fast or smart model (~0ms)
+   * 2. Fast model returns unknown → auto-escalate to smart model
+   * 3. Model timeout → fallback to the other model
+   * 4. Both fail → regex fallback
    *
    * @param {string} message - User message text
    * @param {Array} [recentContext=[]] - Last 4 context entries (2 exchanges)
+   * @param {Object} [context={}] - { replyFn } for thinking indicator
    * @returns {Promise<{intent: string, domain: string|null, needsHistory: boolean, confidence: number}>}
    */
-  async classify(message, recentContext = []) {
+  async classify(message, recentContext = [], context = {}) {
     message = message || '';
+    const useSmartModel = needsSmartClassifier(message);
+    const model = useSmartModel ? this.smartModel : this.fastModel;
+
+    // Send thinking indicator for slow model
+    if (useSmartModel && context.replyFn) {
+      context.replyFn('\u{1F914} Let me think about that...').catch(() => {});
+    }
+
     try {
-      return await this._classifyOnce(message, recentContext, this.timeout);
-    } catch (err) {
-      // First attempt failed — retry with 2× timeout (cold-start grace)
-      if (this._isTimeoutError(err)) {
+      const result = await this._classifyWithModel(model, message, recentContext);
+
+      // If fast model returns unknown, retry with smart model
+      if (!useSmartModel && ((result.intent === 'complex' && result.confidence === 0) || result.intent === 'unknown')) {
         try {
-          return await this._classifyOnce(message, recentContext, this.timeout * 2);
+          return await this._classifyWithModel(this.smartModel, message, recentContext);
         } catch (_retryErr) {
-          // Both attempts failed — use regex fallback (routes local, not cloud)
           return this._regexFallback(message);
         }
       }
-      // Non-timeout error — use regex fallback
-      return this._regexFallback(message);
+
+      return result;
+    } catch (err) {
+      // Primary model failed — try the other one
+      const fallbackModel = model === this.fastModel ? this.smartModel : this.fastModel;
+      try {
+        return await this._classifyWithModel(fallbackModel, message, recentContext);
+      } catch (_fallbackErr) {
+        // Both models failed — regex fallback
+        return this._regexFallback(message);
+      }
     }
   }
 
   /**
-   * Single classification attempt with the given timeout.
-   * @param {string} message
-   * @param {Array} recentContext
-   * @param {number} timeout
+   * Classify with a specific model.
+   *
+   * @param {string} model - Ollama model name
+   * @param {string} message - User message
+   * @param {Array} recentContext - Recent conversation context
    * @returns {Promise<{intent: string, domain: string|null, needsHistory: boolean, confidence: number}>}
    * @private
    */
-  async _classifyOnce(message, recentContext, timeout) {
-    const prompt = this._buildPrompt(message, recentContext);
+  async _classifyWithModel(model, message, recentContext = []) {
+    const userContent = this._buildUserContent(message, recentContext);
+    const timeout = model === this.smartModel ? this.timeout * 4 : this.timeout;
 
     const result = await this.provider.chat({
-      messages: [{ role: 'user', content: prompt }],
+      model,
+      system: CLASSIFICATION_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: userContent }],
       timeout,
-      format: INTENT_FORMAT
+      format: INTENT_SCHEMA,
+      options: {
+        num_ctx: 2048,
+        temperature: 0.1
+      }
     });
 
     return this._parseClassification(result.content || '');
   }
 
   /**
-   * Check whether an error is a timeout/abort error.
-   * @param {Error} err
-   * @returns {boolean}
+   * Build the user content string with optional conversation context.
+   * @param {string} message
+   * @param {Array} recentContext
+   * @returns {string}
    * @private
    */
-  _isTimeoutError(err) {
-    const msg = (err && err.message || '').toLowerCase();
-    return msg.includes('timed out') || msg.includes('timeout') || msg.includes('aborted');
+  _buildUserContent(message, recentContext) {
+    const contextBlock = recentContext.length > 0
+      ? '\nRecent conversation:\n' + recentContext.slice(-4).map(c =>
+          `${c.role}: ${(c.content || '').substring(0, 150)}`
+        ).join('\n') + '\n\n'
+      : '';
+
+    return `${contextBlock}${message.substring(0, 300)}`;
   }
 
   /**
-   * Lightweight regex-based fallback when LLM is unavailable.
+   * Lightweight regex-based fallback when both LLM models are unavailable.
    * Keeps most messages local instead of routing everything to cloud.
    * @param {string} message
    * @returns {{intent: string, domain: string|null, needsHistory: boolean, confidence: number}}
@@ -132,6 +238,11 @@ class IntentRouter {
       return { intent: 'domain', domain: 'search', needsHistory: false, confidence: 0.5 };
     }
 
+    // Memory language → wiki (catches what regex pre-router would send to smart model)
+    if (/\b(remember|forget|forgot|told you|decision|stored)\b/.test(lower)) {
+      return { intent: 'domain', domain: 'wiki', needsHistory: false, confidence: 0.5 };
+    }
+
     // Short messages → greeting/chitchat
     if (lower.split(/\s+/).length <= 8) {
       return { intent: 'chitchat', domain: null, needsHistory: false, confidence: 0.4 };
@@ -142,48 +253,8 @@ class IntentRouter {
   }
 
   /**
-   * Build the classification prompt with conversation context.
-   * @param {string} message
-   * @param {Array} recentContext
-   * @returns {string}
-   * @private
-   */
-  _buildPrompt(message, recentContext) {
-    const contextBlock = recentContext.length > 0
-      ? '\nRecent conversation:\n' + recentContext.slice(-4).map(c =>
-          `${c.role}: ${(c.content || '').substring(0, 150)}`
-        ).join('\n') + '\n'
-      : '';
-
-    return `Classify this message into exactly ONE intent.
-
-Intents:
-- greeting: hello, hi, good morning
-- chitchat: casual talk, opinions, jokes, how are you
-- confirmation: yes, no, ok, sure, do it, go ahead, cancel (references prior message)
-- selection: numeric choice like "2", "1.", "#3" (references prior list)
-- deck: task/card/board management
-- calendar: events, meetings, scheduling, "what's on my schedule", "what do I have today/this week", agenda
-- email: send/read email
-- wiki: wiki pages, knowledge base
-- file: file/folder operations
-- search: find information, look up, what do you know about
-- complex: multi-part request, unclear, or spans multiple domains
-
-Rules:
-- If message references prior conversation → confirmation or selection, NOT a domain
-- If message asks about schedule, agenda, or what's happening today → calendar
-- Single clear domain → that domain
-- Multiple domains or unclear → complex
-- If unsure → complex
-${contextBlock}
-Message: "${message.substring(0, 300)}"
-
-Set intent to the matching category.`;
-  }
-
-  /**
    * Parse LLM classification response into structured result.
+   * Handles both fine-grained (calendar_create) and broad (calendar) intents.
    * @param {string} content - Raw LLM response
    * @returns {{intent: string, domain: string|null, needsHistory: boolean, confidence: number}}
    * @private
@@ -208,7 +279,17 @@ Set intent to the matching category.`;
         return { ...COMPLEX_FALLBACK };
       }
 
-      // Domain intents get mapped
+      // Unknown → complex (cloud escalation)
+      if (intent === 'unknown') {
+        return { ...COMPLEX_FALLBACK };
+      }
+
+      // Fine-grained intents → map to domain
+      if (INTENT_TO_DOMAIN[intent]) {
+        return { intent: 'domain', domain: INTENT_TO_DOMAIN[intent], needsHistory: false, confidence: 0.8 };
+      }
+
+      // Broad domain intents (legacy / fallback)
       if (DOMAIN_INTENTS.has(intent)) {
         return { intent: 'domain', domain: intent, needsHistory: false, confidence: 0.8 };
       }
@@ -231,5 +312,9 @@ Set intent to the matching category.`;
   }
 
 }
+
+// Export class and pre-router function
+IntentRouter.needsSmartClassifier = needsSmartClassifier;
+IntentRouter.CLASSIFICATION_SYSTEM_PROMPT = CLASSIFICATION_SYSTEM_PROMPT;
 
 module.exports = IntentRouter;
