@@ -116,6 +116,7 @@ For action=list, set query_type:
 - "when is my next meeting" → query_type: upcoming
 
 For action=create:
+IMPORTANT: Put the event name/title in the "summary" field.
 Use literal strings for dates and times (e.g. "tomorrow", "2pm") — do not convert them.
 Leave fields as empty strings if not mentioned. Do NOT guess values.
 If date or time is unclear, set requires_clarification to true and list missing_fields.
@@ -136,6 +137,11 @@ Message: "${message.substring(0, 300)}"`;
         ? params.missing_fields.join(', ')
         : 'some details';
       return `I'd like to help schedule this, but could you clarify: ${missing}?`;
+    }
+
+    // Normalize: some models put the title in event_title instead of summary
+    if (!params.summary && params.event_title) {
+      params.summary = params.event_title;
     }
 
     if (params.action === 'create') {
