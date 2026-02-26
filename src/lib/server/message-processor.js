@@ -1047,16 +1047,12 @@ class MessageProcessor {
 
       const { intent, domain } = classification;
 
-      // Greeting/chitchat → local for short messages, cloud for substantive ones.
-      // Messages like "Hey Molti, what mode are you in?" get misclassified as
-      // greeting but need the full system prompt (with cockpit overlay) to answer.
+      // Greeting/chitchat → always local regardless of word count.
+      // If the LLM classified it as greeting/chitchat, trust that classification.
+      // Substantive messages disguised as greetings are a classification accuracy
+      // issue — the word-count gate was leaking most natural chitchat to cloud.
       if (intent === 'greeting' || intent === 'chitchat') {
-        const wordCount = message.trim().split(/\s+/).length;
-        if (wordCount <= 4) {
-          return { useLocal: true, useDomainTools: false, intent };
-        }
-        // Substantive message misclassified as greeting → send to cloud
-        return { useLocal: false, useDomainTools: false, intent };
+        return { useLocal: true, useDomainTools: false, intent };
       }
       // Confirmation/selection → cloud (needs full history)
       if (intent === 'confirmation' || intent === 'selection') {

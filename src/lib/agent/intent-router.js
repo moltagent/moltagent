@@ -4,11 +4,12 @@
  * Replaces regex-based classification in MicroPipeline's _classify() with a
  * single LLM call that receives the last 2 exchanges of conversation context.
  * All intents (including greetings) go through the LLM for accurate
- * classification. On any error/timeout the router falls back to a safe
- * "complex" classification that routes to cloud AgentLoop.
+ * classification. On timeout the router retries once (cold-start grace),
+ * then falls back to a lightweight regex classifier that keeps most messages
+ * local instead of routing to cloud.
  *
  * @module agent/intent-router
- * @version 1.1.0
+ * @version 1.2.0
  */
 
 'use strict';
@@ -45,26 +46,99 @@ class IntentRouter {
 
   /**
    * Classify a user message into an intent.
+   * Retries once on timeout (cold-start grace), then falls back to regex.
    *
    * @param {string} message - User message text
    * @param {Array} [recentContext=[]] - Last 4 context entries (2 exchanges)
    * @returns {Promise<{intent: string, domain: string|null, needsHistory: boolean, confidence: number}>}
    */
   async classify(message, recentContext = []) {
+    message = message || '';
     try {
-      const prompt = this._buildPrompt(message, recentContext);
-
-      const result = await this.provider.chat({
-        messages: [{ role: 'user', content: prompt }],
-        timeout: this.timeout,
-        format: INTENT_FORMAT
-      });
-
-      return this._parseClassification(result.content || '');
+      return await this._classifyOnce(message, recentContext, this.timeout);
     } catch (err) {
-      // Any error (timeout, network, parse) → safe cloud fallback
-      return { ...COMPLEX_FALLBACK };
+      // First attempt failed — retry with 2× timeout (cold-start grace)
+      if (this._isTimeoutError(err)) {
+        try {
+          return await this._classifyOnce(message, recentContext, this.timeout * 2);
+        } catch (_retryErr) {
+          // Both attempts failed — use regex fallback (routes local, not cloud)
+          return this._regexFallback(message);
+        }
+      }
+      // Non-timeout error — use regex fallback
+      return this._regexFallback(message);
     }
+  }
+
+  /**
+   * Single classification attempt with the given timeout.
+   * @param {string} message
+   * @param {Array} recentContext
+   * @param {number} timeout
+   * @returns {Promise<{intent: string, domain: string|null, needsHistory: boolean, confidence: number}>}
+   * @private
+   */
+  async _classifyOnce(message, recentContext, timeout) {
+    const prompt = this._buildPrompt(message, recentContext);
+
+    const result = await this.provider.chat({
+      messages: [{ role: 'user', content: prompt }],
+      timeout,
+      format: INTENT_FORMAT
+    });
+
+    return this._parseClassification(result.content || '');
+  }
+
+  /**
+   * Check whether an error is a timeout/abort error.
+   * @param {Error} err
+   * @returns {boolean}
+   * @private
+   */
+  _isTimeoutError(err) {
+    const msg = (err && err.message || '').toLowerCase();
+    return msg.includes('timed out') || msg.includes('timeout') || msg.includes('aborted');
+  }
+
+  /**
+   * Lightweight regex-based fallback when LLM is unavailable.
+   * Keeps most messages local instead of routing everything to cloud.
+   * @param {string} message
+   * @returns {{intent: string, domain: string|null, needsHistory: boolean, confidence: number}}
+   * @private
+   */
+  _regexFallback(message) {
+    const lower = message.toLowerCase().trim();
+
+    // Domain keywords
+    if (/\b(schedule\w*|calendar|events?|meetings?|appointments?|agenda)\b/.test(lower)) {
+      return { intent: 'domain', domain: 'calendar', needsHistory: false, confidence: 0.5 };
+    }
+    if (/\b(emails?|mail|send.*to|inbox)\b/.test(lower)) {
+      return { intent: 'domain', domain: 'email', needsHistory: false, confidence: 0.5 };
+    }
+    if (/\b(tasks?|cards?|boards?|deck|todos?)\b/.test(lower)) {
+      return { intent: 'domain', domain: 'deck', needsHistory: false, confidence: 0.5 };
+    }
+    if (/\b(wiki|page|knowledge|note)\b/.test(lower)) {
+      return { intent: 'domain', domain: 'wiki', needsHistory: false, confidence: 0.5 };
+    }
+    if (/\b(file|folder|document|upload|download)\b/.test(lower)) {
+      return { intent: 'domain', domain: 'file', needsHistory: false, confidence: 0.5 };
+    }
+    if (/\b(search|find|look up|what do you know)\b/.test(lower)) {
+      return { intent: 'domain', domain: 'search', needsHistory: false, confidence: 0.5 };
+    }
+
+    // Short messages → greeting/chitchat
+    if (lower.split(/\s+/).length <= 8) {
+      return { intent: 'chitchat', domain: null, needsHistory: false, confidence: 0.4 };
+    }
+
+    // Long unmatched → complex (cloud) — only case that still goes to cloud
+    return { ...COMPLEX_FALLBACK, confidence: 0.3 };
   }
 
   /**
@@ -89,7 +163,7 @@ Intents:
 - confirmation: yes, no, ok, sure, do it, go ahead, cancel (references prior message)
 - selection: numeric choice like "2", "1.", "#3" (references prior list)
 - deck: task/card/board management
-- calendar: events, meetings, scheduling
+- calendar: events, meetings, scheduling, "what's on my schedule", "what do I have today/this week", agenda
 - email: send/read email
 - wiki: wiki pages, knowledge base
 - file: file/folder operations
@@ -98,6 +172,7 @@ Intents:
 
 Rules:
 - If message references prior conversation → confirmation or selection, NOT a domain
+- If message asks about schedule, agenda, or what's happening today → calendar
 - Single clear domain → that domain
 - Multiple domains or unclear → complex
 - If unsure → complex

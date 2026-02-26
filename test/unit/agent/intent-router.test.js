@@ -153,16 +153,70 @@ asyncTest('classify() returns complex fallback on garbage LLM response', async (
   assert.strictEqual(result.confidence, 0);
 });
 
-// -- Test 11: LLM throws (timeout) → complex fallback --
-asyncTest('classify() returns complex fallback on LLM timeout/error', async () => {
+// -- Test 11: LLM timeout → retries once, then regex fallback --
+asyncTest('classify() retries on timeout then falls back to regex', async () => {
+  let callCount = 0;
   const router = new IntentRouter({
-    provider: { chat: async () => { throw new Error('timeout'); } },
+    provider: { chat: async () => { callCount++; throw new Error('Request timed out'); } },
+    config: { classifyTimeout: 100 }
+  });
+  const result = await router.classify('what is on my schedule today');
+  assert.strictEqual(callCount, 2, 'Should have tried twice (initial + retry)');
+  // Regex fallback should pick up "schedule" → calendar
+  assert.strictEqual(result.intent, 'domain');
+  assert.strictEqual(result.domain, 'calendar');
+  assert.strictEqual(result.confidence, 0.5);
+});
+
+// -- Test 11b: LLM timeout → retry succeeds --
+asyncTest('classify() succeeds on retry after first timeout', async () => {
+  let callCount = 0;
+  const router = new IntentRouter({
+    provider: {
+      chat: async () => {
+        callCount++;
+        if (callCount === 1) throw new Error('Request timed out');
+        return { content: '{"intent":"greeting"}' };
+      }
+    },
+    config: { classifyTimeout: 100 }
+  });
+  const result = await router.classify('hey there');
+  assert.strictEqual(callCount, 2, 'Should have tried twice');
+  assert.strictEqual(result.intent, 'greeting');
+  assert.strictEqual(result.confidence, 0.9);
+});
+
+// -- Test 11c: Non-timeout error → regex fallback (no retry) --
+asyncTest('classify() uses regex fallback on non-timeout error (no retry)', async () => {
+  let callCount = 0;
+  const router = new IntentRouter({
+    provider: { chat: async () => { callCount++; throw new Error('Connection refused'); } },
+    config: { classifyTimeout: 100 }
+  });
+  const result = await router.classify('check my email');
+  assert.strictEqual(callCount, 1, 'Should NOT retry on non-timeout error');
+  assert.strictEqual(result.intent, 'domain');
+  assert.strictEqual(result.domain, 'email');
+});
+
+// -- Test 11d: Retry uses 2× timeout --
+asyncTest('classify() retries with doubled timeout', async () => {
+  const timeouts = [];
+  const router = new IntentRouter({
+    provider: {
+      chat: async ({ timeout }) => {
+        timeouts.push(timeout);
+        if (timeouts.length === 1) throw new Error('timeout');
+        return { content: '{"intent":"deck"}' };
+      }
+    },
     config: { classifyTimeout: 5000 }
   });
-  const result = await router.classify('something that times out');
-  assert.strictEqual(result.intent, 'complex');
-  assert.strictEqual(result.needsHistory, true);
-  assert.strictEqual(result.confidence, 0);
+  await router.classify('create a card');
+  assert.strictEqual(timeouts.length, 2);
+  assert.strictEqual(timeouts[0], 5000, 'First attempt uses base timeout');
+  assert.strictEqual(timeouts[1], 10000, 'Retry uses 2× timeout');
 });
 
 // -- Test 12: LLM returns {"intent":"deck"} wrapped in think tags → parsed correctly --
@@ -201,6 +255,104 @@ asyncTest('classify() includes recentContext in LLM prompt', async () => {
 
   assert.ok(capturedPrompt.includes('Can you create a card?'), 'Prompt should include user context');
   assert.ok(capturedPrompt.includes('Sure, shall I create it?'), 'Prompt should include assistant context');
+});
+
+// -- _regexFallback tests --
+
+test('_regexFallback maps calendar keywords correctly', () => {
+  const router = createRouter('');
+  const cases = [
+    ["What's on my schedule today", 'calendar'],
+    ['Do I have any meetings this week', 'calendar'],
+    ['Check my calendar', 'calendar'],
+    ['Any events tomorrow', 'calendar'],
+    ["What's on my agenda", 'calendar']
+  ];
+  for (const [msg, expectedDomain] of cases) {
+    const result = router._regexFallback(msg);
+    assert.strictEqual(result.intent, 'domain', `"${msg}" → intent should be domain`);
+    assert.strictEqual(result.domain, expectedDomain, `"${msg}" → domain should be ${expectedDomain}`);
+  }
+});
+
+test('_regexFallback maps email keywords correctly', () => {
+  const router = createRouter('');
+  const result = router._regexFallback('check my email');
+  assert.strictEqual(result.domain, 'email');
+});
+
+test('_regexFallback maps deck keywords correctly', () => {
+  const router = createRouter('');
+  const result = router._regexFallback('show my tasks');
+  assert.strictEqual(result.domain, 'deck');
+});
+
+test('_regexFallback maps wiki keywords correctly', () => {
+  const router = createRouter('');
+  const result = router._regexFallback('open the wiki page');
+  assert.strictEqual(result.domain, 'wiki');
+});
+
+test('_regexFallback maps file keywords correctly', () => {
+  const router = createRouter('');
+  const result = router._regexFallback('upload this document');
+  assert.strictEqual(result.domain, 'file');
+});
+
+test('_regexFallback maps search keywords correctly', () => {
+  const router = createRouter('');
+  const result = router._regexFallback('search for project docs');
+  assert.strictEqual(result.domain, 'search');
+});
+
+test('_regexFallback returns chitchat for short ambiguous messages', () => {
+  const router = createRouter('');
+  const result = router._regexFallback('hey how are you doing');
+  assert.strictEqual(result.intent, 'chitchat');
+  assert.strictEqual(result.confidence, 0.4);
+});
+
+test('_regexFallback returns complex for long ambiguous messages', () => {
+  const router = createRouter('');
+  const result = router._regexFallback(
+    'I need you to analyze the current market trends and compare them with our previous quarterly results and then generate a comprehensive report'
+  );
+  assert.strictEqual(result.intent, 'complex');
+  assert.strictEqual(result.confidence, 0.3);
+});
+
+// -- _isTimeoutError tests --
+
+test('_isTimeoutError detects timeout variants', () => {
+  const router = createRouter('');
+  assert.strictEqual(router._isTimeoutError(new Error('Request timed out')), true);
+  assert.strictEqual(router._isTimeoutError(new Error('timeout')), true);
+  assert.strictEqual(router._isTimeoutError(new Error('The operation was aborted')), true);
+  assert.strictEqual(router._isTimeoutError(new Error('Connection refused')), false);
+  assert.strictEqual(router._isTimeoutError(new Error('ECONNRESET')), false);
+  assert.strictEqual(router._isTimeoutError(new Error('')), false);
+});
+
+// -- Prompt improvement: calendar schedule keywords --
+
+asyncTest('_buildPrompt includes schedule/agenda hints for calendar', async () => {
+  let capturedPrompt = '';
+  const router = new IntentRouter({
+    provider: {
+      chat: async ({ messages }) => {
+        capturedPrompt = messages[0].content;
+        return { content: '{"intent":"calendar"}' };
+      }
+    },
+    config: { classifyTimeout: 5000 }
+  });
+  await router.classify("What's on my schedule for today?");
+  assert.ok(capturedPrompt.includes('schedule'), 'Prompt should mention schedule in calendar hints');
+  assert.ok(capturedPrompt.includes('agenda'), 'Prompt should mention agenda in calendar hints');
+  assert.ok(
+    capturedPrompt.includes('schedule, agenda, or what'),
+    'Prompt should have rule about schedule → calendar'
+  );
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 100);
