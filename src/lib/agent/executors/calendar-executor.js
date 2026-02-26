@@ -17,7 +17,7 @@
  * - Problem: Local models hallucinate tool calls for calendar operations
  * - Pattern: Extract params via LLM → resolve dates in code → guardrail → execute
  * - Key Dependencies: BaseExecutor, CalDAVClient
- * - Data Flow: message → extract → resolveDate → validate → guard → createEvent → confirm
+ * - Data Flow: message → extract → route(create|list) → resolveDate → validate → guard → execute → confirm
  *
  * @module agent/executors/calendar-executor
  * @version 1.0.0
@@ -50,6 +50,7 @@ class CalendarExecutor extends BaseExecutor {
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['create', 'list', 'delete'] },
+        query_type: { type: 'string', enum: ['today', 'tomorrow', 'this_week', 'specific_date', 'upcoming', 'free_slots'] },
         summary: { type: 'string' },
         date: { type: 'string' },
         time: { type: 'string' },
@@ -64,10 +65,29 @@ class CalendarExecutor extends BaseExecutor {
 
     const extractionPrompt = `${dateContext}
 
-Extract calendar event parameters from this message.
+Extract calendar parameters from this message.
+
+Action rules:
+- "Schedule/create/book/set up a meeting" → action: create
+- "What's on my calendar/schedule/agenda?" → action: list
+- "Do I have any events/meetings today?" → action: list
+- "Am I free at 3pm?" → action: list
+- "Any meetings this week?" → action: list
+- "When is my next meeting?" → action: list
+The difference: if the user wants to ADD something → action: create.
+If the user wants to SEE what's already there → action: list.
+
+For action=list, set query_type:
+- "what's on my calendar today" → query_type: today
+- "any meetings tomorrow" → query_type: tomorrow
+- "what's my week look like" → query_type: this_week
+- "am I free at 3pm" → query_type: free_slots, time: "15:00"
+- "any events on March 5" → query_type: specific_date, date: "2026-03-05" (use YYYY-MM-DD for specific dates)
+- "when is my next meeting" → query_type: upcoming
+
+For action=create:
 Use literal strings for dates and times (e.g. "tomorrow", "2pm") — do not convert them.
 Leave fields as empty strings if not mentioned. Do NOT guess values.
-If the message is NOT about creating/scheduling an event, set requires_clarification to true.
 If date or time is unclear, set requires_clarification to true and list missing_fields.
 
 Message: "${message.substring(0, 300)}"`;
@@ -98,6 +118,11 @@ Message: "${message.substring(0, 300)}"`;
       if (!params.date && !params.time) {
         return 'When should I schedule this? I need at least a date or time.';
       }
+    }
+
+    // List/query → read calendar events
+    if (params.action === 'list') {
+      return await this.queryEvents(params, context);
     }
 
     // Unsupported actions → escalate to cloud where full tools exist
@@ -178,6 +203,144 @@ Message: "${message.substring(0, 300)}"`;
     );
 
     return `Created event "${params.summary}" on ${formattedDate} at ${formattedTime} (${durationMinutes} min)${attendeeList}. Event ID: ${uid}`;
+  }
+
+  /**
+   * Query calendar events based on extracted parameters.
+   *
+   * @param {Object} params - { query_type, date?, time? }
+   * @param {Object} context - { userName, roomToken }
+   * @returns {Promise<string>} Formatted event list or "calendar is clear" message
+   */
+  async queryEvents(params, context) {
+    const queryType = params.query_type || 'today';
+    const range = this._resolveQueryRange(params);
+    const { start, end } = range;
+
+    if (range.dateUnresolved) {
+      return `I couldn't understand the date "${range.rawDate || 'unknown'}". Could you try a specific date like "tomorrow" or "March 5"?`;
+    }
+
+    let events;
+    try {
+      if (typeof this.calendarClient.getTodayEvents === 'function' && queryType === 'today') {
+        events = await this.calendarClient.getTodayEvents();
+      } else if (typeof this.calendarClient.getUpcomingEvents === 'function' && queryType === 'upcoming') {
+        events = await this.calendarClient.getUpcomingEvents(168); // 7 days
+      } else if (typeof this.calendarClient.getEventCalendars === 'function') {
+        const calendars = await this.calendarClient.getEventCalendars();
+        events = [];
+        for (const cal of calendars) {
+          const calEvents = await this.calendarClient.getEvents(cal.id, start, end);
+          events.push(...(calEvents || []));
+        }
+        events.sort((a, b) => new Date(a.start) - new Date(b.start));
+      } else {
+        events = await this.calendarClient.getEvents(null, start, end);
+      }
+    } catch (err) {
+      this.logger.warn(`[CalendarExecutor] Calendar query failed: ${err.message}`);
+      return "I couldn't read your calendar right now. Want me to try again?";
+    }
+
+    // Log activity
+    this._logActivity('calendar_query',
+      `Queried calendar: ${queryType}`,
+      { queryType, eventCount: events ? events.length : 0 },
+      context
+    );
+
+    if (!events || events.length === 0) {
+      return this._formatNoEvents(queryType);
+    }
+
+    return this._formatEventList(events, queryType);
+  }
+
+  /**
+   * Resolve query parameters to a start/end date range.
+   * @param {Object} params - { query_type, date?, time? }
+   * @returns {{ start: Date, end: Date }}
+   */
+  _resolveQueryRange(params) {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate() + 1);
+    const endOfDay = new Date(today);
+    endOfDay.setHours(23, 59, 59, 999);
+    const endOfTomorrow = new Date(tomorrow);
+    endOfTomorrow.setHours(23, 59, 59, 999);
+    const endOfWeek = new Date(today);
+    endOfWeek.setDate(today.getDate() + (7 - today.getDay()));
+    endOfWeek.setHours(23, 59, 59, 999);
+
+    switch (params.query_type) {
+      case 'today':
+        return { start: today, end: endOfDay };
+      case 'tomorrow':
+        return { start: tomorrow, end: endOfTomorrow };
+      case 'this_week':
+        return { start: today, end: endOfWeek };
+      case 'upcoming': {
+        const weekOut = new Date(today);
+        weekOut.setDate(today.getDate() + 7);
+        return { start: now, end: weekOut };
+      }
+      case 'specific_date': {
+        const resolved = this._resolveDate(params.date);
+        if (resolved) {
+          const dayStart = new Date(`${resolved}T00:00:00`);
+          const dayEnd = new Date(`${resolved}T23:59:59`);
+          return { start: dayStart, end: dayEnd };
+        }
+        // _resolveDate failed — flag so queryEvents can report clearly
+        return { start: today, end: endOfDay, dateUnresolved: true, rawDate: params.date };
+      }
+      case 'free_slots':
+        return { start: today, end: endOfDay };
+      default:
+        return { start: today, end: endOfDay };
+    }
+  }
+
+  /**
+   * Format a "no events" response.
+   * @param {string} queryType
+   * @returns {string}
+   */
+  _formatNoEvents(queryType) {
+    switch (queryType) {
+      case 'today': return 'Your calendar is clear today. No events scheduled.';
+      case 'tomorrow': return 'Nothing on the calendar for tomorrow.';
+      case 'this_week': return 'Your week is open — no events scheduled.';
+      case 'upcoming': return 'No upcoming events in the next 7 days.';
+      case 'free_slots': return 'Your calendar is clear today — you\'re free.';
+      default: return 'No events found for that time period.';
+    }
+  }
+
+  /**
+   * Format an event list for display.
+   * @param {Array} events - Calendar events
+   * @param {string} queryType
+   * @returns {string}
+   */
+  _formatEventList(events, queryType) {
+    const label = queryType === 'today' ? 'Today' :
+                  queryType === 'tomorrow' ? 'Tomorrow' :
+                  queryType === 'this_week' ? 'This week' :
+                  queryType === 'upcoming' ? 'Upcoming' : 'Events';
+
+    const lines = events.map(e => {
+      const time = e.start ? new Date(e.start).toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit', hour12: false
+      }) : '??:??';
+      const duration = e.duration ? ` (${e.duration} min)` : '';
+      return `• ${time} — ${e.summary || 'Untitled'}${duration}`;
+    });
+
+    return `${label}:\n${lines.join('\n')}`;
   }
 }
 
