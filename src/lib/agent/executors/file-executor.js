@@ -84,7 +84,15 @@ Message: "${message.substring(0, 300)}"`;
     }
 
     if (params.action === 'write' && (!params.filename || params.filename.trim() === '')) {
-      return 'I need a filename. What should I call the file?';
+      return {
+        response: 'I need a filename. What should I call the file?',
+        pendingClarification: {
+          executor: 'file', action: 'write',
+          missingFields: ['filename'],
+          collectedFields: { content: params.content, folder: params.folder, generate_content: params.generate_content },
+          originalMessage: message,
+        }
+      };
     }
 
     if (params.filename && params.filename.length > 100) {

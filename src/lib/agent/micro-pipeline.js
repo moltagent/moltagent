@@ -523,7 +523,12 @@ Sub-questions:`;
     const executor = this.executors[intent];
     if (executor && typeof executor.execute === 'function') {
       try {
-        return await executor.execute(message, context);
+        const result = await executor.execute(message, context);
+        // Structured return — propagate {response, pendingClarification} to caller
+        if (typeof result === 'object' && result !== null && result.response) {
+          return result;
+        }
+        return result;
       } catch (err) {
         if (err.code === 'DOMAIN_ESCALATE') throw err;
         this.logger.warn(`[MicroPipeline] Executor ${intent} failed: ${err.message}`);

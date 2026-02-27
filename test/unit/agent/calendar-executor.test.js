@@ -114,7 +114,7 @@ asyncTest('Defaults time to 09:00 when not specified', async () => {
   assert.ok(result.includes('09:00'), 'Should default to 09:00');
 });
 
-// -- Test 6: Validates required fields (summary) — returns friendly prompt --
+// -- Test 6: Validates required fields (summary) — returns clarification object --
 asyncTest('Validates summary is required for create', async () => {
   const executor = new CalendarExecutor({
     router: createMockRouter({
@@ -125,8 +125,12 @@ asyncTest('Validates summary is required for create', async () => {
   });
 
   const result = await executor.execute('Create event tomorrow', { userName: 'alice' });
-  assert.ok(typeof result === 'string', 'Should return clarification string');
-  assert.ok(result.includes('title'), 'Should ask for event title');
+  // The executor now returns {response, pendingClarification} instead of a plain string
+  assert.ok(result !== null && typeof result === 'object', 'Should return clarification object');
+  assert.ok(typeof result.response === 'string', 'result.response should be a string');
+  assert.ok(result.response.includes('title') || result.response.includes('call'), 'Should ask for event title');
+  assert.ok(result.pendingClarification !== undefined, 'Should include pendingClarification');
+  assert.ok(result.pendingClarification.missingFields.includes('summary'), 'Should flag summary as missing');
 });
 
 // -- Test 7: Guardrail blocks when denied --
@@ -191,6 +195,110 @@ asyncTest('Returns real event UID in confirmation', async () => {
 
   const result = await executor.execute('Create event UID Test', { userName: 'alice' });
   assert.ok(result.includes('real-uid-abc123'), 'Should include real event UID');
+});
+
+// -- Test 11: execute() returns {response, pendingClarification} when title missing --
+asyncTest('execute() returns {response, pendingClarification} when title missing', async () => {
+  const executor = new CalendarExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'create', date: 'tomorrow', time: '10:00' })
+    }),
+    calendarClient: createMockCalendarClient(),
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('Create event tomorrow at 10am', { userName: 'alice' });
+
+  assert.ok(result !== null && typeof result === 'object', 'Result should be an object, not a plain string');
+  assert.ok(typeof result.response === 'string', 'result.response should be a string');
+  assert.ok(result.response.length > 0, 'result.response should not be empty');
+  assert.ok(result.pendingClarification !== undefined, 'Should have pendingClarification');
+  assert.strictEqual(result.pendingClarification.executor, 'calendar', 'executor should be "calendar"');
+  assert.ok(Array.isArray(result.pendingClarification.missingFields), 'missingFields should be an array');
+  assert.ok(result.pendingClarification.missingFields.includes('summary'), 'missingFields should include "summary"');
+});
+
+// -- Test 12: execute() returns {response, pendingClarification} when date/time missing --
+asyncTest('execute() returns {response, pendingClarification} when date/time missing', async () => {
+  const executor = new CalendarExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'create', summary: 'Test' })
+    }),
+    calendarClient: createMockCalendarClient(),
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('Create event called Test', { userName: 'alice' });
+
+  assert.ok(result !== null && typeof result === 'object', 'Result should be an object, not a plain string');
+  assert.ok(typeof result.response === 'string', 'result.response should be a string');
+  assert.ok(result.pendingClarification !== undefined, 'Should have pendingClarification');
+  assert.strictEqual(result.pendingClarification.executor, 'calendar', 'executor should be "calendar"');
+  assert.ok(Array.isArray(result.pendingClarification.missingFields), 'missingFields should be an array');
+  assert.ok(result.pendingClarification.missingFields.includes('date'), 'missingFields should include "date"');
+  assert.strictEqual(result.pendingClarification.collectedFields.summary, 'Test', 'collectedFields should carry forward summary');
+});
+
+// -- Test 13: resumeWithClarification() completes event creation with filled fields --
+asyncTest('resumeWithClarification() completes event creation with filled fields', async () => {
+  const calClient = createMockCalendarClient();
+  const executor = new CalendarExecutor({
+    router: createMockRouter(),
+    calendarClient: calClient,
+    logger: silentLogger
+  });
+
+  // Scenario: summary was missing, user answered with 'Budget Review'
+  // All other required fields (date) were already collected
+  const clarification = {
+    executor: 'calendar',
+    action: 'create',
+    missingFields: ['summary'],
+    collectedFields: { date: 'tomorrow', time: '14:00', duration_minutes: 60, attendees: [], location: '' },
+    originalMessage: 'Create event tomorrow at 2pm',
+    userResponse: 'Budget Review'
+  };
+
+  const result = await executor.resumeWithClarification(clarification, { userName: 'alice' });
+
+  assert.ok(result !== null && typeof result === 'object', 'Result should be an object');
+  assert.ok(typeof result.response === 'string', 'result.response should be a string');
+  assert.ok(result.pendingClarification === undefined, 'Should not have pendingClarification — creation is complete');
+  assert.strictEqual(calClient.getCreatedEvents().length, 1, 'createEvent should have been called once');
+  assert.strictEqual(calClient.getCreatedEvents()[0].summary, 'Budget Review', 'Created event should have the provided summary');
+  assert.ok(result.response.includes('Budget Review'), 'Confirmation should mention the event title');
+});
+
+// -- Test 14: resumeWithClarification() chains when multiple fields still missing --
+asyncTest('resumeWithClarification() chains when multiple fields still missing', async () => {
+  const calClient = createMockCalendarClient();
+  const executor = new CalendarExecutor({
+    router: createMockRouter(),
+    calendarClient: calClient,
+    logger: silentLogger
+  });
+
+  // Scenario: both summary and date were missing; user fills summary first
+  const clarification = {
+    executor: 'calendar',
+    action: 'create',
+    missingFields: ['summary', 'date'],
+    collectedFields: { time: '10:00', duration_minutes: 60, attendees: [], location: '' },
+    originalMessage: 'Create an event',
+    userResponse: 'Quarterly Review'
+  };
+
+  const result = await executor.resumeWithClarification(clarification, { userName: 'alice' });
+
+  assert.ok(result !== null && typeof result === 'object', 'Result should be an object');
+  assert.ok(typeof result.response === 'string', 'result.response should ask the next question');
+  assert.ok(result.pendingClarification !== undefined, 'Should still have pendingClarification — date is still missing');
+  assert.strictEqual(result.pendingClarification.executor, 'calendar', 'executor should be "calendar"');
+  assert.ok(Array.isArray(result.pendingClarification.missingFields), 'missingFields should be an array');
+  assert.ok(result.pendingClarification.missingFields.includes('date'), 'Remaining missingFields should include "date"');
+  assert.ok(!result.pendingClarification.missingFields.includes('summary'), 'summary should no longer be in missingFields');
+  assert.strictEqual(result.pendingClarification.collectedFields.summary, 'Quarterly Review', 'summary should be stored in collectedFields');
+  assert.strictEqual(calClient.getCreatedEvents().length, 0, 'createEvent should NOT have been called yet');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);

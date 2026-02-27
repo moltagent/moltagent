@@ -101,10 +101,18 @@ Message: "${message.substring(0, 300)}"`;
 
     // Step 2: Validation gates
     if (params.requires_clarification) {
-      const missing = Array.isArray(params.missing_fields) && params.missing_fields.length > 0
-        ? params.missing_fields.join(', ')
-        : 'some details';
-      return `Could you clarify: ${missing}?`;
+      const missingFields = Array.isArray(params.missing_fields) && params.missing_fields.length > 0
+        ? params.missing_fields
+        : ['details'];
+      return {
+        response: `Could you clarify: ${missingFields.join(', ')}?`,
+        pendingClarification: {
+          executor: 'wiki', action: params.action || 'write',
+          missingFields,
+          collectedFields: { topic: params.topic, fact: params.fact, page_title: params.page_title, content: params.content, parent: params.parent },
+          originalMessage: message,
+        }
+      };
     }
 
     // Step 3: Auto-categorize into parent section

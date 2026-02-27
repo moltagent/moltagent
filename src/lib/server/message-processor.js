@@ -182,6 +182,9 @@ class MessageProcessor {
     /** @type {string[]} - Names the bot responds to */
     this.botNames = deps.botNames || ['moltagent'];
 
+    /** @type {Object|null} - ClarificationManager (Layer 1: pending clarification bypass) */
+    this.clarificationManager = deps.clarificationManager || null;
+
     /** @type {Map<string, Array>} - Silent observation buffer per room */
     this.roomContext = new Map();
 
@@ -362,6 +365,37 @@ class MessageProcessor {
       }
     }
 
+    // ──── Layer 1: Pending Clarification Check ────
+    if (this.clarificationManager && session) {
+      const clarCheck = this.clarificationManager.check(session, extracted.content);
+      if (clarCheck.bypass) {
+        if (clarCheck.cancelled) {
+          this.sendTalkReply(extracted.token, clarCheck.response, extracted.messageId).catch(err => {
+            console.error('[Process] Failed to send Talk reply:', err.message);
+          });
+          this.sessionManager.addContext(session, 'user', extracted.content);
+          this.sessionManager.addContext(session, 'assistant', clarCheck.response);
+          return { response: clarCheck.response };
+        }
+
+        await this.statusIndicator?.setStatus('thinking');
+        const clarResult = await this.clarificationManager.resolve(
+          clarCheck.handler, clarCheck.clarification,
+          { session, roomToken: extracted.token, userId: extracted.user }
+        );
+        const clarResponse = clarResult.response || 'Done.';
+
+        this.sendTalkReply(extracted.token, clarResponse, extracted.messageId).catch(err => {
+          console.error('[Process] Failed to send Talk reply:', err.message);
+        });
+        this.sessionManager.addContext(session, 'user', extracted.content);
+        this.sessionManager.addContext(session, 'assistant', clarResponse);
+        await this.statusIndicator?.setStatus('ready');
+        return { response: clarResponse };
+      }
+    }
+    // ──── END Layer 1 ────
+
     // Set status to thinking before processing
     await this.statusIndicator?.setStatus('thinking');
 
@@ -385,6 +419,12 @@ class MessageProcessor {
           roomToken: extracted.token,
           warmMemory: ''
         });
+        if (typeof response === 'object' && response !== null && response.pendingClarification) {
+          if (session && this.sessionManager) {
+            this.sessionManager.setPendingClarification(session, response.pendingClarification);
+          }
+          response = response.response;
+        }
         result = { intent: 'micro_pipeline', provider: 'local' };
       } else if (this.microPipeline && this.agentLoop && this._isSmartMixMode()) {
         // Smart-mix: three-path routing (local text / local tools / cloud)
@@ -418,6 +458,12 @@ class MessageProcessor {
               warmMemory: '',
               intent  // Skip re-classification inside MicroPipeline
             });
+            if (typeof response === 'object' && response !== null && response.pendingClarification) {
+              if (session && this.sessionManager) {
+                this.sessionManager.setPendingClarification(session, response.pendingClarification);
+              }
+              response = response.response;
+            }
             result = { intent: `smart_mix_domain:${intent}`, provider: 'local-tools' };
           } catch (domainErr) {
             // Domain escalation: local tool-calling failed → fall back to cloud
@@ -446,6 +492,12 @@ class MessageProcessor {
               warmMemory: '',
               intent  // Skip re-classification inside MicroPipeline
             });
+            if (typeof response === 'object' && response !== null && response.pendingClarification) {
+              if (session && this.sessionManager) {
+                this.sessionManager.setPendingClarification(session, response.pendingClarification);
+              }
+              response = response.response;
+            }
             result = { intent: `smart_mix_local:${intent}`, provider: 'local' };
           } catch (chatErr) {
             console.warn(`[Message] Chitchat escalated to cloud: ${chatErr.message}`);

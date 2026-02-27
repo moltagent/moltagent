@@ -1224,6 +1224,154 @@ function runTests() {
   });
 
   // ---------------------------------------------------------------------------
+  // Pending Clarification Tests
+  // ---------------------------------------------------------------------------
+
+  test('TC-SM-200: setPendingClarification() stores object on session', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomClar', 'userA');
+
+    const before = Date.now();
+    sm.setPendingClarification(session, {
+      executor: 'calendar',
+      action: 'create_event',
+      missingFields: ['date'],
+      collectedFields: {},
+      originalMessage: 'Book a meeting',
+    });
+    const after = Date.now();
+
+    assert.ok(session.pendingClarification !== null, 'pendingClarification should be set');
+    assert.strictEqual(session.pendingClarification.executor, 'calendar');
+    assert.strictEqual(session.pendingClarification.action, 'create_event');
+    assert.ok(
+      session.pendingClarification.askedAt >= before &&
+      session.pendingClarification.askedAt <= after,
+      'askedAt should be a recent timestamp'
+    );
+  });
+
+  test('TC-SM-201: getPendingClarification() returns stored object', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomClar', 'userB');
+
+    sm.setPendingClarification(session, {
+      executor: 'email',
+      action: 'send',
+      missingFields: ['recipient'],
+      collectedFields: {},
+      originalMessage: 'Send an email',
+    });
+
+    const result = sm.getPendingClarification(session);
+
+    assert.ok(result !== null, 'should return the stored clarification');
+    assert.strictEqual(result.executor, 'email');
+    assert.strictEqual(result.action, 'send');
+    assert.ok(Array.isArray(result.missingFields));
+    assert.strictEqual(result.missingFields[0], 'recipient');
+  });
+
+  test('TC-SM-202: getPendingClarification() returns null when nothing pending', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomClar', 'userC');
+
+    // Fresh session — pendingClarification starts as null
+    const result = sm.getPendingClarification(session);
+
+    assert.strictEqual(result, null);
+  });
+
+  test('TC-SM-203: getPendingClarification() returns null when expired', () => {
+    const sm = new SessionManager({ approvalExpiryMs: 300000 }); // 5-min TTL
+    const session = sm.getSession('roomClar', 'userD');
+
+    sm.setPendingClarification(session, {
+      executor: 'calendar',
+      action: 'delete_event',
+      missingFields: ['eventId'],
+      collectedFields: {},
+      originalMessage: 'Delete the meeting',
+    });
+
+    // Simulate expiry: push askedAt 400 seconds into the past (past 300s TTL)
+    session.pendingClarification.askedAt = Date.now() - 400000;
+
+    const result = sm.getPendingClarification(session);
+
+    assert.strictEqual(result, null, 'expired clarification should return null');
+    assert.strictEqual(session.pendingClarification, null, 'expired clarification should be cleared');
+  });
+
+  test('TC-SM-204: clearPendingClarification() sets to null', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomClar', 'userE');
+
+    sm.setPendingClarification(session, {
+      executor: 'calendar',
+      action: 'create_event',
+      missingFields: ['time'],
+      collectedFields: {},
+      originalMessage: 'Schedule something',
+    });
+
+    assert.ok(session.pendingClarification !== null, 'should be set before clear');
+
+    sm.clearPendingClarification(session);
+
+    assert.strictEqual(session.pendingClarification, null, 'should be null after clear');
+    assert.strictEqual(sm.getPendingClarification(session), null);
+  });
+
+  test('TC-SM-205: Clarification is session-scoped', () => {
+    const sm = new SessionManager();
+    const session1 = sm.getSession('roomClar', 'userF');
+    const session2 = sm.getSession('roomClar', 'userG');
+
+    sm.setPendingClarification(session1, {
+      executor: 'calendar',
+      action: 'create_event',
+      missingFields: ['date'],
+      collectedFields: {},
+      originalMessage: 'Book meeting',
+    });
+
+    // session2 must not see session1's clarification
+    assert.ok(sm.getPendingClarification(session1) !== null, 'session1 should have clarification');
+    assert.strictEqual(sm.getPendingClarification(session2), null, 'session2 should have no clarification');
+
+    // Clearing session1 must not affect session2 (and vice-versa)
+    sm.clearPendingClarification(session1);
+    assert.strictEqual(sm.getPendingClarification(session1), null);
+    assert.strictEqual(sm.getPendingClarification(session2), null);
+  });
+
+  test('TC-SM-206: cleanup() clears expired clarifications on active sessions', () => {
+    // Use a short sessionTimeout so the session stays alive but use direct
+    // timestamp manipulation to make the clarification appear expired.
+    const sm = new SessionManager({ sessionTimeoutMs: 3600000, approvalExpiryMs: 300000 });
+    const session = sm.getSession('roomClar', 'userH');
+
+    sm.setPendingClarification(session, {
+      executor: 'email',
+      action: 'send',
+      missingFields: ['recipient'],
+      collectedFields: {},
+      originalMessage: 'Send a note',
+    });
+
+    // Push askedAt into the past beyond the 5-min TTL
+    session.pendingClarification.askedAt = Date.now() - 400000;
+
+    // Session is still active (lastActivityAt is recent); cleanup should only
+    // clear the stale clarification, not remove the session.
+    const result = sm.cleanup();
+
+    assert.strictEqual(result.sessions, 0, 'active session should not be removed');
+    assert.strictEqual(session.pendingClarification, null, 'expired clarification should be cleared by cleanup');
+  });
+
+  // ---------------------------------------------------------------------------
   // Summary
   // ---------------------------------------------------------------------------
 

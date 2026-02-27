@@ -140,7 +140,10 @@ asyncTest('rejects empty filename for write action', async () => {
   });
 
   const result = await executor.execute('Write a file', { userName: 'alice' });
-  assert.ok(result.includes('filename'), `expected filename prompt, got: ${result}`);
+  assert.strictEqual(typeof result, 'object', 'Should return structured object');
+  assert.ok(result.response.includes('filename'), `expected filename prompt, got: ${result.response}`);
+  assert.ok(result.pendingClarification, 'Should include pendingClarification');
+  assert.strictEqual(result.pendingClarification.executor, 'file');
 });
 
 asyncTest('rejects filename > 100 chars', async () => {

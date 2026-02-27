@@ -250,6 +250,54 @@ class BaseExecutor {
   _dateContext() {
     return buildMicroContext(this.timezone);
   }
+  /**
+   * Resume an executor after the user answers a clarification question.
+   * Default implementation: fills the first missing field with userResponse,
+   * then either asks for the next missing field or re-runs execute().
+   *
+   * Executors can override this for domain-specific merge logic.
+   *
+   * @param {Object} clarification - { collectedFields, userResponse, missingFields, action, executor, originalMessage }
+   * @param {Object} context - { userName, roomToken }
+   * @returns {Promise<{ response: string, pendingClarification?: Object }>}
+   */
+  async resumeWithClarification(clarification, context) {
+    const { collectedFields, userResponse } = clarification;
+    const missingFields = Array.isArray(clarification.missingFields) ? clarification.missingFields : [];
+    if (missingFields.length === 0) {
+      return { response: await this.execute(clarification.originalMessage, context) };
+    }
+    const firstMissing = missingFields[0];
+    const updatedFields = { ...collectedFields, [firstMissing]: userResponse };
+    const stillMissing = missingFields.slice(1);
+
+    if (stillMissing.length > 0) {
+      return {
+        response: this._askForField(stillMissing[0]),
+        pendingClarification: {
+          executor: clarification.executor,
+          action: clarification.action,
+          missingFields: stillMissing,
+          collectedFields: updatedFields,
+          originalMessage: clarification.originalMessage,
+        }
+      };
+    }
+
+    // All fields collected — re-execute with the original message
+    return { response: await this.execute(clarification.originalMessage, context) };
+  }
+
+  /**
+   * Generate a user-friendly question for a missing field.
+   * Executors can override for domain-specific phrasing.
+   *
+   * @param {string} fieldName
+   * @returns {string}
+   */
+  _askForField(fieldName) {
+    return `What's the ${fieldName}?`;
+  }
 }
 
 module.exports = BaseExecutor;

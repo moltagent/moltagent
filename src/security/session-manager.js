@@ -137,6 +137,7 @@ class SessionManager extends EventEmitter {
       credentialsAccessed: new Set(),
       pendingApprovals: new Map(),
       grantedApprovals: new Map(),
+      pendingClarification: null,
     };
 
     this.sessions.set(sessionKey, session);
@@ -403,6 +404,49 @@ class SessionManager extends EventEmitter {
   }
 
   /**
+   * Store a pending clarification on a session.
+   * The clarification object tracks which executor asked the question and
+   * what fields are still missing so the next user reply can bypass
+   * classification and resume directly.
+   *
+   * @param {Object} session - Session object
+   * @param {Object} clarification - { executor, action, missingFields, collectedFields, originalMessage }
+   */
+  setPendingClarification(session, clarification) {
+    if (!session || !clarification) return;
+    session.pendingClarification = { ...clarification, askedAt: Date.now() };
+    session.lastActivityAt = Date.now();
+  }
+
+  /**
+   * Retrieve a pending clarification from a session.
+   * Returns null if nothing is pending or if the clarification has expired
+   * (older than approvalExpiryMs, default 5 minutes).
+   *
+   * @param {Object} session - Session object
+   * @returns {Object|null} Stored clarification or null
+   */
+  getPendingClarification(session) {
+    if (!session || !session.pendingClarification) return null;
+    const age = Date.now() - session.pendingClarification.askedAt;
+    if (age > this.approvalExpiryMs) {
+      session.pendingClarification = null;
+      return null;
+    }
+    return session.pendingClarification;
+  }
+
+  /**
+   * Clear a pending clarification from a session.
+   *
+   * @param {Object} session - Session object
+   */
+  clearPendingClarification(session) {
+    if (!session) return;
+    session.pendingClarification = null;
+  }
+
+  /**
    * Clean up expired sessions and approvals.
    * Emits 'sessionExpired' event for each expired session before removal,
    * enabling transcript persistence and other post-expiry workflows.
@@ -437,6 +481,11 @@ class SessionManager extends EventEmitter {
             session.grantedApprovals.delete(approvalKey);
             approvalsRemoved++;
           }
+        }
+        // Clean expired pending clarifications
+        if (session.pendingClarification &&
+            now - session.pendingClarification.askedAt > this.approvalExpiryMs) {
+          session.pendingClarification = null;
         }
       }
     }

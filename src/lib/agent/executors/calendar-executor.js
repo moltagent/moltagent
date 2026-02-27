@@ -146,13 +146,37 @@ Message: "${message.substring(0, 300)}"`;
 
     if (params.action === 'create') {
       if (!params.summary || params.summary.trim() === '') {
-        return 'I need a title for the event. What should I call it?';
+        return {
+          response: 'I need a title for the event. What should I call it?',
+          pendingClarification: {
+            executor: 'calendar', action: 'create',
+            missingFields: ['summary'],
+            collectedFields: { date: params.date, time: params.time, duration_minutes: params.duration_minutes, attendees: params.attendees, location: params.location },
+            originalMessage: message,
+          }
+        };
       }
       if (params.summary.length > 80) {
-        return "I couldn't extract a clear event title. Could you tell me just the event name?";
+        return {
+          response: "I couldn't extract a clear event title. Could you tell me just the event name?",
+          pendingClarification: {
+            executor: 'calendar', action: 'create',
+            missingFields: ['summary'],
+            collectedFields: { date: params.date, time: params.time, duration_minutes: params.duration_minutes, attendees: params.attendees, location: params.location },
+            originalMessage: message,
+          }
+        };
       }
       if (!params.date && !params.time) {
-        return 'When should I schedule this? I need at least a date or time.';
+        return {
+          response: 'When should I schedule this? I need at least a date or time.',
+          pendingClarification: {
+            executor: 'calendar', action: 'create',
+            missingFields: ['date'],
+            collectedFields: { summary: params.summary, duration_minutes: params.duration_minutes, attendees: params.attendees, location: params.location },
+            originalMessage: message,
+          }
+        };
       }
     }
 
@@ -171,9 +195,22 @@ Message: "${message.substring(0, 300)}"`;
       return await this.deleteEvent(params, context);
     }
 
+    // Create — delegate to reusable _executeCreate
+    return await this._executeCreate(params, message, context);
+  }
+
+  /**
+   * Core create-event logic, shared by execute() and resumeWithClarification().
+   *
+   * @param {Object} params - Extracted calendar parameters
+   * @param {string} message - Original user message (for attendee extraction)
+   * @param {Object} context - { userName, roomToken }
+   * @returns {Promise<string>} Confirmation text
+   */
+  async _executeCreate(params, message, context) {
     // Step 3: Resolve date via code (not LLM)
     const resolvedDate = this._resolveDate(params.date);
-    if (!resolvedDate && params.action === 'create') {
+    if (!resolvedDate) {
       const err = new Error(`Could not resolve date: ${params.date}`);
       err.code = 'DOMAIN_ESCALATE';
       throw err;
@@ -673,6 +710,76 @@ Message: "${message.substring(0, 300)}"`;
       result += `\n\n(Showing ${MAX_DISPLAY_EVENTS} of ${totalCount} events)`;
     }
     return result;
+  }
+
+  /**
+   * Resume a calendar create after the user answers a clarification question.
+   * Merges the user's response into collectedFields and either asks the next
+   * question or completes the event creation via _executeCreate().
+   *
+   * @param {Object} clarification - { collectedFields, userResponse, missingFields, action, executor, originalMessage }
+   * @param {Object} context - { userName, roomToken }
+   * @returns {Promise<{ response: string, pendingClarification?: Object }>}
+   */
+  async resumeWithClarification(clarification, context) {
+    const { collectedFields, userResponse } = clarification;
+    const missingFields = Array.isArray(clarification.missingFields) ? clarification.missingFields : [];
+    if (missingFields.length === 0) {
+      const params = {
+        action: 'create',
+        summary: collectedFields.summary || '',
+        date: collectedFields.date || '',
+        time: collectedFields.time || '',
+        duration_minutes: collectedFields.duration_minutes,
+        attendees: collectedFields.attendees,
+        location: collectedFields.location,
+      };
+      return { response: await this._executeCreate(params, clarification.originalMessage, context) };
+    }
+    const firstMissing = missingFields[0];
+    const updatedFields = { ...collectedFields, [firstMissing]: userResponse };
+    const stillMissing = missingFields.slice(1);
+
+    if (stillMissing.length > 0) {
+      return {
+        response: this._askForField(stillMissing[0]),
+        pendingClarification: {
+          executor: 'calendar',
+          action: clarification.action,
+          missingFields: stillMissing,
+          collectedFields: updatedFields,
+          originalMessage: clarification.originalMessage,
+        }
+      };
+    }
+
+    // All fields collected — build params and create
+    const params = {
+      action: 'create',
+      summary: updatedFields.summary || '',
+      date: updatedFields.date || '',
+      time: updatedFields.time || '',
+      duration_minutes: updatedFields.duration_minutes,
+      attendees: updatedFields.attendees,
+      location: updatedFields.location,
+    };
+
+    const response = await this._executeCreate(params, clarification.originalMessage, context);
+    return { response };
+  }
+
+  /**
+   * Calendar-specific field questions.
+   * @param {string} fieldName
+   * @returns {string}
+   */
+  _askForField(fieldName) {
+    switch (fieldName) {
+      case 'summary': return 'What should I call this event?';
+      case 'date': return 'What date should I schedule this for?';
+      case 'time': return 'What time should the event start?';
+      default: return `What's the ${fieldName}?`;
+    }
   }
 }
 

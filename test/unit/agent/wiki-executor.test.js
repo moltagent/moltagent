@@ -109,7 +109,7 @@ asyncTest('Handles append action with correct type', async () => {
 
 // -- Validation gate tests --
 
-asyncTest('requires_clarification returns friendly message', async () => {
+asyncTest('requires_clarification returns structured clarification object', async () => {
   const executor = new WikiExecutor({
     router: createMockRouter({
       result: JSON.stringify({ action: 'write', requires_clarification: true, missing_fields: ['topic'] })
@@ -119,8 +119,11 @@ asyncTest('requires_clarification returns friendly message', async () => {
   });
 
   const result = await executor.execute('Do something with wiki', { userName: 'alice' });
-  assert.ok(result.includes('clarify'), `expected clarify message, got: ${result}`);
-  assert.ok(result.includes('topic'), `expected topic in missing fields, got: ${result}`);
+  assert.strictEqual(typeof result, 'object', 'Should return structured object');
+  assert.ok(result.response.includes('clarify'), `expected clarify message, got: ${result.response}`);
+  assert.ok(result.response.includes('topic'), `expected topic in missing fields, got: ${result.response}`);
+  assert.ok(result.pendingClarification, 'Should include pendingClarification');
+  assert.strictEqual(result.pendingClarification.executor, 'wiki');
 });
 
 asyncTest('requires_clarification without missing_fields returns generic message', async () => {
@@ -133,8 +136,9 @@ asyncTest('requires_clarification without missing_fields returns generic message
   });
 
   const result = await executor.execute('Something wiki', { userName: 'alice' });
-  assert.ok(result.includes('clarify'), `expected clarify message, got: ${result}`);
-  assert.ok(result.includes('some details'), `expected generic prompt, got: ${result}`);
+  assert.strictEqual(typeof result, 'object', 'Should return structured object');
+  assert.ok(result.response.includes('clarify'), `expected clarify message, got: ${result.response}`);
+  assert.ok(result.response.includes('details'), `expected details prompt, got: ${result.response}`);
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);
