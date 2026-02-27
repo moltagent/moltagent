@@ -325,7 +325,7 @@ test('_regexFallback returns complex for long ambiguous messages', () => {
 
 // -- Prompt tests --
 
-asyncTest('Path C system prompt has calendar intents (no rules)', async () => {
+asyncTest('System prompt has calendar intents and context-aware rules', async () => {
   let capturedSystem = '';
   const router = new IntentRouter({
     provider: {
@@ -340,7 +340,119 @@ asyncTest('Path C system prompt has calendar intents (no rules)', async () => {
   assert.ok(capturedSystem.includes('calendar_create'), 'System prompt should have calendar_create');
   assert.ok(capturedSystem.includes('calendar_query'), 'System prompt should have calendar_query');
   assert.ok(capturedSystem.includes('calendar_update'), 'System prompt should have calendar_update');
-  assert.ok(!capturedSystem.includes('Rules:'), 'Path C prompt should NOT have Rules section');
+  assert.ok(capturedSystem.includes('Rules:'), 'System prompt should have context-aware Rules section');
+});
+
+// === Layer 2: Context-Aware Classification ===
+
+asyncTest('classify() includes <conversation> tags when context provided', async () => {
+  let capturedPrompt = '';
+  const router = new IntentRouter({
+    provider: {
+      chat: async ({ messages }) => {
+        capturedPrompt = messages[0].content;
+        return { content: '{"intent":"calendar_delete"}' };
+      }
+    },
+    config: { classifyTimeout: 5000 }
+  });
+
+  await router.classify('Delete the dentist', [
+    { role: 'user', content: 'What events do I have tomorrow?' },
+    { role: 'assistant', content: 'You have 3 events: Team Standup at 9am, Client Call at 2pm, Dentist at 5pm' }
+  ]);
+
+  assert.ok(capturedPrompt.includes('<conversation>'), 'Prompt should include <conversation> tag');
+  assert.ok(capturedPrompt.includes('</conversation>'), 'Prompt should include </conversation> tag');
+  assert.ok(capturedPrompt.includes('What events do I have tomorrow'), 'Prompt should include user context');
+  assert.ok(capturedPrompt.includes('Dentist at 5pm'), 'Prompt should include assistant context');
+});
+
+asyncTest('classify() context block absent when recentContext is empty', async () => {
+  let capturedPrompt = '';
+  const router = new IntentRouter({
+    provider: {
+      chat: async ({ messages }) => {
+        capturedPrompt = messages[0].content;
+        return { content: '{"intent":"chitchat"}' };
+      }
+    },
+    config: { classifyTimeout: 5000 }
+  });
+
+  await router.classify('Good morning', []);
+  assert.ok(!capturedPrompt.includes('<conversation>'), 'No context block when empty');
+});
+
+asyncTest('classify() truncates context entries to 200 chars', async () => {
+  let capturedPrompt = '';
+  const longContent = 'A'.repeat(300);
+  const router = new IntentRouter({
+    provider: {
+      chat: async ({ messages }) => {
+        capturedPrompt = messages[0].content;
+        return { content: '{"intent":"deck_query"}' };
+      }
+    },
+    config: { classifyTimeout: 5000 }
+  });
+
+  await router.classify('Show me the first one', [
+    { role: 'assistant', content: longContent }
+  ]);
+
+  // Content should be truncated to 200 chars, not the full 300
+  assert.ok(!capturedPrompt.includes('A'.repeat(201)), 'Context entries should be truncated to 200 chars');
+  assert.ok(capturedPrompt.includes('A'.repeat(200)), 'Context should include up to 200 chars');
+});
+
+asyncTest('classify() includes up to 6 context entries (3 exchanges)', async () => {
+  let capturedPrompt = '';
+  const router = new IntentRouter({
+    provider: {
+      chat: async ({ messages }) => {
+        capturedPrompt = messages[0].content;
+        return { content: '{"intent":"deck_move"}' };
+      }
+    },
+    config: { classifyTimeout: 5000 }
+  });
+
+  const context = [
+    { role: 'user', content: 'exchange-1-user' },
+    { role: 'assistant', content: 'exchange-1-assistant' },
+    { role: 'user', content: 'exchange-2-user' },
+    { role: 'assistant', content: 'exchange-2-assistant' },
+    { role: 'user', content: 'exchange-3-user' },
+    { role: 'assistant', content: 'exchange-3-assistant' },
+    { role: 'user', content: 'exchange-4-user' },
+    { role: 'assistant', content: 'exchange-4-assistant' },
+  ];
+
+  await router.classify('Move it to done', context);
+
+  // Should include last 6 (3 exchanges), NOT the first 2
+  assert.ok(!capturedPrompt.includes('exchange-1-user'), 'Should not include oldest exchange');
+  assert.ok(capturedPrompt.includes('exchange-3-user'), 'Should include 3rd exchange');
+  assert.ok(capturedPrompt.includes('exchange-4-assistant'), 'Should include most recent exchange');
+});
+
+asyncTest('system prompt contains context-aware rules', async () => {
+  let capturedSystem = '';
+  const router = new IntentRouter({
+    provider: {
+      chat: async ({ system }) => {
+        capturedSystem = system;
+        return { content: '{"intent":"chitchat"}' };
+      }
+    },
+    config: { classifyTimeout: 5000 }
+  });
+
+  await router.classify('hello');
+  assert.ok(capturedSystem.includes('Read the <conversation> block FIRST'), 'System prompt should instruct reading context first');
+  assert.ok(capturedSystem.includes('Delete the dentist'), 'System prompt should include concrete example');
+  assert.ok(capturedSystem.includes('prefer the domain'), 'System prompt should include domain continuation bias');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 100);

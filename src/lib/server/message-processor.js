@@ -1078,6 +1078,26 @@ class MessageProcessor {
   }
 
   /**
+   * Extract recent conversation context for the classifier.
+   * Returns the last N exchanges from the session, formatted for the IntentRouter.
+   *
+   * @param {Object} session - Session from SessionManager
+   * @param {number} [maxExchanges=3] - Number of exchange pairs to include
+   * @returns {Array<{role: string, content: string}>}
+   * @private
+   */
+  _extractRecentContext(session, maxExchanges = 3) {
+    if (!session || !session.context || session.context.length === 0) {
+      return [];
+    }
+    const maxEntries = maxExchanges * 2;
+    return session.context
+      .filter(entry => entry.role === 'user' || entry.role === 'assistant')
+      .slice(-maxEntries)
+      .map(entry => ({ role: entry.role, content: entry.content || '' }));
+  }
+
+  /**
    * Classify message intent for smart-mix routing.
    *
    * Uses IntentRouter (LLM with conversation context) when available,
@@ -1095,10 +1115,7 @@ class MessageProcessor {
    */
   async _smartMixClassify(message, session, roomToken) {
     try {
-      // Get recent conversation context from session (last 2 exchanges)
-      const recentContext = (session?.context || [])
-        .filter(c => c.role === 'user' || c.role === 'assistant')
-        .slice(-4);
+      const recentContext = this._extractRecentContext(session);
 
       // Use IntentRouter if available, fall back to MicroPipeline regex
       let classification;

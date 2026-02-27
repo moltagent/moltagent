@@ -49,11 +49,11 @@ const INTENT_SCHEMA = Object.freeze({
 });
 
 /**
- * Path C classification prompt — description-only, no rules.
+ * Classification prompt — description + context-aware rules.
  * Constrained decoding + schema handle output format.
- * Scored 12/15 on phi4-mini and 15/15 on qwen3:8b.
+ * Context-aware rules help the LLM use conversation history for disambiguation.
  */
-const CLASSIFICATION_SYSTEM_PROMPT = `Classify the user message into one intent.
+const CLASSIFICATION_SYSTEM_PROMPT = `Classify the LAST user message into exactly one intent.
 
 Available intents:
 - calendar_create: Create a new calendar event or meeting
@@ -72,6 +72,18 @@ Available intents:
 - search: Find information, look up, research a topic
 - chitchat: Greetings, small talk, casual conversation
 - unknown: Unclear or doesn't match any intent
+
+Rules:
+- CRITICAL: Read the <conversation> block FIRST. The user's message usually continues the current topic.
+- If the assistant just showed calendar results, the user is probably still talking about calendar.
+- If the assistant just listed Deck cards, the user is probably still talking about Deck.
+- If the assistant just showed emails, the user is probably still talking about email.
+- If the message references something from the conversation ("that one", "delete it", "the first", "move it to done"), classify based on what the conversation was about, NOT the literal words.
+- "Delete the dentist" after a calendar listing = calendar_delete (not chitchat)
+- "Move the first one to done" after a Deck listing = deck_move (not unknown)
+- "Send it" after an email draft = email_send (not unknown)
+- Only classify as unknown if the task genuinely doesn't match any intent AND is not a continuation of the current topic.
+- When uncertain, prefer the domain of the most recent assistant action over a generic classification.
 
 Respond with JSON only.`;
 
@@ -124,7 +136,7 @@ class IntentRouter {
    * 4. Both fail → regex fallback
    *
    * @param {string} message - User message text
-   * @param {Array} [recentContext=[]] - Last 4 context entries (2 exchanges)
+   * @param {Array} [recentContext=[]] - Last 6 context entries (3 exchanges)
    * @param {Object} [context={}] - { replyFn } for thinking indicator
    * @returns {Promise<{intent: string, domain: string|null, needsHistory: boolean, confidence: number}>}
    */
@@ -199,11 +211,14 @@ class IntentRouter {
    * @private
    */
   _buildUserContent(message, recentContext) {
-    const contextBlock = recentContext.length > 0
-      ? '\nRecent conversation:\n' + recentContext.slice(-4).map(c =>
-          `${c.role}: ${(c.content || '').substring(0, 150)}`
-        ).join('\n') + '\n\n'
-      : '';
+    let contextBlock = '';
+    if (recentContext.length > 0) {
+      const formatted = recentContext.slice(-6).map(c => {
+        const safe = (c.content || '').substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return `${c.role}: ${safe}`;
+      }).join('\n');
+      contextBlock = `\n<conversation>\n${formatted}\n</conversation>\n\n`;
+    }
 
     return `${contextBlock}${message.substring(0, 300)}`;
   }
