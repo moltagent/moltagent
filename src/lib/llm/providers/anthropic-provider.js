@@ -43,6 +43,27 @@ class AnthropicProvider extends BaseProvider {
     }
 
     try {
+      // When a JSON schema is provided, instruct Claude to return structured JSON
+      // (mirrors Ollama's constrained decoding via the format parameter)
+      let finalPrompt = prompt;
+      if (options.format) {
+        const schemaStr = JSON.stringify(options.format);
+        finalPrompt = `${prompt}\n\nReply with ONLY a valid JSON object matching this schema — no explanation, no markdown fences:\n${schemaStr}`;
+      }
+
+      const requestBody = {
+        model: this.model,
+        max_tokens: options.maxTokens || 1024,
+        messages: [
+          { role: 'user', content: finalPrompt }
+        ]
+      };
+
+      // Pass temperature when specified (extraction uses 0 for deterministic output)
+      if (typeof options.temperature === 'number') {
+        requestBody.temperature = options.temperature;
+      }
+
       const response = await fetch(`${this.endpoint}/v1/messages`, {
         method: 'POST',
         headers: {
@@ -50,13 +71,7 @@ class AnthropicProvider extends BaseProvider {
           'x-api-key': apiKey,
           'anthropic-version': this.apiVersion
         },
-        body: JSON.stringify({
-          model: this.model,
-          max_tokens: options.maxTokens || 1024,
-          messages: [
-            { role: 'user', content: prompt }
-          ]
-        })
+        body: JSON.stringify(requestBody)
       });
 
       // Capture rate limit headers
