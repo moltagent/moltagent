@@ -55,6 +55,14 @@ try {
   HeartbeatIntelligence = null;
 }
 
+let DailyBriefing;
+try {
+  ({ DailyBriefing } = require('./lib/agent/daily-briefing'));
+} catch {
+  console.warn('[WARN] DailyBriefing not available');
+  DailyBriefing = null;
+}
+
 let SessionManager;
 try {
   SessionManager = require('../src/security/session-manager');
@@ -693,7 +701,9 @@ async function main() {
     meetingPreparer,
     botEnroller: botEnrollerInstance,
     deferralQueue,
-    ncFlow: { activityPoller, webhookReceiver, systemTags }
+    ncFlow: { activityPoller, webhookReceiver, systemTags },
+    talkSendQueue: talkQueue,
+    primaryRoomToken: CONFIG.talk.primaryRoom
   });
 
   // Initialize RSVPTracker (uses heartbeat's internal CalDAV client)
@@ -737,6 +747,22 @@ async function main() {
       console.log('[INIT] Heartbeat Intelligence wired to HeartbeatManager');
     } catch (err) {
       console.warn(`[INIT] Heartbeat Intelligence wiring failed: ${err.message}`);
+    }
+  }
+
+  // Wire DailyBriefing for morning digest poster
+  if (DailyBriefing) {
+    try {
+      heartbeat.dailyBriefing = new DailyBriefing({
+        caldavClient: heartbeat.caldavClient,
+        deckClient: heartbeat.deckClient,
+        budgetEnforcer: llmRouter.budget,
+        collectivesClient: collectivesClient,
+        timezone: heartbeat.settings.timezone
+      });
+      console.log('[INIT] DailyBriefing wired to HeartbeatManager');
+    } catch (err) {
+      console.warn(`[INIT] DailyBriefing wiring failed: ${err.message}`);
     }
   }
 
