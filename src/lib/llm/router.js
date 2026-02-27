@@ -588,8 +588,11 @@ class LLMRouter {
       const { heavy, workhorse, rest } = this._classifyCloudProviders(cloudIds);
 
       for (const job of VALID_JOBS) {
-        if (job === JOBS.QUICK || job === JOBS.TOOLS) {
-          // Volume work: workhorse cloud first (Sonnet handles tools well), local fallback
+        if (job === JOBS.QUICK) {
+          // Classification: local-first (phi4-mini 89% in 1s, free; regex pre-router escalates ambiguous to qwen3:8b)
+          roster[job] = [...new Set([...localIds, workhorse, ...rest].filter(Boolean))];
+        } else if (job === JOBS.TOOLS) {
+          // Extraction/tools: workhorse cloud first (Sonnet handles structured output well), local fallback
           roster[job] = [...new Set([workhorse, ...rest, ...localIds].filter(Boolean))];
         } else if (job === JOBS.THINKING || job === JOBS.WRITING || job === JOBS.CODING) {
           // Deep/complex work: heavy cloud first, workhorse fallback, rest, local last
