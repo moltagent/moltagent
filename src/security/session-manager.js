@@ -138,6 +138,7 @@ class SessionManager extends EventEmitter {
       pendingApprovals: new Map(),
       grantedApprovals: new Map(),
       pendingClarification: null,
+      actionLedger: [],
     };
 
     this.sessions.set(sessionKey, session);
@@ -446,6 +447,63 @@ class SessionManager extends EventEmitter {
     session.pendingClarification = null;
   }
 
+  // ---------------------------------------------------------------------------
+  // Layer 3: Action Ledger
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Record an action in the session's ledger.
+   * @param {Object} session
+   * @param {Object} record - { type: string, refs: Object }
+   */
+  recordAction(session, record) {
+    if (!session || !record || !record.type) return;
+    if (!session.actionLedger) session.actionLedger = [];
+
+    session.actionLedger.push({
+      ...record,
+      timestamp: Date.now()
+    });
+
+    // FIFO: keep only last 10 actions
+    if (session.actionLedger.length > 10) {
+      session.actionLedger = session.actionLedger.slice(-10);
+    }
+  }
+
+  /**
+   * Get the most recent action matching a domain prefix.
+   * @param {Object} session
+   * @param {string} [domainPrefix] - e.g. 'calendar', 'deck', 'file'
+   * @returns {Object|null}
+   */
+  getLastAction(session, domainPrefix) {
+    if (!session || !session.actionLedger || session.actionLedger.length === 0) return null;
+
+    if (!domainPrefix) {
+      return session.actionLedger[session.actionLedger.length - 1];
+    }
+
+    for (let i = session.actionLedger.length - 1; i >= 0; i--) {
+      if (session.actionLedger[i].type.startsWith(domainPrefix)) {
+        return session.actionLedger[i];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Get all recent actions, optionally filtered by domain.
+   * @param {Object} session
+   * @param {string} [domainPrefix]
+   * @returns {Array}
+   */
+  getRecentActions(session, domainPrefix) {
+    if (!session || !session.actionLedger) return [];
+    if (!domainPrefix) return [...session.actionLedger];
+    return session.actionLedger.filter(a => a.type.startsWith(domainPrefix));
+  }
+
   /**
    * Clean up expired sessions and approvals.
    * Emits 'sessionExpired' event for each expired session before removal,
@@ -544,6 +602,11 @@ class SessionManager extends EventEmitter {
 
     // Granted approvals maps must be different objects
     if (session1.grantedApprovals === session2.grantedApprovals) {
+      return false;
+    }
+
+    // Action ledgers must be different objects
+    if (session1.actionLedger === session2.actionLedger) {
       return false;
     }
 

@@ -6,6 +6,11 @@ const CalendarExecutor = require('../../../src/lib/agent/executors/calendar-exec
 
 const silentLogger = { log() {}, info() {}, warn() {}, error() {} };
 
+// Layer 3: executors may return {response, actionRecord} objects
+function getResponse(result) {
+  return typeof result === 'object' && result !== null && result.response ? result.response : result;
+}
+
 function createMockRouter(extractResult) {
   return {
     route: async () => extractResult || { result: '{}', provider: 'mock', tokens: 10 }
@@ -39,9 +44,10 @@ asyncTest('Creates event with extracted params', async () => {
   });
 
   const result = await executor.execute('Create meeting tomorrow 2pm 90 min Team Standup', { userName: 'alice' });
-  assert.ok(result.includes('Team Standup'), 'Should confirm event title');
-  assert.ok(result.includes('evt-12345'), 'Should include event UID');
-  assert.ok(result.includes('90 min'), 'Should confirm duration');
+  const resp = getResponse(result);
+  assert.ok(resp.includes('Team Standup'), 'Should confirm event title');
+  assert.ok(resp.includes('evt-12345'), 'Should include event UID');
+  assert.ok(resp.includes('90 min'), 'Should confirm duration');
 });
 
 // -- Test 2: Resolves "tomorrow" date correctly --
@@ -93,7 +99,7 @@ asyncTest('Defaults duration to 60 minutes', async () => {
   });
 
   const result = await executor.execute('Create event Quick Chat tomorrow 3pm', { userName: 'alice' });
-  assert.ok(result.includes('60 min'), 'Should default to 60 minutes');
+  assert.ok(getResponse(result).includes('60 min'), 'Should default to 60 minutes');
   const created = calClient.getCreatedEvents()[0];
   const diffMs = created.end.getTime() - created.start.getTime();
   assert.strictEqual(diffMs, 60 * 60000, 'Duration should be 60 minutes');
@@ -111,7 +117,7 @@ asyncTest('Defaults time to 09:00 when not specified', async () => {
   });
 
   const result = await executor.execute('Create event Morning Task tomorrow', { userName: 'alice' });
-  assert.ok(result.includes('09:00'), 'Should default to 09:00');
+  assert.ok(getResponse(result).includes('09:00'), 'Should default to 09:00');
 });
 
 // -- Test 6: Validates required fields (summary) — returns clarification object --
@@ -180,7 +186,7 @@ asyncTest('Handles JSON response wrapped in markdown fences', async () => {
   });
 
   const result = await executor.execute('Create fenced event tomorrow', { userName: 'alice' });
-  assert.ok(result.includes('Fenced Event'), 'Should parse fenced JSON');
+  assert.ok(getResponse(result).includes('Fenced Event'), 'Should parse fenced JSON');
 });
 
 // -- Test 10: Returns real event UID in confirmation --
@@ -194,7 +200,7 @@ asyncTest('Returns real event UID in confirmation', async () => {
   });
 
   const result = await executor.execute('Create event UID Test', { userName: 'alice' });
-  assert.ok(result.includes('real-uid-abc123'), 'Should include real event UID');
+  assert.ok(getResponse(result).includes('real-uid-abc123'), 'Should include real event UID');
 });
 
 // -- Test 11: execute() returns {response, pendingClarification} when title missing --
@@ -299,6 +305,52 @@ asyncTest('resumeWithClarification() chains when multiple fields still missing',
   assert.ok(!result.pendingClarification.missingFields.includes('summary'), 'summary should no longer be in missingFields');
   assert.strictEqual(result.pendingClarification.collectedFields.summary, 'Quarterly Review', 'summary should be stored in collectedFields');
   assert.strictEqual(calClient.getCreatedEvents().length, 0, 'createEvent should NOT have been called yet');
+});
+
+// -- Test 15: Create returns actionRecord with event refs --
+asyncTest('Create returns actionRecord with event refs', async () => {
+  const calClient = createMockCalendarClient({ uid: 'evt-action-1' });
+  const executor = new CalendarExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'create', summary: 'Action Test', date: 'tomorrow', time: '10:00' })
+    }),
+    calendarClient: calClient,
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('Create event Action Test tomorrow 10am', { userName: 'alice' });
+
+  assert.ok(typeof result === 'object' && result !== null, 'Should return structured object');
+  assert.ok(result.actionRecord !== undefined, 'Should have actionRecord');
+  assert.strictEqual(result.actionRecord.type, 'calendar_create');
+  assert.strictEqual(result.actionRecord.refs.uid, 'evt-action-1');
+  assert.strictEqual(result.actionRecord.refs.title, 'Action Test');
+});
+
+// -- Test 16: resumeWithClarification propagates actionRecord --
+asyncTest('resumeWithClarification() propagates actionRecord', async () => {
+  const calClient = createMockCalendarClient({ uid: 'evt-resume-1' });
+  const executor = new CalendarExecutor({
+    router: createMockRouter(),
+    calendarClient: calClient,
+    logger: silentLogger
+  });
+
+  const clarification = {
+    executor: 'calendar',
+    action: 'create',
+    missingFields: ['summary'],
+    collectedFields: { date: 'tomorrow', time: '14:00', duration_minutes: 60, attendees: [], location: '' },
+    originalMessage: 'Create event tomorrow at 2pm',
+    userResponse: 'Team Sync'
+  };
+
+  const result = await executor.resumeWithClarification(clarification, { userName: 'alice' });
+
+  assert.ok(result.actionRecord !== undefined, 'Should have actionRecord');
+  assert.strictEqual(result.actionRecord.type, 'calendar_create');
+  assert.strictEqual(result.actionRecord.refs.uid, 'evt-resume-1');
+  assert.strictEqual(result.actionRecord.refs.title, 'Team Sync');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);

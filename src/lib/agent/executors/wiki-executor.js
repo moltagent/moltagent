@@ -154,7 +154,11 @@ Message: "${message.substring(0, 300)}"`;
 
     // Step 6: Confirm
     const parentInfo = parent ? ` under "${parent}"` : '';
-    return `Saved to wiki: "${pageTitle}"${parentInfo}. ${writeResult.result || ''}`.trim();
+    const response = `Saved to wiki: "${pageTitle}"${parentInfo}. ${writeResult.result || ''}`.trim();
+    return {
+      response,
+      actionRecord: { type: 'wiki_write', refs: { pageTitle, parent: parent || null } }
+    };
   }
 
   /**

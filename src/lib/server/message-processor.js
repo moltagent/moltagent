@@ -385,6 +385,7 @@ class MessageProcessor {
           clarCheck.handler, clarCheck.clarification,
           { session, roomToken: extracted.token, userId: extracted.user }
         );
+        this._captureActionRecord(session, clarResult.actionRecord);
         const clarResponse = clarResult.response || 'Done.';
 
         this.sendTalkReply(extracted.token, clarResponse, extracted.messageId).catch(err => {
@@ -419,13 +420,19 @@ class MessageProcessor {
         response = await this.microPipeline.process(extracted.content, {
           userName: extracted.user,
           roomToken: extracted.token,
-          warmMemory: ''
+          warmMemory: '',
+          // Layer 3: Action ledger accessors
+          getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
+          getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
         });
-        if (typeof response === 'object' && response !== null && response.pendingClarification) {
-          if (session && this.sessionManager) {
+        if (typeof response === 'object' && response !== null) {
+          if (response.pendingClarification && session && this.sessionManager) {
             this.sessionManager.setPendingClarification(session, response.pendingClarification);
           }
-          response = response.response;
+          this._captureActionRecord(session, response.actionRecord);
+          if (response.response) {
+            response = response.response;
+          }
         }
         result = { intent: 'micro_pipeline', provider: 'local' };
       } else if (this.microPipeline && this.agentLoop && this._isSmartMixMode()) {
@@ -458,13 +465,19 @@ class MessageProcessor {
               userName: extracted.user,
               roomToken: extracted.token,
               warmMemory: '',
-              intent  // Skip re-classification inside MicroPipeline
+              intent,  // Skip re-classification inside MicroPipeline
+              // Layer 3: Action ledger accessors
+              getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
+              getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
             });
-            if (typeof response === 'object' && response !== null && response.pendingClarification) {
-              if (session && this.sessionManager) {
+            if (typeof response === 'object' && response !== null) {
+              if (response.pendingClarification && session && this.sessionManager) {
                 this.sessionManager.setPendingClarification(session, response.pendingClarification);
               }
-              response = response.response;
+              this._captureActionRecord(session, response.actionRecord);
+              if (response.response) {
+                response = response.response;
+              }
             }
             result = { intent: `smart_mix_domain:${intent}`, provider: 'local-tools' };
           } catch (domainErr) {
@@ -492,13 +505,19 @@ class MessageProcessor {
               userName: extracted.user,
               roomToken: extracted.token,
               warmMemory: '',
-              intent  // Skip re-classification inside MicroPipeline
+              intent,  // Skip re-classification inside MicroPipeline
+              // Layer 3: Action ledger accessors
+              getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
+              getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
             });
-            if (typeof response === 'object' && response !== null && response.pendingClarification) {
-              if (session && this.sessionManager) {
+            if (typeof response === 'object' && response !== null) {
+              if (response.pendingClarification && session && this.sessionManager) {
                 this.sessionManager.setPendingClarification(session, response.pendingClarification);
               }
-              response = response.response;
+              this._captureActionRecord(session, response.actionRecord);
+              if (response.response) {
+                response = response.response;
+              }
             }
             result = { intent: `smart_mix_local:${intent}`, provider: 'local' };
           } catch (chatErr) {
@@ -1075,6 +1094,25 @@ class MessageProcessor {
     if (typeof provider.resetConversation !== 'function') return false;
     if (!provider.chatProviders || provider.chatProviders.size <= 1) return false;
     return true;
+  }
+
+  /**
+   * Record action(s) from a structured executor response onto the session ledger.
+   * Handles both single actionRecord objects and arrays.
+   *
+   * @param {Object} session - Session from SessionManager
+   * @param {Object|Array} actionRecord - Single record or array of records
+   * @private
+   */
+  _captureActionRecord(session, actionRecord) {
+    if (!actionRecord || !session || !this.sessionManager) return;
+    if (Array.isArray(actionRecord)) {
+      for (const record of actionRecord) {
+        this.sessionManager.recordAction(session, record);
+      }
+    } else {
+      this.sessionManager.recordAction(session, actionRecord);
+    }
   }
 
   /**

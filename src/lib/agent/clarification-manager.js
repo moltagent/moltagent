@@ -114,7 +114,8 @@ class ClarificationManager {
       }
 
       return {
-        response: (result && result.response) || (typeof result === 'string' ? result : 'Done.')
+        response: (result && result.response) || (typeof result === 'string' ? result : 'Done.'),
+        actionRecord: result && result.actionRecord ? result.actionRecord : undefined
       };
     } catch (err) {
       this.logger.error(`[ClarificationManager] Resume failed: ${err.message}`);

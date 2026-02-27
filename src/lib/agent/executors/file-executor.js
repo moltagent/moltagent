@@ -167,7 +167,10 @@ Message: "${message.substring(0, 300)}"`;
         context
       );
 
-      return `File "${params.filename}" written to ${folder}/ and shared with ${context.userName || 'you'}.`;
+      return {
+        response: `File "${params.filename}" written to ${folder}/ and shared with ${context.userName || 'you'}.`,
+        actionRecord: { type: 'file_write', refs: { path, filename: params.filename, folder } }
+      };
     }
 
     return `File operation "${params.action}" is not yet supported by the executor.`;

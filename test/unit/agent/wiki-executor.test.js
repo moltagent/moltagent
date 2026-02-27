@@ -6,6 +6,11 @@ const WikiExecutor = require('../../../src/lib/agent/executors/wiki-executor');
 
 const silentLogger = { log() {}, info() {}, warn() {}, error() {} };
 
+// Layer 3: executors may return {response, actionRecord} objects
+function getResponse(result) {
+  return typeof result === 'object' && result !== null && result.response ? result.response : result;
+}
+
 function createMockRouter(extractResult) {
   return {
     route: async () => extractResult || { result: '{}' }
@@ -35,7 +40,7 @@ asyncTest('Writes wiki page with extracted params', async () => {
   });
 
   const result = await executor.execute('Write wiki page Meeting Notes', { userName: 'alice' });
-  assert.ok(result.includes('Meeting Notes'), 'Should confirm page title');
+  assert.ok(getResponse(result).includes('Meeting Notes'), 'Should confirm page title');
   const call = registry.getCalls()[0];
   assert.strictEqual(call.name, 'wiki_write');
   assert.strictEqual(call.args.page_title, 'Meeting Notes');

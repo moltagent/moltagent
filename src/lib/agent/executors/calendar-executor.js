@@ -297,7 +297,14 @@ Message: "${message.substring(0, 300)}"`;
       context
     );
 
-    return `Created event "${params.summary}" on ${formattedDate} at ${formattedTime} (${durationMinutes} min)${attendeeList}. Event ID: ${uid}`;
+    const response = `Created event "${params.summary}" on ${formattedDate} at ${formattedTime} (${durationMinutes} min)${attendeeList}. Event ID: ${uid}`;
+    return {
+      response,
+      actionRecord: {
+        type: 'calendar_create',
+        refs: { uid, title: params.summary, date: resolvedDate, time, duration: durationMinutes }
+      }
+    };
   }
 
   /**
@@ -433,7 +440,10 @@ Message: "${message.substring(0, 300)}"`;
       context
     );
 
-    return description + '.';
+    return {
+      response: description + '.',
+      actionRecord: { type: 'calendar_update', refs: { uid: event.uid, title: event.summary } }
+    };
   }
 
   /**
@@ -497,7 +507,10 @@ Message: "${message.substring(0, 300)}"`;
       context
     );
 
-    return `Deleted event "${event.summary}".`;
+    return {
+      response: `Deleted event "${event.summary}".`,
+      actionRecord: { type: 'calendar_delete', refs: { uid: event.uid, title: event.summary } }
+    };
   }
 
   /**
@@ -590,7 +603,17 @@ Message: "${message.substring(0, 300)}"`;
       return this._formatNoEvents(queryType);
     }
 
-    return this._formatEventList(events, queryType);
+    const formatted = this._formatEventList(events, queryType);
+    return {
+      response: formatted,
+      actionRecord: {
+        type: 'calendar_list',
+        refs: {
+          events: events.slice(0, 20).map(e => ({ uid: e.uid, title: e.summary || e.title, start: e.start })),
+          count: events.length
+        }
+      }
+    };
   }
 
   /**
@@ -742,7 +765,8 @@ Message: "${message.substring(0, 300)}"`;
         attendees: collectedFields.attendees,
         location: collectedFields.location,
       };
-      return { response: await this._executeCreate(params, clarification.originalMessage, context) };
+      const createResult = await this._executeCreate(params, clarification.originalMessage, context);
+      return { response: createResult.response, actionRecord: createResult.actionRecord };
     }
     const firstMissing = missingFields[0];
     // Normalize user response for time fields — strip "at" prefix, parse natural language
@@ -778,8 +802,8 @@ Message: "${message.substring(0, 300)}"`;
       location: updatedFields.location,
     };
 
-    const response = await this._executeCreate(params, clarification.originalMessage, context);
-    return { response };
+    const createResult = await this._executeCreate(params, clarification.originalMessage, context);
+    return { response: createResult.response, actionRecord: createResult.actionRecord };
   }
 
   /**

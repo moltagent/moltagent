@@ -1372,6 +1372,144 @@ function runTests() {
   });
 
   // ---------------------------------------------------------------------------
+  // Action Ledger Tests (Layer 3)
+  // ---------------------------------------------------------------------------
+
+  test('TC-SM-210: recordAction() stores action on session', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomLedger', 'userA');
+
+    const before = Date.now();
+    sm.recordAction(session, { type: 'calendar_create', refs: { uid: 'evt-1', title: 'Test' } });
+    const after = Date.now();
+
+    assert.strictEqual(session.actionLedger.length, 1);
+    assert.strictEqual(session.actionLedger[0].type, 'calendar_create');
+    assert.strictEqual(session.actionLedger[0].refs.uid, 'evt-1');
+    assert.ok(session.actionLedger[0].timestamp >= before && session.actionLedger[0].timestamp <= after);
+  });
+
+  test('TC-SM-211: getLastAction() returns most recent action', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomLedger', 'userB');
+
+    sm.recordAction(session, { type: 'calendar_create', refs: { uid: 'evt-1' } });
+    sm.recordAction(session, { type: 'calendar_delete', refs: { uid: 'evt-2' } });
+
+    const last = sm.getLastAction(session);
+    assert.strictEqual(last.type, 'calendar_delete');
+    assert.strictEqual(last.refs.uid, 'evt-2');
+  });
+
+  test('TC-SM-212: getLastAction() returns null when ledger empty', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomLedger', 'userC');
+
+    assert.strictEqual(sm.getLastAction(session), null);
+  });
+
+  test('TC-SM-213: getLastAction() filters by domain prefix', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomLedger', 'userD');
+
+    sm.recordAction(session, { type: 'calendar_create', refs: { uid: 'evt-1' } });
+    sm.recordAction(session, { type: 'file_write', refs: { path: '/test.txt' } });
+    sm.recordAction(session, { type: 'calendar_delete', refs: { uid: 'evt-2' } });
+
+    const lastFile = sm.getLastAction(session, 'file');
+    assert.strictEqual(lastFile.type, 'file_write');
+    assert.strictEqual(lastFile.refs.path, '/test.txt');
+
+    const lastCalendar = sm.getLastAction(session, 'calendar');
+    assert.strictEqual(lastCalendar.type, 'calendar_delete');
+  });
+
+  test('TC-SM-214: getLastAction() returns null for unmatched prefix', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomLedger', 'userE');
+
+    sm.recordAction(session, { type: 'calendar_create', refs: {} });
+
+    assert.strictEqual(sm.getLastAction(session, 'file'), null);
+  });
+
+  test('TC-SM-215: getRecentActions() returns all actions', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomLedger', 'userF');
+
+    sm.recordAction(session, { type: 'calendar_create', refs: {} });
+    sm.recordAction(session, { type: 'file_write', refs: {} });
+    sm.recordAction(session, { type: 'wiki_write', refs: {} });
+
+    const all = sm.getRecentActions(session);
+    assert.strictEqual(all.length, 3);
+  });
+
+  test('TC-SM-216: getRecentActions() filters by domain prefix', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomLedger', 'userG');
+
+    sm.recordAction(session, { type: 'calendar_create', refs: {} });
+    sm.recordAction(session, { type: 'file_write', refs: {} });
+    sm.recordAction(session, { type: 'calendar_delete', refs: {} });
+
+    const calActions = sm.getRecentActions(session, 'calendar');
+    assert.strictEqual(calActions.length, 2);
+    assert.strictEqual(calActions[0].type, 'calendar_create');
+    assert.strictEqual(calActions[1].type, 'calendar_delete');
+  });
+
+  test('TC-SM-217: getRecentActions() returns empty for no session', () => {
+    const sm = new SessionManager();
+    assert.deepStrictEqual(sm.getRecentActions(null), []);
+  });
+
+  test('TC-SM-218: FIFO cap at 10 entries', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomLedger', 'userH');
+
+    for (let i = 0; i < 15; i++) {
+      sm.recordAction(session, { type: `action_${i}`, refs: { i } });
+    }
+
+    assert.strictEqual(session.actionLedger.length, 10);
+    assert.strictEqual(session.actionLedger[0].type, 'action_5');
+    assert.strictEqual(session.actionLedger[9].type, 'action_14');
+  });
+
+  test('TC-SM-219: Action ledger is session-scoped (no leakage)', () => {
+    const sm = new SessionManager();
+    const session1 = sm.getSession('roomLedger', 'userI');
+    const session2 = sm.getSession('roomLedger', 'userJ');
+
+    sm.recordAction(session1, { type: 'calendar_create', refs: { uid: 'evt-1' } });
+
+    assert.strictEqual(sm.getRecentActions(session1).length, 1);
+    assert.strictEqual(sm.getRecentActions(session2).length, 0);
+  });
+
+  test('TC-SM-220: recordAction() ignores null session or missing type', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomLedger', 'userK');
+
+    sm.recordAction(null, { type: 'test', refs: {} });
+    sm.recordAction(session, null);
+    sm.recordAction(session, { refs: {} }); // no type
+
+    assert.strictEqual(session.actionLedger.length, 0);
+  });
+
+  test('TC-SM-221: recordAction() initializes ledger if missing', () => {
+    const sm = new SessionManager();
+    const session = sm.getSession('roomLedger', 'userL');
+    delete session.actionLedger; // simulate legacy session
+
+    sm.recordAction(session, { type: 'calendar_create', refs: {} });
+
+    assert.strictEqual(session.actionLedger.length, 1);
+  });
+
+  // ---------------------------------------------------------------------------
   // Summary
   // ---------------------------------------------------------------------------
 

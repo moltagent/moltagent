@@ -6,6 +6,11 @@ const FileExecutor = require('../../../src/lib/agent/executors/file-executor');
 
 const silentLogger = { log() {}, info() {}, warn() {}, error() {} };
 
+// Layer 3: executors may return {response, actionRecord} objects
+function getResponse(result) {
+  return typeof result === 'object' && result !== null && result.response ? result.response : result;
+}
+
 function createMockRouter(extractResult, genResult) {
   let callCount = 0;
   return {
@@ -41,7 +46,7 @@ asyncTest('Writes file with extracted params', async () => {
   });
 
   const result = await executor.execute('Create file notes.txt with Hello world', { userName: 'alice' });
-  assert.ok(result.includes('notes.txt'), 'Should confirm filename');
+  assert.ok(getResponse(result).includes('notes.txt'), 'Should confirm filename');
   assert.deepStrictEqual(filesClient.getFiles()[0], { path: 'Documents/notes.txt', content: 'Hello world' });
 });
 
@@ -110,7 +115,7 @@ asyncTest('Defaults folder to Outbox when not specified', async () => {
   });
 
   const result = await executor.execute('Write test.txt', { userName: 'alice' });
-  assert.ok(result.includes('Outbox'), 'Should default to Outbox folder');
+  assert.ok(getResponse(result).includes('Outbox'), 'Should default to Outbox folder');
   assert.strictEqual(filesClient.getFiles()[0].path, 'Outbox/test.txt');
 });
 
