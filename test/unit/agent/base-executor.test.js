@@ -125,4 +125,41 @@ asyncTest('_extractJSON() accepts custom job override', async () => {
   assert.strictEqual(capturedJob, 'quick', 'Should use the overridden job');
 });
 
+// -- Test 11: _parseTime() handles common time formats --
+test('_parseTime() normalizes 12-hour formats to HH:MM', () => {
+  const executor = new BaseExecutor({ router: createMockRouter(), logger: silentLogger });
+  assert.strictEqual(executor._parseTime('3pm'), '15:00');
+  assert.strictEqual(executor._parseTime('3:30pm'), '15:30');
+  assert.strictEqual(executor._parseTime('3 PM'), '15:00');
+  assert.strictEqual(executor._parseTime('12pm'), '12:00');
+  assert.strictEqual(executor._parseTime('12am'), '00:00');
+  assert.strictEqual(executor._parseTime('11:00am'), '11:00');
+  assert.strictEqual(executor._parseTime('11:00 AM'), '11:00');
+});
+
+test('_parseTime() handles 24-hour and named times', () => {
+  const executor = new BaseExecutor({ router: createMockRouter(), logger: silentLogger });
+  assert.strictEqual(executor._parseTime('15:00'), '15:00');
+  assert.strictEqual(executor._parseTime('9:00'), '09:00');
+  assert.strictEqual(executor._parseTime('0:00'), '00:00');
+  assert.strictEqual(executor._parseTime('noon'), '12:00');
+  assert.strictEqual(executor._parseTime('midnight'), '00:00');
+});
+
+test('_parseTime() returns null for unparseable input', () => {
+  const executor = new BaseExecutor({ router: createMockRouter(), logger: silentLogger });
+  assert.strictEqual(executor._parseTime(null), null);
+  assert.strictEqual(executor._parseTime(''), null);
+  assert.strictEqual(executor._parseTime('sometime'), null);
+  assert.strictEqual(executor._parseTime('25:00'), null);
+  assert.strictEqual(executor._parseTime('13pm'), null);
+});
+
+test('_parseTime() handles edge cases with dots and whitespace', () => {
+  const executor = new BaseExecutor({ router: createMockRouter(), logger: silentLogger });
+  assert.strictEqual(executor._parseTime('3:00 p.m.'), '15:00');
+  assert.strictEqual(executor._parseTime('  3pm  '), '15:00');
+  assert.strictEqual(executor._parseTime('7:45am'), '07:45');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

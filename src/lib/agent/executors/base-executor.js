@@ -193,6 +193,44 @@ class BaseExecutor {
   }
 
   /**
+   * Parse natural-language time strings to HH:MM (24-hour).
+   * Handles: "3pm", "3:30pm", "3 PM", "15:00", "3:00 p.m.", "noon", "midnight".
+   * @param {string} timeStr - Time string to parse
+   * @returns {string|null} "HH:MM" or null if unparseable
+   */
+  _parseTime(timeStr) {
+    if (!timeStr || typeof timeStr !== 'string') return null;
+    const cleaned = timeStr.trim().toLowerCase().replace(/\./g, '');
+
+    // Already HH:MM or H:MM (24-hour, no am/pm)
+    if (/^\d{1,2}:\d{2}$/.test(cleaned) && !cleaned.includes('am') && !cleaned.includes('pm')) {
+      const [h, m] = cleaned.split(':').map(Number);
+      if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      }
+      return null;
+    }
+
+    // Named times
+    if (cleaned === 'noon' || cleaned === 'midday') return '12:00';
+    if (cleaned === 'midnight') return '00:00';
+
+    // 12-hour formats: "3pm", "3:30pm", "3 pm", "3:30 p.m.", "11:00am"
+    const match = cleaned.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/);
+    if (match) {
+      let h = parseInt(match[1], 10);
+      const m = match[2] ? parseInt(match[2], 10) : 0;
+      const period = match[3];
+      if (h < 1 || h > 12 || m < 0 || m > 59) return null;
+      if (period === 'am' && h === 12) h = 0;
+      if (period === 'pm' && h !== 12) h += 12;
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    }
+
+    return null;
+  }
+
+  /**
    * Format a Date as YYYY-MM-DD.
    * @param {Date} date
    * @returns {string}

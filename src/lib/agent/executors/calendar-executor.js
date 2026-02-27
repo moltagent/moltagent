@@ -179,8 +179,8 @@ Message: "${message.substring(0, 300)}"`;
       throw err;
     }
 
-    // Step 4: Apply defaults
-    const time = params.time || '09:00';
+    // Step 4: Apply defaults + normalize time
+    const time = this._parseTime(params.time) || params.time || '09:00';
     const durationMinutes = params.duration_minutes || 60;
 
     // Step 5: Code-side attendee supplement — catches what LLM might drop
@@ -324,7 +324,8 @@ Message: "${message.substring(0, 300)}"`;
         break;
       }
       case 'change_time': {
-        const newTime = params.new_time || params.time || '';
+        const rawNewTime = params.new_time || params.time || '';
+        const newTime = this._parseTime(rawNewTime) || rawNewTime;
         const newDate = params.date ? this._resolveDate(params.date) : null;
         const eventDur = event.end && event.start
           ? new Date(event.end).getTime() - new Date(event.start).getTime()
