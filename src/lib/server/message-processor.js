@@ -143,6 +143,9 @@ class MessageProcessor {
     /** @type {Object|null} - MicroPipeline instance */
     this.microPipeline = deps.microPipeline || null;
 
+    /** @type {Object|null} - ClarificationManager (Layer 1: pending clarification bypass) */
+    this.clarificationManager = deps.clarificationManager || null;
+
     // Wire domain tool-calling capabilities into MicroPipeline from AgentLoop
     if (this.microPipeline && this.agentLoop) {
       this._wireMicroPipelineDomainTools();
@@ -182,8 +185,7 @@ class MessageProcessor {
     /** @type {string[]} - Names the bot responds to */
     this.botNames = deps.botNames || ['moltagent'];
 
-    /** @type {Object|null} - ClarificationManager (Layer 1: pending clarification bypass) */
-    this.clarificationManager = deps.clarificationManager || null;
+    // ClarificationManager is set by _wireMicroPipelineDomainTools() above
 
     /** @type {Map<string, Array>} - Silent observation buffer per room */
     this.roomContext = new Map();

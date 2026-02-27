@@ -745,7 +745,13 @@ Message: "${message.substring(0, 300)}"`;
       return { response: await this._executeCreate(params, clarification.originalMessage, context) };
     }
     const firstMissing = missingFields[0];
-    const updatedFields = { ...collectedFields, [firstMissing]: userResponse };
+    // Normalize user response for time fields — strip "at" prefix, parse natural language
+    let normalisedResponse = userResponse;
+    if (firstMissing === 'time') {
+      const stripped = userResponse.replace(/^at\s+/i, '').trim();
+      normalisedResponse = this._parseTime(stripped) || stripped;
+    }
+    const updatedFields = { ...collectedFields, [firstMissing]: normalisedResponse };
     const stillMissing = missingFields.slice(1);
 
     if (stillMissing.length > 0) {
