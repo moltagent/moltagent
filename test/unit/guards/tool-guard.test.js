@@ -264,6 +264,13 @@ test('TC-TG-038: APPROVAL_REQUIRED - delete_calendar_event', () => {
   assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
 });
 
+test('TC-TG-038b: APPROVAL_REQUIRED - calendar_delete_event (executor name)', () => {
+  const guard = new ToolGuard();
+  const result = guard.evaluate('calendar_delete_event');
+  assert.strictEqual(result.allowed, false);
+  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
+});
+
 test('TC-TG-039: APPROVAL_REQUIRED - modify_contacts', () => {
   const guard = new ToolGuard();
   const result = guard.evaluate('modify_contacts');

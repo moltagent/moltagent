@@ -35,7 +35,7 @@ const REQUIRES_APPROVAL = [
   'delete_file', 'delete_files', 'delete_folder', 'file_delete',
 
   // Calendar/contact modification
-  'modify_calendar', 'delete_calendar_event', 'modify_contacts',
+  'modify_calendar', 'delete_calendar_event', 'calendar_delete_event', 'modify_contacts',
 
   // Calendar scheduling (sends external invitations/cancellations)
   'calendar_quick_schedule', 'calendar_schedule_meeting', 'calendar_cancel_meeting',
