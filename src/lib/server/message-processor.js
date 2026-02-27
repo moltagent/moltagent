@@ -159,6 +159,10 @@ class MessageProcessor {
     /** @type {Object|null} - WarmMemory instance */
     this.warmMemory = deps.warmMemory || null;
 
+    // Post-response proactive evaluation (knowledge gaps, implied tasks)
+    /** @type {Object|null} - ProactiveEvaluator instance */
+    this.proactiveEvaluator = deps.proactiveEvaluator || null;
+
     // Budget override: BudgetEnforcer for "override budget" command
     /** @type {Object|null} - BudgetEnforcer instance */
     this.budgetEnforcer = deps.budgetEnforcer || null;
@@ -660,6 +664,20 @@ class MessageProcessor {
       this._maybeConsolidate(session).catch(err => {
         console.warn(`[WarmMemory] Post-response consolidation failed: ${err.message}`);
       });
+
+      // Post-response proactive evaluation (fire-and-forget, non-blocking)
+      if (this.proactiveEvaluator) {
+        this.proactiveEvaluator.evaluate({
+          userMessage: extracted.content,
+          assistantResponse: response,
+          classification: result?.intent || 'unknown',
+          actionRecord: null,
+          session,
+          roomToken: extracted.token
+        }).catch(err => {
+          console.warn(`[Proactive] Background evaluation failed: ${err.message}`);
+        });
+      }
 
       // Set status back to ready after successful processing
       await this.statusIndicator?.setStatus('ready');

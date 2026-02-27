@@ -327,6 +327,14 @@ try {
   DailyBriefing = null;
 }
 
+let ProactiveEvaluator;
+try {
+  ({ ProactiveEvaluator } = require('./src/lib/agent/proactive-evaluator'));
+} catch {
+  console.warn('[WARN] ProactiveEvaluator not available');
+  ProactiveEvaluator = null;
+}
+
 let AgentLoop, ToolRegistry, OllamaToolsProvider, SecretsGuard, ToolGuard, PromptGuard, SystemTagsClient, ProviderChain, RouterChatBridge, GuardrailEnforcer;
 try {
   ({ AgentLoop } = require('./src/lib/agent/agent-loop'));
@@ -476,6 +484,30 @@ function _extractSection(markdown, sectionName) {
   const pattern = new RegExp(`## ${sectionName}\\s*\\n([\\s\\S]*?)(?=\\n## |$)`, 'i');
   const match = markdown.match(pattern);
   return match ? match[1].trim() : null;
+}
+
+/**
+ * Build ProactiveEvaluator if dependencies are available.
+ * @returns {Object|null}
+ */
+function _buildProactiveEvaluator(agentLoop, llmRouter, talkQueue, appConfig) {
+  if (!ProactiveEvaluator || !agentLoop) return null;
+  try {
+    const evaluator = new ProactiveEvaluator({
+      agentLoop,
+      llmRouter: llmRouter?.router || null,
+      talkSendQueue: talkQueue,
+      config: {
+        proactiveMinLevel: 3,
+        initiativeLevel: appConfig.proactive?.initiativeLevel
+      }
+    });
+    console.log('[INIT] ProactiveEvaluator ready');
+    return evaluator;
+  } catch (err) {
+    console.warn(`[INIT] ProactiveEvaluator failed: ${err.message}`);
+    return null;
+  }
 }
 
 /**
@@ -1539,6 +1571,7 @@ async function initialize() {
     selfHealClient,
     budgetEnforcer: llmRouter?.router?.budget || null,
     adminUser: appConfig.cockpit?.adminUser || '',
+    proactiveEvaluator: _buildProactiveEvaluator(agentLoop, llmRouter, talkQueue, appConfig),
     onTokenDiscovered: (token) => {
       // Save token for email monitor notifications (use first room we see)
       if (token && !defaultTalkToken) {
@@ -1702,6 +1735,12 @@ async function initialize() {
       if (dailyBriefing && heartbeatManager.caldavClient) {
         dailyBriefing.caldav = heartbeatManager.caldavClient;
         dailyBriefing.deck = heartbeatManager.deckClient;
+      }
+
+      // Patch ProactiveEvaluator with live initiative level from HeartbeatManager
+      if (serverComponents?.messageProcessor?.proactiveEvaluator) {
+        serverComponents.messageProcessor.proactiveEvaluator.config.getInitiativeLevel =
+          () => heartbeatManager.settings.initiativeLevel;
       }
 
       // Two-Layer Memory: Wire HeartbeatExtractor (Layer 2)

@@ -103,7 +103,8 @@ function createServerComponents(deps) {
     warmMemory,
     selfHealClient,
     budgetEnforcer,
-    adminUser
+    adminUser,
+    proactiveEvaluator
   } = deps;
 
   // Create command handler first (used by message processor)
@@ -139,7 +140,8 @@ function createServerComponents(deps) {
     intentRouter,
     warmMemory,
     budgetEnforcer,
-    adminUser: adminUser || ''
+    adminUser: adminUser || '',
+    proactiveEvaluator
   });
 
   // Create webhook handler (uses message processor)
