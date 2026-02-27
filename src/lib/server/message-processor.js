@@ -1025,6 +1025,21 @@ class MessageProcessor {
         console.warn(`[Message] WikiExecutor skipped: ${err.message}`);
       }
     }
+
+    // Wire ClarificationManager — needs sessionManager + executor map
+    if (this.sessionManager && !this.clarificationManager) {
+      try {
+        const ClarificationManager = require('../agent/clarification-manager');
+        this.clarificationManager = new ClarificationManager({
+          sessionManager: this.sessionManager,
+          executors: this.microPipeline.executors,
+          logger: console
+        });
+        console.log('[Message] Wired ClarificationManager (pending clarification bypass)');
+      } catch (err) {
+        console.warn(`[Message] ClarificationManager skipped: ${err.message}`);
+      }
+    }
   }
 
   /**
