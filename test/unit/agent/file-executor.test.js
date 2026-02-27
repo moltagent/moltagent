@@ -116,7 +116,7 @@ asyncTest('Defaults folder to Outbox when not specified', async () => {
 
 // -- Validation gate tests --
 
-asyncTest('requires_clarification returns friendly message', async () => {
+asyncTest('requires_clarification returns structured clarification object', async () => {
   const executor = new FileExecutor({
     router: createMockRouter({
       result: JSON.stringify({ action: 'write', requires_clarification: true, missing_fields: ['filename'] })
@@ -126,8 +126,11 @@ asyncTest('requires_clarification returns friendly message', async () => {
   });
 
   const result = await executor.execute('Do something with a file', { userName: 'alice' });
-  assert.ok(result.includes('clarify'), `expected clarify message, got: ${result}`);
-  assert.ok(result.includes('filename'), `expected filename in missing fields, got: ${result}`);
+  assert.strictEqual(typeof result, 'object', 'Should return structured object');
+  assert.ok(result.response.includes('clarify'), `expected clarify message, got: ${result.response}`);
+  assert.ok(result.response.includes('filename'), `expected filename in missing fields, got: ${result.response}`);
+  assert.ok(result.pendingClarification, 'Should include pendingClarification');
+  assert.strictEqual(result.pendingClarification.executor, 'file');
 });
 
 asyncTest('rejects empty filename for write action', async () => {

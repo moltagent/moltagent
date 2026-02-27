@@ -133,10 +133,18 @@ Message: "${message.substring(0, 300)}"`;
 
     // Step 2: Validation gates — reject bad extractions before hitting APIs
     if (params.requires_clarification) {
-      const missing = Array.isArray(params.missing_fields) && params.missing_fields.length > 0
-        ? params.missing_fields.join(', ')
-        : 'some details';
-      return `I'd like to help schedule this, but could you clarify: ${missing}?`;
+      const missingFields = Array.isArray(params.missing_fields) && params.missing_fields.length > 0
+        ? params.missing_fields
+        : ['details'];
+      return {
+        response: `I'd like to help schedule this, but could you clarify: ${missingFields.join(', ')}?`,
+        pendingClarification: {
+          executor: 'calendar', action: params.action || 'create',
+          missingFields,
+          collectedFields: { summary: params.summary, date: params.date, time: params.time, duration_minutes: params.duration_minutes, attendees: params.attendees, location: params.location },
+          originalMessage: message,
+        }
+      };
     }
 
     // Normalize: some models put the title in event_title instead of summary

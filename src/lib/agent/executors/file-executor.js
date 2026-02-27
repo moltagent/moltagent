@@ -77,10 +77,18 @@ Message: "${message.substring(0, 300)}"`;
 
     // Step 2: Validation gates
     if (params.requires_clarification) {
-      const missing = Array.isArray(params.missing_fields) && params.missing_fields.length > 0
-        ? params.missing_fields.join(', ')
-        : 'some details';
-      return `Could you clarify: ${missing}?`;
+      const missingFields = Array.isArray(params.missing_fields) && params.missing_fields.length > 0
+        ? params.missing_fields
+        : ['details'];
+      return {
+        response: `Could you clarify: ${missingFields.join(', ')}?`,
+        pendingClarification: {
+          executor: 'file', action: params.action || 'write',
+          missingFields,
+          collectedFields: { filename: params.filename, content: params.content, folder: params.folder, generate_content: params.generate_content },
+          originalMessage: message,
+        }
+      };
     }
 
     if (params.action === 'write' && (!params.filename || params.filename.trim() === '')) {
