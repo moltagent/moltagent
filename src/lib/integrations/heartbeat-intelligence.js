@@ -23,6 +23,7 @@
 
 const { parseFrontmatter, mergeFrontmatter } = require('../knowledge/frontmatter');
 const { JOBS } = require('../llm/router');
+const { filterOwnerEvents } = require('./calendar-scoping');
 
 // ============================================================================
 // MeetingPreparer
@@ -39,8 +40,9 @@ class MeetingPreparer {
    * @param {Object} opts.router - LLM router for synthesis
    * @param {Function} opts.notifyUser - Notification function
    * @param {Object} [opts.config] - Config object
+   * @param {Object} [opts.ownerIds] - Owner identities for calendar alert scoping
    */
-  constructor({ caldavClient, collectivesClient, contactsClient, emailMonitor, deckClient, router, notifyUser, config }) {
+  constructor({ caldavClient, collectivesClient, contactsClient, emailMonitor, deckClient, router, notifyUser, config, ownerIds }) {
     this.caldav = caldavClient;
     this.wiki = collectivesClient;
     this.contacts = contactsClient;
@@ -49,6 +51,7 @@ class MeetingPreparer {
     this.router = router;
     this.notifyUser = notifyUser;
     this.config = config || {};
+    this._ownerIds = ownerIds || null;
 
     this.preparedMeetings = new Set();
     this.PREP_WINDOW_MINUTES = 90;
@@ -59,7 +62,8 @@ class MeetingPreparer {
    * @returns {Promise<{checked: number, prepped: number}>}
    */
   async checkAndPrep() {
-    const upcoming = await this.caldav.getUpcomingEvents(this.PREP_WINDOW_MINUTES / 60);
+    const allUpcoming = await this.caldav.getUpcomingEvents(this.PREP_WINDOW_MINUTES / 60);
+    const upcoming = filterOwnerEvents(allUpcoming, this._ownerIds);
 
     const prepped = [];
     for (const event of upcoming) {

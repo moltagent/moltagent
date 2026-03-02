@@ -36,6 +36,7 @@
   ],
   "dependencies": {
     "@extractus/article-extractor": "^8.0.20",
+    "better-sqlite3": "^12.6.2",
     "cheerio": "^1.2.0",
     "imap": "^0.8.19",
     "js-yaml": "^4.1.1",

@@ -1,5 +1,7 @@
 'use strict';
 
+const { filterOwnerEvents } = require('../integrations/calendar-scoping');
+
 /**
  * DailyBriefing — First-Message-of-Day Briefing
  *
@@ -20,13 +22,15 @@ class DailyBriefing {
    * @param {Object} [opts.budgetEnforcer] - Budget enforcer for cost report
    * @param {Object} [opts.collectivesClient] - Wiki client (unused for now, reserved)
    * @param {string} [opts.timezone='UTC'] - IANA timezone for date calculation
+   * @param {Object} [opts.ownerIds] - Owner identities for calendar alert scoping
    */
-  constructor({ deckClient, caldavClient, budgetEnforcer, collectivesClient, timezone } = {}) {
+  constructor({ deckClient, caldavClient, budgetEnforcer, collectivesClient, timezone, ownerIds } = {}) {
     this.deck = deckClient || null;
     this.caldav = caldavClient || null;
     this.budget = budgetEnforcer || null;
     this.wiki = collectivesClient || null;
     this._timezone = timezone || 'UTC';
+    this._ownerIds = ownerIds || null;
 
     this.lastBriefingDate = null;
   }
@@ -52,7 +56,8 @@ class DailyBriefing {
     // Calendar events
     try {
       if (this.caldav) {
-        const events = await this.caldav.getUpcomingEvents(16);
+        const allEvents = await this.caldav.getUpcomingEvents(16);
+        const events = filterOwnerEvents(allEvents, this._ownerIds);
         if (events.length > 0) {
           const lines = events.slice(0, 6).map(e => {
             const time = new Date(e.start).toLocaleTimeString('en-US', {

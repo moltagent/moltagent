@@ -23,11 +23,13 @@ class SessionPersister {
    * @param {Object} options
    * @param {import('./collectives-client')} options.wikiClient - CollectivesClient instance
    * @param {import('../llm-router')} options.llmRouter - LLM Router instance
+   * @param {Object} [options.rhythmTracker] - RhythmTracker for behavioral pattern recording
    * @param {Object} [options.config] - Configuration
    */
-  constructor({ wikiClient, llmRouter, config = {} }) {
+  constructor({ wikiClient, llmRouter, rhythmTracker, config = {} }) {
     this.wiki = wikiClient;
     this.router = llmRouter;
+    this.rhythmTracker = rhythmTracker || null;
     this.config = config;
     this.minContextForPersistence = 6;
     this.minExchanges = 4; // At least 4 user/assistant messages (2 exchanges)
@@ -84,12 +86,67 @@ class SessionPersister {
     try {
       await this.wiki.writePageWithFrontmatter(pageTitle, frontmatter, body);
       this.lastSummary = summary; // Set only after successful wiki write
+
+      // Rhythm tracking: compute and record session behavioral metadata
+      if (this.rhythmTracker) {
+        try {
+          const sessionMeta = this._computeSessionMeta(session, userAssistantMessages);
+          await this.rhythmTracker.recordSession(sessionMeta);
+        } catch (err) {
+          console.warn('[SessionPersister] Rhythm tracking failed:', err.message);
+        }
+      }
+
       return pageTitle;
     } catch (err) {
       console.error('[SessionPersister] Wiki write failed:', err.message);
       this.lastSummary = null;
       return null;
     }
+  }
+
+  /**
+   * Compute behavioral metadata for rhythm tracking.
+   * @private
+   * @param {Object} session - Session object
+   * @param {Array} messages - User/assistant messages
+   * @returns {Object} sessionMeta
+   */
+  _computeSessionMeta(session, messages) {
+    const startTime = session.createdAt ? new Date(session.createdAt).toISOString() : new Date().toISOString();
+    const endTime = new Date().toISOString();
+    const durationMs = new Date(endTime).getTime() - new Date(startTime).getTime();
+    const duration = Math.max(0, Math.round(durationMs / 1000));
+
+    const userMessages = messages.filter(m => m.role === 'user');
+    const messageCount = messages.length;
+
+    // Directive ratio: fraction of user messages that are commands/directives
+    const directivePatterns = /^(do|create|move|delete|update|set|send|add|remove|find|search|check|fix|run|make|write|list|show|get|close|open|mark|assign|schedule)/i;
+    const directiveCount = userMessages.filter(m => directivePatterns.test((m.content || '').trim())).length;
+    const directiveRatio = userMessages.length > 0 ? directiveCount / userMessages.length : 0;
+
+    // Topic diversity: count unique 4+ char words from user messages (simple heuristic)
+    const words = new Set();
+    for (const m of userMessages) {
+      const content = (m.content || '').toLowerCase();
+      for (const word of content.split(/\s+/)) {
+        const clean = word.replace(/[^a-z0-9]/g, '');
+        if (clean.length >= 4) words.add(clean);
+      }
+    }
+    // Normalize to 0-1 range: 50+ unique words = maximum diversity
+    const topicDiversity = Math.min(1.0, words.size / 50);
+
+    return {
+      startTime,
+      endTime,
+      duration,
+      messageCount,
+      directiveRatio: Math.round(directiveRatio * 100) / 100,
+      topicDiversity,
+      roomName: session.roomName || session.roomToken || 'unknown'
+    };
   }
 
   /**
