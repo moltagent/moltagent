@@ -43,6 +43,7 @@ class HeartbeatExtractor {
     this.wiki = wikiClient;
     this.router = llmRouter;
     this.memory = memorySearcher || null;
+    this.entityExtractor = null; // Late-bound: set by bot.js wiring
     this.logger = logger || console;
     this._lastExtraction = 0;
     this._minEntries = 3;
@@ -228,6 +229,21 @@ Rules:
     // Invalidate memory search cache so new knowledge is findable
     if (writesAttempted > 0 && this.memory?.invalidateCache) {
       this.memory.invalidateCache();
+    }
+
+    // Entity extraction: fire-and-forget title parsing for knowledge graph
+    if (writesAttempted > 0 && this.entityExtractor) {
+      const pagePaths = [];
+      if (Array.isArray(extracted.people)) {
+        for (const p of extracted.people) {
+          if (p.name) pagePaths.push(`People/${p.name.replace(/[^a-zA-Z0-9 ]/g, '')}`);
+        }
+      }
+      if (Array.isArray(extracted.decisions)) pagePaths.push('Decisions Index');
+      if (Array.isArray(extracted.gaps)) pagePaths.push('Meta/Pending Questions');
+      for (const path of pagePaths) {
+        this.entityExtractor.extractFromPage(path, '').catch(() => {});
+      }
     }
 
     this._stats.writesAttempted += writesAttempted;

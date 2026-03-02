@@ -11,11 +11,18 @@
  * Each wiki result returned to a user query triggers a fire-and-forget
  * access_count increment + last_accessed update on the page frontmatter.
  *
+ * Three-channel search fusion: keyword (NC Unified Search), vector
+ * (local embeddings), and graph (knowledge graph traversal) results
+ * are scored and merged with configurable channel weights.
+ *
  * @module integrations/memory-searcher
- * @version 3.0.0
+ * @version 4.0.0
  */
 
 const { mergeFrontmatter } = require('../knowledge/frontmatter');
+
+/** Channel weights for three-channel fusion scoring */
+const CHANNEL_WEIGHTS = { keyword: 0.4, vector: 0.35, graph: 0.25 };
 
 /** Map scope names to NC Unified Search provider IDs */
 const SCOPE_PROVIDERS = {
@@ -59,12 +66,22 @@ class MemorySearcher {
    * @param {Object} options
    * @param {import('./nc-search-client').NCSearchClient} options.ncSearchClient
    * @param {Object} [options.collectivesClient] - CollectivesClient for access tracking (LTP)
+   * @param {Object} [options.coAccessGraph] - CoAccessGraph for co-access tracking and expansion
+   * @param {Object} [options.vectorStore] - VectorStore for semantic similarity search
+   * @param {Object} [options.embeddingClient] - EmbeddingClient for query embedding
+   * @param {Object} [options.gapDetector] - GapDetector for knowledge gap tracking
+   * @param {Object} [options.knowledgeGraph] - KnowledgeGraph for graph-based search
    * @param {Object} [options.logger]
    */
-  constructor({ ncSearchClient, collectivesClient, logger = console }) {
+  constructor({ ncSearchClient, collectivesClient, coAccessGraph, vectorStore, embeddingClient, gapDetector, knowledgeGraph, logger = console }) {
     if (!ncSearchClient) throw new Error('ncSearchClient is required');
     this.nc = ncSearchClient;
     this.wiki = collectivesClient || null;
+    this.coAccessGraph = coAccessGraph || null;
+    this.vectorStore = vectorStore || null;
+    this.embeddingClient = embeddingClient || null;
+    this.gapDetector = gapDetector || null;
+    this.knowledgeGraph = knowledgeGraph || null;
     this.logger = logger;
     this._providers = null;
   }
@@ -99,40 +116,19 @@ class MemorySearcher {
     const providerIds = this._scopeToProviders(scope);
     if (providerIds.length === 0) return [];
 
-    // Search all providers in parallel
-    const settled = await Promise.allSettled(
-      providerIds.map(pid => this._searchProvider(pid, query, { limit: maxResults, since, until }))
-    );
+    // Three-channel search: keyword, vector, graph — all in parallel
+    const channels = await Promise.allSettled([
+      this._searchKeyword(query, { scope, maxResults, since, until, providerIds }),
+      this._searchVector(query, maxResults),
+      this._searchGraph(query, maxResults)
+    ]);
 
-    // Merge results, skip failures
-    let results = [];
-    for (const outcome of settled) {
-      if (outcome.status === 'fulfilled') {
-        results.push(...outcome.value);
-      }
-    }
+    const kwResults = channels[0].status === 'fulfilled' ? channels[0].value : [];
+    const vecResults = channels[1].status === 'fulfilled' ? channels[1].value : [];
+    const graphResults = channels[2].status === 'fulfilled' ? channels[2].value : [];
 
-    // Client-side path filter for sub-wiki scopes
-    if (FILTERED_SCOPES.has(scope)) {
-      results = this._filterByScope(results, scope);
-    }
-
-    // Archive fallback: if few wiki results, also check archive
-    const wikiCount = results.filter(r => r.source === 'Wiki').length;
-    if (wikiCount < maxResults && this.wiki) {
-      try {
-        const archiveResults = await this._searchArchive(query, maxResults - wikiCount);
-        const existingTitles = new Set(results.map(r => r.title.toLowerCase()));
-        results.push(...archiveResults.filter(a => !existingTitles.has(a.title.toLowerCase())));
-      } catch (_err) { /* non-critical */ }
-    }
-
-    // Sort by source priority, then truncate
-    results.sort((a, b) =>
-      (SOURCE_PRIORITY[a._providerId] || 99) - (SOURCE_PRIORITY[b._providerId] || 99)
-    );
-
-    const final = results.slice(0, maxResults).map(({ _providerId, ...rest }) => rest);
+    // Fuse results across channels
+    const final = this._fuseResults(kwResults, vecResults, graphResults, maxResults);
 
     // LTP: retrieval strengthens wiki pages (fire-and-forget, deduplicated by title)
     if (this.wiki) {
@@ -144,6 +140,54 @@ class MemorySearcher {
             this.logger.warn('[MemorySearcher] Access tracking failed:', err.message);
           });
         }
+      }
+    }
+
+    // Co-access tracking: record which pages appear together in search results
+    if (this.coAccessGraph) {
+      const wikiTitles = final.filter(r => r.source === 'Wiki').map(r => r.title);
+      if (wikiTitles.length >= 2) {
+        this.coAccessGraph.record(wikiTitles).catch(err => {
+          this.logger.warn('[MemorySearcher] Co-access recording failed:', err.message);
+        });
+      }
+    }
+
+    // Co-access expansion: if sparse results, expand with co-accessed pages
+    if (final.length <= 2 && this.coAccessGraph) {
+      try {
+        const expanded = [];
+        const existingTitles = new Set(final.map(r => r.title.toLowerCase()));
+        for (const result of final) {
+          if (result.source === 'Wiki') {
+            const related = await this.coAccessGraph.getRelated(result.title);
+            for (const rel of related) {
+              if (!existingTitles.has(rel.title.toLowerCase())) {
+                expanded.push({
+                  source: 'Wiki',
+                  title: rel.title,
+                  excerpt: `[Co-accessed with "${result.title}"]`,
+                  link: '',
+                  coAccess: true,
+                  channelScores: { keyword: 0, vector: 0, graph: 0 }
+                });
+                existingTitles.add(rel.title.toLowerCase());
+              }
+            }
+          }
+        }
+        final.push(...expanded.slice(0, maxResults - final.length));
+      } catch (err) {
+        this.logger.warn('[MemorySearcher] Co-access expansion failed:', err.message);
+      }
+    }
+
+    // Gap detection: record query for knowledge gap analysis
+    if (this.gapDetector) {
+      try {
+        this.gapDetector.recordMention(query);
+      } catch (err) {
+        // Non-critical — never block search for gap tracking
       }
     }
 
@@ -227,6 +271,194 @@ class MemorySearcher {
 
     const merged = mergeFrontmatter(page.frontmatter, updates);
     await this.wiki.writePageWithFrontmatter(title, merged, page.body);
+  }
+
+  /**
+   * Keyword channel: existing NC Unified Search with position-based scoring.
+   * Rank 0 = 1.0, rank 1 = 0.8, rank 2 = 0.6, ..., floor 0.2.
+   * @param {string} query
+   * @param {Object} opts
+   * @returns {Promise<Array>}
+   */
+  async _searchKeyword(query, { scope = 'all', maxResults = 5, since, until, providerIds } = {}) {
+    const pids = providerIds || this._scopeToProviders(scope);
+
+    const settled = await Promise.allSettled(
+      pids.map(pid => this._searchProvider(pid, query, { limit: maxResults, since, until }))
+    );
+
+    let results = [];
+    for (const outcome of settled) {
+      if (outcome.status === 'fulfilled') {
+        results.push(...outcome.value);
+      }
+    }
+
+    // Client-side path filter for sub-wiki scopes
+    if (FILTERED_SCOPES.has(scope)) {
+      results = this._filterByScope(results, scope);
+    }
+
+    // Archive fallback: if few wiki results, also check archive
+    const wikiCount = results.filter(r => r.source === 'Wiki').length;
+    if (wikiCount < maxResults && this.wiki) {
+      try {
+        const archiveResults = await this._searchArchive(query, maxResults - wikiCount);
+        const existingTitles = new Set(results.map(r => r.title.toLowerCase()));
+        results.push(...archiveResults.filter(a => !existingTitles.has(a.title.toLowerCase())));
+      } catch (_err) { /* non-critical */ }
+    }
+
+    // Sort by source priority
+    results.sort((a, b) =>
+      (SOURCE_PRIORITY[a._providerId] || 99) - (SOURCE_PRIORITY[b._providerId] || 99)
+    );
+
+    // Assign position-based keyword scores
+    return results.slice(0, maxResults).map(({ _providerId, ...rest }, idx) => ({
+      ...rest,
+      _kwScore: Math.max(0.2, 1.0 - idx * 0.2)
+    }));
+  }
+
+  /**
+   * Vector channel: semantic similarity search via local embeddings.
+   * @param {string} query - Search query
+   * @param {number} limit - Max results
+   * @returns {Promise<Array>}
+   */
+  async _searchVector(query, limit = 5) {
+    if (!this.vectorStore || !this.embeddingClient) return [];
+    const queryVector = await this.embeddingClient.embed(query);
+    const results = this.vectorStore.search(queryVector, limit);
+    return results.map(r => ({
+      source: 'Wiki',
+      title: r.title || r.id,
+      excerpt: `[Semantic match, score: ${r.score.toFixed(2)}]`,
+      link: '',
+      semantic: true,
+      _vecScore: r.score
+    }));
+  }
+
+  /**
+   * Graph channel: traverse knowledge graph for entities mentioned in query.
+   * Direct match = 1.0, 1 hop = 0.6, 2 hops = 0.3.
+   * @param {string} query - Search query
+   * @param {number} limit - Max results
+   * @returns {Promise<Array>}
+   */
+  async _searchGraph(query, limit = 5) {
+    if (!this.knowledgeGraph) return [];
+    const graph = this.knowledgeGraph;
+    if (!graph._entities || graph._entities.size === 0) return [];
+
+    // Scan query for known entity names
+    const queryLower = query.toLowerCase();
+    const matchedIds = [];
+    for (const entity of graph._entities.values()) {
+      if (queryLower.includes(entity.name.toLowerCase())) {
+        matchedIds.push(entity.id);
+      }
+    }
+    if (matchedIds.length === 0) return [];
+
+    // Traverse graph from matched entities
+    const seen = new Set();
+    const results = [];
+    for (const id of matchedIds) {
+      const related = graph.relatedTo(id, 2);
+      for (const rel of related) {
+        if (seen.has(rel.entity.id)) continue;
+        seen.add(rel.entity.id);
+        const distScore = rel.distance === 1 ? 0.6 : 0.3;
+        results.push({
+          source: 'Wiki',
+          title: rel.entity.name,
+          excerpt: `[Graph: ${rel.predicate}, ${rel.distance} hop(s) from ${graph.getEntity(id)?.name || id}]`,
+          link: '',
+          graph: true,
+          _graphScore: distScore
+        });
+      }
+    }
+
+    // Also add direct entity matches with score 1.0
+    for (const id of matchedIds) {
+      const entity = graph.getEntity(id);
+      if (entity && !seen.has(entity.id)) {
+        seen.add(entity.id);
+        results.push({
+          source: 'Wiki',
+          title: entity.name,
+          excerpt: `[Graph: direct entity match]`,
+          link: '',
+          graph: true,
+          _graphScore: 1.0
+        });
+      }
+    }
+
+    results.sort((a, b) => b._graphScore - a._graphScore);
+    return results.slice(0, limit);
+  }
+
+  /**
+   * Fuse results from three channels using weighted scoring.
+   * Merges by title (case-insensitive), computes weighted score, sorts descending.
+   * @param {Array} kw - Keyword results with _kwScore
+   * @param {Array} vec - Vector results with _vecScore
+   * @param {Array} graph - Graph results with _graphScore
+   * @param {number} max - Max results to return
+   * @returns {Array} Fused results with channelScores
+   */
+  _fuseResults(kw, vec, graph, max) {
+    const merged = new Map(); // title.toLowerCase() → result
+
+    // Process keyword results
+    for (const r of kw) {
+      const key = r.title.toLowerCase();
+      if (!merged.has(key)) {
+        merged.set(key, { ...r, channelScores: { keyword: 0, vector: 0, graph: 0 } });
+      }
+      merged.get(key).channelScores.keyword = r._kwScore || 0;
+    }
+
+    // Process vector results
+    for (const r of vec) {
+      const key = r.title.toLowerCase();
+      if (!merged.has(key)) {
+        merged.set(key, { ...r, channelScores: { keyword: 0, vector: 0, graph: 0 } });
+      }
+      merged.get(key).channelScores.vector = r._vecScore || 0;
+    }
+
+    // Process graph results
+    for (const r of graph) {
+      const key = r.title.toLowerCase();
+      if (!merged.has(key)) {
+        merged.set(key, { ...r, channelScores: { keyword: 0, vector: 0, graph: 0 } });
+      }
+      merged.get(key).channelScores.graph = r._graphScore || 0;
+    }
+
+    // Compute weighted fusion score and sort
+    const results = Array.from(merged.values()).map(r => {
+      const cs = r.channelScores;
+      r._fusionScore =
+        cs.keyword * CHANNEL_WEIGHTS.keyword +
+        cs.vector * CHANNEL_WEIGHTS.vector +
+        cs.graph * CHANNEL_WEIGHTS.graph;
+      // Clean up internal score fields
+      delete r._kwScore;
+      delete r._vecScore;
+      delete r._graphScore;
+      return r;
+    });
+
+    results.sort((a, b) => b._fusionScore - a._fusionScore);
+
+    return results.slice(0, max).map(({ _fusionScore, ...rest }) => rest);
   }
 
   /**

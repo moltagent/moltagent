@@ -22,6 +22,7 @@ const { CapabilityRegistry, HelpGenerator, StatusReporter, CapabilitiesCommandHa
 const { WebhookReceiver, ActivityPoller, SystemTagsClient } = require('./lib/nc-flow');
 const appConfig = require('./lib/config');
 const { TalkSendQueue } = require('./lib/talk/talk-send-queue');
+const { resolveOwnerIdentities } = require('./lib/integrations/calendar-scoping');
 
 let RSVPTracker;
 try {
@@ -89,6 +90,94 @@ try {
 } catch {
   console.warn('[WARN] MemorySearcher not available');
   MemorySearcher = null;
+}
+
+let CoAccessGraph;
+try {
+  CoAccessGraph = require('./lib/memory/co-access-graph');
+} catch {
+  console.warn('[WARN] CoAccessGraph not available');
+  CoAccessGraph = null;
+}
+
+let EmbeddingClient;
+try {
+  EmbeddingClient = require('./lib/memory/embedding-client');
+} catch {
+  console.warn('[WARN] EmbeddingClient not available');
+  EmbeddingClient = null;
+}
+
+let VectorStore;
+try {
+  VectorStore = require('./lib/memory/vector-store');
+} catch {
+  console.warn('[WARN] VectorStore not available');
+  VectorStore = null;
+}
+
+let EmbeddingRefresher;
+try {
+  EmbeddingRefresher = require('./lib/memory/embedding-refresher');
+} catch {
+  console.warn('[WARN] EmbeddingRefresher not available');
+  EmbeddingRefresher = null;
+}
+
+let GapDetector;
+try {
+  GapDetector = require('./lib/memory/gap-detector');
+} catch {
+  console.warn('[WARN] GapDetector not available');
+  GapDetector = null;
+}
+
+let RhythmTracker;
+try {
+  RhythmTracker = require('./lib/memory/rhythm-tracker');
+} catch {
+  console.warn('[WARN] RhythmTracker not available');
+  RhythmTracker = null;
+}
+
+let ActivityLogger;
+try {
+  ({ ActivityLogger } = require('./lib/memory/activity-logger'));
+} catch {
+  console.warn('[WARN] ActivityLogger not available');
+  ActivityLogger = null;
+}
+
+let HeartbeatExtractor;
+try {
+  ({ HeartbeatExtractor } = require('./lib/memory/heartbeat-extractor'));
+} catch {
+  console.warn('[WARN] HeartbeatExtractor not available');
+  HeartbeatExtractor = null;
+}
+
+let KnowledgeGraph;
+try {
+  KnowledgeGraph = require('./lib/memory/knowledge-graph');
+} catch {
+  console.warn('[WARN] KnowledgeGraph not available');
+  KnowledgeGraph = null;
+}
+
+let EntityExtractor;
+try {
+  EntityExtractor = require('./lib/memory/entity-extractor');
+} catch {
+  console.warn('[WARN] EntityExtractor not available');
+  EntityExtractor = null;
+}
+
+let DailyDigest;
+try {
+  DailyDigest = require('./lib/memory/daily-digest');
+} catch {
+  console.warn('[WARN] DailyDigest not available');
+  DailyDigest = null;
 }
 
 let NCFilesClient;
@@ -514,17 +603,22 @@ async function main() {
 
   // Initialize Session Manager and Persister (Session 29b)
   let sessionMgr = null;
+  let persister = null;
   let memorySearcher = null;
   let sessionCleanupTimer = null;
+  // rhythmTracker is declared here so it is in scope for SessionPersister constructor;
+  // the real instance is assigned below in the Semantic Awareness block.
+  let rhythmTracker = null;
 
   if (SessionManager) {
     sessionMgr = new SessionManager();
 
     if (SessionPersister && collectivesClient && llmRouter) {
       try {
-        const persister = new SessionPersister({
+        persister = new SessionPersister({
           wikiClient: collectivesClient,
           llmRouter: llmRouter,
+          rhythmTracker,
           config: appConfig
         });
         sessionMgr.on('sessionExpired', async (session) => {
@@ -596,6 +690,167 @@ async function main() {
     } catch (err) {
       console.warn(`[INIT] MemorySearcher (bot) failed: ${err.message}`);
     }
+  }
+
+  // Semantic Awareness: Co-Access Graph, Vector Store, Embeddings, Gap Detection, Rhythm Tracking
+  let coAccessGraph = null;
+  let embeddingClient = null;
+  let vectorStore = null;
+  let embeddingRefresher = null;
+  let gapDetector = null;
+  // rhythmTracker was declared earlier (before SessionPersister) so it is accessible here
+
+  if (CoAccessGraph && ncFilesClient) {
+    try {
+      coAccessGraph = new CoAccessGraph({ ncFilesClient, logger: console });
+      console.log('[INIT] CoAccessGraph ready');
+    } catch (err) {
+      console.warn(`[INIT] CoAccessGraph failed: ${err.message}`);
+    }
+  }
+
+  if (EmbeddingClient) {
+    try {
+      embeddingClient = new EmbeddingClient({
+        ollamaUrl: CONFIG.ollama.url,
+        model: 'nomic-embed-text',
+        logger: console
+      });
+      console.log('[INIT] EmbeddingClient ready');
+    } catch (err) {
+      console.warn(`[INIT] EmbeddingClient failed: ${err.message}`);
+    }
+  }
+
+  if (VectorStore) {
+    try {
+      const dataDir = '/opt/moltagent/data';
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      vectorStore = new VectorStore({
+        dbPath: `${dataDir}/vectors.db`,
+        logger: console
+      });
+      console.log('[INIT] VectorStore ready');
+    } catch (err) {
+      console.warn(`[INIT] VectorStore failed: ${err.message}`);
+    }
+  }
+
+  if (EmbeddingRefresher && embeddingClient && vectorStore && collectivesClient) {
+    try {
+      embeddingRefresher = new EmbeddingRefresher({
+        embeddingClient,
+        vectorStore,
+        collectivesClient,
+        ncFilesClient,
+        logger: console
+      });
+      console.log('[INIT] EmbeddingRefresher ready');
+    } catch (err) {
+      console.warn(`[INIT] EmbeddingRefresher failed: ${err.message}`);
+    }
+  }
+
+  if (GapDetector) {
+    try {
+      gapDetector = new GapDetector({
+        vectorStore,
+        embeddingClient,
+        ncFilesClient,
+        talkClient: talkQueue,
+        config: { talk: { primaryRoom: CONFIG.talk.primaryRoom } },
+        logger: console
+      });
+      console.log('[INIT] GapDetector ready');
+    } catch (err) {
+      console.warn(`[INIT] GapDetector failed: ${err.message}`);
+    }
+  }
+
+  if (RhythmTracker && ncFilesClient) {
+    try {
+      rhythmTracker = new RhythmTracker({ ncFilesClient, logger: console });
+      console.log('[INIT] RhythmTracker ready');
+    } catch (err) {
+      console.warn(`[INIT] RhythmTracker failed: ${err.message}`);
+    }
+  }
+
+  // Knowledge Graph + Entity Extractor + Daily Digest
+  let knowledgeGraph = null;
+  let entityExtractor = null;
+  let dailyDigest = null;
+
+  if (KnowledgeGraph && collectivesClient) {
+    try {
+      knowledgeGraph = new KnowledgeGraph({ wikiClient: collectivesClient, logger: console });
+      await knowledgeGraph.load();
+      console.log('[INIT] KnowledgeGraph ready');
+    } catch (err) {
+      console.warn(`[INIT] KnowledgeGraph failed: ${err.message}`);
+    }
+  }
+
+  if (EntityExtractor && knowledgeGraph) {
+    try {
+      entityExtractor = new EntityExtractor({ knowledgeGraph, llmRouter: llmRouter.router, logger: console });
+      console.log('[INIT] EntityExtractor ready');
+    } catch (err) {
+      console.warn(`[INIT] EntityExtractor failed: ${err.message}`);
+    }
+  }
+
+  // ActivityLogger + HeartbeatExtractor (prerequisites for entity extraction pipeline)
+  let activityLogger = null;
+  let heartbeatExtractor = null;
+
+  if (ActivityLogger && collectivesClient) {
+    try {
+      activityLogger = new ActivityLogger({ wikiClient: collectivesClient });
+      console.log('[INIT] ActivityLogger ready');
+    } catch (err) {
+      console.warn(`[INIT] ActivityLogger failed: ${err.message}`);
+    }
+  }
+
+  if (HeartbeatExtractor && activityLogger && collectivesClient) {
+    try {
+      heartbeatExtractor = new HeartbeatExtractor({
+        activityLogger,
+        wikiClient: collectivesClient,
+        llmRouter: llmRouter.router,
+        memorySearcher
+      });
+      if (entityExtractor) heartbeatExtractor.entityExtractor = entityExtractor;
+      console.log('[INIT] HeartbeatExtractor ready');
+    } catch (err) {
+      console.warn(`[INIT] HeartbeatExtractor failed: ${err.message}`);
+    }
+  }
+
+  if (DailyDigest && collectivesClient) {
+    try {
+      dailyDigest = new DailyDigest({ wikiClient: collectivesClient, llmRouter: llmRouter.router, logger: console });
+      console.log('[INIT] DailyDigest ready');
+    } catch (err) {
+      console.warn(`[INIT] DailyDigest failed: ${err.message}`);
+    }
+  }
+
+  // Wire co-access, vector, gap, graph into existing MemorySearcher
+  if (memorySearcher) {
+    if (coAccessGraph) memorySearcher.coAccessGraph = coAccessGraph;
+    if (vectorStore) memorySearcher.vectorStore = vectorStore;
+    if (embeddingClient) memorySearcher.embeddingClient = embeddingClient;
+    if (gapDetector) memorySearcher.gapDetector = gapDetector;
+    if (knowledgeGraph) memorySearcher.knowledgeGraph = knowledgeGraph;
+  }
+
+  // Wire rhythmTracker into persister now that it is initialized
+  if (persister && rhythmTracker) {
+    persister.rhythmTracker = rhythmTracker;
   }
 
   if (HeartbeatIntelligence) {
@@ -673,6 +928,20 @@ async function main() {
     }
   }
 
+  // Resolve owner identity for calendar alert scoping
+  let ownerIds = null;
+  const adminUser = appConfig.cockpit?.adminUser || '';
+  if (adminUser && ncRequestManager) {
+    try {
+      ownerIds = await resolveOwnerIdentities(adminUser, ncRequestManager);
+      console.log(`[INIT] Calendar scoping: owner=${ownerIds.username}, emails=${ownerIds.emails.join(',') || '(none)'}`);
+    } catch (err) {
+      console.warn(`[INIT] Calendar scoping failed, alerts unfiltered: ${err.message}`);
+    }
+  } else if (!adminUser) {
+    console.warn('[INIT] ADMIN_USER not set — calendar alerts will not be scoped to owner');
+  }
+
   // Initialize Heartbeat Manager with credential broker
   console.log('[INIT] Setting up Heartbeat Manager...');
   const heartbeat = new HeartbeatManager({
@@ -703,8 +972,19 @@ async function main() {
     deferralQueue,
     ncFlow: { activityPoller, webhookReceiver, systemTags },
     talkSendQueue: talkQueue,
-    primaryRoomToken: CONFIG.talk.primaryRoom
+    primaryRoomToken: CONFIG.talk.primaryRoom,
+    ownerIds
   });
+
+  // Wire Semantic Awareness components into HeartbeatManager
+  if (embeddingRefresher) heartbeat.embeddingRefresher = embeddingRefresher;
+  if (gapDetector) heartbeat.gapDetector = gapDetector;
+  if (rhythmTracker) heartbeat.rhythmTracker = rhythmTracker;
+
+  // Wire Knowledge Graph + Episodic Memory into HeartbeatManager
+  if (heartbeatExtractor) heartbeat.heartbeatExtractor = heartbeatExtractor;
+  if (dailyDigest) heartbeat.dailyDigest = dailyDigest;
+  if (knowledgeGraph) heartbeat.knowledgeGraph = knowledgeGraph;
 
   // Initialize RSVPTracker (uses heartbeat's internal CalDAV client)
   if (RSVPTracker && heartbeat.caldavClient) {
@@ -735,7 +1015,8 @@ async function main() {
         deckClient: heartbeat.deckClient,
         router: llmRouter,
         notifyUser,
-        config: appConfig
+        config: appConfig,
+        ownerIds
       });
       heartbeat.meetingPreparer = meetingPreparer;
 
@@ -758,7 +1039,8 @@ async function main() {
         deckClient: heartbeat.deckClient,
         budgetEnforcer: llmRouter.budget,
         collectivesClient: collectivesClient,
-        timezone: heartbeat.settings.timezone
+        timezone: heartbeat.settings.timezone,
+        ownerIds
       });
       console.log('[INIT] DailyBriefing wired to HeartbeatManager');
     } catch (err) {
@@ -806,6 +1088,12 @@ async function main() {
     await heartbeat.stop();
 
     // Note: learningLog.shutdown() is already called by heartbeat.stop()
+
+    // Close VectorStore SQLite connection
+    if (vectorStore) {
+      vectorStore.close();
+      console.log('[SHUTDOWN] VectorStore closed.');
+    }
 
     // Drain Talk queue before discarding credentials
     if (talkQueue) {

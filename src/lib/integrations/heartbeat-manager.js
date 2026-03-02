@@ -15,6 +15,7 @@ const DeckTaskProcessor = require('./deck-task-processor');
 const CalDAVClient = require('./caldav-client');
 const appConfig = require('../config');
 const { MODES, normalizeModeName } = require('./cockpit-modes');
+const { filterOwnerEvents } = require('./calendar-scoping');
 
 class HeartbeatManager {
   /**
@@ -170,6 +171,9 @@ class HeartbeatManager {
     this._lastLearningLogHash = null;
     this._lastStatsHash = null;
     this._lastFreshnessResult = null;
+
+    // Calendar alert scoping — owner identity for event filtering
+    this._ownerIds = config.ownerIds || null;
 
     // DailyBriefing (optional, for daily digest poster)
     this.dailyBriefing = config.dailyBriefing || null;
@@ -773,6 +777,57 @@ class HeartbeatManager {
         }
       }
 
+      // Episodic daily digest: generate once per day at level >= 2
+      if (level >= 2 && this.dailyDigest) {
+        try {
+          const digestResult = await this.dailyDigest.generate();
+          if (digestResult && digestResult.written) results.digest = digestResult;
+        } catch (err) {
+          console.warn('[Heartbeat] Daily digest generation failed:', err.message);
+          results.errors.push({ component: 'dailyDigest', error: err.message });
+        }
+      }
+
+      // Knowledge Graph flush: persist changes to wiki at level >= 2
+      if (level >= 2 && this.knowledgeGraph) {
+        try {
+          await this.knowledgeGraph.flush();
+        } catch (err) {
+          console.warn('[Heartbeat] Knowledge graph flush failed:', err.message);
+          results.errors.push({ component: 'knowledgeGraph', error: err.message });
+        }
+      }
+
+      // Semantic Awareness: embedding refresh (lightweight — checks 1-2 pages per pulse)
+      if (this.embeddingRefresher) {
+        try {
+          await this.embeddingRefresher.tick();
+        } catch (err) {
+          console.warn('[Heartbeat] Embedding refresher tick failed:', err.message);
+          results.errors.push({ component: 'embeddingRefresher', error: err.message });
+        }
+      }
+
+      // Semantic Awareness: knowledge gap detection (internally gated to 12-pulse cadence)
+      if (this.gapDetector) {
+        try {
+          await this.gapDetector.tick();
+        } catch (err) {
+          console.warn('[Heartbeat] Gap detector tick failed:', err.message);
+          results.errors.push({ component: 'gapDetector', error: err.message });
+        }
+      }
+
+      // Semantic Awareness: rhythm tracker persistence (flushes when dirty)
+      if (this.rhythmTracker) {
+        try {
+          await this.rhythmTracker.tick();
+        } catch (err) {
+          console.warn('[Heartbeat] Rhythm tracker tick failed:', err.message);
+          results.errors.push({ component: 'rhythmTracker', error: err.message });
+        }
+      }
+
       // Level >= 3: Meeting prep
       if (level >= 3 && this.meetingPreparer && !this._isModeGated('meetingPrep')) {
         try {
@@ -1067,7 +1122,8 @@ class HeartbeatManager {
       // Get events in the next N minutes (exclude cancelled)
       const lookahead = this.settings.calendarLookaheadMinutes;
       const allEvents = await this.caldavClient.getUpcomingEvents(lookahead / 60);
-      const events = allEvents.filter(e => e.status !== 'CANCELLED');
+      const nonCancelled = allEvents.filter(e => e.status !== 'CANCELLED');
+      const events = filterOwnerEvents(nonCancelled, this._ownerIds);
 
       result.upcoming = events;
 
