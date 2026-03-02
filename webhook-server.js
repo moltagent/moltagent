@@ -465,6 +465,15 @@ let microPipeline = null; // Local Intelligence: MicroPipeline for local-only mo
 let activityLogger = null; // Two-Layer Memory: Layer 1 raw activity log
 let deferralQueue = null; // Local Intelligence: DeferralQueue for deferred complex tasks
 let intentRouter = null; // IntentRouter: LLM-powered intent classification
+let coAccessGraph = null; // Semantic Awareness: co-access pattern graph
+let embeddingClient = null; // Semantic Awareness: Ollama embedding client
+let vectorStore = null; // Semantic Awareness: SQLite vector store
+let embeddingRefresher = null; // Semantic Awareness: periodic embedding refresh
+let gapDetector = null; // Semantic Awareness: knowledge gap detection
+let rhythmTracker = null; // Semantic Awareness: user rhythm tracking
+let knowledgeGraph = null; // Knowledge Graph: entity/triple store
+let entityExtractor = null; // Knowledge Graph: entity extraction from text
+let dailyDigest = null; // Episodic Memory: daily digest page generation
 
 // Simple console audit logger fallback
 async function consoleAuditLog(event, data) {
@@ -1071,6 +1080,131 @@ async function initialize() {
     } catch (err) {
       console.warn(`[INIT] MemorySearcher failed: ${err.message}`);
     }
+  }
+
+  // Semantic Awareness: Co-Access Graph, Vector Store, Embeddings, Gap Detection, Rhythm Tracking
+  if (ncFilesClient) {
+    try {
+      const CoAccessGraph = require('./src/lib/memory/co-access-graph');
+      coAccessGraph = new CoAccessGraph({ ncFilesClient, logger: console });
+      console.log('[INIT] CoAccessGraph ready');
+    } catch (err) {
+      console.warn(`[INIT] CoAccessGraph failed: ${err.message}`);
+    }
+  }
+
+  try {
+    const EmbeddingClient = require('./src/lib/memory/embedding-client');
+    embeddingClient = new EmbeddingClient({
+      ollamaUrl: CONFIG.ollama.url,
+      model: 'nomic-embed-text',
+      logger: console
+    });
+    console.log('[INIT] EmbeddingClient ready');
+  } catch (err) {
+    console.warn(`[INIT] EmbeddingClient failed: ${err.message}`);
+  }
+
+  try {
+    const VectorStore = require('./src/lib/memory/vector-store');
+    const dataDir = '/opt/moltagent/data';
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    vectorStore = new VectorStore({
+      dbPath: `${dataDir}/vectors.db`,
+      logger: console
+    });
+    console.log('[INIT] VectorStore ready');
+  } catch (err) {
+    console.warn(`[INIT] VectorStore failed: ${err.message}`);
+  }
+
+  if (embeddingClient && vectorStore && collectivesClient) {
+    try {
+      const EmbeddingRefresher = require('./src/lib/memory/embedding-refresher');
+      embeddingRefresher = new EmbeddingRefresher({
+        embeddingClient,
+        vectorStore,
+        collectivesClient,
+        ncFilesClient,
+        logger: console
+      });
+      console.log('[INIT] EmbeddingRefresher ready');
+    } catch (err) {
+      console.warn(`[INIT] EmbeddingRefresher failed: ${err.message}`);
+    }
+  }
+
+  try {
+    const GapDetector = require('./src/lib/memory/gap-detector');
+    gapDetector = new GapDetector({
+      vectorStore,
+      embeddingClient,
+      ncFilesClient,
+      talkClient: talkQueue,
+      config: { talk: { primaryRoom: appConfig.talk.primaryRoom } },
+      logger: console
+    });
+    console.log('[INIT] GapDetector ready');
+  } catch (err) {
+    console.warn(`[INIT] GapDetector failed: ${err.message}`);
+  }
+
+  if (ncFilesClient) {
+    try {
+      const RhythmTracker = require('./src/lib/memory/rhythm-tracker');
+      rhythmTracker = new RhythmTracker({ ncFilesClient, logger: console });
+      console.log('[INIT] RhythmTracker ready');
+    } catch (err) {
+      console.warn(`[INIT] RhythmTracker failed: ${err.message}`);
+    }
+  }
+
+  // Knowledge Graph + Entity Extractor + Daily Digest
+  if (collectivesClient) {
+    try {
+      const KnowledgeGraph = require('./src/lib/memory/knowledge-graph');
+      knowledgeGraph = new KnowledgeGraph({ wikiClient: collectivesClient, logger: console });
+      await knowledgeGraph.load();
+      console.log('[INIT] KnowledgeGraph ready');
+    } catch (err) {
+      console.warn(`[INIT] KnowledgeGraph failed: ${err.message}`);
+    }
+  }
+
+  if (knowledgeGraph && llmRouter) {
+    try {
+      const EntityExtractor = require('./src/lib/memory/entity-extractor');
+      entityExtractor = new EntityExtractor({ knowledgeGraph, llmRouter: llmRouter.router, logger: console });
+      console.log('[INIT] EntityExtractor ready');
+    } catch (err) {
+      console.warn(`[INIT] EntityExtractor failed: ${err.message}`);
+    }
+  }
+
+  if (collectivesClient && llmRouter) {
+    try {
+      const DailyDigest = require('./src/lib/memory/daily-digest');
+      dailyDigest = new DailyDigest({ wikiClient: collectivesClient, llmRouter: llmRouter.router, logger: console });
+      console.log('[INIT] DailyDigest ready');
+    } catch (err) {
+      console.warn(`[INIT] DailyDigest failed: ${err.message}`);
+    }
+  }
+
+  // Wire Semantic Awareness + Knowledge Graph into MemorySearcher
+  if (memorySearcher) {
+    if (coAccessGraph) memorySearcher.coAccessGraph = coAccessGraph;
+    if (vectorStore) memorySearcher.vectorStore = vectorStore;
+    if (embeddingClient) memorySearcher.embeddingClient = embeddingClient;
+    if (gapDetector) memorySearcher.gapDetector = gapDetector;
+    if (knowledgeGraph) memorySearcher.knowledgeGraph = knowledgeGraph;
+  }
+
+  // Wire RhythmTracker into SessionPersister
+  if (sessionPersister && rhythmTracker) {
+    sessionPersister.rhythmTracker = rhythmTracker;
   }
 
   // 7b10. Start SessionManager periodic cleanup (Session 29b)
@@ -1754,11 +1888,19 @@ async function initialize() {
             memorySearcher,
             logger: console
           });
+          // Late-bind entity extractor for knowledge graph population
+          if (entityExtractor) {
+            heartbeatManager.heartbeatExtractor.entityExtractor = entityExtractor;
+          }
           console.log('[INIT] HeartbeatExtractor wired into HeartbeatManager (Layer 2 memory)');
         } catch (err) {
           console.warn(`[INIT] HeartbeatExtractor failed: ${err.message}`);
         }
       }
+
+      // Wire DailyDigest and KnowledgeGraph into HeartbeatManager
+      if (dailyDigest) heartbeatManager.dailyDigest = dailyDigest;
+      if (knowledgeGraph) heartbeatManager.knowledgeGraph = knowledgeGraph;
 
       if (HeartbeatIntelligence && heartbeatManager.caldavClient) {
         try {
