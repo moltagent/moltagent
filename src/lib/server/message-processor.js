@@ -1110,6 +1110,20 @@ class MessageProcessor {
       }
     }
 
+    if (router && !this.microPipeline.executors.deck && toolRegistry) {
+      try {
+        const DeckExecutor = require('../agent/executors/deck-executor');
+        this.microPipeline.executors.deck = new DeckExecutor({
+          router, toolRegistry,
+          guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
+          activityLogger: aLog, timezone: tz, logger: console
+        });
+        console.log('[Message] Wired DeckExecutor into MicroPipeline');
+      } catch (err) {
+        console.warn(`[Message] DeckExecutor skipped: ${err.message}`);
+      }
+    }
+
     // Wire ClarificationManager — needs sessionManager + executor map
     if (this.sessionManager && !this.clarificationManager) {
       try {
