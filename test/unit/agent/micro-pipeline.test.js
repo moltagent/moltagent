@@ -434,4 +434,107 @@ asyncTest('_handleChat() returns response on success (no escalation)', async () 
   assert.strictEqual(result, 'Hello back!');
 });
 
+// === Action-ledger classification override ===
+
+asyncTest('process() overrides classification to file when last action was file_list', async () => {
+  // Mock router that returns a response for file domain handler
+  const router = {
+    route: async ({ content }) => {
+      // Classification call vs domain handler call
+      if (content.includes('Classify')) return { result: 'wiki', provider: 'mock', tokens: 5 };
+      return { result: '{"action":"read","path":"notes.txt"}', provider: 'mock', tokens: 20 };
+    },
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
+  const stats = pipeline.getStats();
+
+  // Context with file_list as last action
+  const ctx = {
+    userName: 'alice',
+    roomToken: 'room1',
+    warmMemory: '',
+    getLastAction: (prefix) => {
+      if (prefix === 'file_') {
+        return { type: 'file_list', refs: { path: '/', count: 3, files: ['a.txt', 'b.pdf'] } };
+      }
+      return null;
+    },
+    getRecentActions: () => []
+  };
+
+  // Without pre-classified intent, _classifyFallback will run.
+  // "read the most recent one" has no file keyword → would go to wiki via LLM.
+  // But the action-ledger override should force it to file domain.
+  // Since there's no FileExecutor wired, this will throw DOMAIN_ESCALATE.
+  try {
+    await pipeline.process('read the most recent one', ctx);
+  } catch (err) {
+    // DOMAIN_ESCALATE means it reached the file handler path (correct routing)
+    // OR it could be an executor error — either way it went to file domain
+    assert.ok(err.code === 'DOMAIN_ESCALATE' || err.message, 'Should route to file domain');
+  }
+
+  // Verify file intent was counted
+  assert.ok(stats.byIntent.file >= 1, `Expected file intent count >= 1, got: ${JSON.stringify(stats.byIntent)}`);
+});
+
+asyncTest('process() does NOT override when message has explicit other-domain keyword', async () => {
+  const router = {
+    route: async () => ({ result: 'wiki', provider: 'mock', tokens: 5 }),
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
+  const stats = pipeline.getStats();
+
+  const ctx = {
+    userName: 'alice',
+    warmMemory: '',
+    getLastAction: (prefix) => {
+      if (prefix === 'file_') {
+        return { type: 'file_list', refs: { path: '/', count: 3 } };
+      }
+      return null;
+    }
+  };
+
+  // "the most recent one" + "wiki" → should NOT override
+  try {
+    await pipeline.process('read the most recent wiki page', ctx);
+  } catch (_) { /* domain escalate expected */ }
+
+  // Should NOT have counted as file
+  assert.ok(!stats.byIntent.file, `file intent should NOT be set when wiki keyword present, got: ${JSON.stringify(stats.byIntent)}`);
+});
+
+asyncTest('process() does NOT override when last action is not file_list', async () => {
+  const router = {
+    route: async () => ({ result: 'chitchat', provider: 'mock', tokens: 5 }),
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
+
+  const ctx = {
+    userName: 'alice',
+    warmMemory: '',
+    getLastAction: (prefix) => {
+      if (prefix === 'file_') {
+        return { type: 'file_read', refs: { path: 'notes.txt' } };
+      }
+      return null;
+    }
+  };
+
+  // file_read (not file_list) → should NOT override
+  const result = await pipeline.process('read the most recent one', ctx);
+  // Should fall through to chitchat/LLM classification, not file
+  assert.ok(typeof result === 'string', 'Should return a string response');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 100);

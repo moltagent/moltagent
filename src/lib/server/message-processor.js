@@ -1207,7 +1207,23 @@ class MessageProcessor {
         }
       }
 
-      const { intent, domain } = classification;
+      let { intent, domain } = classification;
+
+      // Action-ledger override: when the last action was file_* and the message
+      // is an ambiguous reference (no explicit domain keywords), force file domain.
+      // This prevents "read the most recent one" from routing to wiki after a file listing.
+      if (session && this.sessionManager && domain !== 'file') {
+        const lastAction = this.sessionManager.getLastAction(session, 'file_');
+        if (lastAction && lastAction.type === 'file_list') {
+          const lower = message.toLowerCase();
+          const hasAmbiguousRef = /\b(the most recent|the latest|the newest|that one|the last one|read it|open it|all of them|the first)\b/.test(lower);
+          const hasExplicitOtherDomain = /\b(wiki|calendar|event|meeting|deck|card|task|email|mail|schedule)\b/.test(lower);
+          if (hasAmbiguousRef && !hasExplicitOtherDomain) {
+            intent = 'domain';
+            domain = 'file';
+          }
+        }
+      }
 
       // Greeting/chitchat → always local regardless of word count.
       // If the LLM classified it as greeting/chitchat, trust that classification.

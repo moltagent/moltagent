@@ -14,6 +14,11 @@ const CalendarExecutor = require('../../../../src/lib/agent/executors/calendar-e
 
 console.log('\n=== CalendarExecutor Validation Gate Tests ===\n');
 
+// Layer 3: executors may return {response, actionRecord} objects
+function getResponse(result) {
+  return typeof result === 'object' && result !== null && result.response ? result.response : result;
+}
+
 // Shared mock router that returns configurable extraction results
 function makeExecutor(extractionResult) {
   const router = {
@@ -34,33 +39,33 @@ const context = { userName: 'testuser', roomToken: 'room1' };
 asyncTest('rejects empty summary for create action', async () => {
   const executor = makeExecutor({ action: 'create', summary: '', date: 'tomorrow', time: '14:00' });
   const result = await executor.execute('Schedule something', context);
-  assert.ok(result.includes('title'), `expected title prompt, got: ${result}`);
+  assert.ok(getResponse(result).includes('title'), `expected title prompt, got: ${getResponse(result)}`);
 });
 
 asyncTest('rejects null summary for create action', async () => {
   const executor = makeExecutor({ action: 'create', date: 'tomorrow', time: '14:00' });
   const result = await executor.execute('Schedule something', context);
-  assert.ok(result.includes('title'), `expected title prompt, got: ${result}`);
+  assert.ok(getResponse(result).includes('title'), `expected title prompt, got: ${getResponse(result)}`);
 });
 
 asyncTest('rejects summary > 80 chars (model dumped whole message)', async () => {
   const longSummary = 'A'.repeat(81);
   const executor = makeExecutor({ action: 'create', summary: longSummary, date: 'tomorrow', time: '10:00' });
   const result = await executor.execute('Some message', context);
-  assert.ok(result.includes('event name'), `expected event name prompt, got: ${result}`);
+  assert.ok(getResponse(result).includes('event name'), `expected event name prompt, got: ${getResponse(result)}`);
 });
 
 asyncTest('rejects missing date AND time for create', async () => {
   const executor = makeExecutor({ action: 'create', summary: 'Standup', date: '', time: '' });
   const result = await executor.execute('Create event Standup', context);
-  assert.ok(result.includes('schedule'), `expected schedule prompt, got: ${result}`);
+  assert.ok(getResponse(result).includes('schedule'), `expected schedule prompt, got: ${getResponse(result)}`);
 });
 
 asyncTest('passes with date only (no time)', async () => {
   const executor = makeExecutor({ action: 'create', summary: 'Standup', date: 'tomorrow', time: '' });
   const result = await executor.execute('Standup tomorrow', context);
   // Should succeed — resolveDate handles "tomorrow", time defaults to 09:00
-  assert.ok(result.includes('Created event'), `expected success, got: ${result}`);
+  assert.ok(getResponse(result).includes('Created event'), `expected success, got: ${getResponse(result)}`);
 });
 
 asyncTest('passes with time only (no date)', async () => {
@@ -81,9 +86,10 @@ asyncTest('requires_clarification=true returns friendly message', async () => {
     requires_clarification: true, missing_fields: ['date', 'time']
   });
   const result = await executor.execute('Schedule a meeting', context);
-  assert.ok(result.includes('clarify'), `expected clarification prompt, got: ${result}`);
-  assert.ok(result.includes('date'), `expected date in missing fields, got: ${result}`);
-  assert.ok(result.includes('time'), `expected time in missing fields, got: ${result}`);
+  const response = getResponse(result);
+  assert.ok(response.includes('clarify'), `expected clarification prompt, got: ${response}`);
+  assert.ok(response.includes('date'), `expected date in missing fields, got: ${response}`);
+  assert.ok(response.includes('time'), `expected time in missing fields, got: ${response}`);
 });
 
 asyncTest('requires_clarification=true without missing_fields returns generic message', async () => {
@@ -92,8 +98,9 @@ asyncTest('requires_clarification=true without missing_fields returns generic me
     requires_clarification: true
   });
   const result = await executor.execute('Something', context);
-  assert.ok(result.includes('clarify'), `expected clarification prompt, got: ${result}`);
-  assert.ok(result.includes('some details'), `expected generic prompt, got: ${result}`);
+  const response = getResponse(result);
+  assert.ok(response.includes('clarify'), `expected clarification prompt, got: ${response}`);
+  assert.ok(response.includes('details'), `expected generic prompt, got: ${response}`);
 });
 
 asyncTest('code-side attendee extraction merges with LLM attendees', async () => {
@@ -128,8 +135,9 @@ asyncTest('valid create with all fields succeeds', async () => {
     duration_minutes: 30, attendees: [], location: 'Room 5'
   });
   const result = await executor.execute('Team Standup tomorrow 9am in Room 5', context);
-  assert.ok(result.includes('Created event'), `expected success, got: ${result}`);
-  assert.ok(result.includes('Team Standup'), `expected title, got: ${result}`);
+  const response = getResponse(result);
+  assert.ok(response.includes('Created event'), `expected success, got: ${response}`);
+  assert.ok(response.includes('Team Standup'), `expected title, got: ${response}`);
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);

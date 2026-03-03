@@ -167,7 +167,7 @@ asyncTest('model parameter passed correctly to provider', async () => {
   assert.strictEqual(calls[0].options.num_ctx, 2048);
 });
 
-// -- Test 10: Classification prompt is Path C (descriptions only, no rules) --
+// -- Test 10: Classification prompt has intent descriptions and context-aware rules --
 asyncTest('classification prompt uses Path C (description-only)', async () => {
   const { router, calls } = createRouter({
     'phi4-mini': { intent: 'chitchat' }
@@ -177,8 +177,7 @@ asyncTest('classification prompt uses Path C (description-only)', async () => {
   assert.ok(systemPrompt.includes('Available intents:'), 'Should have intent descriptions');
   assert.ok(systemPrompt.includes('calendar_create'), 'Should have fine-grained intents');
   assert.ok(systemPrompt.includes('wiki_write'), 'Should have wiki_write');
-  assert.ok(!systemPrompt.includes('Rules:'), 'Should NOT have rules section');
-  assert.ok(!systemPrompt.includes('if the user'), 'Should NOT have rule-based hints');
+  assert.ok(systemPrompt.includes('Rules:'), 'Should have context-aware rules section');
 });
 
 // -- Test 11: Fine-grained intents map to correct domains --

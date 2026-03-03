@@ -115,9 +115,24 @@ class MicroPipeline {
 
     try {
       // Use pre-classified intent if provided (from IntentRouter via MessageProcessor)
-      const classification = context.intent
+      let classification = context.intent
         ? { intent: context.intent }
         : await this._classifyFallback(message);
+
+      // Action-ledger override: when the last action was file_list and the message
+      // is an ambiguous reference, force file domain regardless of classifier output.
+      if (classification.intent !== INTENTS.FILE && typeof context.getLastAction === 'function') {
+        const lastAction = context.getLastAction('file_');
+        if (lastAction && lastAction.type === 'file_list') {
+          const lower = message.toLowerCase();
+          const hasAmbiguousRef = /\b(the most recent|the latest|the newest|that one|the last one|read it|open it|all of them|the first)\b/.test(lower);
+          const hasExplicitOtherDomain = /\b(wiki|calendar|event|meeting|deck|card|task|email|mail|schedule)\b/.test(lower);
+          if (hasAmbiguousRef && !hasExplicitOtherDomain) {
+            classification = { intent: INTENTS.FILE };
+          }
+        }
+      }
+
       const intent = classification.intent || INTENTS.CHITCHAT;
 
       this.stats.byIntent[intent] = (this.stats.byIntent[intent] || 0) + 1;

@@ -455,4 +455,41 @@ asyncTest('system prompt contains context-aware rules', async () => {
   assert.ok(capturedSystem.includes('prefer the domain'), 'System prompt should include domain continuation bias');
 });
 
+// === Context-aware file classification ===
+
+test('needsSmartClassifier routes "the most recent one" to smart model', () => {
+  assert.strictEqual(IntentRouter.needsSmartClassifier('read the most recent one'), true,
+    '"the most recent one" should trigger smart model');
+  assert.strictEqual(IntentRouter.needsSmartClassifier('open the latest'), true,
+    '"the latest" should trigger smart model');
+  assert.strictEqual(IntentRouter.needsSmartClassifier('show me the newest'), true,
+    '"the newest" should trigger smart model');
+});
+
+test('system prompt includes file context rule', () => {
+  const prompt = IntentRouter.CLASSIFICATION_SYSTEM_PROMPT;
+  assert.ok(prompt.includes('just listed files'), 'Prompt should include file context rule');
+  assert.ok(prompt.includes('file_query'), 'Prompt should include file_query as example');
+});
+
+asyncTest('classify() routes "read the most recent one" to smart model', async () => {
+  const models = [];
+  const router = new IntentRouter({
+    provider: {
+      chat: async ({ model }) => {
+        models.push(model);
+        return { content: '{"intent":"file_query"}' };
+      }
+    },
+    config: { classifyTimeout: 5000 }
+  });
+
+  await router.classify('read the most recent one and tell me what you learned', [
+    { role: 'user', content: 'list my files' },
+    { role: 'assistant', content: 'report.pdf — 2KB — 2026-03-02\nnotes.txt — 512B — 2026-03-03' }
+  ]);
+
+  assert.strictEqual(models[0], 'qwen3:8b', 'Should use smart model for contextual references');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 100);

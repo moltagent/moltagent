@@ -25,6 +25,11 @@ const CalendarExecutor = require('../../../../src/lib/agent/executors/calendar-e
 
 console.log('\n=== Calendar Delete Handler Tests ===\n');
 
+// Layer 3: executors may return {response, actionRecord} objects
+function getResponse(result) {
+  return typeof result === 'object' && result !== null && result.response ? result.response : result;
+}
+
 const silentLogger = { log() {}, info() {}, warn() {}, error() {} };
 const context = { userName: 'testuser', roomToken: 'room1' };
 
@@ -54,7 +59,7 @@ asyncTest('no event identification → asks which event', async () => {
     action: 'delete', event_title: '', summary: ''
   });
   const result = await executor.execute('Delete an event', context);
-  assert.ok(result.includes('Which event'), `Expected clarification, got: ${result}`);
+  assert.ok(getResponse(result).includes('Which event'), `Expected clarification, got: ${getResponse(result)}`);
 });
 
 asyncTest('finds event by title → confirms deletion', async () => {
@@ -68,8 +73,8 @@ asyncTest('finds event by title → confirms deletion', async () => {
     deleteEvent: async (calId, uid) => { deletedUid = uid; }
   });
   const result = await executor.execute('Delete the standup', context);
-  assert.ok(result.includes('Deleted'), `Expected deletion confirmation, got: ${result}`);
-  assert.ok(result.includes('Daily Standup'), `Expected event name, got: ${result}`);
+  assert.ok(getResponse(result).includes('Deleted'), `Expected deletion confirmation, got: ${getResponse(result)}`);
+  assert.ok(getResponse(result).includes('Daily Standup'), `Expected event name, got: ${getResponse(result)}`);
   assert.strictEqual(deletedUid, 'ev-del-1');
 });
 
@@ -85,7 +90,7 @@ asyncTest('lastCreatedEvent reference works for delete', async () => {
     summary: 'Quick Sync', start: new Date()
   };
   const result = await executor.execute('Delete the event you just made', context);
-  assert.ok(result.includes('Deleted'), `Expected deletion, got: ${result}`);
+  assert.ok(getResponse(result).includes('Deleted'), `Expected deletion, got: ${getResponse(result)}`);
   assert.strictEqual(deletedUid, 'last-uid');
   // lastCreatedEvent should be cleared
   assert.strictEqual(executor._lastCreatedEvent, null, 'lastCreatedEvent should be cleared');
@@ -105,7 +110,7 @@ asyncTest('guardrail denied → event preserved', async () => {
     checkApproval: async () => ({ allowed: false, reason: 'Denied' })
   });
   const result = await executor.execute('Delete the standup', context);
-  assert.ok(result.includes('blocked'), `Expected blocked message, got: ${result}`);
+  assert.ok(getResponse(result).includes('blocked'), `Expected blocked message, got: ${getResponse(result)}`);
   assert.ok(!deleteWasCalled, 'deleteEvent should not have been called');
 });
 
@@ -116,8 +121,8 @@ asyncTest('last_created with no tracked event → helpful message', async () => 
     getEvents: async () => []
   });
   const result = await executor.execute('Delete the event you just created', context);
-  assert.ok(result.includes("don't remember"), `Expected helpful message, got: ${result}`);
-  assert.ok(!result.includes('last_created'), 'Should NOT show literal "last_created" to user');
+  assert.ok(getResponse(result).includes("don't remember"), `Expected helpful message, got: ${getResponse(result)}`);
+  assert.ok(!getResponse(result).includes('last_created'), 'Should NOT show literal "last_created" to user');
 });
 
 asyncTest('calendarClient error → friendly error', async () => {
@@ -130,7 +135,7 @@ asyncTest('calendarClient error → friendly error', async () => {
     deleteEvent: async () => { throw new Error('CalDAV server error'); }
   });
   const result = await executor.execute('Delete the standup', context);
-  assert.ok(result.includes("couldn't delete"), `Expected friendly error, got: ${result}`);
+  assert.ok(getResponse(result).includes("couldn't delete"), `Expected friendly error, got: ${getResponse(result)}`);
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);

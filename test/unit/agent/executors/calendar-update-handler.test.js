@@ -25,6 +25,11 @@ const CalendarExecutor = require('../../../../src/lib/agent/executors/calendar-e
 
 console.log('\n=== Calendar Update Handler Tests ===\n');
 
+// Layer 3: executors may return {response, actionRecord} objects
+function getResponse(result) {
+  return typeof result === 'object' && result !== null && result.response ? result.response : result;
+}
+
 const silentLogger = { log() {}, info() {}, warn() {}, error() {} };
 const context = { userName: 'testuser', roomToken: 'room1' };
 
@@ -58,7 +63,7 @@ asyncTest('"Assign me to the standup" classifies as update', async () => {
     getEvents: async () => [{ uid: 'ev1', summary: 'Standup', start: new Date().toISOString(), attendees: [] }]
   });
   const result = await executor.execute('Assign me to the standup', context);
-  assert.ok(result.includes('Added'), `Expected add confirmation, got: ${result}`);
+  assert.ok(getResponse(result).includes('Added'), `Expected add confirmation, got: ${getResponse(result)}`);
 });
 
 asyncTest('"Invite Bob to the planning meeting" classifies as update', async () => {
@@ -69,7 +74,7 @@ asyncTest('"Invite Bob to the planning meeting" classifies as update', async () 
     getEvents: async () => [{ uid: 'ev2', summary: 'Planning Meeting', start: new Date().toISOString(), attendees: [] }]
   });
   const result = await executor.execute('Invite Bob to the planning meeting', context);
-  assert.ok(result.includes('Added Bob'), `Expected Bob added, got: ${result}`);
+  assert.ok(getResponse(result).includes('Added Bob'), `Expected Bob added, got: ${getResponse(result)}`);
 });
 
 asyncTest('"Reschedule standup to 3pm" classifies as update', async () => {
@@ -83,7 +88,7 @@ asyncTest('"Reschedule standup to 3pm" classifies as update', async () => {
     }]
   });
   const result = await executor.execute('Reschedule standup to 3pm', context);
-  assert.ok(result.includes('Rescheduled'), `Expected reschedule confirmation, got: ${result}`);
+  assert.ok(getResponse(result).includes('Rescheduled'), `Expected reschedule confirmation, got: ${getResponse(result)}`);
 });
 
 asyncTest('"Schedule a meeting tomorrow" still classifies as create', async () => {
@@ -92,14 +97,15 @@ asyncTest('"Schedule a meeting tomorrow" still classifies as create', async () =
     date: 'tomorrow', time: '14:00'
   });
   const result = await executor.execute('Schedule a meeting tomorrow at 2pm', context);
-  assert.ok(result.includes('Created event'), `Should create event, got: ${result}`);
+  assert.ok(getResponse(result).includes('Created event'), `Should create event, got: ${getResponse(result)}`);
 });
 
 asyncTest('"What\'s on my calendar?" still classifies as list', async () => {
   const executor = makeExecutor({ action: 'list', query_type: 'today' });
   const result = await executor.execute("What's on my calendar?", context);
-  assert.ok(result.includes('clear') || result.includes('Today'),
-    `Should list events, got: ${result}`);
+  const response = getResponse(result);
+  assert.ok(response.includes('clear') || response.includes('Today'),
+    `Should list events, got: ${response}`);
 });
 
 // ---- Handler tests ----
@@ -110,7 +116,7 @@ asyncTest('no event reference → asks which event', async () => {
     event_title: '', event_reference: '', attendee: 'self'
   });
   const result = await executor.execute('Add me to the event', context);
-  assert.ok(result.includes('Which event'), `Expected clarification, got: ${result}`);
+  assert.ok(getResponse(result).includes('Which event'), `Expected clarification, got: ${getResponse(result)}`);
 });
 
 asyncTest('finds event by partial title match', async () => {
@@ -128,7 +134,7 @@ asyncTest('finds event by partial title match', async () => {
     }
   });
   const result = await executor.execute('Add Bob to the standup', context);
-  assert.ok(result.includes('Added Bob'), `Expected add confirmation, got: ${result}`);
+  assert.ok(getResponse(result).includes('Added Bob'), `Expected add confirmation, got: ${getResponse(result)}`);
   assert.ok(updateCalledWith, 'updateEvent should have been called');
   assert.strictEqual(updateCalledWith.uid, 'ev1');
   assert.ok(updateCalledWith.updates.attendees.includes('Bob'));
@@ -150,7 +156,7 @@ asyncTest('add_attendee with "self" resolves to userName', async () => {
     }
   });
   const result = await executor.execute('Add me to the standup', context);
-  assert.ok(result.includes('Added testuser'), `Expected testuser, got: ${result}`);
+  assert.ok(getResponse(result).includes('Added testuser'), `Expected testuser, got: ${getResponse(result)}`);
   assert.ok(updateCalledWith.updates.attendees.includes('testuser'));
 });
 
@@ -160,7 +166,7 @@ asyncTest('change_time without new_time → asks what time', async () => {
     event_title: 'standup', new_time: '', date: ''
   });
   const result = await executor.execute('Reschedule the standup', context);
-  assert.ok(result.includes('time'), `Expected time prompt, got: ${result}`);
+  assert.ok(getResponse(result).includes('time'), `Expected time prompt, got: ${getResponse(result)}`);
 });
 
 asyncTest('change_title without new_title → asks what name', async () => {
@@ -169,7 +175,7 @@ asyncTest('change_title without new_title → asks what name', async () => {
     event_title: 'standup', new_title: ''
   });
   const result = await executor.execute('Rename the standup', context);
-  assert.ok(result.includes('rename'), `Expected rename prompt, got: ${result}`);
+  assert.ok(getResponse(result).includes('rename'), `Expected rename prompt, got: ${getResponse(result)}`);
 });
 
 asyncTest('requires_clarification returns friendly message', async () => {
@@ -178,7 +184,7 @@ asyncTest('requires_clarification returns friendly message', async () => {
     requires_clarification: true, missing_fields: ['event_title']
   });
   const result = await executor.execute('Update the event somehow', context);
-  assert.ok(result.includes('clarify'), `Expected clarification, got: ${result}`);
+  assert.ok(getResponse(result).includes('clarify'), `Expected clarification, got: ${getResponse(result)}`);
 });
 
 asyncTest('event not found → friendly error', async () => {
@@ -189,7 +195,7 @@ asyncTest('event not found → friendly error', async () => {
     getEvents: async () => []
   });
   const result = await executor.execute('Add Bob to the nonexistent meeting', context);
-  assert.ok(result.includes("couldn't find"), `Expected not-found message, got: ${result}`);
+  assert.ok(getResponse(result).includes("couldn't find"), `Expected not-found message, got: ${getResponse(result)}`);
 });
 
 asyncTest('lastCreatedEvent reference works for update', async () => {
@@ -209,7 +215,7 @@ asyncTest('lastCreatedEvent reference works for update', async () => {
     summary: 'Team Sync', start: new Date(), attendees: []
   };
   const result = await executor.execute('Add me to the event you just created', context);
-  assert.ok(result.includes('Added testuser'), `Expected add confirmation, got: ${result}`);
+  assert.ok(getResponse(result).includes('Added testuser'), `Expected add confirmation, got: ${getResponse(result)}`);
   assert.strictEqual(updateCalledWith.uid, 'last-uid');
 });
 
@@ -222,8 +228,8 @@ asyncTest('last_created with no tracked event → helpful message', async () => 
   });
   // Do NOT set _lastCreatedEvent — simulates cloud-created event
   const result = await executor.execute('Add me to the event you just created', context);
-  assert.ok(result.includes("don't remember"), `Expected helpful message, got: ${result}`);
-  assert.ok(!result.includes('last_created'), 'Should NOT show literal "last_created" to user');
+  assert.ok(getResponse(result).includes("don't remember"), `Expected helpful message, got: ${getResponse(result)}`);
+  assert.ok(!getResponse(result).includes('last_created'), 'Should NOT show literal "last_created" to user');
 });
 
 asyncTest('calendarClient error in update → friendly error', async () => {
@@ -237,7 +243,7 @@ asyncTest('calendarClient error in update → friendly error', async () => {
     updateEvent: async () => { throw new Error('CalDAV timeout'); }
   });
   const result = await executor.execute('Add Bob to the standup', context);
-  assert.ok(result.includes("couldn't update"), `Expected error message, got: ${result}`);
+  assert.ok(getResponse(result).includes("couldn't update"), `Expected error message, got: ${getResponse(result)}`);
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);

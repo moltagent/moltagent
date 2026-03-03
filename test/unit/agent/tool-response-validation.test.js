@@ -382,6 +382,10 @@ asyncTest('mail_send: success result returns success message', async () => {
 
 // -- calendar_create_event --
 
+// Use a date 2 days in the future to avoid the 24h-in-the-past guardrail
+const futureDate = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+const futureStart = `${futureDate}T10:00:00Z`;
+
 asyncTest('calendar_create_event: null response returns ambiguous message', async () => {
   const registry = new ToolRegistry({
     calDAVClient: createCalDAVClient({
@@ -392,7 +396,7 @@ asyncTest('calendar_create_event: null response returns ambiguous message', asyn
 
   const result = await registry.execute('calendar_create_event', {
     title: 'Team Meeting',
-    start: '2026-03-01T10:00:00Z'
+    start: futureStart
   });
 
   assert.ok(result.success);
@@ -410,7 +414,7 @@ asyncTest('calendar_create_event: empty object response returns ambiguous messag
 
   const result = await registry.execute('calendar_create_event', {
     title: 'Team Meeting',
-    start: '2026-03-01T10:00:00Z'
+    start: futureStart
   });
 
   assert.ok(result.result.includes('may not have been created'), `Should indicate uncertainty, got: ${result.result}`);
@@ -426,7 +430,7 @@ asyncTest('calendar_create_event: valid response with uid returns success', asyn
 
   const result = await registry.execute('calendar_create_event', {
     title: 'Team Meeting',
-    start: '2026-03-01T10:00:00Z'
+    start: futureStart
   });
 
   assert.ok(result.result.includes('cal-uid-456'), `Should contain event UID, got: ${result.result}`);

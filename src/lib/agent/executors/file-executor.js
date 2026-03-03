@@ -348,8 +348,11 @@ Message: "${message.substring(0, 300)}"`;
       const typeCounts = {};
 
       for (const f of fileEntries) {
-        if (f.modified && (!newestFile || f.modified > newestFile.modified)) {
-          newestFile = { name: f.name, modified: f.modified };
+        if (f.modified) {
+          const modTime = new Date(f.modified).getTime();
+          if (!newestFile || modTime > newestFile._time) {
+            newestFile = { name: f.name, modified: f.modified, _time: modTime };
+          }
         }
         const sz = Number.isFinite(f.size) ? f.size : 0;
         if (!biggestFile || sz > biggestFile.size) {
@@ -389,7 +392,7 @@ Message: "${message.substring(0, 300)}"`;
             path: dirPath,
             count: sorted.length,
             files: first10Names,
-            newest: newestFile,
+            newest: newestFile ? { name: newestFile.name, modified: newestFile.modified } : null,
             biggest: biggestFile,
             types: typeCounts
           }

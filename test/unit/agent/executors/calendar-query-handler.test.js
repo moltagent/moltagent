@@ -25,6 +25,11 @@ const CalendarExecutor = require('../../../../src/lib/agent/executors/calendar-e
 
 console.log('\n=== Calendar Query Handler Tests ===\n');
 
+// Layer 3: executors may return {response, actionRecord} objects
+function getResponse(result) {
+  return typeof result === 'object' && result !== null && result.response ? result.response : result;
+}
+
 const silentLogger = { log() {}, info() {}, warn() {}, error() {} };
 
 const context = { userName: 'testuser', roomToken: 'room1' };
@@ -61,7 +66,7 @@ asyncTest('queryEvents returns "calendar is clear" when no events', async () => 
   });
 
   const result = await executor.queryEvents({ query_type: 'today' }, context);
-  assert.ok(result.includes('clear'), `Should say calendar is clear, got: ${result}`);
+  assert.ok(getResponse(result).includes('clear'), `Should say calendar is clear, got: ${getResponse(result)}`);
 });
 
 // -- Test 3: queryEvents with events returns formatted list --
@@ -75,10 +80,11 @@ asyncTest('queryEvents formats event list correctly', async () => {
   });
 
   const result = await executor.queryEvents({ query_type: 'today' }, context);
-  assert.ok(result.includes('Today:'), `Should have Today label, got: ${result}`);
-  assert.ok(result.includes('Team Standup'), `Should include event title, got: ${result}`);
-  assert.ok(result.includes('Lunch with Bob'), `Should include second event, got: ${result}`);
-  assert.ok(result.includes('30 min'), `Should include duration, got: ${result}`);
+  const response = getResponse(result);
+  assert.ok(response.includes('Today:'), `Should have Today label, got: ${response}`);
+  assert.ok(response.includes('Team Standup'), `Should include event title, got: ${response}`);
+  assert.ok(response.includes('Lunch with Bob'), `Should include second event, got: ${response}`);
+  assert.ok(response.includes('30 min'), `Should include duration, got: ${response}`);
 });
 
 // -- Test 4: queryEvents with query_type=tomorrow uses tomorrow date range --
@@ -89,8 +95,9 @@ asyncTest('queryEvents with query_type=tomorrow returns tomorrow message', async
   });
 
   const result = await executor.queryEvents({ query_type: 'tomorrow' }, context);
-  assert.ok(result.includes('Nothing') || result.includes('tomorrow'),
-    `Should reference tomorrow, got: ${result}`);
+  const response = getResponse(result);
+  assert.ok(response.includes('Nothing') || response.includes('tomorrow'),
+    `Should reference tomorrow, got: ${response}`);
 });
 
 // -- Test 5: _resolveQueryRange returns correct dates for each query_type --
@@ -123,8 +130,8 @@ asyncTest('calendarClient error returns friendly error message', async () => {
   });
 
   const result = await executor.queryEvents({ query_type: 'today' }, context);
-  assert.ok(typeof result === 'string', 'Should return a string');
-  assert.ok(result.includes("couldn't read"), `Should be friendly error, got: ${result}`);
+  assert.ok(typeof getResponse(result) === 'string', 'Should return a string');
+  assert.ok(getResponse(result).includes("couldn't read"), `Should be friendly error, got: ${getResponse(result)}`);
 });
 
 // -- Test 7: queryEvents with upcoming calls getUpcomingEvents --
@@ -140,7 +147,7 @@ asyncTest('queryEvents with query_type=upcoming calls getUpcomingEvents', async 
 
   const result = await executor.queryEvents({ query_type: 'upcoming' }, context);
   assert.ok(upcomingCalled, 'Should call getUpcomingEvents for upcoming queries');
-  assert.ok(result.includes('No upcoming'), `Should report no upcoming, got: ${result}`);
+  assert.ok(getResponse(result).includes('No upcoming'), `Should report no upcoming, got: ${getResponse(result)}`);
 });
 
 // -- Test 8: _formatEventList handles events without duration --

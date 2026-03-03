@@ -78,10 +78,12 @@ Rules:
 - If the assistant just showed calendar results, the user is probably still talking about calendar.
 - If the assistant just listed Deck cards, the user is probably still talking about Deck.
 - If the assistant just showed emails, the user is probably still talking about email.
+- If the assistant just listed files, the user is probably still talking about files.
 - If the message references something from the conversation ("that one", "delete it", "the first", "move it to done"), classify based on what the conversation was about, NOT the literal words.
 - "Delete the dentist" after a calendar listing = calendar_delete (not chitchat)
 - "Move the first one to done" after a Deck listing = deck_move (not unknown)
 - "Send it" after an email draft = email_send (not unknown)
+- "Read the most recent one" after a file listing = file_query (not wiki_read)
 - Only classify as unknown if the task genuinely doesn't match any intent AND is not a continuation of the current topic.
 - When uncertain, prefer the domain of the most recent assistant action over a generic classification.
 
@@ -106,7 +108,7 @@ function needsSmartClassifier(message) {
   if (/\b(remember|forget|forgot|don't forget|told you|asked you|stored|decide[d]?|decision)\b/.test(lower)) return true;
 
   // Contextual references — phi can't resolve "that one", "you just created"
-  if (/\b(you just|that one|that event|that meeting|that task|the last one|never mind)\b/.test(lower)) return true;
+  if (/\b(you just|that one|that event|that meeting|that task|the last one|the most recent|the latest|the newest|never mind)\b/.test(lower)) return true;
 
   return false;
 }

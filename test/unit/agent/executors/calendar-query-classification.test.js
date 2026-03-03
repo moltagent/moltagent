@@ -25,6 +25,11 @@ const CalendarExecutor = require('../../../../src/lib/agent/executors/calendar-e
 
 console.log('\n=== Calendar Query Classification Tests ===\n');
 
+// Layer 3: executors may return {response, actionRecord} objects
+function getResponse(result) {
+  return typeof result === 'object' && result !== null && result.response ? result.response : result;
+}
+
 const silentLogger = { log() {}, info() {}, warn() {}, error() {} };
 
 /**
@@ -55,27 +60,30 @@ const context = { userName: 'testuser', roomToken: 'room1' };
 asyncTest('"Do I have events today?" classifies as list, not create', async () => {
   const { executor } = makeExecutor({ action: 'list', query_type: 'today' });
   const result = await executor.execute('Do I have any events today?', context);
+  const response = getResponse(result);
   // Should NOT ask for a title (create path), should return a calendar response
-  assert.ok(!result.includes('title'), `Should not ask for title, got: ${result}`);
-  assert.ok(!result.includes('What should I call it'), `Should not ask to name event, got: ${result}`);
+  assert.ok(!response.includes('title'), `Should not ask for title, got: ${response}`);
+  assert.ok(!response.includes('What should I call it'), `Should not ask to name event, got: ${response}`);
   // Should return the "no events" message (empty mock calendar)
-  assert.ok(result.includes('clear') || result.includes('No events'), `Should report calendar status, got: ${result}`);
+  assert.ok(response.includes('clear') || response.includes('No events'), `Should report calendar status, got: ${response}`);
 });
 
 // -- Test 2: "What's on my schedule tomorrow?" → action: list --
 asyncTest('"What\'s on my schedule tomorrow?" classifies as list', async () => {
   const { executor } = makeExecutor({ action: 'list', query_type: 'tomorrow' });
   const result = await executor.execute("What's on my schedule tomorrow?", context);
-  assert.ok(result.includes('Nothing') || result.includes('No events') || result.includes('Tomorrow'),
-    `Should report tomorrow's calendar, got: ${result}`);
+  const response = getResponse(result);
+  assert.ok(response.includes('Nothing') || response.includes('No events') || response.includes('Tomorrow'),
+    `Should report tomorrow's calendar, got: ${response}`);
 });
 
 // -- Test 3: "Am I free at 3pm?" → action: list --
 asyncTest('"Am I free at 3pm?" classifies as list with free_slots', async () => {
   const { executor } = makeExecutor({ action: 'list', query_type: 'free_slots', time: '15:00' });
   const result = await executor.execute('Am I free at 3pm?', context);
-  assert.ok(result.includes('clear') || result.includes('free') || result.includes('No events'),
-    `Should report availability, got: ${result}`);
+  const response = getResponse(result);
+  assert.ok(response.includes('clear') || response.includes('free') || response.includes('No events'),
+    `Should report availability, got: ${response}`);
 });
 
 // -- Test 4: "Schedule a meeting tomorrow" → action: create (still works) --
@@ -85,8 +93,9 @@ asyncTest('"Schedule a meeting tomorrow" still classifies as create', async () =
     date: 'tomorrow', time: '14:00'
   });
   const result = await executor.execute('Schedule a meeting called Team Meeting tomorrow at 2pm', context);
-  assert.ok(result.includes('Created event'), `Should create event, got: ${result}`);
-  assert.ok(result.includes('Team Meeting'), `Should confirm title, got: ${result}`);
+  const response = getResponse(result);
+  assert.ok(response.includes('Created event'), `Should create event, got: ${response}`);
+  assert.ok(response.includes('Team Meeting'), `Should confirm title, got: ${response}`);
 });
 
 // -- Test 5: "Create event called Standup" → action: create (still works) --
@@ -96,24 +105,27 @@ asyncTest('"Create event called Standup" still classifies as create', async () =
     date: 'tomorrow', time: '09:00'
   });
   const result = await executor.execute('Create event called Standup tomorrow 9am', context);
-  assert.ok(result.includes('Created event'), `Should create event, got: ${result}`);
-  assert.ok(result.includes('Standup'), `Should confirm title, got: ${result}`);
+  const response = getResponse(result);
+  assert.ok(response.includes('Created event'), `Should create event, got: ${response}`);
+  assert.ok(response.includes('Standup'), `Should confirm title, got: ${response}`);
 });
 
 // -- Test 6: "When is my next meeting?" → action: list --
 asyncTest('"When is my next meeting?" classifies as list with upcoming', async () => {
   const { executor } = makeExecutor({ action: 'list', query_type: 'upcoming' });
   const result = await executor.execute('When is my next meeting?', context);
-  assert.ok(result.includes('No upcoming') || result.includes('Upcoming') || result.includes('No events'),
-    `Should report upcoming events, got: ${result}`);
+  const response = getResponse(result);
+  assert.ok(response.includes('No upcoming') || response.includes('Upcoming') || response.includes('No events'),
+    `Should report upcoming events, got: ${response}`);
 });
 
 // -- Test 7: "Any meetings this week?" → action: list --
 asyncTest('"Any meetings this week?" classifies as list with this_week', async () => {
   const { executor } = makeExecutor({ action: 'list', query_type: 'this_week' });
   const result = await executor.execute('Any meetings this week?', context);
-  assert.ok(result.includes('week') || result.includes('No events'),
-    `Should report week's events, got: ${result}`);
+  const response = getResponse(result);
+  assert.ok(response.includes('week') || response.includes('No events'),
+    `Should report week's events, got: ${response}`);
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);
