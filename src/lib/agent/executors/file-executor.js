@@ -397,11 +397,25 @@ Message: "${message.substring(0, 300)}"`;
       };
     }
 
-    const { path, filename } = this._buildPath(params);
+    let { path, folder, filename } = this._buildPath(params);
 
     // Reject wildcard / aggregate read attempts
     if (path.includes('*') || path.toLowerCase() === 'all') {
       return 'I can only read one file at a time. Which file would you like me to read?';
+    }
+
+    // Resolve bare filenames against the last listing directory
+    // When the LLM returns just "file.md" after a listing of "Moltagent DEV/docs",
+    // prepend the listing directory to get the correct WebDAV path
+    if (!folder && context && typeof context.getLastAction === 'function') {
+      const lastAction = context.getLastAction('file_');
+      if (lastAction && lastAction.type === 'file_list' && lastAction.refs?.path) {
+        const listDir = lastAction.refs.path;
+        if (listDir && listDir !== '/') {
+          path = `${listDir}/${filename}`;
+          folder = listDir;
+        }
+      }
     }
 
     // Hallucination guard: verify filename exists in last file_list result

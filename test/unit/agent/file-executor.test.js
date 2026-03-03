@@ -806,9 +806,62 @@ asyncTest('hallucination guard skips when no prior file_list', async () => {
   assert.strictEqual(result.actionRecord.refs.result, 'synthesized');
 });
 
+// -- Test 31: bare filename resolved against listing directory --
+asyncTest('bare filename gets listing directory prepended', async () => {
+  let readPath = null;
+  const filesClient = createMockFilesClient();
+  filesClient.readFile = async (p) => { readPath = p; return { content: 'File content here' }; };
+
+  let routeCallCount = 0;
+  const mockRouter = {
+    route: async () => {
+      routeCallCount++;
+      // LLM returns just the filename, no folder
+      if (routeCallCount === 1) return { result: JSON.stringify({ action: 'read', path: 'briefing.md' }) };
+      return { result: 'Technical briefing about the project architecture.' };
+    }
+  };
+
+  const executor = new FileExecutor({
+    router: mockRouter,
+    ncFilesClient: filesClient,
+    logger: silentLogger
+  });
+
+  const ctx = {
+    userName: 'alice',
+    getLastAction: (prefix) => {
+      if (prefix === 'file_') {
+        return {
+          type: 'file_list',
+          refs: {
+            path: 'Moltagent DEV/docs', count: 2,
+            directories: [],
+            files: [
+              { name: 'briefing.md', size: 15000, ext: 'md' },
+              { name: 'roadmap.md', size: 8000, ext: 'md' }
+            ],
+            newest: { name: 'briefing.md', modified: '2026-03-03' },
+            biggest: { name: 'briefing.md', size: 15000 },
+            types: { md: 2 }
+          }
+        };
+      }
+      return null;
+    }
+  };
+
+  const result = await executor.execute('read briefing.md', ctx);
+  assert.strictEqual(typeof result, 'object');
+  // The WebDAV path should include the listing directory
+  assert.strictEqual(readPath, 'Moltagent DEV/docs/briefing.md',
+    `expected full path with listing dir, got: ${readPath}`);
+  assert.strictEqual(result.actionRecord.refs.result, 'synthesized');
+});
+
 // ===== Image OCR Tests =====
 
-// -- Test 31: image with OCR text → synthesis --
+// -- Test 32: image with OCR text → synthesis --
 asyncTest('image with OCR text triggers synthesis', async () => {
   const filesClient = createMockFilesClient();
   let routeCallCount = 0;
