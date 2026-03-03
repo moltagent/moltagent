@@ -15,24 +15,62 @@
  *
  * Architecture Brief:
  * - Problem: Local models hallucinate file tool calls
- * - Pattern: Extract params → validate → guard → write/read → auto-share
- * - Key Dependencies: BaseExecutor, NCFilesClient
- * - Data Flow: message → extract → validate → guard → writeFile → shareFile → confirm
+ * - Pattern: Extract params → validate → guard → execute (read/write/list/delete/share)
+ * - Key Dependencies: BaseExecutor, NCFilesClient, TextExtractor
+ * - Data Flow: message → extract → validate → _buildPath → guard → execute → confirm
  *
  * @module agent/executors/file-executor
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 const BaseExecutor = require('./base-executor');
 
+let TextExtractor;
+try { TextExtractor = require('../../extraction/text-extractor').TextExtractor; } catch (_) { /* optional */ }
+
+const MAX_LIST_ENTRIES = 30;
+
 class FileExecutor extends BaseExecutor {
   /**
-   * @param {Object} config - BaseExecutor config + ncFilesClient
+   * @param {Object} config - BaseExecutor config + ncFilesClient + textExtractor
    * @param {Object} config.ncFilesClient - NCFilesClient instance
+   * @param {Object} [config.textExtractor] - TextExtractor for rich document reading
    */
   constructor(config = {}) {
     super(config);
     this.ncFilesClient = config.ncFilesClient;
+    this.textExtractor = config.textExtractor || null;
+  }
+
+  /**
+   * Build a sanitized file path from extracted params.
+   * @param {Object} params - { path?, folder?, filename? }
+   * @returns {{ path: string, folder: string, filename: string }}
+   * @throws {Error} with code DOMAIN_ESCALATE on path traversal
+   */
+  _buildPath(params) {
+    let path;
+    if (params.path && typeof params.path === 'string' && params.path.trim()) {
+      path = params.path.trim();
+    } else {
+      const folder = (params.folder || '').trim();
+      const filename = (params.filename || '').trim();
+      path = folder ? `${folder}/${filename}` : filename;
+    }
+
+    // Reject path traversal
+    if (path.includes('..') || path.startsWith('/')) {
+      const err = new Error('Invalid file path: traversal not allowed');
+      err.code = 'DOMAIN_ESCALATE';
+      throw err;
+    }
+
+    // Derive folder and filename from the resolved path
+    const lastSlash = path.lastIndexOf('/');
+    const folder = lastSlash >= 0 ? path.substring(0, lastSlash) : '';
+    const filename = lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+
+    return { path, folder, filename };
   }
 
   /**
@@ -40,7 +78,7 @@ class FileExecutor extends BaseExecutor {
    *
    * @param {string} message - User message
    * @param {Object} context - { userName, roomToken }
-   * @returns {Promise<string>} Confirmation text
+   * @returns {Promise<string|Object>} Confirmation text or structured response
    */
   async execute(message, context) {
     // Step 1: Extract parameters
@@ -52,6 +90,9 @@ class FileExecutor extends BaseExecutor {
         filename: { type: 'string' },
         content: { type: 'string' },
         folder: { type: 'string' },
+        path: { type: 'string' },
+        share_with: { type: 'string' },
+        permission: { type: 'string', enum: ['read', 'edit'] },
         generate_content: { type: 'boolean' },
         requires_clarification: { type: 'boolean' },
         missing_fields: { type: 'array', items: { type: 'string' } }
@@ -64,6 +105,18 @@ class FileExecutor extends BaseExecutor {
 Extract file operation parameters from this message.
 Leave fields as empty strings if not mentioned. Set generate_content to true if the user wants content created.
 If the message is NOT about a file operation, set requires_clarification to true.
+
+Action rules:
+- "Create/write/save a file" → action: write
+- "Read/open/show/cat a file" → action: read
+- "List/browse/show folder" → action: list
+- "Delete/remove a file" → action: delete
+- "Share a file with someone" → action: share
+
+Use "path" for full relative paths like "Projects/spec.md".
+Use "folder" + "filename" when they are separate.
+Use "share_with" for the NC username to share with.
+Use "permission" (read or edit) for share permission level.
 
 Message: "${message.substring(0, 300)}"`;
 
@@ -85,13 +138,55 @@ Message: "${message.substring(0, 300)}"`;
         pendingClarification: {
           executor: 'file', action: params.action || 'write',
           missingFields,
-          collectedFields: { filename: params.filename, content: params.content, folder: params.folder, generate_content: params.generate_content },
+          collectedFields: { filename: params.filename, content: params.content, folder: params.folder, path: params.path, generate_content: params.generate_content },
           originalMessage: message,
         }
       };
     }
 
-    if (params.action === 'write' && (!params.filename || params.filename.trim() === '')) {
+    if (params.filename && params.filename.length > 100) {
+      return "I couldn't extract a clear filename. Could you tell me just the file name?";
+    }
+
+    // Route to action handler
+    switch (params.action) {
+      case 'write': return await this._executeWrite(params, message, context);
+      case 'read':  return await this._executeRead(params, context);
+      case 'list':  return await this._executeList(params, context);
+      case 'delete': return await this._executeDelete(params, context);
+      case 'share': return await this._executeShare(params, context);
+      default:
+        return `File operation "${params.action}" is not supported.`;
+    }
+  }
+
+  /**
+   * Write a file and auto-share with requesting user.
+   */
+  async _executeWrite(params, message, context) {
+    if (!params.filename || params.filename.trim() === '') {
+      // Check if path provides a filename
+      if (!params.path || !params.path.trim()) {
+        return {
+          response: 'I need a filename. What should I call the file?',
+          pendingClarification: {
+            executor: 'file', action: 'write',
+            missingFields: ['filename'],
+            collectedFields: { content: params.content, folder: params.folder, generate_content: params.generate_content },
+            originalMessage: message,
+          }
+        };
+      }
+    }
+
+    // Default folder to Outbox for write action
+    if (!params.folder && !params.path) {
+      params.folder = 'Outbox';
+    }
+
+    const { path, folder, filename } = this._buildPath(params);
+
+    if (!filename) {
       return {
         response: 'I need a filename. What should I call the file?',
         pendingClarification: {
@@ -103,24 +198,9 @@ Message: "${message.substring(0, 300)}"`;
       };
     }
 
-    if (params.filename && params.filename.length > 100) {
-      return "I couldn't extract a clear filename. Could you tell me just the file name?";
-    }
-
-    // Step 3: Defaults + path sanitization
-    const folder = params.folder || 'Outbox';
-    const path = `${folder}/${params.filename}`;
-
-    // Reject path traversal attempts
-    if (path.includes('..') || path.startsWith('/')) {
-      const err = new Error('Invalid file path: traversal not allowed');
-      err.code = 'DOMAIN_ESCALATE';
-      throw err;
-    }
-
-    // Step 4: If content needs generation, use a separate LLM call
+    // Content generation
     let content = params.content;
-    if (params.action === 'write' && (params.generate_content || !content)) {
+    if (params.generate_content || !content) {
       try {
         const genResult = await this.router.route({
           job: 'quick',
@@ -134,46 +214,267 @@ Message: "${message.substring(0, 300)}"`;
       }
     }
 
-    if (params.action === 'write' && !content) {
+    if (!content) {
       const err = new Error('No content for file write');
       err.code = 'DOMAIN_ESCALATE';
       throw err;
     }
 
-    // Step 5: Guardrail check
-    const toolName = params.action === 'delete' ? 'file_delete' : 'file_write';
-    const guardResult = await this._checkGuardrails(toolName, { path }, context.roomToken || null);
+    // Guardrail check
+    const guardResult = await this._checkGuardrails('file_write', { path }, context.roomToken || null);
     if (!guardResult.allowed) {
       return `Action blocked: ${guardResult.reason}`;
     }
 
-    // Step 6: Execute
-    if (params.action === 'write') {
-      await this.ncFilesClient.writeFile(path, content);
+    // Execute
+    await this.ncFilesClient.writeFile(path, content);
 
-      // Step 7: Auto-share (best-effort)
-      if (context.userName) {
-        try {
-          await this.ncFilesClient.shareFile(path, context.userName);
-        } catch (shareErr) {
-          this.logger.warn(`[FileExecutor] Auto-share failed: ${shareErr.message}`);
+    // Auto-share (best-effort)
+    if (context.userName) {
+      try {
+        await this.ncFilesClient.shareFile(path, context.userName);
+      } catch (shareErr) {
+        this.logger.warn(`[FileExecutor] Auto-share failed: ${shareErr.message}`);
+      }
+    }
+
+    this._logActivity('file_write',
+      `Saved "${filename}" to ${folder || 'Outbox'}/, shared with ${context.userName || 'user'}`,
+      { filename, folder: folder || 'Outbox', shared: true },
+      context
+    );
+
+    return {
+      response: `File "${filename}" written to ${folder || 'Outbox'}/ and shared with ${context.userName || 'you'}.`,
+      actionRecord: { type: 'file_write', refs: { path, filename, folder: folder || 'Outbox' } }
+    };
+  }
+
+  /**
+   * Read a file and return its content.
+   */
+  async _executeRead(params, context) {
+    // Need a filename or path
+    const hasFile = (params.filename && params.filename.trim()) || (params.path && params.path.trim());
+    if (!hasFile) {
+      return {
+        response: 'Which file should I read? Please provide a filename or path.',
+        pendingClarification: {
+          executor: 'file', action: 'read',
+          missingFields: ['filename'],
+          collectedFields: { folder: params.folder },
+          originalMessage: '',
         }
+      };
+    }
+
+    const { path } = this._buildPath(params);
+
+    try {
+      let content;
+
+      if (this.textExtractor && TextExtractor && TextExtractor.isSupported(path)) {
+        const buffer = await this.ncFilesClient.readFileBuffer(path);
+        const result = await this.textExtractor.extract(buffer, path);
+        content = result.text;
+        if (result.pages) {
+          content += `\n(PDF, ${result.pages} pages)`;
+        }
+      } else {
+        const result = await this.ncFilesClient.readFile(path);
+        content = result.content;
       }
 
-      // Layer 1: Log activity
-      this._logActivity('file_write',
-        `Saved "${params.filename}" to ${folder}/, shared with ${context.userName || 'user'}`,
-        { filename: params.filename, folder, shared: true },
+      this._logActivity('file_read',
+        `Read "${path}"`,
+        { path },
         context
       );
 
       return {
-        response: `File "${params.filename}" written to ${folder}/ and shared with ${context.userName || 'you'}.`,
-        actionRecord: { type: 'file_write', refs: { path, filename: params.filename, folder } }
+        response: content,
+        actionRecord: { type: 'file_read', refs: { path } }
+      };
+    } catch (err) {
+      if (err.statusCode === 404 || (err.message && err.message.includes('404'))) {
+        return `File not found: ${path}. Use file_list to browse.`;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * List directory contents.
+   */
+  async _executeList(params, context) {
+    const rawPath = (params.path && params.path.trim()) || (params.folder && params.folder.trim()) || '';
+    const dirPath = rawPath || '/';
+
+    // Reject path traversal (root '/' is allowed for listing)
+    if (rawPath && (rawPath.includes('..') || rawPath.startsWith('/'))) {
+      const err = new Error('Invalid file path: traversal not allowed');
+      err.code = 'DOMAIN_ESCALATE';
+      throw err;
+    }
+
+    try {
+      const entries = await this.ncFilesClient.listDirectory(dirPath);
+
+      // Sort: directories first, then files
+      const dirs = entries.filter(e => e.type === 'directory');
+      const files = entries.filter(e => e.type !== 'directory');
+      const sorted = [...dirs, ...files];
+
+      const capped = sorted.slice(0, MAX_LIST_ENTRIES);
+      const lines = capped.map(e => {
+        const icon = e.type === 'directory' ? '\u{1F4C1}' : '';
+        const size = e.size ? this._formatSize(e.size) : '';
+        const modified = e.modified || '';
+        const parts = [e.name];
+        if (size) parts.push(size);
+        if (modified) parts.push(modified);
+        return `${icon} ${parts.join(' \u2014 ')}`.trim();
+      });
+
+      let formatted = lines.join('\n');
+      if (sorted.length > MAX_LIST_ENTRIES) {
+        formatted += `\n[+${sorted.length - MAX_LIST_ENTRIES} more]`;
+      }
+
+      this._logActivity('file_list',
+        `Listed "${dirPath}" (${sorted.length} entries)`,
+        { path: dirPath, count: sorted.length },
+        context
+      );
+
+      return {
+        response: formatted,
+        actionRecord: { type: 'file_list', refs: { path: dirPath } }
+      };
+    } catch (err) {
+      if (err.statusCode === 404 || (err.message && err.message.includes('404'))) {
+        return 'Folder not found.';
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Delete a file.
+   */
+  async _executeDelete(params, context) {
+    const hasFile = (params.filename && params.filename.trim()) || (params.path && params.path.trim());
+    if (!hasFile) {
+      return {
+        response: 'Which file should I delete? Please provide a filename or path.',
+        pendingClarification: {
+          executor: 'file', action: 'delete',
+          missingFields: ['filename'],
+          collectedFields: { folder: params.folder },
+          originalMessage: '',
+        }
       };
     }
 
-    return `File operation "${params.action}" is not yet supported by the executor.`;
+    const { path, filename } = this._buildPath(params);
+
+    // Guardrail check — file_delete REQUIRES_APPROVAL
+    const guardResult = await this._checkGuardrails('file_delete', { path }, context.roomToken || null);
+    if (!guardResult.allowed) {
+      return `Action blocked: ${guardResult.reason}`;
+    }
+
+    try {
+      await this.ncFilesClient.deleteFile(path);
+    } catch (err) {
+      if (err.statusCode === 404 || (err.message && err.message.includes('404'))) {
+        return `File not found: ${path}.`;
+      }
+      throw err;
+    }
+
+    this._logActivity('file_delete',
+      `Deleted "${path}"`,
+      { path, filename },
+      context
+    );
+
+    return {
+      response: `Deleted "${filename}" from ${path}.`,
+      actionRecord: { type: 'file_delete', refs: { path } }
+    };
+  }
+
+  /**
+   * Share a file with a Nextcloud user.
+   */
+  async _executeShare(params, context) {
+    const hasFile = (params.filename && params.filename.trim()) || (params.path && params.path.trim());
+    if (!hasFile) {
+      return {
+        response: 'Which file should I share? Please provide a filename or path.',
+        pendingClarification: {
+          executor: 'file', action: 'share',
+          missingFields: ['filename'],
+          collectedFields: { folder: params.folder, share_with: params.share_with, permission: params.permission },
+          originalMessage: '',
+        }
+      };
+    }
+
+    if (!params.share_with || !params.share_with.trim()) {
+      return {
+        response: 'Who should I share this file with? Please provide a username.',
+        pendingClarification: {
+          executor: 'file', action: 'share',
+          missingFields: ['share_with'],
+          collectedFields: { filename: params.filename, folder: params.folder, path: params.path, permission: params.permission },
+          originalMessage: '',
+        }
+      };
+    }
+
+    const { path, filename } = this._buildPath(params);
+    const permission = params.permission || 'read';
+    const shareWith = params.share_with.trim();
+
+    // Guardrail check — file_share REQUIRES_APPROVAL
+    const guardResult = await this._checkGuardrails('file_share', { path, shareWith, permission }, context.roomToken || null);
+    if (!guardResult.allowed) {
+      return `Action blocked: ${guardResult.reason}`;
+    }
+
+    try {
+      await this.ncFilesClient.shareFile(path, shareWith, permission);
+    } catch (err) {
+      if (err.statusCode === 404 || (err.message && err.message.includes('404'))) {
+        return `File not found: ${path}.`;
+      }
+      throw err;
+    }
+
+    this._logActivity('file_share',
+      `Shared "${path}" with ${shareWith} (${permission})`,
+      { path, filename, sharedWith: shareWith, permission },
+      context
+    );
+
+    return {
+      response: `Shared "${filename}" with ${shareWith} (${permission} access).`,
+      actionRecord: { type: 'file_share', refs: { path, sharedWith: shareWith, permission } }
+    };
+  }
+
+  /**
+   * Format file size for display.
+   * @param {number} bytes
+   * @returns {string}
+   */
+  _formatSize(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 }
 

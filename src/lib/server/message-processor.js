@@ -1042,6 +1042,7 @@ class MessageProcessor {
         const FileExecutor = require('../agent/executors/file-executor');
         this.microPipeline.executors.file = new FileExecutor({
           router, ncFilesClient: this.agentLoop.toolRegistry.clients.ncFilesClient,
+          textExtractor: this.agentLoop.toolRegistry.clients.textExtractor || null,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
           activityLogger: aLog, timezone: tz, logger: console
         });
