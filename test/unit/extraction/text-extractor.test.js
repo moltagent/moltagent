@@ -110,6 +110,157 @@ asyncTest('extract throws for unsupported extension', async () => {
 });
 
 // ============================================================
+// Constructor — OCR config
+// ============================================================
+
+test('constructor sets OCR defaults', () => {
+  const ext = new TextExtractor();
+  assert.strictEqual(ext.ocrEnabled, true);
+  assert.strictEqual(ext.ocrLanguages, 'eng+deu+por');
+  assert.strictEqual(ext.ocrTimeoutMs, 120000);
+  assert.strictEqual(ext.ocrJobs, 1);
+  assert.strictEqual(ext.charsPerPageThreshold, 50);
+  assert.strictEqual(ext._ocrAvailable, null);
+});
+
+test('constructor accepts custom OCR config', () => {
+  const ext = new TextExtractor({
+    ocrEnabled: false,
+    ocrLanguages: 'eng+fra',
+    ocrTimeoutMs: 60000,
+    ocrJobs: 2,
+    charsPerPageThreshold: 100
+  });
+  assert.strictEqual(ext.ocrEnabled, false);
+  assert.strictEqual(ext.ocrLanguages, 'eng+fra');
+  assert.strictEqual(ext.ocrTimeoutMs, 60000);
+  assert.strictEqual(ext.ocrJobs, 2);
+  assert.strictEqual(ext.charsPerPageThreshold, 100);
+});
+
+// ============================================================
+// _extractPdf — normal PDF (no OCR triggered)
+// ============================================================
+
+asyncTest('_extractPdf returns text directly for normal PDF (no OCR)', async () => {
+  const ext = new TextExtractor({ charsPerPageThreshold: 50 });
+
+  // Monkey-patch _extractPdf to simulate pdf-parse returning a text-rich PDF
+  const original = ext._extractPdf.bind(ext);
+  ext._extractPdf = async (buffer) => {
+    // Simulate: pdf-parse found 3000 chars on 1 page → not scanned
+    return { text: 'A'.repeat(3000), pageCount: 1, ocr: false };
+  };
+
+  const result = await ext.extract(Buffer.from('fake-pdf'), 'invoice.pdf');
+  assert.strictEqual(result.ocr, false);
+  assert.strictEqual(result.pages, 1);
+  assert.ok(result.text.length > 0);
+  assert.ok(!result.warning);
+});
+
+// ============================================================
+// _extractPdf — scanned PDF detection + OCR available
+// ============================================================
+
+asyncTest('_extractPdf detects scanned PDF and triggers OCR when available', async () => {
+  const ext = new TextExtractor({ charsPerPageThreshold: 50 });
+
+  // Override _extractPdf to simulate scanned PDF → OCR success
+  ext._extractPdf = async (buffer) => {
+    return { text: 'OCR-extracted invoice text', pageCount: 3, ocr: true };
+  };
+
+  const result = await ext.extract(Buffer.from('fake-pdf'), 'scan.pdf');
+  assert.strictEqual(result.ocr, true);
+  assert.strictEqual(result.pages, 3);
+  assert.strictEqual(result.text, 'OCR-extracted invoice text');
+});
+
+// ============================================================
+// _extractPdf — scanned PDF but ocrmypdf not available
+// ============================================================
+
+asyncTest('_extractPdf returns warning when scanned but ocrmypdf not installed', async () => {
+  const ext = new TextExtractor({ charsPerPageThreshold: 50 });
+
+  // Override to simulate: scanned detected, OCR unavailable
+  ext._extractPdf = async (buffer) => {
+    return {
+      text: '',
+      pageCount: 5,
+      ocr: false,
+      warning: 'This appears to be a scanned PDF but OCR is not available on this system. Text extraction may be incomplete.'
+    };
+  };
+
+  const result = await ext.extract(Buffer.from('fake-pdf'), 'scan.pdf');
+  assert.strictEqual(result.ocr, false);
+  assert.strictEqual(result.pages, 5);
+  assert.ok(result.warning);
+  assert.ok(result.warning.includes('not available'));
+});
+
+// ============================================================
+// _ocrPdf — timeout handling
+// ============================================================
+
+asyncTest('_ocrPdf handles errors gracefully', async () => {
+  const ext = new TextExtractor({ ocrTimeoutMs: 100 });
+
+  // _ocrPdf expects to call execFileAsync('ocrmypdf', ...) which will fail
+  // since ocrmypdf is not installed in test env. This tests graceful error handling.
+  const result = await ext._ocrPdf(Buffer.from('not-a-real-pdf'), 1);
+  assert.strictEqual(result.ocr, false);
+  assert.strictEqual(result.pageCount, 1);
+  assert.ok(result.error);
+  assert.ok(result.error.includes('OCR processing failed'));
+  assert.strictEqual(result.text, '');
+});
+
+// ============================================================
+// _checkOcrAvailable — caches result after first check
+// ============================================================
+
+asyncTest('_checkOcrAvailable caches result after first check', async () => {
+  const ext = new TextExtractor();
+
+  // First call: should set _ocrAvailable (true or false depending on system)
+  const first = await ext._checkOcrAvailable();
+  assert.strictEqual(typeof first, 'boolean');
+  assert.strictEqual(ext._ocrAvailable, first);
+
+  // Force to a known value and verify second call returns cached
+  ext._ocrAvailable = true;
+  const second = await ext._checkOcrAvailable();
+  assert.strictEqual(second, true);
+
+  ext._ocrAvailable = false;
+  const third = await ext._checkOcrAvailable();
+  assert.strictEqual(third, false);
+});
+
+// ============================================================
+// extract — PDF result shape includes ocr and warning fields
+// ============================================================
+
+asyncTest('extract propagates ocr and warning fields from PDF result', async () => {
+  const ext = new TextExtractor();
+
+  ext._extractPdf = async () => ({
+    text: 'some text',
+    pageCount: 2,
+    ocr: true,
+    warning: 'test warning'
+  });
+
+  const result = await ext.extract(Buffer.from('x'), 'doc.pdf');
+  assert.strictEqual(result.ocr, true);
+  assert.strictEqual(result.warning, 'test warning');
+  assert.strictEqual(result.pages, 2);
+});
+
+// ============================================================
 // Summary
 // ============================================================
 

@@ -825,8 +825,14 @@ async function initialize() {
   }
   if (TextExtractor) {
     try {
-      textExtractor = new TextExtractor();
-      console.log('[INIT] TextExtractor ready');
+      textExtractor = new TextExtractor({
+        ocrEnabled: appConfig.extraction.ocrEnabled,
+        ocrLanguages: appConfig.extraction.ocrLanguages,
+        ocrJobs: appConfig.extraction.ocrJobs,
+        ocrTimeoutMs: appConfig.extraction.ocrTimeoutMs,
+        charsPerPageThreshold: appConfig.extraction.charsPerPageThreshold
+      });
+      console.log('[INIT] TextExtractor ready (OCR: ' + (appConfig.extraction.ocrEnabled ? 'enabled' : 'disabled') + ')');
     } catch (err) {
       console.warn(`[INIT] TextExtractor failed: ${err.message}`);
     }

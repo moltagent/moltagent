@@ -527,6 +527,17 @@ const config = {
   },
 
   // -------------------------------------------------------------------------
+  // Text Extraction & OCR
+  // -------------------------------------------------------------------------
+  extraction: {
+    ocrEnabled: envBool('OCR_ENABLED', true),
+    ocrLanguages: envStr('OCR_LANGUAGES', 'eng+deu+por'),
+    ocrJobs: envInt('OCR_JOBS', 1),
+    ocrTimeoutMs: envInt('OCR_TIMEOUT', 120000),
+    charsPerPageThreshold: envInt('OCR_CHARS_THRESHOLD', 50)
+  },
+
+  // -------------------------------------------------------------------------
   // Infrastructure Monitor
   // -------------------------------------------------------------------------
   infra: {
