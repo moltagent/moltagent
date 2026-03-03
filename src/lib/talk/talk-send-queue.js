@@ -11,6 +11,9 @@
  */
 
 class TalkSendQueue {
+  // NC Talk message limit is ~32KB; truncate below that with buffer for JSON overhead
+  static MAX_MESSAGE_LENGTH = 30000;
+
   /**
    * @param {Object} ncRequestManager - NCRequestManager instance
    * @param {Object} [logger=console] - Logger with .log/.warn/.error methods
@@ -87,32 +90,84 @@ class TalkSendQueue {
   }
 
   /**
+   * Truncate a message to fit within Talk's size limit.
+   * Cuts at a natural boundary (paragraph/line) and appends a helpful notice.
+   * @param {string} msg
+   * @param {number} limit
+   * @returns {string}
+   */
+  _truncateMessage(msg, limit) {
+    if (msg.length <= limit) return msg;
+    const slice = msg.substring(0, limit);
+    // Cut at last paragraph break, or line break if no paragraph break in the last 20%
+    const lastParagraph = slice.lastIndexOf('\n\n');
+    const lastLine = slice.lastIndexOf('\n');
+    const cutPoint = lastParagraph > limit * 0.8 ? lastParagraph
+      : lastLine > limit * 0.8 ? lastLine
+      : limit;
+    const totalKB = (msg.length / 1024).toFixed(1);
+    return slice.substring(0, cutPoint) +
+      `\n\n[Content truncated — full content is ${totalKB} KB. Ask me to summarize or show a specific section.]`;
+  }
+
+  /**
    * Send a single Talk message via NCRequestManager.
+   * Pre-truncates oversized messages; retries with shorter truncation on 413.
    * @returns {Promise<boolean>}
    */
   async _send(token, message, replyTo) {
+    // Pre-truncate to avoid 413
+    const text = this._truncateMessage(message, TalkSendQueue.MAX_MESSAGE_LENGTH);
+
+    const result = await this._sendOnce(token, text, replyTo);
+    if (result === '413') {
+      // Retry with aggressive truncation (halve the limit)
+      this.logger.warn(`[TalkSendQueue] 413 on pre-truncated message (${text.length} chars), retrying at half length`);
+      const shorter = this._truncateMessage(message, Math.floor(TalkSendQueue.MAX_MESSAGE_LENGTH / 2));
+      const retry = await this._sendOnce(token, shorter, replyTo);
+      if (retry === '413') {
+        this.metrics.failed++;
+        return false;
+      }
+      return retry;
+    }
+    return result;
+  }
+
+  /**
+   * Send a single message attempt.
+   * @returns {Promise<boolean|'413'>} true on success, false on error, '413' on entity too large
+   */
+  async _sendOnce(token, message, replyTo) {
     const body = { message };
     if (replyTo != null) {
       body.replyTo = replyTo;
     }
-    const response = await this.nc.request(
-      `/ocs/v2.php/apps/spreed/api/v1/chat/${token}`,
-      {
-        method: 'POST',
-        headers: {
-          'OCS-APIRequest': 'true',
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body
+    try {
+      const response = await this.nc.request(
+        `/ocs/v2.php/apps/spreed/api/v1/chat/${token}`,
+        {
+          method: 'POST',
+          headers: {
+            'OCS-APIRequest': 'true',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body
+        }
+      );
+      if (response.status === 413) return '413';
+      if (response.status >= 400) {
+        this.metrics.failed++;
+        return false;
       }
-    );
-    if (response.status >= 400) {
-      this.metrics.failed++;
-      return false;
+      this.metrics.sent++;
+      return true;
+    } catch (err) {
+      // NCRequestManager may throw on 413 instead of returning status
+      if (err.message && err.message.includes('413')) return '413';
+      throw err;
     }
-    this.metrics.sent++;
-    return true;
   }
 
   /**
