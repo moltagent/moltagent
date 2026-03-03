@@ -67,7 +67,34 @@ asyncTest('Read existing page by exact title', async () => {
   assert.strictEqual(registry.getCallsFor('wiki_write').length, 0, 'Should NOT call wiki_write');
 });
 
-// -- Test 2: Read with memory_search fallback --
+// -- Test 2: Read with possessive stripping --
+asyncTest('Read strips possessive to find page', async () => {
+  const registry = createMockToolRegistry({
+    wiki_read: (args) => {
+      if (args.page_title === "Funana's Preferences") {
+        return { success: true, result: 'No wiki page found for "Funana\'s Preferences"' };
+      }
+      if (args.page_title === 'Funana Preferences') {
+        return { success: true, result: 'Preferred meeting time: mornings' };
+      }
+      return { success: true, result: 'No wiki page found' };
+    }
+  });
+  const executor = new WikiExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'read', page_title: "Funana's Preferences" })
+    }),
+    toolRegistry: registry,
+    logger: silentLogger
+  });
+
+  const result = await executor.execute("What does the wiki say about Funana's Preferences?", { userName: 'alice' });
+  const resp = getResponse(result);
+  assert.ok(resp.includes('mornings'), `Should find page via stripped possessive, got: ${resp}`);
+  assert.strictEqual(registry.getCallsFor('wiki_write').length, 0, 'Should NOT call wiki_write');
+});
+
+// -- Test 3: Read with memory_search fallback --
 asyncTest('Read with memory_search fallback when exact title fails', async () => {
   let readCallCount = 0;
   const registry = createMockToolRegistry({

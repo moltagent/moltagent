@@ -145,20 +145,26 @@ Message: "${message.substring(0, 300)}"`;
       return { response: 'What wiki page should I look up?' };
     }
 
-    // Try exact title first
-    const readResult = await this.toolRegistry.execute('wiki_read', { page_title: title });
+    // Build candidate titles: original + possessive-stripped variant
+    // "Funana's Preferences" → also try "Funana Preferences"
+    const stripped = title.replace(/['\u2019]s\b/g, '');
+    const candidates = stripped !== title ? [title, stripped] : [title];
 
-    if (readResult.success && this._isWikiContent(readResult.result)) {
-      this._logActivity('wiki_read',
-        `Read wiki: ${title}`,
-        { page: title, topic: params.topic },
-        context
-      );
-      const response = readResult.result || `The wiki page "${title}" exists but has no content yet.`;
-      return {
-        response,
-        actionRecord: { type: 'wiki_read', refs: { page: title } }
-      };
+    // Try direct page fetch for each candidate
+    for (const candidate of candidates) {
+      const readResult = await this.toolRegistry.execute('wiki_read', { page_title: candidate });
+      if (readResult.success && this._isWikiContent(readResult.result)) {
+        this._logActivity('wiki_read',
+          `Read wiki: ${candidate}`,
+          { page: candidate, topic: params.topic },
+          context
+        );
+        const response = readResult.result || `The wiki page "${candidate}" exists but has no content yet.`;
+        return {
+          response,
+          actionRecord: { type: 'wiki_read', refs: { page: candidate } }
+        };
+      }
     }
 
     // Fallback: search via memory_search for fuzzy match
@@ -372,14 +378,22 @@ Message: "${message.substring(0, 300)}"`;
    * @private
    */
   async _searchViaMemory(query) {
-    try {
-      const result = await this.toolRegistry.execute('memory_search', { query, scope: 'wiki' });
-      if (!result.success || !result.result || result.result.includes('No matching memories')) return null;
-      const match = result.result.match(/\*\*([^*]+)\*\*/);
-      return match ? { title: match[1] } : null;
-    } catch {
-      return null;
+    // Strip possessives — "Funana's Preferences" → "Funana Preferences"
+    // NC Unified Search tokenizer chokes on apostrophe-s
+    const cleaned = query.replace(/['\u2019]s\b/g, '');
+    const queries = cleaned !== query ? [cleaned, query] : [query];
+
+    for (const q of queries) {
+      try {
+        const result = await this.toolRegistry.execute('memory_search', { query: q, scope: 'wiki' });
+        if (!result.success || !result.result || result.result.includes('No matching memories')) continue;
+        const match = result.result.match(/\*\*([^*]+)\*\*/);
+        if (match) return { title: match[1] };
+      } catch {
+        // Continue to next query variant
+      }
     }
+    return null;
   }
 
   /**
