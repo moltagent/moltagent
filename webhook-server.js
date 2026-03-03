@@ -1201,11 +1201,19 @@ async function initialize() {
 
   // Wire Semantic Awareness + Knowledge Graph into MemorySearcher
   if (memorySearcher) {
+    if (collectivesClient) memorySearcher.wiki = collectivesClient;
     if (coAccessGraph) memorySearcher.coAccessGraph = coAccessGraph;
     if (vectorStore) memorySearcher.vectorStore = vectorStore;
     if (embeddingClient) memorySearcher.embeddingClient = embeddingClient;
     if (gapDetector) memorySearcher.gapDetector = gapDetector;
     if (knowledgeGraph) memorySearcher.knowledgeGraph = knowledgeGraph;
+    const channels = [
+      vectorStore && embeddingClient ? 'Vector' : null,
+      knowledgeGraph ? 'Graph' : null,
+    ].filter(Boolean);
+    if (channels.length > 0) {
+      console.log(`[INIT] MemorySearcher upgraded to three-channel fusion (Unified + ${channels.join(' + ')})`);
+    }
   }
 
   // Wire RhythmTracker into SessionPersister
@@ -1907,6 +1915,13 @@ async function initialize() {
       // Wire DailyDigest and KnowledgeGraph into HeartbeatManager
       if (dailyDigest) heartbeatManager.dailyDigest = dailyDigest;
       if (knowledgeGraph) heartbeatManager.knowledgeGraph = knowledgeGraph;
+
+      // Wire Semantic Awareness components into HeartbeatManager pulse()
+      if (embeddingRefresher) heartbeatManager.embeddingRefresher = embeddingRefresher;
+      if (gapDetector) heartbeatManager.gapDetector = gapDetector;
+      if (rhythmTracker) heartbeatManager.rhythmTracker = rhythmTracker;
+      if (coAccessGraph) heartbeatManager.coAccessGraph = coAccessGraph;
+      if (entityExtractor) heartbeatManager.entityExtractor = entityExtractor;
 
       if (HeartbeatIntelligence && heartbeatManager.caldavClient) {
         try {
