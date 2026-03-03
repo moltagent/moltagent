@@ -195,15 +195,18 @@ asyncTest('process() routes question intent to search+synthesize handler', async
   assert.strictEqual(result, 'Answer from LLM');
 });
 
-// -- Test 12: _classifyFallback() detects domain-specific intents via regex --
-asyncTest('_classifyFallback() detects deck intent from task keywords', async () => {
-  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+// -- Test 12: _classifyFallback() detects domain-specific intents via LLM with regex hint --
+asyncTest('_classifyFallback() detects deck intent via LLM (regex hint: deck)', async () => {
+  // LLM receives the regex hint and confirms deck
+  const router = createMockRouter({ result: 'deck', provider: 'mock', tokens: 5 });
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
   const result = await pipeline._classifyFallback('Create a card for the new feature');
   assert.strictEqual(result.intent, 'deck');
 });
 
-asyncTest('_classifyFallback() detects calendar intent from meeting keywords', async () => {
-  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+asyncTest('_classifyFallback() detects calendar intent via LLM (regex hint: calendar)', async () => {
+  const router = createMockRouter({ result: 'calendar', provider: 'mock', tokens: 5 });
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
   const result = await pipeline._classifyFallback('What time is the meeting tomorrow?');
   assert.strictEqual(result.intent, 'calendar');
 });
@@ -434,107 +437,182 @@ asyncTest('_handleChat() returns response on success (no escalation)', async () 
   assert.strictEqual(result, 'Hello back!');
 });
 
-// === Action-ledger classification override ===
+// === Regex-as-Hint Classification Tests ===
 
-asyncTest('process() overrides classification to file when last action was file_list', async () => {
-  // Mock router that returns a response for file domain handler
+// -- Test: _classifyFallback sends LLM prompt with <conversation> block when context has getRecentContext --
+asyncTest('_classifyFallback includes <conversation> block when context has getRecentContext', async () => {
+  let capturedPrompt = '';
+  const router = {
+    route: async ({ content }) => { capturedPrompt = content; return { result: 'file', provider: 'mock', tokens: 5 }; },
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
+  const ctx = {
+    getRecentContext: () => [
+      { role: 'user', content: 'list my files' },
+      { role: 'assistant', content: 'Here are your files: notes.txt, report.pdf' }
+    ]
+  };
+
+  await pipeline._classifyFallback('read the most recent one', ctx);
+  assert.ok(capturedPrompt.includes('<conversation>'), `Prompt should contain <conversation> block, got: ${capturedPrompt.substring(0, 100)}`);
+  assert.ok(capturedPrompt.includes('list my files'), 'Prompt should include user context');
+  assert.ok(capturedPrompt.includes('notes.txt'), 'Prompt should include assistant context');
+});
+
+// -- Test: _classifyFallback includes regex hint in prompt when single domain matches --
+asyncTest('_classifyFallback includes regex hint in prompt when single domain matches', async () => {
+  let capturedPrompt = '';
+  const router = {
+    route: async ({ content }) => { capturedPrompt = content; return { result: 'deck', provider: 'mock', tokens: 5 }; },
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
+  await pipeline._classifyFallback('Create a new card for the sprint');
+  assert.ok(capturedPrompt.includes('Regex keyword hint: deck'), `Prompt should include regex hint, got: ${capturedPrompt.substring(0, 200)}`);
+});
+
+// -- Test: _classifyFallback does NOT include regex hint when no domain matches --
+asyncTest('_classifyFallback does NOT include regex hint when no domain matches', async () => {
+  let capturedPrompt = '';
+  const router = {
+    route: async ({ content }) => { capturedPrompt = content; return { result: 'chitchat', provider: 'mock', tokens: 5 }; },
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
+  await pipeline._classifyFallback('tell me a joke please');
+  assert.ok(!capturedPrompt.includes('Regex keyword hint'), `Prompt should NOT include regex hint for non-domain message`);
+});
+
+// -- Test: _classifyFallback LLM failure with regex hint → trusts regex hint --
+asyncTest('_classifyFallback trusts regex hint when LLM fails', async () => {
+  const failRouter = {
+    route: async () => { throw new Error('LLM unavailable'); },
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+
+  const pipeline = new MicroPipeline({ llmRouter: failRouter, logger: silentLogger });
+  // "Create a card" matches deck regex → should trust hint on LLM failure
+  const result = await pipeline._classifyFallback('Create a card for the feature');
+  assert.strictEqual(result.intent, 'deck', 'Should trust regex hint (deck) when LLM fails');
+});
+
+// -- Test: _classifyFallback LLM failure without regex hint → falls back to _heuristicClassify --
+asyncTest('_classifyFallback falls back to _heuristicClassify when LLM fails and no regex hint', async () => {
+  const failRouter = {
+    route: async () => { throw new Error('LLM unavailable'); },
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+
+  const pipeline = new MicroPipeline({ llmRouter: failRouter, logger: silentLogger });
+  // "tell me a joke" has no domain regex match → heuristic fallback
+  const result = await pipeline._classifyFallback('tell me a joke please');
+  assert.ok(result.intent, 'Should return a valid intent from heuristic');
+  // Heuristic would return QUESTION or CHITCHAT for this
+  assert.ok(['question', 'chitchat'].includes(result.intent), `Expected question or chitchat, got: ${result.intent}`);
+});
+
+// -- Test: _classifyFallback multi-domain still returns complex (hard gate preserved) --
+asyncTest('_classifyFallback multi-domain still returns complex (hard gate preserved)', async () => {
+  const pipeline = new MicroPipeline({ llmRouter: createMockRouter(), logger: silentLogger });
+  const result = await pipeline._classifyFallback('Create a task and send an email about it');
+  assert.strictEqual(result.intent, 'complex', 'Multi-domain should still hard-gate to complex');
+});
+
+// -- Test: _classifyFallback backward compat — no context param works --
+asyncTest('_classifyFallback backward compat — works without context param', async () => {
+  const router = createMockRouter({ result: 'chitchat', provider: 'mock', tokens: 5 });
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
+  // Call without context param (backward compat)
+  const result = await pipeline._classifyFallback('tell me something interesting');
+  assert.ok(result.intent, 'Should return a valid intent without context param');
+});
+
+// -- Test: _classifyFallback includes last action in prompt --
+asyncTest('_classifyFallback includes last action in prompt', async () => {
+  let capturedPrompt = '';
+  const router = {
+    route: async ({ content }) => { capturedPrompt = content; return { result: 'file', provider: 'mock', tokens: 5 }; },
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
+  const ctx = {
+    getLastAction: () => ({ type: 'file_list', refs: { path: '/' } }),
+    getRecentContext: () => [{ role: 'assistant', content: 'Listed files' }]
+  };
+
+  await pipeline._classifyFallback('read the most recent one', ctx);
+  assert.ok(capturedPrompt.includes('Last action performed: file_list'), `Prompt should include last action, got: ${capturedPrompt.substring(0, 300)}`);
+});
+
+// -- Test: _classifyFallback short message WITH conversation context still calls LLM --
+asyncTest('_classifyFallback short message with conversation context still calls LLM', async () => {
+  let llmCalled = false;
+  const router = {
+    route: async () => { llmCalled = true; return { result: 'file', provider: 'mock', tokens: 5 }; },
+    hasCloudPlayers: () => false,
+    isCloudAvailable: async () => false
+  };
+
+  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
+  const ctx = {
+    getRecentContext: () => [
+      { role: 'user', content: 'list my files' },
+      { role: 'assistant', content: 'Here are your files: notes.txt' }
+    ]
+  };
+
+  // "yes" is ≤2 words but has conversation context → should NOT short-circuit to chitchat
+  const result = await pipeline._classifyFallback('yes', ctx);
+  assert.strictEqual(llmCalled, true, 'LLM should be called for short message with conversation context');
+  assert.strictEqual(result.intent, 'file', 'Should return LLM classification, not chitchat');
+});
+
+// -- Test: process() no longer has action-ledger override — relies on LLM context --
+asyncTest('process() passes context to _classifyFallback (no action-ledger override)', async () => {
+  let classifyPrompt = '';
+  let callCount = 0;
   const router = {
     route: async ({ content }) => {
-      // Classification call vs domain handler call
-      if (content.includes('Classify')) return { result: 'wiki', provider: 'mock', tokens: 5 };
-      return { result: '{"action":"read","path":"notes.txt"}', provider: 'mock', tokens: 20 };
+      callCount++;
+      if (callCount === 1) {
+        // First call is the classification prompt
+        classifyPrompt = content;
+        return { result: 'file', provider: 'mock', tokens: 5 };
+      }
+      return { result: 'Here is the file content', provider: 'mock', tokens: 20 };
     },
     hasCloudPlayers: () => false,
     isCloudAvailable: async () => false
   };
 
   const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
-  const stats = pipeline.getStats();
-
-  // Context with file_list as last action
   const ctx = {
     userName: 'alice',
-    roomToken: 'room1',
-    warmMemory: '',
-    getLastAction: (prefix) => {
-      if (prefix === 'file_') {
-        return { type: 'file_list', refs: { path: '/', count: 3, files: ['a.txt', 'b.pdf'] } };
-      }
-      return null;
-    },
-    getRecentActions: () => []
+    getLastAction: () => ({ type: 'file_list', refs: { path: '/' } }),
+    getRecentContext: () => [
+      { role: 'assistant', content: 'Here are your files: notes.txt, report.pdf' }
+    ]
   };
 
-  // Without pre-classified intent, _classifyFallback will run.
-  // "read the most recent one" has no file keyword → would go to wiki via LLM.
-  // But the action-ledger override should force it to file domain.
-  // Since there's no FileExecutor wired, this will throw DOMAIN_ESCALATE.
+  // Without pre-classified intent, _classifyFallback runs with context
   try {
     await pipeline.process('read the most recent one', ctx);
-  } catch (err) {
-    // DOMAIN_ESCALATE means it reached the file handler path (correct routing)
-    // OR it could be an executor error — either way it went to file domain
-    assert.ok(err.code === 'DOMAIN_ESCALATE' || err.message, 'Should route to file domain');
-  }
-
-  // Verify file intent was counted
-  assert.ok(stats.byIntent.file >= 1, `Expected file intent count >= 1, got: ${JSON.stringify(stats.byIntent)}`);
-});
-
-asyncTest('process() does NOT override when message has explicit other-domain keyword', async () => {
-  const router = {
-    route: async () => ({ result: 'wiki', provider: 'mock', tokens: 5 }),
-    hasCloudPlayers: () => false,
-    isCloudAvailable: async () => false
-  };
-
-  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
-  const stats = pipeline.getStats();
-
-  const ctx = {
-    userName: 'alice',
-    warmMemory: '',
-    getLastAction: (prefix) => {
-      if (prefix === 'file_') {
-        return { type: 'file_list', refs: { path: '/', count: 3 } };
-      }
-      return null;
-    }
-  };
-
-  // "the most recent one" + "wiki" → should NOT override
-  try {
-    await pipeline.process('read the most recent wiki page', ctx);
   } catch (_) { /* domain escalate expected */ }
 
-  // Should NOT have counted as file
-  assert.ok(!stats.byIntent.file, `file intent should NOT be set when wiki keyword present, got: ${JSON.stringify(stats.byIntent)}`);
-});
-
-asyncTest('process() does NOT override when last action is not file_list', async () => {
-  const router = {
-    route: async () => ({ result: 'chitchat', provider: 'mock', tokens: 5 }),
-    hasCloudPlayers: () => false,
-    isCloudAvailable: async () => false
-  };
-
-  const pipeline = new MicroPipeline({ llmRouter: router, logger: silentLogger });
-
-  const ctx = {
-    userName: 'alice',
-    warmMemory: '',
-    getLastAction: (prefix) => {
-      if (prefix === 'file_') {
-        return { type: 'file_read', refs: { path: 'notes.txt' } };
-      }
-      return null;
-    }
-  };
-
-  // file_read (not file_list) → should NOT override
-  const result = await pipeline.process('read the most recent one', ctx);
-  // Should fall through to chitchat/LLM classification, not file
-  assert.ok(typeof result === 'string', 'Should return a string response');
+  // Verify the classification LLM received conversation context (no hardcoded override)
+  assert.ok(classifyPrompt.includes('<conversation>'), 'Classification prompt should include conversation context');
+  assert.ok(classifyPrompt.includes('Last action performed: file_list'), 'Classification prompt should include last action');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 100);

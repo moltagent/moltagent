@@ -30,7 +30,7 @@ const INTENTS = Object.freeze({
   SEARCH: 'search'
 });
 
-// Domain-specific regex patterns for fast-path classification (no LLM needed)
+// Domain-specific regex patterns for classification hints and heuristic fallback
 const DOMAIN_PATTERNS = {
   deck: /\b(card|task|board|stack|kanban|deck|todo|to-do|to do|assign|due date|overdue)\b/i,
   calendar: /\b(calendar|event|meeting|appointment|schedule|book|reschedule|invite|agenda)\b/i,
@@ -117,21 +117,7 @@ class MicroPipeline {
       // Use pre-classified intent if provided (from IntentRouter via MessageProcessor)
       let classification = context.intent
         ? { intent: context.intent }
-        : await this._classifyFallback(message);
-
-      // Action-ledger override: when the last action was file_list and the message
-      // is an ambiguous reference, force file domain regardless of classifier output.
-      if (classification.intent !== INTENTS.FILE && typeof context.getLastAction === 'function') {
-        const lastAction = context.getLastAction('file_');
-        if (lastAction && lastAction.type === 'file_list') {
-          const lower = message.toLowerCase();
-          const hasAmbiguousRef = /\b(the most recent|the latest|the newest|that one|the last one|read it|open it|all of them|the first)\b/.test(lower);
-          const hasExplicitOtherDomain = /\b(wiki|calendar|event|meeting|deck|card|task|email|mail|schedule)\b/.test(lower);
-          if (hasAmbiguousRef && !hasExplicitOtherDomain) {
-            classification = { intent: INTENTS.FILE };
-          }
-        }
-      }
+        : await this._classifyFallback(message, context);
 
       const intent = classification.intent || INTENTS.CHITCHAT;
 
@@ -180,46 +166,41 @@ class MicroPipeline {
   // ---------------------------------------------------------------------------
 
   /**
-   * Fallback classifier — regex heuristics + LLM.
+   * Fallback classifier — regex hint + LLM with conversation context.
    * Used when no pre-classified intent is provided via context.intent
    * (i.e. direct callers without IntentRouter).
    *
+   * Regex is a HINT, not a gate: the LLM always runs (except for
+   * short messages with no context, or multi-domain matches).
+   *
    * @param {string} message
+   * @param {Object} [context={}] - { getRecentContext?, getLastAction? }
    * @returns {Promise<Object>} { intent, topics?, names? }
    */
-  async _classifyFallback(message) {
-    // Fast-path: short messages (< 5 words) are likely chitchat
+  async _classifyFallback(message, context = {}) {
+    let hasConversationContext = false;
+    if (typeof context.getRecentContext === 'function') {
+      const recent = context.getRecentContext();
+      hasConversationContext = Array.isArray(recent) && recent.length > 0;
+    }
+
+    // Fast-path: short messages (≤2 words) with no conversation context → chitchat
     const wordCount = message.trim().split(/\s+/).length;
-    if (wordCount <= 2) {
+    if (wordCount <= 2 && !hasConversationContext) {
       return { intent: INTENTS.CHITCHAT };
     }
 
-    // Fast-path: domain-specific detection via regex
-    // Check for multi-domain (mentions 2+ domains) → complex
+    // Hard gate: multi-domain regex → complex (two domains IS complex)
     const domainHits = this._detectDomains(message);
-    if (domainHits.length === 1) {
-      return { intent: INTENTS[domainHits[0].toUpperCase()] || INTENTS.TASK };
-    }
     if (domainHits.length > 1) {
       return { intent: INTENTS.COMPLEX };
     }
 
+    // Regex hint: single domain match becomes a suggestion, not a return
+    const regexHint = domainHits.length === 1 ? domainHits[0] : null;
+
     try {
-      const classifyPrompt = `Classify this user message into exactly ONE category. Reply with ONLY the category name, nothing else.
-
-Categories:
-- deck (task/card/board management: create card, list tasks, move card, assign, due date)
-- calendar (events/meetings: schedule, book, check calendar, reschedule)
-- email (sending/reading email: send mail, check inbox, draft)
-- wiki (wiki/knowledge pages: write page, search wiki, read article)
-- file (file operations: list files, create folder, upload, share file)
-- search (information lookup: search for, find, what do you know about)
-- chitchat (casual conversation, opinions, small talk, greetings)
-- complex (multi-part request, analysis, research, comparison, writing, planning)
-
-Message: "${message.substring(0, 200)}"
-
-Category:`;
+      const classifyPrompt = this._buildClassifyPrompt(message, regexHint, context);
 
       const result = await this.router.route({
         job: 'quick',
@@ -246,8 +227,78 @@ Category:`;
       return { intent: this._heuristicClassify(message) };
     } catch (err) {
       this.logger.warn(`[MicroPipeline] Classification LLM failed: ${err.message}`);
+      // On LLM failure: trust regex hint if available, else heuristic
+      if (regexHint) {
+        return { intent: INTENTS[regexHint.toUpperCase()] || INTENTS.TASK };
+      }
       return { intent: this._heuristicClassify(message) };
     }
+  }
+
+  /**
+   * Build a context-aware classification prompt for _classifyFallback.
+   * Mirrors IntentRouter's <conversation> pattern for consistency.
+   *
+   * @param {string} message - User message text
+   * @param {string|null} regexHint - Single domain from _detectDomains, or null
+   * @param {Object} context - { getRecentContext?, getLastAction? }
+   * @returns {string} Classification prompt
+   * @private
+   */
+  _buildClassifyPrompt(message, regexHint, context) {
+    const parts = [];
+
+    parts.push(`Classify this user message into exactly ONE category. Reply with ONLY the category name, nothing else.`);
+
+    // Conversation context block (mirrors IntentRouter._buildUserContent)
+    if (typeof context.getRecentContext === 'function') {
+      const recent = context.getRecentContext();
+      if (Array.isArray(recent) && recent.length > 0) {
+        const formatted = recent.slice(-8).map(c => {
+          const safe = (c.content || '').substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          return `${c.role}: ${safe}`;
+        }).join('\n');
+        parts.push(`\n<conversation>\n${formatted}\n</conversation>`);
+      }
+    }
+
+    // Last action hint
+    if (typeof context.getLastAction === 'function') {
+      const lastAction = context.getLastAction();
+      if (lastAction && lastAction.type) {
+        parts.push(`Last action performed: ${lastAction.type}`);
+      }
+    }
+
+    // Regex keyword hint (override-able suggestion)
+    if (regexHint) {
+      parts.push(`Regex keyword hint: ${regexHint} (override if conversation context suggests otherwise)`);
+    }
+
+    // Context-aware rules
+    parts.push(`
+Rules:
+- Read the <conversation> block FIRST. The user's message usually continues the current topic.
+- If the assistant just listed files, the user is probably still talking about files.
+- If the assistant just showed calendar results, the user is probably still talking about calendar.
+- If the assistant just listed Deck cards, the user is probably still talking about Deck.
+- If the assistant just showed emails, the user is probably still talking about email.
+- If the message references something from the conversation ("that one", "read it", "the first"), classify based on the conversation topic.
+
+Categories:
+- deck (task/card/board management: create card, list tasks, move card, assign, due date)
+- calendar (events/meetings: schedule, book, check calendar, reschedule)
+- email (sending/reading email: send mail, check inbox, draft)
+- wiki (wiki/knowledge pages: write page, search wiki, read article)
+- file (file operations: list files, create folder, upload, share file)
+- search (information lookup: search for, find, what do you know about)
+- chitchat (casual conversation, opinions, small talk, greetings)
+- complex (multi-part request, analysis, research, comparison, writing, planning)`);
+
+    parts.push(`Message: "${message.substring(0, 300)}"`);
+    parts.push(`Category:`);
+
+    return parts.join('\n\n');
   }
 
   /**

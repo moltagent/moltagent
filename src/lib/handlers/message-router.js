@@ -9,6 +9,11 @@
  * Pattern: Intent-based routing with keyword scoring and confirmation state tracking.
  * Handles Human-in-the-Loop (HITL) confirmations for critical actions.
  *
+ * **SUPERSEDED**: Primary classification is now handled by IntentRouter
+ * (dual-model LLM with conversation context) + MicroPipeline (regex-as-hint
+ * with LLM fallback). This MessageRouter remains as a legacy fallback path
+ * for direct callers. New code should use IntentRouter + MicroPipeline.
+ *
  * Key Dependencies:
  * - src/lib/handlers/calendar-handler.js (CalendarHandler)
  * - src/lib/handlers/email-handler.js (EmailHandler)
@@ -144,6 +149,7 @@ class MessageRouter {
 
   /**
    * Classify the intent of a message
+   * @deprecated Use IntentRouter.classify() + MicroPipeline._classifyFallback() instead.
    * @param {string} message - The message to classify
    * @param {Array} [history] - Conversation history for context-aware classification
    * @returns {MessageIntent} 'calendar' | 'email' | 'confirm' | 'general'
@@ -330,12 +336,15 @@ class MessageRouter {
 
   /**
    * Route a message to the appropriate handler
+   * @deprecated Use MessageProcessor smart-mix routing instead.
    * @param {string} message - The message to route
    * @param {MessageContext} [context={}] - Request context
    * @returns {Promise<RouteResult>} Response with message and metadata
    */
   async route(message, context = {}) {
     const { user, token, messageId, history } = context;
+
+    console.log(`[MessageRouter] LEGACY keyword route: "${message.substring(0, 60)}" user=${user || 'unknown'}`);
 
     // Check for active Skill Forge session before general classification.
     // If the user is mid-conversation (not idle), route to skillforge

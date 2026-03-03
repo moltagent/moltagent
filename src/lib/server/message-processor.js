@@ -1198,7 +1198,15 @@ class MessageProcessor {
           replyFn: roomToken ? (text) => this.sendTalkReply(roomToken, text) : null
         });
       } else {
-        const fallback = await this.microPipeline._classifyFallback(message);
+        // Build context for _classifyFallback so it has conversation history
+        const fallbackCtx = {};
+        if (recentContext.length > 0) {
+          fallbackCtx.getRecentContext = () => recentContext;
+        }
+        if (session && this.sessionManager) {
+          fallbackCtx.getLastAction = (dp) => this.sessionManager.getLastAction(session, dp);
+        }
+        const fallback = await this.microPipeline._classifyFallback(message, fallbackCtx);
         // Map fallback domain intents to IntentRouter format
         if (DOMAIN_INTENTS.has(fallback.intent)) {
           classification = { intent: 'domain', domain: fallback.intent, needsHistory: false };
