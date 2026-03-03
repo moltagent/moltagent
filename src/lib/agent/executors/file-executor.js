@@ -23,7 +23,18 @@
  * @version 2.0.0
  */
 
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const fs = require('fs').promises;
+const os = require('os');
+const nodePath = require('path');
+
+const execFileAsync = promisify(execFile);
+
 const BaseExecutor = require('./base-executor');
+
+let appConfig;
+try { appConfig = require('../../config'); } catch (_) { /* optional */ }
 
 let TextExtractor;
 try { TextExtractor = require('../../extraction/text-extractor').TextExtractor; } catch (_) { /* optional */ }
@@ -316,10 +327,32 @@ Message: "${message.substring(0, 300)}"`;
     const fileType = this._classifyFileType(filename);
 
     if (fileType === 'image') {
-      const ext = filename.split('.').pop().toUpperCase();
+      // Attempt OCR — tesseract reads PNG/JPG/TIFF/BMP directly
+      try {
+        const buffer = await this.ncFilesClient.readFileBuffer(path);
+        const ocrText = await this._ocrImage(buffer, filename);
+
+        if (ocrText && ocrText.trim().length > 50) {
+          this._logActivity('file_read', `OCR read "${path}"`, { path, ocr: true }, context);
+
+          const wantsRaw = RAW_CONTENT_PATTERN.test(message || '');
+          if (wantsRaw) {
+            return {
+              response: ocrText.trim(),
+              actionRecord: { type: 'file_read', refs: { path, result: 'image_ocr_raw', contentLength: ocrText.length } }
+            };
+          }
+
+          return await this._synthesizeFileContent(path, filename, ocrText.trim());
+        }
+      } catch (err) {
+        this.logger?.warn?.(`[FileExecutor] Image read/OCR failed for ${path}: ${err.message}`);
+      }
+
+      // No meaningful text found or OCR unavailable
       return {
-        response: `**${filename}** is a ${ext} image file. I can't view images directly, but if you share it in Talk I may be able to see it.`,
-        actionRecord: { type: 'file_read', refs: { path, result: 'image_skipped' } }
+        response: `**${filename}** is an image file. I ran OCR but found no readable text — this appears to be a photo or graphic rather than a document.`,
+        actionRecord: { type: 'file_read', refs: { path, result: 'image_no_text' } }
       };
     }
 
@@ -429,6 +462,49 @@ Be concise but thorough. Do NOT dump the raw content. Speak as someone who just 
       response: fallback,
       actionRecord: { type: 'file_read', refs: { path: filePath, result: 'raw_fallback', contentLength: content.length } }
     };
+  }
+
+  /**
+   * Run tesseract OCR directly on an image buffer.
+   * Returns extracted text or empty string on failure/unavailable.
+   */
+  async _ocrImage(buffer, filename) {
+    // Lazy availability check (cached for process lifetime)
+    if (this._tesseractAvailable === undefined) {
+      try {
+        await execFileAsync('tesseract', ['--version']);
+        this._tesseractAvailable = true;
+      } catch {
+        this._tesseractAvailable = false;
+      }
+    }
+
+    if (!this._tesseractAvailable) {
+      this.logger?.warn?.('[FileExecutor] tesseract not available, skipping image OCR');
+      return '';
+    }
+
+    const ext = nodePath.extname(filename) || '.png';
+    const stamp = Date.now();
+    const tmpIn = nodePath.join(os.tmpdir(), `molti-ocr-${stamp}${ext}`);
+    const tmpOut = nodePath.join(os.tmpdir(), `molti-ocr-${stamp}`);
+
+    try {
+      await fs.writeFile(tmpIn, buffer);
+
+      const languages = appConfig?.extraction?.ocrLanguages ?? 'eng+deu+por';
+      const timeout = appConfig?.extraction?.ocrTimeoutMs ?? 30000;
+      await execFileAsync('tesseract', [tmpIn, tmpOut, '-l', languages], { timeout });
+
+      const text = await fs.readFile(tmpOut + '.txt', 'utf-8');
+      return text;
+    } catch (err) {
+      this.logger?.warn?.(`[FileExecutor] Image OCR failed: ${err.message}`);
+      return '';
+    } finally {
+      await fs.unlink(tmpIn).catch(() => {});
+      await fs.unlink(tmpOut + '.txt').catch(() => {});
+    }
   }
 
   /**

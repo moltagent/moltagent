@@ -654,4 +654,73 @@ asyncTest('extraction works without context accessors (backward compat)', async 
   assert.strictEqual(result.actionRecord.refs.result, 'synthesized');
 });
 
+// ===== Image OCR Tests =====
+
+// -- Test 28: image with OCR text → synthesis --
+asyncTest('image with OCR text triggers synthesis', async () => {
+  const filesClient = createMockFilesClient();
+  let routeCallCount = 0;
+  const mockRouter = {
+    route: async () => {
+      routeCallCount++;
+      if (routeCallCount === 1) return { result: JSON.stringify({ action: 'read', path: 'docs/receipt.png' }) };
+      // Second call is synthesis of OCR text
+      return { result: 'This image contains a receipt from Store ABC for $42.50.' };
+    }
+  };
+
+  // Mock _ocrImage to return substantial text
+  const executor = new FileExecutor({
+    router: mockRouter,
+    ncFilesClient: filesClient,
+    logger: silentLogger
+  });
+  executor._ocrImage = async () => 'Store ABC\nDate: 2026-03-01\nTotal: $42.50\nThank you for your purchase!';
+
+  const result = await executor.execute('Read docs/receipt.png', { userName: 'alice' });
+  assert.strictEqual(typeof result, 'object');
+  assert.strictEqual(routeCallCount, 2, `expected 2 router calls (extract + synthesis), got: ${routeCallCount}`);
+  assert.ok(result.response.includes('receipt'), `expected synthesis about receipt, got: ${result.response}`);
+  assert.strictEqual(result.actionRecord.refs.result, 'synthesized');
+});
+
+// -- Test 29: image with no OCR text → friendly message --
+asyncTest('image without readable text returns friendly message', async () => {
+  const filesClient = createMockFilesClient();
+  const executor = new FileExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'read', path: 'photos/sunset.jpg' })
+    }),
+    ncFilesClient: filesClient,
+    logger: silentLogger
+  });
+  // Mock _ocrImage to return empty/short text (below 50-char threshold)
+  executor._ocrImage = async () => 'xy';
+
+  const result = await executor.execute('Read photos/sunset.jpg', { userName: 'alice' });
+  assert.strictEqual(typeof result, 'object');
+  assert.ok(result.response.includes('no readable text'), `expected no-text message, got: ${result.response}`);
+  assert.strictEqual(result.actionRecord.refs.result, 'image_no_text');
+});
+
+// -- Test 30: tesseract unavailable → graceful fallback --
+asyncTest('tesseract unavailable falls back gracefully', async () => {
+  const filesClient = createMockFilesClient();
+  const executor = new FileExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'read', path: 'docs/scan.png' })
+    }),
+    ncFilesClient: filesClient,
+    logger: silentLogger
+  });
+  // Mock _ocrImage to return empty (tesseract not found)
+  executor._ocrImage = async () => '';
+
+  const result = await executor.execute('Read docs/scan.png', { userName: 'alice' });
+  assert.strictEqual(typeof result, 'object');
+  assert.ok(result.response.includes('no readable text') || result.response.includes('image file'),
+    `expected graceful fallback, got: ${result.response}`);
+  assert.strictEqual(result.actionRecord.refs.result, 'image_no_text');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);
