@@ -469,7 +469,7 @@ asyncTest('context-aware read resolves filename from action ledger', async () =>
     logger: silentLogger
   });
 
-  // Context with getLastAction returning a file_list action
+  // Context with getLastAction returning a file_list action (new object format)
   const ctx = {
     userName: 'alice',
     getLastAction: (prefix) => {
@@ -478,7 +478,11 @@ asyncTest('context-aware read resolves filename from action ledger', async () =>
           type: 'file_list',
           refs: {
             path: '/', count: 3,
-            files: ['Documents', 'report.pdf', 'notes.txt'],
+            directories: ['Documents'],
+            files: [
+              { name: 'report.pdf', size: 2048, ext: 'pdf' },
+              { name: 'notes.txt', size: 512, ext: 'txt' }
+            ],
             newest: { name: 'notes.txt', modified: '2026-03-03' },
             biggest: { name: 'report.pdf', size: 2048 },
             types: { pdf: 1, txt: 1 }
@@ -491,6 +495,7 @@ asyncTest('context-aware read resolves filename from action ledger', async () =>
 
   const result = await executor.execute('read the most recent one', ctx);
   // The extraction prompt now includes context; LLM mock returns notes.txt
+  // Hallucination guard passes because notes.txt is in the listing
   assert.strictEqual(typeof result, 'object');
   assert.strictEqual(routeCallCount, 2, `expected 2 router calls, got: ${routeCallCount}`);
   assert.strictEqual(result.actionRecord.type, 'file_read');
@@ -524,7 +529,11 @@ asyncTest('_buildContextHint includes file_list summary with enriched refs', asy
       type: 'file_list',
       refs: {
         path: 'Projects', count: 5,
-        files: ['readme.md', 'spec.pdf'],
+        directories: ['src'],
+        files: [
+          { name: 'readme.md', size: 1024, ext: 'md' },
+          { name: 'spec.pdf', size: 10240, ext: 'pdf' }
+        ],
         newest: { name: 'spec.pdf', modified: '2026-03-03' },
         biggest: { name: 'spec.pdf', size: 10240 },
         types: { md: 3, pdf: 2 }
@@ -541,6 +550,7 @@ asyncTest('_buildContextHint includes file_list summary with enriched refs', asy
   assert.ok(hint.includes('5 entries'), `expected count, got: ${hint}`);
   assert.ok(hint.includes('spec.pdf'), `expected newest file, got: ${hint}`);
   assert.ok(hint.includes('readme.md'), `expected file list, got: ${hint}`);
+  assert.ok(hint.includes('1024'), `expected file size in hint, got: ${hint}`);
   assert.ok(hint.includes('Last assistant response'), `expected conversation context, got: ${hint}`);
 });
 
@@ -557,13 +567,27 @@ asyncTest('_summarizeLastAction handles all action types and null', async () => 
   assert.strictEqual(executor._summarizeLastAction(undefined), '');
   assert.strictEqual(executor._summarizeLastAction({}), '');
 
-  // file_list
+  // file_list (new format: objects with name/size/ext)
   const listSummary = executor._summarizeLastAction({
     type: 'file_list',
-    refs: { path: '/', count: 2, files: ['a.txt', 'b.pdf'], newest: { name: 'b.pdf', modified: '2026-03-03' }, biggest: { name: 'b.pdf', size: 4096 } }
+    refs: {
+      path: '/', count: 2, directories: ['docs'],
+      files: [{ name: 'a.txt', size: 512, ext: 'txt' }, { name: 'b.pdf', size: 4096, ext: 'pdf' }],
+      newest: { name: 'b.pdf', modified: '2026-03-03' }, biggest: { name: 'b.pdf', size: 4096 }
+    }
   });
   assert.ok(listSummary.includes('Previous listing'), `expected listing header, got: ${listSummary}`);
-  assert.ok(listSummary.includes('a.txt, b.pdf'), `expected file names, got: ${listSummary}`);
+  assert.ok(listSummary.includes('a.txt'), `expected file name a.txt, got: ${listSummary}`);
+  assert.ok(listSummary.includes('b.pdf'), `expected file name b.pdf, got: ${listSummary}`);
+  assert.ok(listSummary.includes('512'), `expected file size in summary, got: ${listSummary}`);
+  assert.ok(listSummary.includes('docs'), `expected directory name, got: ${listSummary}`);
+
+  // file_list backward compat (old string format)
+  const oldSummary = executor._summarizeLastAction({
+    type: 'file_list',
+    refs: { path: '/', count: 1, files: ['legacy.txt'] }
+  });
+  assert.ok(oldSummary.includes('legacy.txt'), `expected backward compat, got: ${oldSummary}`);
 
   // file_read
   const readSummary = executor._summarizeLastAction({ type: 'file_read', refs: { path: 'foo.md' } });
@@ -603,7 +627,14 @@ asyncTest('file_list actionRecord includes enriched refs (newest/biggest/types)'
   const refs = result.actionRecord.refs;
   assert.strictEqual(refs.count, 3, `expected 3 entries, got: ${refs.count}`);
   assert.ok(Array.isArray(refs.files), 'files should be an array');
-  assert.ok(refs.files.includes('report.pdf'), `expected report.pdf in files, got: ${refs.files}`);
+  // files now contains objects with name, size, ext
+  const fileNames = refs.files.map(f => f.name);
+  assert.ok(fileNames.includes('report.pdf'), `expected report.pdf in files, got: ${fileNames}`);
+  assert.ok(fileNames.includes('notes.txt'), `expected notes.txt in files, got: ${fileNames}`);
+  assert.strictEqual(refs.files[0].ext, 'pdf', `expected pdf ext, got: ${refs.files[0].ext}`);
+  assert.strictEqual(refs.files[0].size, 2048, `expected size 2048, got: ${refs.files[0].size}`);
+  assert.ok(Array.isArray(refs.directories), 'directories should be an array');
+  assert.ok(refs.directories.includes('Documents'), `expected Documents in dirs, got: ${refs.directories}`);
   assert.ok(refs.newest, 'should have newest');
   assert.strictEqual(refs.newest.name, 'notes.txt', `expected notes.txt as newest, got: ${refs.newest.name}`);
   assert.ok(refs.biggest, 'should have biggest');
@@ -654,9 +685,130 @@ asyncTest('extraction works without context accessors (backward compat)', async 
   assert.strictEqual(result.actionRecord.refs.result, 'synthesized');
 });
 
+// ===== Hallucination Guard Tests =====
+
+// -- Test 28: hallucinated filename blocked with filtered suggestions --
+asyncTest('hallucination guard blocks non-existent filename with suggestions', async () => {
+  const filesClient = createMockFilesClient();
+  const executor = new FileExecutor({
+    router: createMockRouter({
+      // LLM hallucinates "moltagent_system_prompt.md" which doesn't exist
+      result: JSON.stringify({ action: 'read', path: 'moltagent_system_prompt.md' })
+    }),
+    ncFilesClient: filesClient,
+    logger: silentLogger
+  });
+
+  const ctx = {
+    userName: 'alice',
+    getLastAction: (prefix) => {
+      if (prefix === 'file_') {
+        return {
+          type: 'file_list',
+          refs: {
+            path: 'docs', count: 3,
+            directories: [],
+            files: [
+              { name: 'briefing.md', size: 15000, ext: 'md' },
+              { name: 'roadmap.md', size: 8000, ext: 'md' },
+              { name: 'photo.png', size: 50000, ext: 'png' }
+            ],
+            newest: { name: 'briefing.md', modified: '2026-03-03' },
+            biggest: { name: 'photo.png', size: 50000 },
+            types: { md: 2, png: 1 }
+          }
+        };
+      }
+      return null;
+    }
+  };
+
+  const result = await executor.execute('read the biggest markdown file', ctx);
+  assert.strictEqual(typeof result, 'object');
+  assert.ok(result.response.includes("don't see"), `expected guard message, got: ${result.response}`);
+  // Should suggest .md files sorted by size
+  assert.ok(result.response.includes('briefing.md'), `expected biggest md suggestion, got: ${result.response}`);
+  assert.ok(result.response.includes('roadmap.md'), `expected second md suggestion, got: ${result.response}`);
+  // Should NOT suggest the png
+  assert.ok(!result.response.includes('photo.png'), `should not suggest non-md files, got: ${result.response}`);
+  assert.strictEqual(result.actionRecord.refs.result, 'hallucination_blocked');
+});
+
+// -- Test 29: valid filename passes hallucination guard --
+asyncTest('hallucination guard passes for valid filename', async () => {
+  const filesClient = createMockFilesClient();
+  let routeCallCount = 0;
+  const mockRouter = {
+    route: async () => {
+      routeCallCount++;
+      if (routeCallCount === 1) return { result: JSON.stringify({ action: 'read', path: 'briefing.md' }) };
+      return { result: 'This is a technical briefing about the project.' };
+    }
+  };
+
+  const executor = new FileExecutor({
+    router: mockRouter,
+    ncFilesClient: filesClient,
+    logger: silentLogger
+  });
+
+  const ctx = {
+    userName: 'alice',
+    getLastAction: (prefix) => {
+      if (prefix === 'file_') {
+        return {
+          type: 'file_list',
+          refs: {
+            path: 'docs', count: 2,
+            directories: [],
+            files: [
+              { name: 'briefing.md', size: 15000, ext: 'md' },
+              { name: 'photo.png', size: 50000, ext: 'png' }
+            ],
+            newest: { name: 'briefing.md', modified: '2026-03-03' },
+            biggest: { name: 'photo.png', size: 50000 },
+            types: { md: 1, png: 1 }
+          }
+        };
+      }
+      return null;
+    }
+  };
+
+  const result = await executor.execute('read briefing.md', ctx);
+  assert.strictEqual(typeof result, 'object');
+  assert.strictEqual(routeCallCount, 2, `expected extraction + synthesis, got: ${routeCallCount}`);
+  assert.strictEqual(result.actionRecord.refs.result, 'synthesized');
+});
+
+// -- Test 30: guard works without prior listing (no block) --
+asyncTest('hallucination guard skips when no prior file_list', async () => {
+  const filesClient = createMockFilesClient();
+  let routeCallCount = 0;
+  const mockRouter = {
+    route: async () => {
+      routeCallCount++;
+      if (routeCallCount === 1) return { result: JSON.stringify({ action: 'read', path: 'notes.txt' }) };
+      return { result: 'Notes content summary.' };
+    }
+  };
+
+  const executor = new FileExecutor({
+    router: mockRouter,
+    ncFilesClient: filesClient,
+    logger: silentLogger
+  });
+
+  // No getLastAction or last action is not file_list
+  const result = await executor.execute('Read notes.txt', { userName: 'alice' });
+  assert.strictEqual(typeof result, 'object');
+  assert.strictEqual(routeCallCount, 2, `should proceed without guard, got: ${routeCallCount}`);
+  assert.strictEqual(result.actionRecord.refs.result, 'synthesized');
+});
+
 // ===== Image OCR Tests =====
 
-// -- Test 28: image with OCR text → synthesis --
+// -- Test 31: image with OCR text → synthesis --
 asyncTest('image with OCR text triggers synthesis', async () => {
   const filesClient = createMockFilesClient();
   let routeCallCount = 0;
@@ -684,7 +836,7 @@ asyncTest('image with OCR text triggers synthesis', async () => {
   assert.strictEqual(result.actionRecord.refs.result, 'synthesized');
 });
 
-// -- Test 29: image with no OCR text → friendly message --
+// -- Test 32: image with no OCR text → friendly message --
 asyncTest('image without readable text returns friendly message', async () => {
   const filesClient = createMockFilesClient();
   const executor = new FileExecutor({
@@ -703,7 +855,7 @@ asyncTest('image without readable text returns friendly message', async () => {
   assert.strictEqual(result.actionRecord.refs.result, 'image_no_text');
 });
 
-// -- Test 30: tesseract unavailable → graceful fallback --
+// -- Test 33: tesseract unavailable → graceful fallback --
 asyncTest('tesseract unavailable falls back gracefully', async () => {
   const filesClient = createMockFilesClient();
   const executor = new FileExecutor({

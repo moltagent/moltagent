@@ -298,6 +298,87 @@ Message: "${message.substring(0, 300)}"`;
   }
 
   /**
+   * Hallucination guard: verify a filename exists in the last file_list result.
+   * Returns a structured response with filtered suggestions if the file doesn't exist,
+   * or null if the file is valid (or no listing to check against).
+   */
+  _checkFileExistsInListing(filename, filePath, message, context) {
+    if (!context || typeof context.getLastAction !== 'function') return null;
+
+    const lastAction = context.getLastAction('file_');
+    if (!lastAction || lastAction.type !== 'file_list') return null;
+
+    const refs = lastAction.refs || {};
+    if (!Array.isArray(refs.files) || refs.files.length === 0) return null;
+
+    const listingDir = refs.path || '/';
+
+    // If the resolved file is in a different directory than the listing, skip guard
+    // (user may be navigating into a subdirectory — we can't validate across dirs)
+    const lastSlash = filePath.lastIndexOf('/');
+    const fileFolder = lastSlash >= 0 ? filePath.substring(0, lastSlash) : '';
+    if (fileFolder && fileFolder !== listingDir) return null;
+
+    // Build set of known filenames (case-insensitive) from the listing
+    const knownFiles = refs.files.map(f => (typeof f === 'string') ? f : f.name);
+    const knownLower = new Set(knownFiles.map(n => n.toLowerCase()));
+    const knownDirs = Array.isArray(refs.directories) ? refs.directories : [];
+    const dirsLower = new Set(knownDirs.map(n => n.toLowerCase()));
+
+    // Check if the resolved filename exists in the listing (case-insensitive)
+    const filenameLower = filename.toLowerCase();
+    if (knownLower.has(filenameLower) || dirsLower.has(filenameLower)) {
+      return null; // File exists in listing — proceed
+    }
+
+    // File not found in listing — infer what the user wanted and suggest matches
+    // Detect extension filter from original message
+    const extMatch = (message || '').match(/\b(markdown|md|pdf|txt|csv|json|docx|xlsx|html|yaml|yml|xml|py|js|sh|log|spreadsheet|word)\b/i);
+    let filterExt = null;
+    if (extMatch) {
+      const raw = extMatch[1].toLowerCase();
+      const extMap = { markdown: 'md', spreadsheet: 'xlsx', word: 'docx' };
+      filterExt = extMap[raw] || raw;
+    }
+
+    // Normalize candidates (handle both old string format and new object format)
+    let candidates = refs.files.map(f =>
+      typeof f === 'string'
+        ? { name: f, size: 0, ext: f.includes('.') ? f.split('.').pop().toLowerCase() : 'other' }
+        : f
+    );
+    if (filterExt) {
+      candidates = candidates.filter(f => f.ext === filterExt);
+    }
+    // Sort by size descending (most common "biggest" query)
+    candidates.sort((a, b) => (b.size || 0) - (a.size || 0));
+
+    const typeLabel = filterExt ? `.${filterExt}` : '';
+    if (candidates.length === 0 && filterExt) {
+      return {
+        response: `I don't see any ${typeLabel} files in ${listingDir}. The listing has ${knownFiles.length} files. Could you check the folder or file type?`,
+        actionRecord: { type: 'file_read', refs: { path: filePath, result: 'hallucination_blocked' } }
+      };
+    }
+
+    if (candidates.length > 0) {
+      const top = candidates.slice(0, 10);
+      const suggestion = top.map(f => `- ${f.name} (${this._formatSize(f.size)})`).join('\n');
+      return {
+        response: `I don't see "${filename}" in the listing. Here are the${typeLabel ? ' ' + typeLabel : ''} files I found in ${listingDir}:\n${suggestion}\nWhich one do you mean?`,
+        actionRecord: { type: 'file_read', refs: { path: filePath, result: 'hallucination_blocked' } }
+      };
+    }
+
+    // No filter, no candidates — generic fallback
+    const topFiles = knownFiles.slice(0, 10);
+    return {
+      response: `I don't see "${filename}" in ${listingDir}. Here are some files I found:\n${topFiles.map(n => `- ${n}`).join('\n')}\nWhich one do you mean?`,
+      actionRecord: { type: 'file_read', refs: { path: filePath, result: 'hallucination_blocked' } }
+    };
+  }
+
+  /**
    * Read a file: classify → extract → synthesize via LLM.
    * Returns a human summary by default; raw content only when explicitly requested.
    */
@@ -322,6 +403,10 @@ Message: "${message.substring(0, 300)}"`;
     if (path.includes('*') || path.toLowerCase() === 'all') {
       return 'I can only read one file at a time. Which file would you like me to read?';
     }
+
+    // Hallucination guard: verify filename exists in last file_list result
+    const guardResult = this._checkFileExistsInListing(filename, path, message, context);
+    if (guardResult) return guardResult;
 
     // Content-type gate: reject non-readable file types early
     const fileType = this._classifyFileType(filename);
@@ -529,26 +614,30 @@ Be concise but thorough. Do NOT dump the raw content. Speak as someone who just 
       const files = entries.filter(e => e.type !== 'directory');
       const sorted = [...dirs, ...files];
 
-      // Compute enriched metadata for action ledger
+      // Compute enriched metadata for action ledger — store ALL files for context resolution
       const fileEntries = sorted.filter(e => e.type !== 'directory');
-      const first10Names = sorted.slice(0, 10).map(e => e.name);
+      const dirNames = dirs.map(e => e.name);
 
+      // Full file manifest: name + size + extension for every file
+      const allFiles = [];
       let newestFile = null;
       let biggestFile = null;
       const typeCounts = {};
 
       for (const f of fileEntries) {
+        const sz = Number.isFinite(f.size) ? f.size : 0;
+        const ext = (f.name.includes('.') ? f.name.split('.').pop().toLowerCase() : 'other');
+        allFiles.push({ name: f.name, size: sz, ext });
+
         if (f.modified) {
           const modTime = new Date(f.modified).getTime();
           if (!newestFile || modTime > newestFile._time) {
             newestFile = { name: f.name, modified: f.modified, _time: modTime };
           }
         }
-        const sz = Number.isFinite(f.size) ? f.size : 0;
         if (!biggestFile || sz > biggestFile.size) {
           biggestFile = { name: f.name, size: sz };
         }
-        const ext = (f.name.includes('.') ? f.name.split('.').pop().toLowerCase() : 'other');
         typeCounts[ext] = (typeCounts[ext] || 0) + 1;
       }
 
@@ -581,7 +670,8 @@ Be concise but thorough. Do NOT dump the raw content. Speak as someone who just 
           refs: {
             path: dirPath,
             count: sorted.length,
-            files: first10Names,
+            directories: dirNames,
+            files: allFiles,
             newest: newestFile ? { name: newestFile.name, modified: newestFile.modified } : null,
             biggest: biggestFile,
             types: typeCounts
@@ -714,8 +804,17 @@ Be concise but thorough. Do NOT dump the raw content. Speak as someone who just 
     switch (action.type) {
       case 'file_list': {
         const parts = [`Previous listing of ${refs.path || '/'} (${refs.count || 0} entries)`];
+        if (Array.isArray(refs.directories) && refs.directories.length > 0) {
+          parts.push(`Directories: ${refs.directories.join(', ')}`);
+        }
         if (Array.isArray(refs.files) && refs.files.length > 0) {
-          parts.push(`Files: ${refs.files.join(', ')}`);
+          // Full manifest: name (size, ext) for every file
+          const fileLines = refs.files.map(f => {
+            if (typeof f === 'string') return f; // backward compat with old format
+            const sz = Number.isFinite(f.size) ? ` (${f.size} bytes)` : '';
+            return `${f.name}${sz}`;
+          });
+          parts.push(`Files:\n${fileLines.join('\n')}`);
         }
         if (refs.newest && refs.newest.name) {
           parts.push(`Newest: ${refs.newest.name} (${refs.newest.modified || 'unknown date'})`);
