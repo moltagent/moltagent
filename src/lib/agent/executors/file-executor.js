@@ -112,6 +112,9 @@ Action rules:
 - "List/browse/show folder" → action: list
 - "Delete/remove a file" → action: delete
 - "Share a file with someone" → action: share
+- If the message is ONLY a filename or path with no action word, default to action: read
+  Examples: "report.pdf" → action: read, path: "report.pdf"
+            "Documents/spec.md" → action: read, path: "Documents/spec.md"
 
 Use "path" for full relative paths like "Projects/spec.md".
 Use "folder" + "filename" when they are separate.

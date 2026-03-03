@@ -216,6 +216,33 @@ asyncTest('listDirectory skips parent entry', async () => {
   assert.strictEqual(parent, undefined, 'Parent directory should be skipped');
 });
 
+asyncTest('listDirectory appends trailing slash to non-root paths', async () => {
+  let capturedPath;
+  const nc = createMockNCRM();
+  nc.request = async (path, options) => {
+    capturedPath = path;
+    return { status: 207, headers: {}, body: SAMPLE_PROPFIND_XML };
+  };
+  const client = new NCFilesClient(nc);
+  await client.listDirectory('Documents');
+  assert.ok(capturedPath.endsWith('/'), `Expected path to end with /, got: ${capturedPath}`);
+  assert.ok(capturedPath.includes('Documents/'), `Expected Documents/ in path, got: ${capturedPath}`);
+});
+
+asyncTest('listDirectory does not double-append trailing slash', async () => {
+  let capturedPath;
+  const nc = createMockNCRM();
+  nc.request = async (path, options) => {
+    capturedPath = path;
+    return { status: 207, headers: {}, body: SAMPLE_PROPFIND_XML };
+  };
+  const client = new NCFilesClient(nc);
+  await client.listDirectory('Documents/');
+  // Should not produce Documents//
+  assert.ok(!capturedPath.includes('//'), `Path should not have double slash, got: ${capturedPath}`);
+  assert.ok(capturedPath.endsWith('/'), `Expected path to end with /, got: ${capturedPath}`);
+});
+
 // ============================================================
 // getFileInfo
 // ============================================================

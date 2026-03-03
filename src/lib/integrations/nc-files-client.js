@@ -324,6 +324,9 @@ class NCFilesClient {
    * @returns {Promise<Array<{name: string, type: string, size: number, modified: string, permissions: string}>>}
    */
   async listDirectory(dirPath = '/') {
+    // Nextcloud requires trailing slash for Depth:1 PROPFIND directory listing
+    const normalizedPath = dirPath === '/' ? '/' : dirPath.replace(/\/+$/, '') + '/';
+
     const propfindBody = `<?xml version="1.0"?>
 <d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
   <d:prop>
@@ -332,7 +335,7 @@ class NCFilesClient {
   </d:prop>
 </d:propfind>`;
 
-    const response = await this._request(this._davPath(dirPath), {
+    const response = await this._request(this._davPath(normalizedPath), {
       method: 'PROPFIND',
       headers: {
         'Content-Type': 'application/xml',

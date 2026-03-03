@@ -228,6 +228,7 @@ class MessageProcessor {
     // Extract message data from Activity Streams format
     const extracted = this._extractMessage(data);
 
+    try {
     // CRITICAL: Ignore bot's own messages to prevent self-reply loops
     if (extracted.isBotMessage) {
       console.log(`[Message] Ignoring own message from: ${extracted.user}`);
@@ -710,6 +711,19 @@ class MessageProcessor {
       await this.statusIndicator?.setStatus('ready');
 
       return { error: errorResponse };
+    }
+
+    } catch (outerError) {
+      console.error('[Process] Unhandled processing error:', outerError.message);
+      await this.statusIndicator?.setStatus('ready');
+      // Guarantee a response to the user even when pre-routing logic throws
+      if (extracted.token) {
+        const fallback = "I ran into an unexpected error processing your message. Could you try rephrasing?";
+        this.sendTalkReply(extracted.token, fallback, extracted.messageId).catch(err => {
+          console.error('[Process] Failed to send fallback error reply:', err.message);
+        });
+      }
+      return { error: outerError.message };
     }
   }
 
