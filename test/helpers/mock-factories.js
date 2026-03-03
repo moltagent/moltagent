@@ -441,8 +441,8 @@ function createMockWarmMemory(overrides = {}) {
 // NCSearchClient Mock (for MemorySearcher / Unified Search tests)
 function createMockNCSearchClient(overrides = {}) {
   const defaultProviders = [
-    { id: 'collectives_pages', name: 'Collectives Pages' },
-    { id: 'collectives_pages_content', name: 'Collectives Page Content' },
+    { id: 'collectives-pages', name: 'Collectives Pages' },
+    { id: 'collectives-page-content', name: 'Collectives Page Content' },
     { id: 'talk-message', name: 'Talk Messages' },
     { id: 'files', name: 'Files' },
     { id: 'deck', name: 'Deck' },

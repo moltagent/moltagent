@@ -161,7 +161,7 @@ asyncTest('search() calls _recordAccess for wiki results (fire-and-forget)', asy
   const accessedTitles = [];
   const mock = createMockNCSearchClient({
     searchProvider: async (pid) => {
-      if (pid === 'collectives_pages_content') {
+      if (pid === 'collectives-page-content') {
         return [{ title: 'Wiki Hit', subline: 'found it', resourceUrl: '/wiki/hit' }];
       }
       return [];

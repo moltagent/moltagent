@@ -26,12 +26,12 @@ const CHANNEL_WEIGHTS = { keyword: 0.4, vector: 0.35, graph: 0.25 };
 
 /** Map scope names to NC Unified Search provider IDs */
 const SCOPE_PROVIDERS = {
-  all:           ['collectives_pages_content', 'talk-message', 'files'],
-  wiki:          ['collectives_pages', 'collectives_pages_content'],
-  people:        ['collectives_pages_content'],
-  projects:      ['collectives_pages_content'],
-  sessions:      ['collectives_pages_content'],
-  policies:      ['collectives_pages_content'],
+  all:           ['collectives-page-content', 'talk-message', 'files'],
+  wiki:          ['collectives-pages', 'collectives-page-content'],
+  people:        ['collectives-page-content'],
+  projects:      ['collectives-page-content'],
+  sessions:      ['collectives-page-content'],
+  policies:      ['collectives-page-content'],
   conversations: ['talk-message'],
   files:         ['files'],
   tasks:         ['deck'],
@@ -43,22 +43,22 @@ const FILTERED_SCOPES = new Set(['people', 'projects', 'sessions', 'policies']);
 
 /** Source display labels */
 const SOURCE_LABELS = {
-  collectives_pages_content: 'Wiki',
-  collectives_pages:         'Wiki',
-  'talk-message':            'Conversation',
-  files:                     'File',
-  deck:                      'Task',
-  calendar:                  'Event',
+  'collectives-page-content': 'Wiki',
+  'collectives-pages':         'Wiki',
+  'talk-message':              'Conversation',
+  files:                       'File',
+  deck:                        'Task',
+  calendar:                    'Event',
 };
 
 /** Lower number = higher priority */
 const SOURCE_PRIORITY = {
-  collectives_pages_content: 1,
-  collectives_pages:         2,
-  'talk-message':            3,
-  files:                     4,
-  deck:                      5,
-  calendar:                  6,
+  'collectives-page-content': 1,
+  'collectives-pages':         2,
+  'talk-message':              3,
+  files:                       4,
+  deck:                        5,
+  calendar:                    6,
 };
 
 class MemorySearcher {
@@ -470,7 +470,7 @@ class MemorySearcher {
    */
   async _searchArchive(query, limit) {
     const entries = await this.nc.searchProvider(
-      'collectives_pages_content', query, limit + 5
+      'collectives-page-content', query, limit + 5
     );
     return entries
       .filter(e => {
@@ -482,7 +482,7 @@ class MemorySearcher {
       })
       .slice(0, limit)
       .map(e => ({
-        _providerId: 'collectives_pages_content',
+        _providerId: 'collectives-page-content',
         source: 'Wiki',
         title: e.title || '',
         excerpt: `[Archived] ${e.subline || ''}`,

@@ -44,7 +44,7 @@ const silentLogger = { log() {}, info() {}, warn() {}, error() {} };
  */
 function createMockNCSearchClient(results = []) {
   return {
-    getProviders: async () => [{ id: 'collectives_pages_content', name: 'Wiki' }],
+    getProviders: async () => [{ id: 'collectives-page-content', name: 'Wiki' }],
     searchProvider: async (pid, query, limit) => results.map(r => ({
       title: r.title || r,
       subline: r.excerpt || '',

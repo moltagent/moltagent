@@ -87,7 +87,7 @@ async function runTests() {
     const searcher = new MemorySearcher({ ncSearchClient: mock });
 
     await searcher.search('test query', { scope: 'all' });
-    assert.ok(calledProviders.includes('collectives_pages_content'), 'Should search collectives_pages_content');
+    assert.ok(calledProviders.includes('collectives-page-content'), 'Should search collectives-page-content');
     assert.ok(calledProviders.includes('talk-message'), 'Should search talk-message');
     assert.ok(calledProviders.includes('files'), 'Should search files');
     assert.strictEqual(calledProviders.length, 3, 'Should search 3 providers for scope all');
@@ -100,7 +100,7 @@ async function runTests() {
   await asyncTest('TC-MS-006: search() returns formatted results from multiple providers, sorted by priority', async () => {
     const mock = createMockNCSearchClient({
       searchProvider: async (pid) => {
-        if (pid === 'collectives_pages_content') {
+        if (pid === 'collectives-page-content') {
           return [{ title: 'Wiki Page', subline: 'excerpt from wiki', resourceUrl: '/wiki/page' }];
         }
         if (pid === 'talk-message') {
@@ -161,7 +161,7 @@ async function runTests() {
     const mock = createMockNCSearchClient({
       searchProvider: async (pid) => {
         if (pid === 'talk-message') throw new Error('Talk is down');
-        if (pid === 'collectives_pages_content') {
+        if (pid === 'collectives-page-content') {
           return [{ title: 'Result', subline: 'ok', resourceUrl: '/ok' }];
         }
         return [];
