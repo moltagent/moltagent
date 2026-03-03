@@ -429,4 +429,193 @@ asyncTest('read action returns friendly message on 404', async () => {
   assert.ok(result.includes('File not found'), `expected not found message, got: ${result}`);
 });
 
+// ===== NEW TESTS: Context-aware extraction =====
+
+// -- Test 21: Context-aware read resolves from action ledger mock --
+asyncTest('context-aware read resolves filename from action ledger', async () => {
+  const filesClient = createMockFilesClient();
+  const executor = new FileExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'read', path: 'notes.txt' })
+    }),
+    ncFilesClient: filesClient,
+    logger: silentLogger
+  });
+
+  // Context with getLastAction returning a file_list action
+  const ctx = {
+    userName: 'alice',
+    getLastAction: (prefix) => {
+      if (prefix === 'file_') {
+        return {
+          type: 'file_list',
+          refs: {
+            path: '/', count: 3,
+            files: ['Documents', 'report.pdf', 'notes.txt'],
+            newest: { name: 'notes.txt', modified: '2026-03-03' },
+            biggest: { name: 'report.pdf', size: 2048 },
+            types: { pdf: 1, txt: 1 }
+          }
+        };
+      }
+      return null;
+    }
+  };
+
+  const result = await executor.execute('read the most recent one', ctx);
+  // The extraction prompt now includes context; LLM mock returns notes.txt
+  assert.strictEqual(typeof result, 'object');
+  assert.ok(result.response.includes('Content of notes.txt'), `expected file content, got: ${result.response}`);
+  assert.strictEqual(result.actionRecord.type, 'file_read');
+});
+
+// -- Test 22: _buildContextHint returns empty for null/missing context --
+asyncTest('_buildContextHint returns empty string for null context', async () => {
+  const executor = new FileExecutor({
+    router: createMockRouter(),
+    ncFilesClient: createMockFilesClient(),
+    logger: silentLogger
+  });
+
+  assert.strictEqual(executor._buildContextHint(null), '');
+  assert.strictEqual(executor._buildContextHint(undefined), '');
+  assert.strictEqual(executor._buildContextHint({}), '');
+  assert.strictEqual(executor._buildContextHint({ userName: 'alice' }), '');
+});
+
+// -- Test 23: _buildContextHint includes file_list summary --
+asyncTest('_buildContextHint includes file_list summary with enriched refs', async () => {
+  const executor = new FileExecutor({
+    router: createMockRouter(),
+    ncFilesClient: createMockFilesClient(),
+    logger: silentLogger
+  });
+
+  const ctx = {
+    getLastAction: () => ({
+      type: 'file_list',
+      refs: {
+        path: 'Projects', count: 5,
+        files: ['readme.md', 'spec.pdf'],
+        newest: { name: 'spec.pdf', modified: '2026-03-03' },
+        biggest: { name: 'spec.pdf', size: 10240 },
+        types: { md: 3, pdf: 2 }
+      }
+    }),
+    getRecentContext: () => [
+      { role: 'user', content: 'list Projects' },
+      { role: 'assistant', content: 'Here are 5 files in Projects...' }
+    ]
+  };
+
+  const hint = executor._buildContextHint(ctx);
+  assert.ok(hint.includes('Projects'), `expected path, got: ${hint}`);
+  assert.ok(hint.includes('5 entries'), `expected count, got: ${hint}`);
+  assert.ok(hint.includes('spec.pdf'), `expected newest file, got: ${hint}`);
+  assert.ok(hint.includes('readme.md'), `expected file list, got: ${hint}`);
+  assert.ok(hint.includes('Last assistant response'), `expected conversation context, got: ${hint}`);
+});
+
+// -- Test 24: _summarizeLastAction handles all types + null guards --
+asyncTest('_summarizeLastAction handles all action types and null', async () => {
+  const executor = new FileExecutor({
+    router: createMockRouter(),
+    ncFilesClient: createMockFilesClient(),
+    logger: silentLogger
+  });
+
+  // null / undefined
+  assert.strictEqual(executor._summarizeLastAction(null), '');
+  assert.strictEqual(executor._summarizeLastAction(undefined), '');
+  assert.strictEqual(executor._summarizeLastAction({}), '');
+
+  // file_list
+  const listSummary = executor._summarizeLastAction({
+    type: 'file_list',
+    refs: { path: '/', count: 2, files: ['a.txt', 'b.pdf'], newest: { name: 'b.pdf', modified: '2026-03-03' }, biggest: { name: 'b.pdf', size: 4096 } }
+  });
+  assert.ok(listSummary.includes('Previous listing'), `expected listing header, got: ${listSummary}`);
+  assert.ok(listSummary.includes('a.txt, b.pdf'), `expected file names, got: ${listSummary}`);
+
+  // file_read
+  const readSummary = executor._summarizeLastAction({ type: 'file_read', refs: { path: 'foo.md' } });
+  assert.ok(readSummary.includes('Last read: foo.md'), `expected read summary, got: ${readSummary}`);
+
+  // file_write
+  const writeSummary = executor._summarizeLastAction({ type: 'file_write', refs: { path: 'bar.txt' } });
+  assert.ok(writeSummary.includes('Last wrote: bar.txt'), `expected write summary, got: ${writeSummary}`);
+
+  // file_delete
+  const deleteSummary = executor._summarizeLastAction({ type: 'file_delete', refs: { path: 'old.log' } });
+  assert.ok(deleteSummary.includes('Last deleted: old.log'), `expected delete summary, got: ${deleteSummary}`);
+
+  // file_share
+  const shareSummary = executor._summarizeLastAction({ type: 'file_share', refs: { path: 'doc.pdf', sharedWith: 'bob' } });
+  assert.ok(shareSummary.includes('Last shared: doc.pdf'), `expected share summary, got: ${shareSummary}`);
+  assert.ok(shareSummary.includes('bob'), `expected share target, got: ${shareSummary}`);
+
+  // unknown type
+  assert.strictEqual(executor._summarizeLastAction({ type: 'calendar_create' }), '');
+});
+
+// -- Test 25: file_list actionRecord includes enriched refs --
+asyncTest('file_list actionRecord includes enriched refs (newest/biggest/types)', async () => {
+  const filesClient = createMockFilesClient();
+  const executor = new FileExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'list', folder: 'Projects' })
+    }),
+    ncFilesClient: filesClient,
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('List files in Projects', { userName: 'alice' });
+  assert.strictEqual(result.actionRecord.type, 'file_list');
+
+  const refs = result.actionRecord.refs;
+  assert.strictEqual(refs.count, 3, `expected 3 entries, got: ${refs.count}`);
+  assert.ok(Array.isArray(refs.files), 'files should be an array');
+  assert.ok(refs.files.includes('report.pdf'), `expected report.pdf in files, got: ${refs.files}`);
+  assert.ok(refs.newest, 'should have newest');
+  assert.strictEqual(refs.newest.name, 'notes.txt', `expected notes.txt as newest, got: ${refs.newest.name}`);
+  assert.ok(refs.biggest, 'should have biggest');
+  assert.strictEqual(refs.biggest.name, 'report.pdf', `expected report.pdf as biggest, got: ${refs.biggest.name}`);
+  assert.ok(refs.types, 'should have types');
+  assert.strictEqual(refs.types.pdf, 1, `expected 1 pdf, got: ${refs.types.pdf}`);
+  assert.strictEqual(refs.types.txt, 1, `expected 1 txt, got: ${refs.types.txt}`);
+});
+
+// -- Test 26: read action rejects wildcard path --
+asyncTest('read action rejects wildcard path', async () => {
+  const executor = new FileExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'read', path: '*.txt' })
+    }),
+    ncFilesClient: createMockFilesClient(),
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('read *.txt', { userName: 'alice' });
+  assert.ok(typeof result === 'string', `expected string, got: ${typeof result}`);
+  assert.ok(result.includes('one file at a time'), `expected wildcard rejection, got: ${result}`);
+});
+
+// -- Test 27: Extraction works without context accessors (backward compat) --
+asyncTest('extraction works without context accessors (backward compat)', async () => {
+  const filesClient = createMockFilesClient();
+  const executor = new FileExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'read', path: 'Documents/notes.txt' })
+    }),
+    ncFilesClient: filesClient,
+    logger: silentLogger
+  });
+
+  // Minimal context — no getLastAction, no getRecentContext
+  const result = await executor.execute('Read Documents/notes.txt', { userName: 'alice' });
+  assert.strictEqual(typeof result, 'object');
+  assert.ok(result.response.includes('Content of Documents/notes.txt'), `expected file content, got: ${result.response}`);
+  assert.strictEqual(result.actionRecord.type, 'file_read');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

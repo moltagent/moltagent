@@ -100,8 +100,14 @@ class FileExecutor extends BaseExecutor {
       required: ['action']
     };
 
-    const extractionPrompt = `${dateContext}
+    // Build context hint from action ledger + recent conversation
+    const contextHint = this._buildContextHint(context);
+    const contextBlock = contextHint
+      ? `\nContext from this conversation:\n${contextHint}\n\nResolve relative references using this context.\n- "the most recent one" → newest file from the listing\n- "that PDF" → the .pdf file mentioned\nDo not set requires_clarification if the reference can be resolved from context.\n`
+      : '';
 
+    const extractionPrompt = `${dateContext}
+${contextBlock}
 Extract file operation parameters from this message.
 Leave fields as empty strings if not mentioned. Set generate_content to true if the user wants content created.
 If the message is NOT about a file operation, set requires_clarification to true.
@@ -273,6 +279,11 @@ Message: "${message.substring(0, 300)}"`;
 
     const { path } = this._buildPath(params);
 
+    // Reject wildcard / aggregate read attempts
+    if (path.includes('*') || path.toLowerCase() === 'all') {
+      return 'I can only read one file at a time. Which file would you like me to read?';
+    }
+
     try {
       let content;
 
@@ -328,6 +339,26 @@ Message: "${message.substring(0, 300)}"`;
       const files = entries.filter(e => e.type !== 'directory');
       const sorted = [...dirs, ...files];
 
+      // Compute enriched metadata for action ledger
+      const fileEntries = sorted.filter(e => e.type !== 'directory');
+      const first10Names = sorted.slice(0, 10).map(e => e.name);
+
+      let newestFile = null;
+      let biggestFile = null;
+      const typeCounts = {};
+
+      for (const f of fileEntries) {
+        if (f.modified && (!newestFile || f.modified > newestFile.modified)) {
+          newestFile = { name: f.name, modified: f.modified };
+        }
+        const sz = Number.isFinite(f.size) ? f.size : 0;
+        if (!biggestFile || sz > biggestFile.size) {
+          biggestFile = { name: f.name, size: sz };
+        }
+        const ext = (f.name.includes('.') ? f.name.split('.').pop().toLowerCase() : 'other');
+        typeCounts[ext] = (typeCounts[ext] || 0) + 1;
+      }
+
       const capped = sorted.slice(0, MAX_LIST_ENTRIES);
       const lines = capped.map(e => {
         const icon = e.type === 'directory' ? '\u{1F4C1}' : '';
@@ -352,7 +383,17 @@ Message: "${message.substring(0, 300)}"`;
 
       return {
         response: formatted,
-        actionRecord: { type: 'file_list', refs: { path: dirPath } }
+        actionRecord: {
+          type: 'file_list',
+          refs: {
+            path: dirPath,
+            count: sorted.length,
+            files: first10Names,
+            newest: newestFile,
+            biggest: biggestFile,
+            types: typeCounts
+          }
+        }
       };
     } catch (err) {
       if (err.statusCode === 404 || (err.message && err.message.includes('404'))) {
@@ -466,6 +507,78 @@ Message: "${message.substring(0, 300)}"`;
       response: `Shared "${filename}" with ${shareWith} (${permission} access).`,
       actionRecord: { type: 'file_share', refs: { path, sharedWith: shareWith, permission } }
     };
+  }
+
+  /**
+   * Summarize a previous action record for context injection.
+   * @param {Object|null} action - Action record from the ledger
+   * @returns {string} Human-readable summary or empty string
+   */
+  _summarizeLastAction(action) {
+    if (!action || !action.type) return '';
+
+    const refs = action.refs || {};
+    switch (action.type) {
+      case 'file_list': {
+        const parts = [`Previous listing of ${refs.path || '/'} (${refs.count || 0} entries)`];
+        if (Array.isArray(refs.files) && refs.files.length > 0) {
+          parts.push(`Files: ${refs.files.join(', ')}`);
+        }
+        if (refs.newest && refs.newest.name) {
+          parts.push(`Newest: ${refs.newest.name} (${refs.newest.modified || 'unknown date'})`);
+        }
+        if (refs.biggest && refs.biggest.name) {
+          parts.push(`Biggest: ${refs.biggest.name} (${refs.biggest.size || 0} bytes)`);
+        }
+        return parts.join('\n');
+      }
+      case 'file_read':
+        return `Last read: ${refs.path || 'unknown'}`;
+      case 'file_write':
+        return `Last wrote: ${refs.path || refs.filename || 'unknown'}`;
+      case 'file_delete':
+        return `Last deleted: ${refs.path || 'unknown'}`;
+      case 'file_share':
+        return `Last shared: ${refs.path || 'unknown'} with ${refs.sharedWith || 'unknown'}`;
+      default:
+        return '';
+    }
+  }
+
+  /**
+   * Build a context hint from the session's action ledger and recent conversation.
+   * Returns empty string when no context is available (backward compatible).
+   * @param {Object} context - Execution context with optional getLastAction/getRecentContext
+   * @returns {string} Context hint for the extraction prompt
+   */
+  _buildContextHint(context) {
+    if (!context) return '';
+
+    const parts = [];
+
+    // Action ledger: last file action
+    if (typeof context.getLastAction === 'function') {
+      const lastAction = context.getLastAction('file_');
+      const summary = this._summarizeLastAction(lastAction);
+      if (summary) parts.push(summary);
+    }
+
+    // Conversation history: last assistant response
+    if (typeof context.getRecentContext === 'function') {
+      const recent = context.getRecentContext();
+      if (Array.isArray(recent) && recent.length > 0) {
+        // Find the last assistant message
+        for (let i = recent.length - 1; i >= 0; i--) {
+          if (recent[i] && recent[i].role === 'assistant' && recent[i].content) {
+            const truncated = recent[i].content.substring(0, 400);
+            parts.push(`Last assistant response:\n${truncated}`);
+            break;
+          }
+        }
+      }
+    }
+
+    return parts.join('\n\n');
   }
 
   /**

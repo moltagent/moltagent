@@ -429,6 +429,7 @@ class MessageProcessor {
           // Layer 3: Action ledger accessors
           getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
           getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
+          getRecentContext: session ? () => session.context.slice(-4) : undefined,
         });
         if (typeof response === 'object' && response !== null) {
           if (response.pendingClarification && session && this.sessionManager) {
@@ -474,6 +475,7 @@ class MessageProcessor {
               // Layer 3: Action ledger accessors
               getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
               getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
+              getRecentContext: session ? () => session.context.slice(-4) : undefined,
             });
             if (typeof response === 'object' && response !== null) {
               if (response.pendingClarification && session && this.sessionManager) {
@@ -514,6 +516,7 @@ class MessageProcessor {
               // Layer 3: Action ledger accessors
               getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
               getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
+              getRecentContext: session ? () => session.context.slice(-4) : undefined,
             });
             if (typeof response === 'object' && response !== null) {
               if (response.pendingClarification && session && this.sessionManager) {
