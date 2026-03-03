@@ -116,7 +116,28 @@ asyncTest('Read non-existent page returns friendly message', async () => {
   assert.strictEqual(registry.getCallsFor('wiki_write').length, 0, 'Should NOT call wiki_write');
 });
 
-// -- Test 4: Read with empty title asks for clarification --
+// -- Test 4: Read empty page returns "exists but no content" --
+asyncTest('Read empty page reports it exists but has no content', async () => {
+  const registry = createMockToolRegistry({
+    wiki_read: { success: true, result: '' }
+  });
+  const executor = new WikiExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'read', page_title: 'Christian Fu Mueller' })
+    }),
+    toolRegistry: registry,
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('What does the wiki say about Christian Fu Mueller?', { userName: 'alice' });
+  const resp = getResponse(result);
+  assert.ok(resp.includes('exists') && resp.includes('no content'), `Should report page exists but empty, got: ${resp}`);
+  assert.strictEqual(registry.getCallsFor('wiki_write').length, 0, 'Should NOT call wiki_write for empty page');
+  assert.ok(result.actionRecord, 'Should return actionRecord for found page');
+  assert.strictEqual(result.actionRecord.type, 'wiki_read', 'Action type should be wiki_read');
+});
+
+// -- Test 5: Read with empty title asks for clarification --
 asyncTest('Read with empty title returns clarification request', async () => {
   const registry = createMockToolRegistry();
   const executor = new WikiExecutor({

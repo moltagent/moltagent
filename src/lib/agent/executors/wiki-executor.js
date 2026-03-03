@@ -148,14 +148,15 @@ Message: "${message.substring(0, 300)}"`;
     // Try exact title first
     const readResult = await this.toolRegistry.execute('wiki_read', { page_title: title });
 
-    if (readResult.success && readResult.result && !readResult.result.startsWith('No wiki page found')) {
+    if (readResult.success && this._isWikiContent(readResult.result)) {
       this._logActivity('wiki_read',
         `Read wiki: ${title}`,
         { page: title, topic: params.topic },
         context
       );
+      const response = readResult.result || `The wiki page "${title}" exists but has no content yet.`;
       return {
-        response: readResult.result,
+        response,
         actionRecord: { type: 'wiki_read', refs: { page: title } }
       };
     }
@@ -164,14 +165,15 @@ Message: "${message.substring(0, 300)}"`;
     const memoryHit = await this._searchViaMemory(title);
     if (memoryHit) {
       const retryResult = await this.toolRegistry.execute('wiki_read', { page_title: memoryHit.title });
-      if (retryResult.success && retryResult.result && !retryResult.result.startsWith('No wiki page found')) {
+      if (retryResult.success && this._isWikiContent(retryResult.result)) {
         this._logActivity('wiki_read',
           `Read wiki: ${memoryHit.title} (searched for: ${title})`,
           { page: memoryHit.title, originalQuery: title },
           context
         );
+        const response = retryResult.result || `The wiki page "${memoryHit.title}" exists but has no content yet.`;
         return {
-          response: retryResult.result,
+          response,
           actionRecord: { type: 'wiki_read', refs: { page: memoryHit.title } }
         };
       }
@@ -254,9 +256,9 @@ Message: "${message.substring(0, 300)}"`;
     // Read existing page
     const readResult = await this.toolRegistry.execute('wiki_read', { page_title: pageTitle });
 
-    if (readResult.success && readResult.result && !readResult.result.startsWith('No wiki page found')) {
-      // Append to existing
-      const merged = readResult.result + '\n\n' + newContent;
+    if (readResult.success && this._isWikiContent(readResult.result)) {
+      // Append to existing (if page is empty, just use new content)
+      const merged = readResult.result ? readResult.result + '\n\n' + newContent : newContent;
 
       const parent = params.parent || this._autoCategory(params.topic, params.category, params.fact);
 
@@ -339,6 +341,27 @@ Message: "${message.substring(0, 300)}"`;
       response,
       actionRecord: { type: 'wiki_write', refs: { pageTitle, parent: parent || null } }
     };
+  }
+
+  /**
+   * Check if a wiki_read result represents actual page content (including empty pages)
+   * vs a "not found" or error message.
+   *
+   * @param {string} result - wiki_read result string
+   * @returns {boolean} true if the page was found (even if empty)
+   * @private
+   */
+  _isWikiContent(result) {
+    // null/undefined = tool failure
+    if (result == null) return false;
+    // These prefixes indicate the page doesn't exist or the service is down
+    if (typeof result === 'string') {
+      if (result.startsWith('No wiki page found')) return false;
+      if (result.startsWith('Wiki service is temporarily unavailable')) return false;
+      if (result.startsWith('Failed to read wiki page')) return false;
+    }
+    // Empty string = page exists but has no content — still a valid find
+    return true;
   }
 
   /**
