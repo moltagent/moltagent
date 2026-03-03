@@ -202,43 +202,63 @@ asyncTest('rejects filename > 100 chars', async () => {
 
 // ===== NEW TESTS: read, list, delete, share =====
 
-// -- Test 9: read action reads text file and returns content --
+// -- Test 9: read action reads text file and returns synthesized content --
 asyncTest('read action reads text file and returns content', async () => {
   const filesClient = createMockFilesClient();
+  let routeCallCount = 0;
+  const mockRouter = {
+    route: async () => {
+      routeCallCount++;
+      if (routeCallCount === 1) return { result: JSON.stringify({ action: 'read', path: 'Documents/notes.txt' }) };
+      // Second call is synthesis
+      return { result: 'This is a text file containing notes about Documents.' };
+    }
+  };
+
   const executor = new FileExecutor({
-    router: createMockRouter({
-      result: JSON.stringify({ action: 'read', path: 'Documents/notes.txt' })
-    }),
+    router: mockRouter,
     ncFilesClient: filesClient,
     logger: silentLogger
   });
 
   const result = await executor.execute('Read Documents/notes.txt', { userName: 'alice' });
   assert.strictEqual(typeof result, 'object');
-  assert.ok(result.response.includes('Content of Documents/notes.txt'), `expected file content, got: ${result.response}`);
+  assert.strictEqual(routeCallCount, 2, `expected 2 router calls (extract + synthesis), got: ${routeCallCount}`);
   assert.strictEqual(result.actionRecord.type, 'file_read');
   assert.strictEqual(result.actionRecord.refs.path, 'Documents/notes.txt');
+  assert.strictEqual(result.actionRecord.refs.result, 'synthesized');
 });
 
-// -- Test 10: read action uses TextExtractor for .pdf files --
+// -- Test 10: read action uses TextExtractor for .pdf files (synthesized) --
 asyncTest('read action uses TextExtractor for .pdf files', async () => {
   const filesClient = createMockFilesClient();
+  let extractCalled = false;
   const mockExtractor = {
-    extract: async (buffer, path) => ({ text: 'Extracted PDF text', pages: 5 })
+    extract: async (buffer, path) => { extractCalled = true; return { text: 'Extracted PDF text', pages: 5 }; }
+  };
+
+  let routeCallCount = 0;
+  const mockRouter = {
+    route: async (opts) => {
+      routeCallCount++;
+      if (routeCallCount === 1) return { result: JSON.stringify({ action: 'read', path: 'Reports/annual.pdf' }) };
+      // Second call is synthesis — return a summary mentioning file details
+      return { result: 'This is a 5-page PDF report containing extracted content about annual results.' };
+    }
   };
 
   const executor = new FileExecutor({
-    router: createMockRouter({
-      result: JSON.stringify({ action: 'read', path: 'Reports/annual.pdf' })
-    }),
+    router: mockRouter,
     ncFilesClient: filesClient,
     textExtractor: mockExtractor,
     logger: silentLogger
   });
 
   const result = await executor.execute('Read Reports/annual.pdf', { userName: 'alice' });
-  assert.ok(getResponse(result).includes('Extracted PDF text'), `expected extracted text, got: ${getResponse(result)}`);
-  assert.ok(getResponse(result).includes('5 pages'), `expected page count, got: ${getResponse(result)}`);
+  assert.ok(extractCalled, 'TextExtractor.extract should have been called');
+  assert.strictEqual(routeCallCount, 2, `expected 2 router calls (extract + synthesis), got: ${routeCallCount}`);
+  assert.ok(getResponse(result).includes('5-page PDF'), `expected synthesized summary, got: ${getResponse(result)}`);
+  assert.strictEqual(result.actionRecord.refs.result, 'synthesized', `expected synthesized result type, got: ${result.actionRecord.refs.result}`);
 });
 
 // -- Test 11: read action returns clarification when no filename --
@@ -434,10 +454,17 @@ asyncTest('read action returns friendly message on 404', async () => {
 // -- Test 21: Context-aware read resolves from action ledger mock --
 asyncTest('context-aware read resolves filename from action ledger', async () => {
   const filesClient = createMockFilesClient();
+  let routeCallCount = 0;
+  const mockRouter = {
+    route: async () => {
+      routeCallCount++;
+      if (routeCallCount === 1) return { result: JSON.stringify({ action: 'read', path: 'notes.txt' }) };
+      return { result: 'This file contains notes from 2026-03-03.' };
+    }
+  };
+
   const executor = new FileExecutor({
-    router: createMockRouter({
-      result: JSON.stringify({ action: 'read', path: 'notes.txt' })
-    }),
+    router: mockRouter,
     ncFilesClient: filesClient,
     logger: silentLogger
   });
@@ -465,8 +492,9 @@ asyncTest('context-aware read resolves filename from action ledger', async () =>
   const result = await executor.execute('read the most recent one', ctx);
   // The extraction prompt now includes context; LLM mock returns notes.txt
   assert.strictEqual(typeof result, 'object');
-  assert.ok(result.response.includes('Content of notes.txt'), `expected file content, got: ${result.response}`);
+  assert.strictEqual(routeCallCount, 2, `expected 2 router calls, got: ${routeCallCount}`);
   assert.strictEqual(result.actionRecord.type, 'file_read');
+  assert.strictEqual(result.actionRecord.refs.result, 'synthesized');
 });
 
 // -- Test 22: _buildContextHint returns empty for null/missing context --
@@ -603,10 +631,17 @@ asyncTest('read action rejects wildcard path', async () => {
 // -- Test 27: Extraction works without context accessors (backward compat) --
 asyncTest('extraction works without context accessors (backward compat)', async () => {
   const filesClient = createMockFilesClient();
+  let routeCallCount = 0;
+  const mockRouter = {
+    route: async () => {
+      routeCallCount++;
+      if (routeCallCount === 1) return { result: JSON.stringify({ action: 'read', path: 'Documents/notes.txt' }) };
+      return { result: 'A text file with notes about the Documents folder.' };
+    }
+  };
+
   const executor = new FileExecutor({
-    router: createMockRouter({
-      result: JSON.stringify({ action: 'read', path: 'Documents/notes.txt' })
-    }),
+    router: mockRouter,
     ncFilesClient: filesClient,
     logger: silentLogger
   });
@@ -614,8 +649,9 @@ asyncTest('extraction works without context accessors (backward compat)', async 
   // Minimal context — no getLastAction, no getRecentContext
   const result = await executor.execute('Read Documents/notes.txt', { userName: 'alice' });
   assert.strictEqual(typeof result, 'object');
-  assert.ok(result.response.includes('Content of Documents/notes.txt'), `expected file content, got: ${result.response}`);
+  assert.strictEqual(routeCallCount, 2, `expected 2 router calls, got: ${routeCallCount}`);
   assert.strictEqual(result.actionRecord.type, 'file_read');
+  assert.strictEqual(result.actionRecord.refs.result, 'synthesized');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);

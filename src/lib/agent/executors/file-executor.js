@@ -29,6 +29,20 @@ let TextExtractor;
 try { TextExtractor = require('../../extraction/text-extractor').TextExtractor; } catch (_) { /* optional */ }
 
 const MAX_LIST_ENTRIES = 30;
+const MAX_SYNTHESIS_CHARS = 12000;
+
+/** File type classification by extension */
+const FILE_TYPE_MAP = {
+  text: new Set(['md', 'txt', 'json', 'yaml', 'yml', 'csv', 'html', 'htm',
+    'xml', 'js', 'py', 'sh', 'env', 'cfg', 'ini', 'toml', 'log', 'conf', 'css']),
+  document: new Set(['pdf', 'docx', 'xlsx', 'xls', 'odt', 'ods']),
+  image: new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'tiff']),
+  audio: new Set(['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma']),
+  video: new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'wmv', 'flv']),
+};
+
+/** Detect explicit raw-content requests */
+const RAW_CONTENT_PATTERN = /\b(show|paste|display|dump|print|output|raw|full text|verbatim|cat)\b/i;
 
 class FileExecutor extends BaseExecutor {
   /**
@@ -160,7 +174,7 @@ Message: "${message.substring(0, 300)}"`;
     // Route to action handler
     switch (params.action) {
       case 'write': return await this._executeWrite(params, message, context);
-      case 'read':  return await this._executeRead(params, context);
+      case 'read':  return await this._executeRead(params, message, context);
       case 'list':  return await this._executeList(params, context);
       case 'delete': return await this._executeDelete(params, context);
       case 'share': return await this._executeShare(params, context);
@@ -260,9 +274,23 @@ Message: "${message.substring(0, 300)}"`;
   }
 
   /**
-   * Read a file and return its content.
+   * Classify a file by extension into text/document/image/audio/video/binary.
+   * @param {string} filename
+   * @returns {string}
    */
-  async _executeRead(params, context) {
+  _classifyFileType(filename) {
+    const ext = (filename || '').split('.').pop().toLowerCase();
+    for (const [type, extensions] of Object.entries(FILE_TYPE_MAP)) {
+      if (extensions.has(ext)) return type;
+    }
+    return 'binary';
+  }
+
+  /**
+   * Read a file: classify → extract → synthesize via LLM.
+   * Returns a human summary by default; raw content only when explicitly requested.
+   */
+  async _executeRead(params, message, context) {
     // Need a filename or path
     const hasFile = (params.filename && params.filename.trim()) || (params.path && params.path.trim());
     if (!hasFile) {
@@ -277,44 +305,130 @@ Message: "${message.substring(0, 300)}"`;
       };
     }
 
-    const { path } = this._buildPath(params);
+    const { path, filename } = this._buildPath(params);
 
     // Reject wildcard / aggregate read attempts
     if (path.includes('*') || path.toLowerCase() === 'all') {
       return 'I can only read one file at a time. Which file would you like me to read?';
     }
 
+    // Content-type gate: reject non-readable file types early
+    const fileType = this._classifyFileType(filename);
+
+    if (fileType === 'image') {
+      const ext = filename.split('.').pop().toUpperCase();
+      return {
+        response: `**${filename}** is a ${ext} image file. I can't view images directly, but if you share it in Talk I may be able to see it.`,
+        actionRecord: { type: 'file_read', refs: { path, result: 'image_skipped' } }
+      };
+    }
+
+    if (fileType === 'audio' || fileType === 'video') {
+      return {
+        response: `**${filename}** is a ${fileType} file. I can't process ${fileType} files directly.`,
+        actionRecord: { type: 'file_read', refs: { path, result: `${fileType}_skipped` } }
+      };
+    }
+
+    if (fileType === 'binary') {
+      return {
+        response: `**${filename}** is a binary file. I can't read binary content. If this should be a readable format, let me know what type it is.`,
+        actionRecord: { type: 'file_read', refs: { path, result: 'binary_skipped' } }
+      };
+    }
+
+    // Text or document — extract content
     try {
       let content;
+      let pages;
 
       if (this.textExtractor && TextExtractor && TextExtractor.isSupported(path)) {
         const buffer = await this.ncFilesClient.readFileBuffer(path);
         const result = await this.textExtractor.extract(buffer, path);
         content = result.text;
-        if (result.pages) {
-          content += `\n(PDF, ${result.pages} pages)`;
-        }
+        pages = result.pages;
       } else {
         const result = await this.ncFilesClient.readFile(path);
         content = result.content;
       }
 
-      this._logActivity('file_read',
-        `Read "${path}"`,
-        { path },
-        context
-      );
+      this._logActivity('file_read', `Read "${path}"`, { path }, context);
 
-      return {
-        response: content,
-        actionRecord: { type: 'file_read', refs: { path } }
-      };
+      // If user explicitly asked for raw content, return it directly
+      const wantsRaw = RAW_CONTENT_PATTERN.test(message || '');
+      if (wantsRaw) {
+        return {
+          response: content,
+          actionRecord: { type: 'file_read', refs: { path, contentLength: content.length } }
+        };
+      }
+
+      // Default: synthesize through LLM
+      return await this._synthesizeFileContent(path, filename, content, pages);
     } catch (err) {
       if (err.statusCode === 404 || (err.message && err.message.includes('404'))) {
         return `File not found: ${path}. Use file_list to browse.`;
       }
       throw err;
     }
+  }
+
+  /**
+   * Pass file content through LLM for intelligent synthesis.
+   * Falls back to truncated raw content if LLM fails.
+   */
+  async _synthesizeFileContent(filePath, filename, content, pages) {
+    const contextText = content.slice(0, MAX_SYNTHESIS_CHARS);
+    const truncatedNote = content.length > MAX_SYNTHESIS_CHARS
+      ? `\n[... content truncated, full file is ${content.length} characters ...]`
+      : '';
+
+    const ext = (filename || '').split('.').pop().toLowerCase();
+    const pageInfo = pages ? ` (${pages} pages)` : '';
+
+    const synthesisPrompt = `You just read a file shared with you. Here are the details:
+
+Filename: ${filename}
+Type: .${ext}${pageInfo}
+
+Content:
+---
+${contextText}${truncatedNote}
+---
+
+Tell the user what this document contains. Be specific about:
+- What it is (type of document, its purpose)
+- Key content (main topics, decisions, people mentioned, data points)
+- Anything notable or actionable
+
+Be concise but thorough. Do NOT dump the raw content. Speak as someone who just read and understood the document.`;
+
+    try {
+      const result = await this.router.route({
+        job: 'quick',
+        content: synthesisPrompt,
+        requirements: { maxTokens: 800 }
+      });
+
+      const synthesis = (result.result || '').trim();
+      if (synthesis.length > 20) {
+        return {
+          response: synthesis,
+          actionRecord: { type: 'file_read', refs: { path: filePath, result: 'synthesized', contentLength: content.length } }
+        };
+      }
+    } catch (err) {
+      this.logger?.warn?.(`[FileExecutor] Synthesis failed, returning truncated content: ${err.message}`);
+    }
+
+    // Fallback: return truncated raw content if LLM fails
+    const fallback = content.length > MAX_SYNTHESIS_CHARS
+      ? contextText + `\n\n[Content truncated — full file is ${(content.length / 1024).toFixed(1)} KB. Ask me to show a specific section.]`
+      : content;
+    return {
+      response: fallback,
+      actionRecord: { type: 'file_read', refs: { path: filePath, result: 'raw_fallback', contentLength: content.length } }
+    };
   }
 
   /**
