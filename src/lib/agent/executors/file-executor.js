@@ -103,7 +103,7 @@ class FileExecutor extends BaseExecutor {
     // Build context hint from action ledger + recent conversation
     const contextHint = this._buildContextHint(context);
     const contextBlock = contextHint
-      ? `\nContext from this conversation:\n${contextHint}\n\nResolve relative references using this context.\n- "the most recent one" → newest file from the listing\n- "that PDF" → the .pdf file mentioned\nDo not set requires_clarification if the reference can be resolved from context.\n`
+      ? `\nContext from this conversation:\n${contextHint}\n\nResolve relative references using this context.\n- "the most recent one" / "the newest" → use the Newest file from the listing\n- "the biggest one" / "the largest" → use the Biggest file from the listing\n- "the first one" → first file in the Files list\n- "that PDF" / "the spreadsheet" → match by extension from the Files list\n- "the one about X" → match by filename keywords from the Files list\nDo not set requires_clarification if the reference can be resolved from context.\n`
       : '';
 
     const extractionPrompt = `${dateContext}
