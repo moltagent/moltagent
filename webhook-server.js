@@ -335,6 +335,14 @@ try {
   ProactiveEvaluator = null;
 }
 
+let ReferenceResolver;
+try {
+  ({ ReferenceResolver } = require('./src/lib/agent/reference-resolver'));
+} catch {
+  console.warn('[WARN] ReferenceResolver not available');
+  ReferenceResolver = null;
+}
+
 let AgentLoop, ToolRegistry, OllamaToolsProvider, SecretsGuard, ToolGuard, PromptGuard, SystemTagsClient, ProviderChain, RouterChatBridge, GuardrailEnforcer;
 try {
   ({ AgentLoop } = require('./src/lib/agent/agent-loop'));
@@ -515,6 +523,25 @@ function _buildProactiveEvaluator(agentLoop, llmRouter, talkQueue, appConfig) {
     return evaluator;
   } catch (err) {
     console.warn(`[INIT] ProactiveEvaluator failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Build ReferenceResolver if dependencies are available.
+ * @returns {Object|null}
+ */
+function _buildReferenceResolver(llmRouter) {
+  if (!ReferenceResolver || !llmRouter?.router) return null;
+  try {
+    const resolver = new ReferenceResolver({
+      router: llmRouter.router,
+      logger: console
+    });
+    console.log('[INIT] ReferenceResolver ready');
+    return resolver;
+  } catch (err) {
+    console.warn(`[INIT] ReferenceResolver failed: ${err.message}`);
     return null;
   }
 }
@@ -1720,6 +1747,7 @@ async function initialize() {
     budgetEnforcer: llmRouter?.router?.budget || null,
     adminUser: appConfig.cockpit?.adminUser || '',
     proactiveEvaluator: _buildProactiveEvaluator(agentLoop, llmRouter, talkQueue, appConfig),
+    referenceResolver: _buildReferenceResolver(llmRouter),
     onTokenDiscovered: (token) => {
       // Save token for email monitor notifications (use first room we see)
       if (token && !defaultTalkToken) {

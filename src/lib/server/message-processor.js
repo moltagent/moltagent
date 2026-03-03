@@ -163,6 +163,10 @@ class MessageProcessor {
     /** @type {Object|null} - ProactiveEvaluator instance */
     this.proactiveEvaluator = deps.proactiveEvaluator || null;
 
+    // Pre-routing reference resolution (resolves "that", "the biggest one", etc.)
+    /** @type {Object|null} - ReferenceResolver instance */
+    this.referenceResolver = deps.referenceResolver || null;
+
     // Budget override: BudgetEnforcer for "override budget" command
     /** @type {Object|null} - BudgetEnforcer instance */
     this.budgetEnforcer = deps.budgetEnforcer || null;
@@ -411,6 +415,29 @@ class MessageProcessor {
       let response;
       let result;
 
+      // Pre-routing reference resolution
+      // Enriches "read the biggest one" → "Read file X.md from Moltagent DEV/docs"
+      // Original message stays in session context; enriched goes to pipeline
+      let pipelineMessage = extracted.content;
+      if (this.referenceResolver && !extracted.content.startsWith('/')) {
+        try {
+          const refContext = {
+            recentTurns: session ? session.context.slice(-4) : [],
+            lastAction: session && this.sessionManager
+              ? this.sessionManager.getLastAction(session) : null,
+            lastAssistantMessage: session
+              ? session.context.filter(t => t.role === 'assistant').slice(-1)[0]?.content || null
+              : null,
+          };
+          const resolved = await this.referenceResolver.resolve(extracted.content, refContext);
+          if (resolved.wasEnriched && resolved.enrichedMessage) {
+            pipelineMessage = resolved.enrichedMessage;
+          }
+        } catch (refErr) {
+          console.warn(`[ReferenceResolver] Error, using original: ${refErr.message}`);
+        }
+      }
+
       // Handle slash commands
       if (extracted.content.startsWith('/')) {
         result = await this.commandHandler.handle(extracted.content, {
@@ -422,7 +449,7 @@ class MessageProcessor {
       } else if (this.microPipeline && this._shouldUseMicroPipeline() && !flushPrompt) {
         // Local Intelligence: MicroPipeline handles local-only messages with focused calls
         // (skipped when flushPrompt is pending — wiki_write requires the full agent loop)
-        response = await this.microPipeline.process(extracted.content, {
+        response = await this.microPipeline.process(pipelineMessage, {
           userName: extracted.user,
           roomToken: extracted.token,
           warmMemory: '',
@@ -443,7 +470,7 @@ class MessageProcessor {
         result = { intent: 'micro_pipeline', provider: 'local' };
       } else if (this.microPipeline && this.agentLoop && this._isSmartMixMode()) {
         // Smart-mix: three-path routing (local text / local tools / cloud)
-        const { useLocal, useDomainTools, intent } = await this._smartMixClassify(extracted.content, session, extracted.token);
+        const { useLocal, useDomainTools, intent } = await this._smartMixClassify(pipelineMessage, session, extracted.token);
         console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}`);
 
         if (flushPrompt) {
@@ -453,7 +480,7 @@ class MessageProcessor {
           if (this.agentLoop.llmProvider?.skipLocalForConversation) {
             this.agentLoop.llmProvider.skipLocalForConversation();
           }
-          response = await this.agentLoop.process(extracted.content, extracted.token, {
+          response = await this.agentLoop.process(pipelineMessage, extracted.token, {
             messageId: extracted.messageId,
             inputType: extracted._isVoice ? 'voice' : 'text',
             user: extracted.user,
@@ -467,7 +494,7 @@ class MessageProcessor {
             this.agentLoop.llmProvider.clearLocalSkip();
           }
           try {
-            response = await this.microPipeline.process(extracted.content, {
+            response = await this.microPipeline.process(pipelineMessage, {
               userName: extracted.user,
               roomToken: extracted.token,
               warmMemory: '',
@@ -493,7 +520,7 @@ class MessageProcessor {
             if (this.agentLoop.llmProvider?.skipLocalForConversation) {
               this.agentLoop.llmProvider.skipLocalForConversation();
             }
-            response = await this.agentLoop.process(extracted.content, extracted.token, {
+            response = await this.agentLoop.process(pipelineMessage, extracted.token, {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
               user: extracted.user,
@@ -508,7 +535,7 @@ class MessageProcessor {
             this.agentLoop.llmProvider.clearLocalSkip();
           }
           try {
-            response = await this.microPipeline.process(extracted.content, {
+            response = await this.microPipeline.process(pipelineMessage, {
               userName: extracted.user,
               roomToken: extracted.token,
               warmMemory: '',
@@ -533,7 +560,7 @@ class MessageProcessor {
             if (this.agentLoop.llmProvider?.skipLocalForConversation) {
               this.agentLoop.llmProvider.skipLocalForConversation();
             }
-            response = await this.agentLoop.process(extracted.content, extracted.token, {
+            response = await this.agentLoop.process(pipelineMessage, extracted.token, {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
               user: extracted.user
@@ -561,7 +588,7 @@ class MessageProcessor {
             agentOpts.maxIterations = 2;
           }
 
-          response = await this.agentLoop.process(extracted.content, extracted.token, {
+          response = await this.agentLoop.process(pipelineMessage, extracted.token, {
             ...agentOpts,
             systemSuffix: flushPrompt
           });
@@ -584,7 +611,7 @@ class MessageProcessor {
           agentOpts.maxIterations = 2;
         }
 
-        response = await this.agentLoop.process(extracted.content, extracted.token, {
+        response = await this.agentLoop.process(pipelineMessage, extracted.token, {
           ...agentOpts,
           systemSuffix: flushPrompt
         });
@@ -603,7 +630,7 @@ class MessageProcessor {
           }
         }
 
-        result = await this.messageRouter.route(extracted.content, {
+        result = await this.messageRouter.route(pipelineMessage, {
           user: extracted.user,
           token: extracted.token,
           messageId: extracted.messageId,

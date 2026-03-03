@@ -141,7 +141,8 @@ function createServerComponents(deps) {
     warmMemory,
     budgetEnforcer,
     adminUser: adminUser || '',
-    proactiveEvaluator
+    proactiveEvaluator,
+    referenceResolver: deps.referenceResolver || null
   });
 
   // Create webhook handler (uses message processor)
