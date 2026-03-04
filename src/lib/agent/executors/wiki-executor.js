@@ -91,6 +91,11 @@ Extract wiki/knowledge operation parameters from this message.
 Leave fields as empty strings if not mentioned. Do NOT guess values.
 If the message is NOT about wiki/knowledge, set requires_clarification to true.
 
+Action rules:
+- "introspect" = structural/listing query with NO specific topic. Examples: "What's in your wiki?", "List your pages", "Show me your knowledge base"
+- "read" = query about a SPECIFIC topic. Examples: "What do you know about Carlos?", "What do you know about reading documents?", "Tell me about the onboarding process"
+- If the message mentions a topic ("about X", a name, a subject), use "read" with that topic — never "introspect"
+
 Message: "${message.substring(0, 300)}"`;
 
     const params = await this._extractJSON(message, extractionPrompt, WIKI_SCHEMA);
@@ -115,6 +120,12 @@ Message: "${message.substring(0, 300)}"`;
           originalMessage: message,
         }
       };
+    }
+
+    // Safety net: reclassify introspect → read when a topic is present.
+    // Local models sometimes ignore prompt guidance and return introspect for topic queries.
+    if (params.action === 'introspect' && (params.topic || params.page_title)) {
+      params.action = 'read';
     }
 
     // Step 3: Route by action
