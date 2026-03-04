@@ -226,4 +226,125 @@ asyncTest('TC-ER-06: tick() limits to 2 pages per pulse (MAX_PER_TICK)', async (
   );
 });
 
+// TC-ER-07: backfillAll() processes all pages with content > 50 chars (alias for refreshAll)
+asyncTest('TC-ER-07: backfillAll() processes all pages with content', async () => {
+  const embedder = createMockEmbedder();
+  const store = createMockVectorStore();
+  const collectives = {
+    getPageList: async () => [
+      { title: 'FullPage' },
+      { title: 'StubPage' },
+      { title: 'AnotherPage' }
+    ],
+    readPageContent: async (title) => {
+      if (title === 'StubPage') return '';  // empty content — should be skipped
+      return `Full content of ${title} with enough text to be meaningful`;
+    }
+  };
+
+  const refresher = new EmbeddingRefresher({
+    embeddingClient: embedder,
+    vectorStore: store,
+    collectivesClient: collectives,
+    logger: silentLogger
+  });
+
+  const result = await refresher.backfillAll();
+
+  assert.strictEqual(result.processed, 2, `Expected 2 processed (skipping stub), got ${result.processed}`);
+  assert.strictEqual(result.errors, 0, `Expected 0 errors, got ${result.errors}`);
+});
+
+// TC-ER-08: backfillAll() skips stubs gracefully (empty/null content)
+asyncTest('TC-ER-08: backfillAll() skips stubs gracefully', async () => {
+  const embedder = createMockEmbedder();
+  const store = createMockVectorStore();
+  const collectives = {
+    getPageList: async () => [
+      { title: 'Stub1' },
+      { title: 'Stub2' }
+    ],
+    readPageContent: async () => null  // all stubs
+  };
+
+  const refresher = new EmbeddingRefresher({
+    embeddingClient: embedder,
+    vectorStore: store,
+    collectivesClient: collectives,
+    logger: silentLogger
+  });
+
+  const result = await refresher.backfillAll();
+
+  assert.strictEqual(result.processed, 0, 'No pages should be processed when all are stubs');
+  assert.strictEqual(embedder.getCallCount(), 0, 'Embedder should not be called for stubs');
+});
+
+// TC-ER-09: One embedding failure doesn't abort the batch
+asyncTest('TC-ER-09: One embedding failure does not abort the batch', async () => {
+  let callCount = 0;
+  const partialEmbedder = {
+    embed: async (text) => {
+      callCount++;
+      if (text.includes('BadPage')) throw new Error('Embedding failed for BadPage');
+      return new Float64Array(768).fill(0.2);
+    }
+  };
+
+  const store = createMockVectorStore();
+  const collectives = {
+    getPageList: async () => [
+      { title: 'GoodPage1' },
+      { title: 'BadPage' },
+      { title: 'GoodPage2' }
+    ],
+    readPageContent: async (title) => `Content of ${title} with enough detail`
+  };
+
+  const refresher = new EmbeddingRefresher({
+    embeddingClient: partialEmbedder,
+    vectorStore: store,
+    collectivesClient: collectives,
+    logger: silentLogger
+  });
+
+  const result = await refresher.backfillAll();
+
+  assert.strictEqual(result.processed, 2, `Expected 2 processed, got ${result.processed}`);
+  assert.strictEqual(result.errors, 1, `Expected 1 error, got ${result.errors}`);
+  assert.strictEqual(callCount, 3, 'Embedder should be called for all 3 pages');
+});
+
+// TC-ER-10: Bootstrap retries on next tick if first attempt fails
+asyncTest('TC-ER-10: Bootstrap retries on next tick if first attempt produced 0', async () => {
+  let attempt = 0;
+  const eventualEmbedder = {
+    embed: async () => {
+      attempt++;
+      if (attempt <= 1) throw new Error('Ollama cold start');
+      return new Float64Array(768).fill(0.3);
+    }
+  };
+
+  const store = createMockVectorStore();
+  const collectives = createMockCollectives([{ title: 'PageX' }]);
+
+  const refresher = new EmbeddingRefresher({
+    embeddingClient: eventualEmbedder,
+    vectorStore: store,
+    collectivesClient: collectives,
+    logger: silentLogger
+  });
+
+  // First tick — bootstrap fails, _bootstrapped should stay false
+  const result1 = await refresher.tick();
+  assert.strictEqual(result1.refreshed, 0, 'First tick should fail');
+  assert.strictEqual(refresher._bootstrapped, false, '_bootstrapped should be false after failed bootstrap');
+
+  // Second tick — bootstrap retries and succeeds
+  const result2 = await refresher.tick();
+  assert.strictEqual(result2.refreshed, 1, 'Second tick should succeed');
+  assert.strictEqual(refresher._bootstrapped, true, '_bootstrapped should be true after successful bootstrap');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

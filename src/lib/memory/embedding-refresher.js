@@ -105,8 +105,8 @@ class EmbeddingRefresher {
       if (!title) continue;
 
       try {
-        await this._embedAndUpsert(title);
-        processed++;
+        const embedded = await this._embedAndUpsert(title);
+        if (embedded) processed++;
       } catch (err) {
         errors++;
         this.logger.warn(`[EmbeddingRefresher] refreshAll: failed to embed "${title}" — ${err.message}`);
@@ -117,6 +117,16 @@ class EmbeddingRefresher {
       `[EmbeddingRefresher] refreshAll complete: processed=${processed}, errors=${errors}`
     );
     return { processed, errors };
+  }
+
+  /**
+   * Manual trigger alias for refreshAll(). Intended for admin commands and testing.
+   * Identical to refreshAll() but exists as a distinct method for clarity in the API.
+   *
+   * @returns {Promise<{ processed: number, errors: number }>}
+   */
+  async backfillAll() {
+    return this.refreshAll();
   }
 
   /**
@@ -153,8 +163,8 @@ class EmbeddingRefresher {
       if (!this._isStale(title)) continue;
 
       try {
-        await this._embedAndUpsert(title);
-        processed++;
+        const embedded = await this._embedAndUpsert(title);
+        if (embedded) processed++;
       } catch (err) {
         errors++;
         this.logger.warn(`[EmbeddingRefresher] refreshStale: failed to embed "${title}" — ${err.message}`);
@@ -191,10 +201,8 @@ class EmbeddingRefresher {
     let errors = 0;
 
     try {
-      // Bootstrap check — only on the first ever tick
+      // Bootstrap check — retry until the store is populated
       if (!this._bootstrapped) {
-        this._bootstrapped = true; // Set early so an error doesn't loop forever
-
         let storeCount = 0;
         try {
           storeCount = await this.store.count();
@@ -205,8 +213,15 @@ class EmbeddingRefresher {
         if (storeCount === 0) {
           this.logger.info('[EmbeddingRefresher] tick: vector store is empty — running full bootstrap');
           const result = await this.refreshAll();
+          // Only mark bootstrapped if at least one page was embedded successfully
+          if (result.processed > 0) {
+            this._bootstrapped = true;
+          }
           return { refreshed: result.processed, errors: result.errors };
         }
+
+        // Store already has data (e.g. survived restart) — no bootstrap needed
+        this._bootstrapped = true;
       }
 
       // Normal incremental tick — pick the MAX_PER_TICK stalest pages
@@ -214,8 +229,8 @@ class EmbeddingRefresher {
 
       for (const title of candidates) {
         try {
-          await this._embedAndUpsert(title);
-          refreshed++;
+          const embedded = await this._embedAndUpsert(title);
+          if (embedded) refreshed++;
         } catch (err) {
           errors++;
           this.logger.warn(`[EmbeddingRefresher] tick: failed to embed "${title}" — ${err.message}`);
@@ -238,7 +253,7 @@ class EmbeddingRefresher {
    * Read, embed, and upsert a single wiki page by title.
    *
    * @param {string} title - Page title as returned by getPageList()
-   * @returns {Promise<void>}
+   * @returns {Promise<boolean>} true if embedded, false if skipped (empty/null content)
    * @throws {Error} If embedding or upsert fails
    * @private
    */
@@ -248,7 +263,7 @@ class EmbeddingRefresher {
     // readPageContent returns null for 404; skip rather than embed empty string
     if (!content || typeof content !== 'string' || content.trim() === '') {
       this.logger.warn(`[EmbeddingRefresher] _embedAndUpsert: no content for "${title}" — skipping`);
-      return;
+      return false;
     }
 
     const vector = await this.embedder.embed(content);
@@ -258,6 +273,8 @@ class EmbeddingRefresher {
       source: 'wiki',
       updated_at: new Date().toISOString()
     });
+
+    return true;
   }
 
   /**

@@ -101,23 +101,35 @@ class FreshnessChecker {
 
   /**
    * Check whether a page's frontmatter indicates staleness.
+   *
+   * Biology: access refreshes freshness. If a page was recently accessed
+   * (via enricher → MemorySearcher → LTP), it stays alive even if
+   * last_verified is old. The most recent of last_verified and last_accessed
+   * is used as the freshness anchor.
+   *
    * @param {Object} frontmatter
    * @returns {{stale: boolean, daysSinceVerified: number, decayDays: number}}
+   *   daysSinceVerified reflects the most recent of last_verified and last_accessed
    */
   _isStale(frontmatter) {
     const decayDays = frontmatter.decay_days || this.config.defaultDecayDays;
 
-    if (!frontmatter.last_verified) {
-      return { stale: true, daysSinceVerified: Infinity, decayDays };
-    }
+    // Determine the freshness anchor: most recent of last_verified and last_accessed
+    const lastVerified = frontmatter.last_verified ? new Date(frontmatter.last_verified) : null;
+    const lastAccessed = frontmatter.last_accessed ? new Date(frontmatter.last_accessed) : null;
 
-    const lastVerified = new Date(frontmatter.last_verified);
-    if (isNaN(lastVerified.getTime())) {
+    const verifiedMs = lastVerified && !isNaN(lastVerified.getTime()) ? lastVerified.getTime() : 0;
+    const accessedMs = lastAccessed && !isNaN(lastAccessed.getTime()) ? lastAccessed.getTime() : 0;
+
+    // Use the most recent touch as the freshness anchor
+    const freshestMs = Math.max(verifiedMs, accessedMs);
+
+    if (freshestMs === 0) {
       return { stale: true, daysSinceVerified: Infinity, decayDays };
     }
 
     const now = new Date();
-    const diffMs = now.getTime() - lastVerified.getTime();
+    const diffMs = now.getTime() - freshestMs;
     const daysSinceVerified = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
     return {
@@ -141,7 +153,7 @@ class FreshnessChecker {
       lines.push('**Last verified:** Never (no last_verified in frontmatter)');
     } else {
       lines.push(`**Last verified:** ${frontmatter.last_verified}`);
-      lines.push(`**Days since verification:** ${staleInfo.daysSinceVerified}`);
+      lines.push(`**Days since last touch:** ${staleInfo.daysSinceVerified}`);
       lines.push(`**Decay threshold:** ${staleInfo.decayDays} days`);
       lines.push(`**Overdue by:** ${staleInfo.daysSinceVerified - staleInfo.decayDays} days`);
     }

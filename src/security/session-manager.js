@@ -572,6 +572,16 @@ class SessionManager extends EventEmitter {
   }
 
   /**
+   * Return all active sessions. Used for graceful shutdown persistence —
+   * sessions live in-memory and vanish on restart unless persisted.
+   *
+   * @returns {Object[]} Array of all session objects
+   */
+  getAllSessions() {
+    return Array.from(this.sessions.values());
+  }
+
+  /**
    * Verify isolation between two sessions
    * Checks that no data structures are shared by reference
    *

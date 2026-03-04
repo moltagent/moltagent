@@ -439,6 +439,70 @@ async function runTests() {
     assert.ok(call.title.startsWith('Sessions/'), `Title should start with Sessions/, got: ${call.title}`);
   });
 
+  // ----------------------------------------------------------
+  // Summary quality: captures key topics, not just last message
+  // ----------------------------------------------------------
+
+  await asyncTest('TC-SP3-015: Summary prompt includes full transcript, not just last message', async () => {
+    let promptContent = null;
+    const wiki = createMinimalWikiClient();
+    const router = {
+      route: async ({ content }) => {
+        promptContent = content;
+        return { content: STRUCTURED_SUMMARY };
+      }
+    };
+    const persister = new SessionPersister({ wikiClient: wiki, llmRouter: router });
+
+    const session = createSession();
+    await persister.persistSession(session);
+
+    assert.ok(promptContent, 'Router should have been called with content');
+    // The transcript should include messages from the beginning, not just the last one
+    assert.ok(promptContent.includes('plan'), 'Transcript should include early message about "plan"');
+    assert.ok(promptContent.includes('budget'), 'Transcript should include middle message about "budget"');
+    assert.ok(promptContent.includes('next steps'), 'Transcript should include later message about "next steps"');
+  });
+
+  // ----------------------------------------------------------
+  // getAllSessions: used by graceful shutdown
+  // ----------------------------------------------------------
+
+  await asyncTest('TC-SP3-016: SessionManager.getAllSessions() returns all active sessions', async () => {
+    const manager = new SessionManager();
+    const s1 = manager.getSession('room-a', 'user1');
+    const s2 = manager.getSession('room-b', 'user2');
+
+    const all = manager.getAllSessions();
+    assert.strictEqual(all.length, 2, `Expected 2 sessions, got ${all.length}`);
+    assert.ok(all.includes(s1), 'Should include first session');
+    assert.ok(all.includes(s2), 'Should include second session');
+  });
+
+  // ----------------------------------------------------------
+  // Frontmatter includes required fields
+  // ----------------------------------------------------------
+
+  await asyncTest('TC-SP3-017: Page frontmatter includes room, user, dates, decay_days', async () => {
+    const wiki = createMinimalWikiClient();
+    const router = createMockLLMRouter();
+    const persister = new SessionPersister({ wikiClient: wiki, llmRouter: router });
+
+    const session = createSession();
+    await persister.persistSession(session);
+
+    const call = wiki._calls.find(c => c.method === 'writePageWithFrontmatter');
+    assert.ok(call, 'writePageWithFrontmatter should have been called');
+    const fm = call.frontmatter;
+    assert.strictEqual(fm.type, 'session_transcript', 'type should be session_transcript');
+    assert.strictEqual(fm.room, 'room1234xyz', 'room should match session roomToken');
+    assert.strictEqual(fm.user, 'user1', 'user should match session userId');
+    assert.strictEqual(fm.decay_days, 90, 'decay_days should be 90');
+    assert.ok(fm.created, 'created should be set');
+    assert.ok(fm.expired, 'expired should be set');
+    assert.ok(fm.messages > 0, 'messages count should be > 0');
+  });
+
   console.log('\n=== SessionPersister v3 Tests Complete ===\n');
   summary();
   exitWithCode();

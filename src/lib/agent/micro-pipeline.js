@@ -606,6 +606,10 @@ Sub-questions:`;
     if (executor && typeof executor.execute === 'function') {
       try {
         const result = await executor.execute(message, context);
+        // Invalidate deck cache after any deck mutation so enricher sees fresh state
+        if (intent === 'deck' && this.memoryContextEnricher) {
+          this.memoryContextEnricher.invalidateDeckCache();
+        }
         // Structured return — propagate {response, pendingClarification} to caller
         if (typeof result === 'object' && result !== null && result.response) {
           return result;
@@ -683,6 +687,10 @@ Sub-questions:`;
 
         // If no tool calls, we have the final response
         if (!llmResult.toolCalls || llmResult.toolCalls.length === 0) {
+          // Invalidate deck cache — tool-calling loop may have mutated board state
+          if (intent === 'deck' && this.memoryContextEnricher) {
+            this.memoryContextEnricher.invalidateDeckCache();
+          }
           return llmResult.content || 'Done.';
         }
 
@@ -717,6 +725,10 @@ Sub-questions:`;
       }
 
       // If we exhaust iterations, synthesize from last messages
+      // Invalidate deck cache — iterations may have mutated board state
+      if (intent === 'deck' && this.memoryContextEnricher) {
+        this.memoryContextEnricher.invalidateDeckCache();
+      }
       const lastToolResult = messages.filter(m => m.role === 'tool').pop();
       return lastToolResult?.content || 'I completed the operation.';
 

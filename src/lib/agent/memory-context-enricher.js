@@ -16,25 +16,29 @@
 'use strict';
 
 /**
- * MemoryContextEnricher — Pre-response wiki knowledge injection.
+ * MemoryContextEnricher — Pre-response knowledge injection from wiki (Ring 1) and Deck (Ring 2).
  *
  * Architecture Brief:
  * - Problem: The agent only consults its wiki when classification routes to WikiExecutor.
  *   Messages about known entities ("Who is Sarah?") routed to search/chitchat never
- *   see the wiki. The agent has knowledge it cannot access.
+ *   see the wiki or the active Deck task board. The agent has knowledge it cannot access.
  * - Pattern: After classification, before handler dispatch, extract potential entity
- *   references from the user message and search wiki. If matches are found, inject
- *   them into context.warmMemory so all downstream handlers (chat, domain, question)
- *   see the agent's own knowledge.
- * - Key Dependencies: MemorySearcher (three-channel search fusion)
- * - Data Flow: message → extractSearchTerms → memorySearcher.search → warmMemory injection
+ *   references from the user message and search wiki + Deck in parallel. If matches are
+ *   found, inject them into context.warmMemory so all downstream handlers (chat, domain,
+ *   question) see the agent's own knowledge.
+ *   Ring 1 = Wiki (persistent knowledge, via MemorySearcher)
+ *   Ring 2 = Deck (ambient working memory — active cards, tasks, due dates)
+ * - Key Dependencies: MemorySearcher (three-channel search fusion), DeckClient (getAllCards)
+ * - Data Flow: message → extractSearchTerms → [memorySearcher.search, _searchDeck] in parallel
+ *              → warmMemory injection
  *
  * Dependency Map:
  *   memory-context-enricher → memory-searcher → nc-request-manager
+ *   memory-context-enricher → deck-client → nc-request-manager
  *   memory-context-enricher ← micro-pipeline (called in process())
  *
  * @module agent/memory-context-enricher
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 // Intents that never need memory enrichment
@@ -56,13 +60,20 @@ class MemoryContextEnricher {
   /**
    * @param {Object} opts
    * @param {Object} opts.memorySearcher - MemorySearcher instance
+   * @param {Object} [opts.deckClient] - DeckClient instance (Ring 2 ambient working memory)
    * @param {Object} [opts.logger] - Logger instance
    * @param {number} [opts.timeout=3000] - Max ms for enrichment search
    */
-  constructor({ memorySearcher, logger, timeout } = {}) {
+  constructor({ memorySearcher, deckClient, logger, timeout } = {}) {
     this.memorySearcher = memorySearcher;
+    this.deckClient = deckClient || null;
     this.logger = logger || console;
     this.timeout = timeout || 3000;
+
+    // Deck board state cache (2-minute TTL)
+    this._deckCache = null;
+    this._deckCacheTime = 0;
+    this._deckCacheTTL = 120000; // 2 minutes
   }
 
   /**
@@ -112,16 +123,16 @@ class MemoryContextEnricher {
   }
 
   /**
-   * Search wiki for relevant knowledge and format as context string.
+   * Search wiki (Ring 1) and Deck (Ring 2) for relevant knowledge and format as context string.
    * Runs after classification, before handler dispatch.
-   * Never blocks the response pipeline — times out after 3s.
+   * Never blocks the response pipeline — both probes time out after 3s.
+   * Deck failures are silent — wiki results always flow through.
    *
    * @param {string} message - User's message
    * @param {string} intent - The classified intent
    * @returns {Promise<string|null>} Context to inject into warmMemory, or null
    */
   async enrich(message, intent) {
-    // Skip for intents that never need memory enrichment
     if (SKIP_INTENTS.has(intent)) return null;
 
     // Skip for wiki domain — WikiExecutor already handles its own lookups
@@ -131,23 +142,37 @@ class MemoryContextEnricher {
     if (searchTerms.length === 0) return null;
 
     try {
-      const results = await Promise.race([
-        this.memorySearcher.search(searchTerms.join(' '), {
-          maxResults: 3,
-          scope: 'all'
-        }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), this.timeout))
+      const _timeout = (ms) => new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms));
+
+      // Parallel probes — wiki and deck, independent, with timeout
+      const [wikiResult, deckResult] = await Promise.allSettled([
+        Promise.race([
+          this.memorySearcher.search(searchTerms.join(' '), { maxResults: 3, scope: 'all' }),
+          _timeout(this.timeout)
+        ]),
+        Promise.race([
+          this._searchDeck(searchTerms),
+          _timeout(this.timeout)
+        ])
       ]);
 
-      if (!results || results.length === 0) return null;
+      const wikiResults = wikiResult.status === 'fulfilled' && Array.isArray(wikiResult.value) ? wikiResult.value : [];
+      const deckResults = deckResult.status === 'fulfilled' && Array.isArray(deckResult.value) ? deckResult.value : [];
 
-      // Format as context block with source tags and confidence
-      const contextParts = results
-        .filter(r => r.title || r.excerpt)
+      const allResults = [...wikiResults, ...deckResults];
+      if (allResults.length === 0) return null;
+
+      // Format results — wiki results use existing format, deck results have their own
+      const contextParts = allResults
+        .filter(r => r.title || r.excerpt || r.snippet)
         .map(r => {
+          if (r.source === 'deck') {
+            const confidence = r.matchType === 'title' ? 'high' : 'medium';
+            return `[source: deck, match: ${r.matchType}, confidence: ${confidence}]\nCard #${r.cardId}: "${r.title}"\nStack: ${r.stackName}${r.duedate ? ` | Due: ${r.duedate}` : ''}${r.description ? '\n' + r.description.substring(0, 300) : ''}`;
+          }
           const title = r.title || 'Untitled';
           const snippet = (r.excerpt || r.subline || '').substring(0, 300);
-          const source = (r.source || 'Wiki').toLowerCase();
+          const source = (r.source || 'wiki').toLowerCase();
           const confidence = this._computeConfidence(r);
           return `[source: ${source}, confidence: ${confidence}]\n${title}\n${snippet}`;
         });
@@ -182,6 +207,79 @@ class MemoryContextEnricher {
     if (cs.keyword >= 0.5 || cs.vector >= 0.7 || cs.graph >= 0.7) return 'medium';
     // Weak or tangential match
     return 'low';
+  }
+
+  /**
+   * Get cached deck board state. Refreshes every 2 minutes.
+   * @returns {Promise<Object>} Board state: { stackName: cards[] }
+   * @private
+   */
+  async _getDeckState() {
+    const now = Date.now();
+    if (this._deckCache && (now - this._deckCacheTime) < this._deckCacheTTL) {
+      return this._deckCache;
+    }
+    const state = await this.deckClient.getAllCards();
+    this._deckCache = state;
+    this._deckCacheTime = now;
+    return state;
+  }
+
+  /**
+   * Search Deck cards by keyword against cached board state.
+   * Returns matching cards with stack context and due dates.
+   *
+   * @param {string[]} searchTerms
+   * @returns {Promise<Array>} Matching card results
+   * @private
+   */
+  async _searchDeck(searchTerms) {
+    if (!this.deckClient) return [];
+
+    try {
+      const state = await this._getDeckState();
+      const results = [];
+
+      for (const [stackKey, cards] of Object.entries(state || {})) {
+        for (const card of (cards || [])) {
+          const titleLower = (card.title || '').toLowerCase();
+          const descLower = (card.description || '').toLowerCase();
+
+          const titleMatch = searchTerms.some(term => titleLower.includes(term.toLowerCase()));
+          const descMatch = card.description && searchTerms.some(term => descLower.includes(term.toLowerCase()));
+
+          if (titleMatch || descMatch) {
+            results.push({
+              source: 'deck',
+              title: card.title,
+              snippet: `Stack: ${stackKey} | Card #${card.id}` +
+                `${card.duedate ? ` | Due: ${card.duedate}` : ''}` +
+                `${card.description ? '\n' + card.description.substring(0, 300) : ''}`,
+              matchType: titleMatch ? 'title' : 'content',
+              score: titleMatch ? 0.9 : 0.6,
+              cardId: card.id,
+              stackName: stackKey,
+              duedate: card.duedate || null,
+              description: card.description || null
+            });
+          }
+        }
+      }
+
+      return results.sort((a, b) => b.score - a.score).slice(0, 3);
+    } catch (err) {
+      this.logger.warn(`[MemoryEnrich] Deck search failed: ${err.message}`);
+      return []; // Never block. Deck failure is invisible. Wiki results still flow.
+    }
+  }
+
+  /**
+   * Invalidate the cached deck board state.
+   * Call this after DeckExecutor operations (card created/moved/updated/deleted).
+   */
+  invalidateDeckCache() {
+    this._deckCache = null;
+    this._deckCacheTime = 0;
   }
 }
 

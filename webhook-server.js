@@ -1025,8 +1025,10 @@ async function initialize() {
 
   // 7b8. Initialize SessionManager, SessionPersister, MemorySearcher (Session 29b)
   if (SessionManager) {
-    sessionManager = new SessionManager();
-    console.log('[INIT] SessionManager ready');
+    sessionManager = new SessionManager({
+      sessionTimeoutMs: 2 * 60 * 60 * 1000, // 2 hours — ensures sessions expire before server restart
+    });
+    console.log('[INIT] SessionManager ready (2h session timeout)');
 
     // Wire SessionPersister to sessionExpired events
     if (SessionPersister && collectivesClient && llmRouter) {
@@ -1616,6 +1618,7 @@ async function initialize() {
       if (MemoryContextEnricher && memorySearcher) {
         memoryContextEnricher = new MemoryContextEnricher({
           memorySearcher,
+          deckClient: deckClient2,
           logger: console,
           timeout: 3000
         });
@@ -2121,6 +2124,27 @@ async function shutdown(signal) {
     clearInterval(sessionCleanupTimer);
     sessionCleanupTimer = null;
     console.log('[SHUTDOWN] SessionManager cleanup timer stopped');
+  }
+
+  // Persist all active sessions before losing them (in-memory Map vanishes on exit)
+  if (sessionManager && sessionPersister) {
+    try {
+      const activeSessions = sessionManager.getAllSessions ? sessionManager.getAllSessions() : [];
+      let persisted = 0;
+      for (const session of activeSessions) {
+        try {
+          const page = await sessionPersister.persistSession(session);
+          if (page) persisted++;
+        } catch (err) {
+          console.warn(`[SHUTDOWN] Session persist failed for ${session.roomToken}: ${err.message}`);
+        }
+      }
+      if (persisted > 0) {
+        console.log(`[SHUTDOWN] Persisted ${persisted} active session(s) to wiki`);
+      }
+    } catch (err) {
+      console.warn(`[SHUTDOWN] Session persistence sweep failed: ${err.message}`);
+    }
   }
 
   // Stop NC Flow modules

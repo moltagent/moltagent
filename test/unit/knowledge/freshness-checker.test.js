@@ -266,6 +266,71 @@ test('returns correct scan summary', async () => {
   assert.strictEqual(result.cards.length, 2);
 });
 
+// -- Phase 2 Tests: Access-refreshes-freshness feedback loop --
+
+test('_isStale() respects last_accessed — recently accessed page is NOT stale', () => {
+  const checker = new FreshnessChecker({
+    collectivesClient: createMockCollectivesClient(),
+    knowledgeBoard: createMockKnowledgeBoard()
+  });
+
+  // last_verified is 120 days ago (past 90-day default) but last_accessed is yesterday
+  const result = checker._isStale({
+    last_verified: new Date(Date.now() - 120 * 86400000).toISOString().split('T')[0],
+    last_accessed: new Date(Date.now() - 1 * 86400000).toISOString(),
+    decay_days: 90
+  });
+
+  assert.strictEqual(result.stale, false, 'Page recently accessed should NOT be stale');
+  assert.ok(result.daysSinceVerified < 90, 'daysSinceVerified should reflect most recent touch');
+});
+
+test('_isStale() identifies pages past decay_days with no recent access', () => {
+  const checker = new FreshnessChecker({
+    collectivesClient: createMockCollectivesClient(),
+    knowledgeBoard: createMockKnowledgeBoard()
+  });
+
+  const result = checker._isStale({
+    last_verified: new Date(Date.now() - 100 * 86400000).toISOString().split('T')[0],
+    decay_days: 90
+  });
+
+  assert.strictEqual(result.stale, true, 'Page verified 100 days ago with no access should be stale');
+  assert.ok(result.daysSinceVerified >= 90, `Expected >= 90, got ${result.daysSinceVerified}`);
+});
+
+test('Recently accessed pages are protected from decay even if never verified', () => {
+  const checker = new FreshnessChecker({
+    collectivesClient: createMockCollectivesClient(),
+    knowledgeBoard: createMockKnowledgeBoard()
+  });
+
+  // No last_verified at all, but last_accessed is today
+  const result = checker._isStale({
+    last_accessed: new Date().toISOString(),
+    decay_days: 90
+  });
+
+  assert.strictEqual(result.stale, false, 'Page accessed today should not be stale even without last_verified');
+});
+
+test('Old access does not protect from decay', () => {
+  const checker = new FreshnessChecker({
+    collectivesClient: createMockCollectivesClient(),
+    knowledgeBoard: createMockKnowledgeBoard()
+  });
+
+  // Both last_verified and last_accessed are past decay threshold
+  const result = checker._isStale({
+    last_verified: new Date(Date.now() - 100 * 86400000).toISOString().split('T')[0],
+    last_accessed: new Date(Date.now() - 95 * 86400000).toISOString(),
+    decay_days: 90
+  });
+
+  assert.strictEqual(result.stale, true, 'Page with old access should still be stale');
+});
+
 // -- Summary --
 summary();
 exitWithCode();

@@ -189,4 +189,156 @@ asyncTest('enricher output includes source and confidence per result', async () 
   assert.ok(result.includes('Carlos'), 'Should include title');
 });
 
+// ============================================================
+// Deck Enrichment Tests (Ring 2)
+// ============================================================
+
+function createMockDeckClient(cardsByStack = {}) {
+  return {
+    getAllCards: async () => cardsByStack,
+    _callCount: 0,
+    get callCount() { return this._callCount; },
+    _origGetAllCards: null
+  };
+}
+
+function enricherWithDeck(deckCards, wikiResults = []) {
+  const deckClient = createMockDeckClient(deckCards);
+  // Track getAllCards call count
+  const origFn = deckClient.getAllCards;
+  deckClient.getAllCards = async function() {
+    deckClient._callCount++;
+    return origFn.call(this);
+  };
+  return {
+    enricher: new MemoryContextEnricher({
+      memorySearcher: { search: async () => wikiResults },
+      deckClient,
+      logger: silentLogger
+    }),
+    deckClient
+  };
+}
+
+// -- Test 15: _searchDeck finds card by title keyword --
+asyncTest('_searchDeck finds card by title keyword', async () => {
+  const { enricher } = enricherWithDeck({
+    working: [{ id: 42, title: 'Compare Hetzner CPX31 vs GEX44', description: 'Research specs' }]
+  });
+
+  const result = await enricher.enrich('What about the Hetzner upgrade?', 'question');
+  assert.ok(result !== null, 'Should find Hetzner card');
+  assert.ok(result.includes('Hetzner'), 'Should include card title');
+  assert.ok(result.includes('source: deck'), 'Should tag as deck source');
+  assert.ok(result.includes('Card #42'), 'Should include card ID');
+});
+
+// -- Test 16: _searchDeck finds card by description keyword --
+asyncTest('_searchDeck finds card by description keyword', async () => {
+  const { enricher } = enricherWithDeck({
+    inbox: [{ id: 99, title: 'Server Migration', description: 'Migrate from Hetzner to OVH cloud' }]
+  });
+
+  const result = await enricher.enrich('What do you know about OVH?', 'question');
+  assert.ok(result !== null, 'Should find card by description match');
+  assert.ok(result.includes('Server Migration'), 'Should include card title');
+  assert.ok(result.includes('match: content'), 'Should tag as content match');
+});
+
+// -- Test 17: _searchDeck returns empty for no matches --
+asyncTest('_searchDeck returns empty for no matches — not an error', async () => {
+  const { enricher } = enricherWithDeck({
+    inbox: [{ id: 1, title: 'Unrelated card', description: 'Nothing relevant' }]
+  });
+
+  const result = await enricher.enrich('Tell me about Carlos', 'question');
+  // Only wiki results matter here, and wiki mock returns []
+  assert.strictEqual(result, null, 'Should return null when no deck or wiki matches');
+});
+
+// -- Test 18: Results include stack name and card ID --
+asyncTest('Deck results include stack name and card ID', async () => {
+  const { enricher } = enricherWithDeck({
+    review: [{ id: 77, title: 'Deploy MoltAgent v2', description: 'Production deploy', duedate: '2026-03-10' }]
+  });
+
+  const result = await enricher.enrich('What about MoltAgent deploy?', 'question');
+  assert.ok(result.includes('Stack: review'), 'Should include stack name');
+  assert.ok(result.includes('Card #77'), 'Should include card ID');
+  assert.ok(result.includes('Due: 2026-03-10'), 'Should include due date');
+});
+
+// -- Test 19: Deck results appear in <agent_knowledge> alongside wiki results --
+asyncTest('Deck results appear alongside wiki results in agent_knowledge', async () => {
+  const wikiResults = [
+    { source: 'Wiki', title: 'MoltAgent Docs', excerpt: 'Documentation for MoltAgent' }
+  ];
+  const { enricher } = enricherWithDeck(
+    { working: [{ id: 55, title: 'MoltAgent Phase 2', description: 'Phase 2 work' }] },
+    wikiResults
+  );
+
+  const result = await enricher.enrich('What about MoltAgent?', 'question');
+  assert.ok(result.includes('source: wiki'), 'Should include wiki source');
+  assert.ok(result.includes('source: deck'), 'Should include deck source');
+  assert.ok(result.includes('MoltAgent Docs'), 'Should include wiki title');
+  assert.ok(result.includes('MoltAgent Phase 2'), 'Should include deck card title');
+});
+
+// -- Test 20: Cache returns stale data within TTL (fast path) --
+asyncTest('Deck cache returns stale data within TTL', async () => {
+  const { enricher, deckClient } = enricherWithDeck({
+    inbox: [{ id: 10, title: 'Hetzner card', description: 'test' }]
+  });
+
+  // First call — populates cache
+  await enricher.enrich('Hetzner status?', 'question');
+  const firstCallCount = deckClient._callCount;
+  assert.strictEqual(firstCallCount, 1, 'Should call getAllCards once');
+
+  // Second call — hits cache
+  await enricher.enrich('Hetzner progress?', 'question');
+  assert.strictEqual(deckClient._callCount, 1, 'Should NOT call getAllCards again (cache hit)');
+});
+
+// -- Test 21: invalidateDeckCache() forces fresh fetch --
+asyncTest('invalidateDeckCache forces fresh fetch on next enrich', async () => {
+  const { enricher, deckClient } = enricherWithDeck({
+    inbox: [{ id: 10, title: 'Hetzner card', description: 'test' }]
+  });
+
+  // Populate cache
+  await enricher.enrich('Hetzner status?', 'question');
+  assert.strictEqual(deckClient._callCount, 1);
+
+  // Invalidate
+  enricher.invalidateDeckCache();
+
+  // Next call should fetch again
+  await enricher.enrich('Hetzner progress?', 'question');
+  assert.strictEqual(deckClient._callCount, 2, 'Should call getAllCards again after invalidation');
+});
+
+// -- Test 22: Deck API failure doesn't block wiki enrichment --
+asyncTest('Deck API failure does not block wiki enrichment', async () => {
+  const failingDeckClient = {
+    getAllCards: async () => { throw new Error('Deck API 503'); }
+  };
+
+  const enricher = new MemoryContextEnricher({
+    memorySearcher: {
+      search: async () => [
+        { source: 'Wiki', title: 'Carlos', excerpt: 'Contact person' }
+      ]
+    },
+    deckClient: failingDeckClient,
+    logger: silentLogger
+  });
+
+  const result = await enricher.enrich('Tell me about Carlos', 'question');
+  assert.ok(result !== null, 'Should still return wiki results');
+  assert.ok(result.includes('Carlos'), 'Wiki result should be present despite deck failure');
+  assert.ok(!result.includes('source: deck'), 'No deck results should be present');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 1000);
