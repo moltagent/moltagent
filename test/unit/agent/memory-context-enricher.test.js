@@ -64,15 +64,17 @@ asyncTest('enrich returns null for confirmation intent', async () => {
   assert.strictEqual(result, null, 'Should skip confirmation intent');
 });
 
-// -- Test 6: enrich returns null for wiki intent (executor handles it) --
-asyncTest('enrich returns null for wiki intent (WikiExecutor handles its own lookups)', async () => {
+// -- Test 6: enrich runs for wiki intent (pre-enriches warmMemory for WikiExecutor fallback) --
+asyncTest('enrich runs for wiki intent to pre-populate warmMemory', async () => {
   const enricher = new MemoryContextEnricher({
-    memorySearcher: { search: async () => [{ title: 'Should not reach' }] },
+    memorySearcher: { search: async () => [{ source: 'Wiki', title: 'Sarah', excerpt: 'Sarah is the marketing lead' }] },
     logger: silentLogger
   });
 
   const result = await enricher.enrich('What does the wiki say about Sarah?', 'wiki');
-  assert.strictEqual(result, null, 'Should skip wiki intent');
+  assert.ok(result !== null, 'Should enrich wiki intent (no longer skipped)');
+  assert.ok(result.includes('Sarah'), 'Should include search results');
+  assert.ok(result.includes('<agent_knowledge>'), 'Should wrap in agent_knowledge tags');
 });
 
 // -- Test 7: enrich returns formatted context when wiki has matches --

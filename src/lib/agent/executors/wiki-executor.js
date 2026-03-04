@@ -140,20 +140,21 @@ Message: "${message.substring(0, 300)}"`;
         return this._executeIntrospect(context);
       case 'read':
       default:
-        return this._executeRead(params, context);
+        return this._executeRead(params, context, message);
     }
   }
 
   /**
    * Read a wiki page. Never writes.
-   * Falls back to memory_search if exact title not found.
+   * Falls back to memory_search, then warmMemory synthesis if exact title not found.
    *
    * @param {Object} params - Extracted parameters
-   * @param {Object} context - { userName, roomToken }
+   * @param {Object} context - { userName, roomToken, warmMemory? }
+   * @param {string} message - Original user message (for warmMemory synthesis prompt)
    * @returns {Promise<Object|string>}
    * @private
    */
-  async _executeRead(params, context) {
+  async _executeRead(params, context, message) {
     const title = params.page_title || params.topic;
 
     if (!title) {
@@ -200,7 +201,66 @@ Message: "${message.substring(0, 300)}"`;
       }
     }
 
-    return { response: `I don't have a wiki page about '${title}'.` };
+    // Fallback: check if the enricher pre-populated warmMemory with related knowledge
+    const synthesized = await this._synthesizeFromWarmMemory(title, message, context);
+    if (synthesized) {
+      return synthesized;
+    }
+
+    return { response: `I don't have anything about '${title}' in my knowledge yet.` };
+  }
+
+  /**
+   * Synthesize an answer from enricher-provided warmMemory when no exact page was found.
+   * Sends the warm knowledge + user question to the LLM and returns its response.
+   *
+   * @param {string} title - The topic the user asked about
+   * @param {string} message - Original user message
+   * @param {Object} context - Pipeline context (may contain warmMemory)
+   * @returns {Promise<Object|null>} { response, actionRecord } or null if no warmMemory
+   * @private
+   */
+  async _synthesizeFromWarmMemory(title, message, context) {
+    const warm = context && context.warmMemory;
+    if (!warm || typeof warm !== 'string' || !warm.includes('<agent_knowledge>')) {
+      return null;
+    }
+
+    try {
+      const synthesisPrompt = `You are a knowledgeable assistant. The user asked about "${title}".
+No exact wiki page was found, but here is related knowledge from your memory:
+
+${warm}
+
+Answer the user's question based ONLY on the knowledge above.
+If the knowledge doesn't answer the question, say so honestly.
+Be concise and helpful.
+
+User question: "${message.substring(0, 300)}"`;
+
+      const result = await this.router.route({
+        job: 'chat',
+        content: synthesisPrompt,
+        requirements: { maxTokens: 500, temperature: 0.3 }
+      });
+
+      const answer = (result.result || '').trim();
+      if (!answer || answer.length < 10) return null;
+
+      this._logActivity('wiki_read',
+        `Synthesized answer for: ${title} (from warm memory)`,
+        { topic: title, source: 'warm_memory' },
+        context
+      );
+
+      return {
+        response: answer,
+        actionRecord: { type: 'wiki_read', refs: { topic: title, source: 'warm_memory' } }
+      };
+    } catch (err) {
+      this.logger.warn(`[WikiExecutor] Warm memory synthesis failed: ${err.message}`);
+      return null;
+    }
   }
 
   /**

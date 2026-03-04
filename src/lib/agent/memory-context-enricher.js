@@ -135,9 +135,6 @@ class MemoryContextEnricher {
   async enrich(message, intent) {
     if (SKIP_INTENTS.has(intent)) return null;
 
-    // Skip for wiki domain — WikiExecutor already handles its own lookups
-    if (intent === 'wiki') return null;
-
     const searchTerms = this._extractSearchTerms(message);
     if (searchTerms.length === 0) return null;
 

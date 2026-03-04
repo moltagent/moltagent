@@ -138,7 +138,7 @@ asyncTest('Read non-existent page returns friendly message', async () => {
 
   const result = await executor.execute('What does the wiki say about Nonexistent Topic?', { userName: 'alice' });
   const resp = getResponse(result);
-  assert.ok(resp.includes("I don't have a wiki page"), `Should return not-found message, got: ${resp}`);
+  assert.ok(resp.includes("I don't have anything about"), `Should return not-found message, got: ${resp}`);
   assert.ok(resp.includes('Nonexistent Topic'), 'Should include the topic name');
   assert.strictEqual(registry.getCallsFor('wiki_write').length, 0, 'Should NOT call wiki_write');
 });
@@ -319,6 +319,126 @@ asyncTest('REGRESSION: Read action never triggers wiki_write', async () => {
     registry.getCallsFor('wiki_write').length, 0,
     'wiki_write must NEVER be called for action: read'
   );
+});
+
+// -- Test 12: No-match falls back to warmMemory synthesis --
+asyncTest('No-match falls back to warmMemory synthesis from enricher', async () => {
+  let routeCallCount = 0;
+  const registry = createMockToolRegistry({
+    wiki_read: { success: true, result: 'No wiki page found for "document reading"' },
+    memory_search: { success: true, result: 'No matching memories found.' }
+  });
+
+  const executor = new WikiExecutor({
+    router: {
+      route: async (req) => {
+        routeCallCount++;
+        if (routeCallCount === 1) {
+          // First call: JSON extraction
+          return { result: JSON.stringify({ action: 'read', topic: 'document reading' }) };
+        }
+        // Second call: synthesis from warm memory
+        return { result: 'Based on my knowledge, document reading involves using the FileOps tool to process uploaded files.' };
+      }
+    },
+    toolRegistry: registry,
+    logger: silentLogger
+  });
+
+  const context = {
+    userName: 'alice',
+    warmMemory: '<agent_knowledge>\n[source: wiki, confidence: high]\nFileOps\nFileOps is the document reading and processing pipeline\n</agent_knowledge>'
+  };
+
+  const result = await executor.execute('What do you know about document reading?', context);
+  const resp = getResponse(result);
+
+  assert.ok(resp.includes('FileOps'), `Should synthesize answer from warm memory, got: ${resp}`);
+  assert.ok(result.actionRecord, 'Should have actionRecord');
+  assert.strictEqual(result.actionRecord.refs.source, 'warm_memory', 'Source should be warm_memory');
+  assert.strictEqual(routeCallCount, 2, 'Router should be called twice (extraction + synthesis)');
+});
+
+// -- Test 13: No warmMemory → returns "I don't have" message --
+asyncTest('No warmMemory returns final not-found message', async () => {
+  const registry = createMockToolRegistry({
+    wiki_read: { success: true, result: 'No wiki page found for "Nonexistent"' },
+    memory_search: { success: true, result: 'No matching memories found.' }
+  });
+
+  const executor = new WikiExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'read', topic: 'Nonexistent' })
+    }),
+    toolRegistry: registry,
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('Tell me about Nonexistent', { userName: 'alice' });
+  const resp = getResponse(result);
+
+  assert.ok(resp.includes("I don't have anything about"), `Should say no knowledge, got: ${resp}`);
+  assert.ok(resp.includes('Nonexistent'), 'Should include the topic name');
+});
+
+// -- Test 14: warmMemory without agent_knowledge tags is ignored --
+asyncTest('warmMemory without agent_knowledge tags is ignored', async () => {
+  const registry = createMockToolRegistry({
+    wiki_read: { success: true, result: 'No wiki page found for "Carlos"' },
+    memory_search: { success: true, result: 'No matching memories found.' }
+  });
+
+  const executor = new WikiExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'read', topic: 'Carlos' })
+    }),
+    toolRegistry: registry,
+    logger: silentLogger
+  });
+
+  const context = {
+    userName: 'alice',
+    warmMemory: 'Some random context string without knowledge tags'
+  };
+
+  const result = await executor.execute('Tell me about Carlos', context);
+  const resp = getResponse(result);
+
+  assert.ok(resp.includes("I don't have anything about"), `Should not use non-tagged warmMemory, got: ${resp}`);
+});
+
+// -- Test 15: Synthesis failure falls through to not-found --
+asyncTest('Synthesis failure falls through to not-found gracefully', async () => {
+  let routeCallCount = 0;
+  const registry = createMockToolRegistry({
+    wiki_read: { success: true, result: 'No wiki page found for "Carlos"' },
+    memory_search: { success: true, result: 'No matching memories found.' }
+  });
+
+  const executor = new WikiExecutor({
+    router: {
+      route: async () => {
+        routeCallCount++;
+        if (routeCallCount === 1) {
+          return { result: JSON.stringify({ action: 'read', topic: 'Carlos' }) };
+        }
+        // Synthesis call fails
+        throw new Error('LLM timeout');
+      }
+    },
+    toolRegistry: registry,
+    logger: silentLogger
+  });
+
+  const context = {
+    userName: 'alice',
+    warmMemory: '<agent_knowledge>\n[source: wiki]\nCarlos\nSome info\n</agent_knowledge>'
+  };
+
+  const result = await executor.execute('Tell me about Carlos', context);
+  const resp = getResponse(result);
+
+  assert.ok(resp.includes("I don't have anything about"), `Should fall through on synthesis error, got: ${resp}`);
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);
