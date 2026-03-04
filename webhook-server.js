@@ -1256,10 +1256,9 @@ async function initialize() {
   if (sessionManager) {
     sessionCleanupTimer = setInterval(() => {
       try {
-        const mapBefore = sessionManager.sessions.size;
         const result = sessionManager.cleanup();
-        if (result.sessions > 0 || result.approvals > 0 || result.idle > 0 || mapBefore > 0) {
-          console.log(`[SessionManager] Cleanup: ${result.sessions} sessions expired, ${result.approvals} approvals expired, ${result.idle} idle consolidated (map: ${mapBefore} → ${sessionManager.sessions.size})`);
+        if (result.sessions > 0 || result.approvals > 0 || result.idle > 0) {
+          console.log(`[SessionManager] Cleanup: ${result.sessions} sessions expired, ${result.approvals} approvals expired, ${result.idle} idle consolidated`);
         }
       } catch (err) {
         console.error('[SessionManager] Cleanup error:', err.message);
@@ -2130,9 +2129,8 @@ async function shutdown(signal) {
   // Persist all active sessions before losing them (in-memory Map vanishes on exit)
   if (sessionManager && sessionPersister) {
     try {
-      const mapSize = sessionManager.sessions ? sessionManager.sessions.size : 'N/A';
       const activeSessions = sessionManager.getAllSessions ? sessionManager.getAllSessions() : [];
-      console.log(`[SHUTDOWN] ${activeSessions.length} active session(s) to persist (map size: ${mapSize})`);
+      console.log(`[SHUTDOWN] ${activeSessions.length} active session(s) to persist`);
       let persisted = 0;
       for (const session of activeSessions) {
         const messageCount = (session.context || []).length;
@@ -2143,7 +2141,8 @@ async function shutdown(signal) {
             persisted++;
             console.log(`[SHUTDOWN] Persisted session ${session.id} → ${page}`);
           } else {
-            console.log(`[SHUTDOWN] Session ${session.id} returned null (skipped by persister)`);
+            const msgCount = (session.context || []).length;
+            console.log(`[SHUTDOWN] Session ${session.id} skipped (${msgCount} messages — need ≥6 context entries)`);
           }
         } catch (err) {
           console.warn(`[SHUTDOWN] Session persist failed for ${session.roomToken}: ${err.message}`);

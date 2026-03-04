@@ -143,7 +143,6 @@ class SessionManager extends EventEmitter {
 
     this.sessions.set(sessionKey, session);
     this.sessionIndex.set(session.id, sessionKey);
-    console.log(`[SessionManager] New session: ${session.id} (${sessionKey}), map size: ${this.sessions.size}`);
 
     if (this.auditLog) {
       this.auditLog.log('session_created', {
