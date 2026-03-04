@@ -37,6 +37,10 @@ class TalkSendQueue {
    * @returns {Promise<boolean>} true if sent successfully
    */
   enqueue(token, message, replyTo = null) {
+    // Coerce non-string messages (e.g. objects from executor pipelines)
+    if (typeof message !== 'string') {
+      message = (message && message.response) ? String(message.response) : String(message || '');
+    }
     // Strip <think> reasoning tags from LLM responses
     let sanitized = message;
     if (typeof sanitized === 'string') {

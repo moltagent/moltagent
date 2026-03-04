@@ -265,10 +265,29 @@ class BaseExecutor {
     const { collectedFields, userResponse } = clarification;
     const missingFields = Array.isArray(clarification.missingFields) ? clarification.missingFields : [];
     if (missingFields.length === 0) {
-      return { response: await this.execute(clarification.originalMessage, context) };
+      const result = await this.execute(clarification.originalMessage, context);
+      if (typeof result === 'object' && result !== null && result.response !== undefined) {
+        return result;
+      }
+      return { response: typeof result === 'string' ? result : 'Done.' };
     }
+
     const firstMissing = missingFields[0];
-    const updatedFields = { ...collectedFields, [firstMissing]: userResponse };
+
+    // Determine what value to store for this field.
+    // If the user gave a meta-instruction ("you pick", "propose a name", etc.),
+    // ask the executor subclass to generate a default instead of storing it literally.
+    let fieldValue = userResponse;
+    if (this._isMetaInstruction(userResponse)) {
+      const generated = this._generateDefaultValue(firstMissing, collectedFields, clarification.originalMessage);
+      if (generated !== null && generated !== undefined) {
+        fieldValue = generated;
+      }
+      // If no default could be generated, fall through and store the literal reply —
+      // the executor's execute() will deal with it (e.g. re-ask).
+    }
+
+    const updatedFields = { ...collectedFields, [firstMissing]: fieldValue };
     const stillMissing = missingFields.slice(1);
 
     if (stillMissing.length > 0) {
@@ -285,7 +304,37 @@ class BaseExecutor {
     }
 
     // All fields collected — re-execute with the original message
-    return { response: await this.execute(clarification.originalMessage, context) };
+    const result = await this.execute(clarification.originalMessage, context);
+    if (typeof result === 'object' && result !== null && result.response !== undefined) {
+      return result;
+    }
+    return { response: typeof result === 'string' ? result : 'Done.' };
+  }
+
+  /**
+   * Detect meta-instructions where the user defers the decision to the agent
+   * ("you pick", "propose a name", "whatever", etc.).
+   *
+   * @param {string} reply - User's clarification reply
+   * @returns {boolean}
+   */
+  _isMetaInstruction(reply) {
+    if (!reply || typeof reply !== 'string') return false;
+    return /\b(propose|suggest|pick|choose|generate|you decide|make one|come up with|whatever|any\b.*\bname|default|you.?(?:re|'re) the (?:ai|bot|agent)|up to you|your (?:choice|call))\b/i.test(reply);
+  }
+
+  /**
+   * Generate a default value for a missing field when the user issued a meta-instruction.
+   * Base implementation always returns null (no opinion).
+   * Executor subclasses should override this to provide domain-specific defaults.
+   *
+   * @param {string} fieldName - Name of the field that needs a value
+   * @param {Object} collectedFields - Fields already collected so far
+   * @param {string} originalMessage - The original user message that started the flow
+   * @returns {string|null} A default value string, or null if no default can be derived
+   */
+  _generateDefaultValue(fieldName, collectedFields, originalMessage) { // eslint-disable-line no-unused-vars
+    return null;
   }
 
   /**

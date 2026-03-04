@@ -364,15 +364,17 @@ try {
 const CostTracker = require('./src/lib/llm/cost-tracker');
 
 // Local Intelligence: ModelScout + MicroPipeline + DeferralQueue
-let ModelScout, MicroPipeline, DeferralQueue;
+let ModelScout, MicroPipeline, MemoryContextEnricher, DeferralQueue;
 try {
   ({ ModelScout } = require('./src/lib/providers/model-scout'));
   MicroPipeline = require('./src/lib/agent/micro-pipeline');
+  MemoryContextEnricher = require('./src/lib/agent/memory-context-enricher');
   DeferralQueue = require('./src/lib/agent/deferral-queue');
 } catch (err) {
   console.warn(`[WARN] Local Intelligence modules not available: ${err.message}`);
   ModelScout = null;
   MicroPipeline = null;
+  MemoryContextEnricher = null;
   DeferralQueue = null;
 }
 
@@ -1609,9 +1611,21 @@ async function initialize() {
 
   if (MicroPipeline && llmRouter) {
     try {
+      // Memory enrichment: searches wiki for entities before handler dispatch
+      let memoryContextEnricher = null;
+      if (MemoryContextEnricher && memorySearcher) {
+        memoryContextEnricher = new MemoryContextEnricher({
+          memorySearcher,
+          logger: console,
+          timeout: 3000
+        });
+        console.log('[INIT] MemoryContextEnricher ready');
+      }
+
       microPipeline = new MicroPipeline({
         llmRouter: llmRouter.router,
         memorySearcher,
+        memoryContextEnricher,
         deckClient: deckClient2,
         calendarClient: caldavClient,
         talkSendQueue: talkQueue,
@@ -1760,6 +1774,12 @@ async function initialize() {
     }
   });
   console.log('[INIT] Server Components ready');
+
+  // Late-bind EntityExtractor into WikiExecutor for knowledge graph population
+  if (entityExtractor && serverComponents?.messageProcessor?.microPipeline?.executors?.wiki) {
+    serverComponents.messageProcessor.microPipeline.executors.wiki.entityExtractor = entityExtractor;
+    console.log('[INIT] EntityExtractor wired into WikiExecutor');
+  }
 
   // 11. Initialize HeartbeatManager (proactive operations)
   if (HeartbeatManager && ncRequestManager && llmRouter) {

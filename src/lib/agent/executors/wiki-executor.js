@@ -51,10 +51,12 @@ class WikiExecutor extends BaseExecutor {
   /**
    * @param {Object} config - BaseExecutor config + toolRegistry
    * @param {Object} config.toolRegistry - ToolRegistry with wiki_write/wiki_read/memory_search
+   * @param {Object} [config.entityExtractor] - EntityExtractor for knowledge graph population
    */
   constructor(config = {}) {
     super(config);
     this.toolRegistry = config.toolRegistry;
+    this.entityExtractor = config.entityExtractor || null;
   }
 
   /**
@@ -70,7 +72,7 @@ class WikiExecutor extends BaseExecutor {
     const WIKI_SCHEMA = {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['write', 'read', 'append', 'remember'] },
+        action: { type: 'string', enum: ['write', 'read', 'append', 'remember', 'introspect'] },
         topic: { type: 'string' },
         fact: { type: 'string' },
         page_title: { type: 'string' },
@@ -123,6 +125,8 @@ Message: "${message.substring(0, 300)}"`;
         return this._executeAppend(params, context);
       case 'remember':
         return this._executeRemember(params, context);
+      case 'introspect':
+        return this._executeIntrospect(context);
       case 'read':
       default:
         return this._executeRead(params, context);
@@ -310,23 +314,28 @@ Message: "${message.substring(0, 300)}"`;
    * @private
    */
   async _executeRemember(params, context) {
-    const pageTitle = params.page_title || params.topic || 'Notes';
-    const content = params.fact || params.content || '';
+    const rawContent = params.fact || params.content || '';
 
-    if (!content) {
+    if (!rawContent) {
       return { response: 'What should I remember?' };
     }
 
-    const parent = params.parent || this._autoCategory(params.topic, params.category, params.fact);
+    // Smart entity extraction: use LLM to derive proper entity name and structure
+    const entityInfo = await this._extractEntityInfo(rawContent, params);
+    const pageTitle = entityInfo.page_title || params.page_title || params.topic || 'Notes';
+    const parent = entityInfo.section || params.parent || this._autoCategory(params.topic, params.category, params.fact);
 
     const guardResult = await this._checkGuardrails('wiki_write', { page_title: pageTitle }, context.roomToken || null);
     if (!guardResult.allowed) {
       return { response: `Action blocked: ${guardResult.reason}` };
     }
 
+    // Format as structured knowledge page with frontmatter
+    const formattedContent = this._formatKnowledgePage(pageTitle, entityInfo, rawContent);
+
     const writeResult = await this.toolRegistry.execute('wiki_write', {
       page_title: pageTitle,
-      content,
+      content: formattedContent,
       parent: parent || undefined,
       type: 'create'
     });
@@ -335,8 +344,18 @@ Message: "${message.substring(0, 300)}"`;
       return { response: `Wiki write failed: ${writeResult.error || 'unknown error'}` };
     }
 
+    // Fire entity extraction into knowledge graph (non-blocking)
+    if (this.entityExtractor) {
+      try {
+        const pagePath = parent ? `${parent}/${pageTitle}` : pageTitle;
+        await this.entityExtractor.extractFromPage(pagePath, formattedContent);
+      } catch (err) {
+        this.logger.warn(`[WikiExecutor] Entity extraction failed: ${err.message}`);
+      }
+    }
+
     this._logActivity('wiki_write',
-      `Remembered: ${pageTitle} — ${content.substring(0, 80)}`,
+      `Remembered: ${pageTitle} — ${rawContent.substring(0, 80)}`,
       { page: pageTitle, topic: params.topic, category: parent },
       context
     );
@@ -347,6 +366,164 @@ Message: "${message.substring(0, 300)}"`;
       response,
       actionRecord: { type: 'wiki_write', refs: { pageTitle, parent: parent || null } }
     };
+  }
+
+  /**
+   * List wiki structure — answers "what's in your wiki?" queries.
+   * Uses wiki_read with known section names and memory_search to enumerate pages.
+   * @param {Object} context - { userName, roomToken }
+   * @returns {Promise<Object>}
+   * @private
+   */
+  async _executeIntrospect(context) { // eslint-disable-line no-unused-vars
+    // Try to list pages via wiki_read for each well-known top-level section
+    const sections = ['People', 'Projects', 'Decisions', 'Procedures', 'Preferences', 'Research', 'Notes', 'Sessions'];
+    const found = [];
+
+    for (const section of sections) {
+      try {
+        const result = await this.toolRegistry.execute('wiki_read', { page_title: section });
+        if (result.success && this._isWikiContent(result.result)) {
+          found.push({ name: section, hasContent: !!(result.result && result.result.trim()) });
+        }
+      } catch {
+        // Section doesn't exist — skip
+      }
+    }
+
+    // Also do a broad memory search to find individual pages
+    let pageList = [];
+    try {
+      const searchResult = await this.toolRegistry.execute('memory_search', { query: '*', scope: 'wiki' });
+      if (searchResult.success && searchResult.result && !searchResult.result.includes('No matching')) {
+        // Extract page titles from search results (format: **PageTitle** [source])
+        const matches = searchResult.result.matchAll(/\*\*([^*]+)\*\*/g);
+        for (const m of matches) {
+          pageList.push(m[1]);
+        }
+      }
+    } catch {
+      // Search unavailable — proceed with section listing only
+    }
+
+    if (found.length === 0 && pageList.length === 0) {
+      return {
+        response: 'My wiki is empty — no knowledge pages have been created yet.',
+        actionRecord: { type: 'wiki_introspect', refs: { pageCount: 0 } }
+      };
+    }
+
+    const parts = [];
+    if (found.length > 0) {
+      parts.push('**Wiki sections:**');
+      for (const s of found) {
+        parts.push(`- ${s.name}/`);
+      }
+    }
+
+    if (pageList.length > 0) {
+      parts.push('');
+      parts.push('**Known pages:**');
+      for (const p of pageList.slice(0, 20)) {
+        parts.push(`- ${p}`);
+      }
+      if (pageList.length > 20) {
+        parts.push(`... and ${pageList.length - 20} more`);
+      }
+    }
+
+    const totalPages = pageList.length || found.length;
+    return {
+      response: `Here's what's in my knowledge wiki:\n\n${parts.join('\n')}`,
+      actionRecord: { type: 'wiki_introspect', refs: { pageCount: totalPages } }
+    };
+  }
+
+  /**
+   * Extract entity information from a remember message using LLM.
+   * Returns structured fields for proper page creation.
+   * @param {string} content - The fact/content to remember
+   * @param {Object} params - Already-extracted parameters
+   * @returns {Promise<Object>} { page_title, section, entity_type, fields }
+   * @private
+   */
+  async _extractEntityInfo(content, params) {
+    const ENTITY_SCHEMA = {
+      type: 'object',
+      properties: {
+        page_title: { type: 'string' },
+        section: { type: 'string' },
+        entity_type: { type: 'string' },
+        fields: { type: 'object' }
+      },
+      required: ['page_title']
+    };
+
+    const prompt = `Extract the primary entity from this information to store in a wiki.
+
+Rules:
+- page_title MUST be the specific entity name (person name, company name, project name). NEVER generic words like "contacts", "notes", "info", "people".
+- section: where this belongs — People, Projects, Research, Procedures, Decisions, or Notes. Default: Notes
+- entity_type: person | company | project | decision | procedure | topic
+- fields: key-value pairs from the content. For a person: { name, email, company, role, context }. For a company: { name, domain, contacts, description }. For a project: { name, status, description }. Only include fields that are explicitly stated.
+
+Examples:
+- "Carlos from TheCatalyne, email carlos@thecatalyne.com" → page_title: "Carlos", section: "People", entity_type: "person", fields: { name: "Carlos", company: "TheCatalyne", email: "carlos@thecatalyne.com" }
+- "Project X is our Q3 initiative for automation" → page_title: "Project X", section: "Projects", entity_type: "project", fields: { name: "Project X", description: "Q3 initiative for automation" }
+
+Content: "${content.substring(0, 500)}"`;
+
+    try {
+      const result = await this._extractJSON(content, prompt, ENTITY_SCHEMA);
+      if (result && result.page_title && result.page_title.length >= 2) {
+        return result;
+      }
+    } catch (err) {
+      this.logger.warn(`[WikiExecutor] Entity info extraction failed: ${err.message}`);
+    }
+
+    // Fallback: use existing params
+    return {
+      page_title: params.page_title || params.topic || null,
+      section: null,
+      entity_type: 'note',
+      fields: {}
+    };
+  }
+
+  /**
+   * Format a wiki page with frontmatter and structured content.
+   * @param {string} title - Page title
+   * @param {Object} entityInfo - { entity_type, fields }
+   * @param {string} rawContent - Original content from user
+   * @returns {string} Formatted markdown page
+   * @private
+   */
+  _formatKnowledgePage(title, entityInfo, rawContent) {
+    const lines = [
+      '---',
+      `type: ${entityInfo.entity_type || 'note'}`,
+      `confidence: medium`,
+      `last_verified: ${new Date().toISOString().split('T')[0]}`,
+      `created_by: conversation`,
+    ];
+
+    // Add structured fields to frontmatter
+    if (entityInfo.fields && typeof entityInfo.fields === 'object') {
+      for (const [key, value] of Object.entries(entityInfo.fields)) {
+        if (value && key !== 'name') {
+          lines.push(`${key}: ${String(value).replace(/\n/g, ' ')}`);
+        }
+      }
+    }
+
+    lines.push('---');
+    lines.push('');
+    lines.push(`# ${title}`);
+    lines.push('');
+    lines.push(rawContent);
+
+    return lines.join('\n');
   }
 
   /**

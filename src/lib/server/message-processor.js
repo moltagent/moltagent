@@ -463,9 +463,7 @@ class MessageProcessor {
             this.sessionManager.setPendingClarification(session, response.pendingClarification);
           }
           this._captureActionRecord(session, response.actionRecord);
-          if (response.response) {
-            response = response.response;
-          }
+          response = response.response || 'Done.';
         }
         result = { intent: 'micro_pipeline', provider: 'local' };
       } else if (this.microPipeline && this.agentLoop && this._isSmartMixMode()) {
@@ -509,9 +507,7 @@ class MessageProcessor {
                 this.sessionManager.setPendingClarification(session, response.pendingClarification);
               }
               this._captureActionRecord(session, response.actionRecord);
-              if (response.response) {
-                response = response.response;
-              }
+              response = response.response || 'Done.';
             }
             result = { intent: `smart_mix_domain:${intent}`, provider: 'local-tools' };
           } catch (domainErr) {
@@ -550,9 +546,7 @@ class MessageProcessor {
                 this.sessionManager.setPendingClarification(session, response.pendingClarification);
               }
               this._captureActionRecord(session, response.actionRecord);
-              if (response.response) {
-                response = response.response;
-              }
+              response = response.response || 'Done.';
             }
             result = { intent: `smart_mix_local:${intent}`, provider: 'local' };
           } catch (chatErr) {
@@ -681,7 +675,7 @@ class MessageProcessor {
         user: extracted.user,
         intent: result.intent,
         provider: result.provider,
-        responsePreview: response.substring(0, 100)
+        responsePreview: (typeof response === 'string' ? response : String(response)).substring(0, 100)
       });
 
       // Send reply asynchronously (fire-and-forget) - don't block webhook response
@@ -1209,7 +1203,7 @@ class MessageProcessor {
     return session.context
       .filter(entry => entry.role === 'user' || entry.role === 'assistant')
       .slice(-maxEntries)
-      .map(entry => ({ role: entry.role, content: entry.content || '' }));
+      .map(entry => ({ role: entry.role, content: typeof entry.content === 'string' ? entry.content : String(entry.content || '') }));
   }
 
   /**
@@ -1330,7 +1324,7 @@ class MessageProcessor {
     const continuation = recent
       .filter(c => c.role === 'user' || c.role === 'assistant')
       .map(c => {
-        const text = (c.content || '').substring(0, 150);
+        const text = (typeof c.content === 'string' ? c.content : String(c.content || '')).substring(0, 150);
         return `${c.role}: ${text}`;
       })
       .join(' | ');

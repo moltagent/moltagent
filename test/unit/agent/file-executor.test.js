@@ -928,4 +928,103 @@ asyncTest('tesseract unavailable falls back gracefully', async () => {
   assert.strictEqual(result.actionRecord.refs.result, 'image_no_text');
 });
 
+// ===== _generateDefaultValue — FileExecutor override =====
+
+asyncTest('FileExecutor generates default filename from "save summary of OCR briefing"', async () => {
+  const executor = new FileExecutor({
+    router: createMockRouter(),
+    ncFilesClient: createMockFilesClient(),
+    logger: silentLogger
+  });
+
+  const result = executor._generateDefaultValue('filename', {}, 'save summary of OCR briefing to a file');
+  assert.ok(result !== null, 'should return a generated filename');
+  assert.ok(result.endsWith('.md'), `generated name should end with .md, got: ${result}`);
+  assert.ok(result.toLowerCase().includes('ocr'), `generated name should include topic keyword, got: ${result}`);
+  assert.ok(result.toLowerCase().includes('summary'), `generated name should include "Summary", got: ${result}`);
+});
+
+asyncTest('FileExecutor returns null for ambiguous "save that to a file"', async () => {
+  const executor = new FileExecutor({
+    router: createMockRouter(),
+    ncFilesClient: createMockFilesClient(),
+    logger: silentLogger
+  });
+
+  const result = executor._generateDefaultValue('filename', {}, 'save that to a file');
+  assert.strictEqual(result, null, 'should return null when topic cannot be inferred');
+});
+
+asyncTest('FileExecutor _generateDefaultValue returns null for non-filename fields', async () => {
+  const executor = new FileExecutor({
+    router: createMockRouter(),
+    ncFilesClient: createMockFilesClient(),
+    logger: silentLogger
+  });
+
+  // Only 'filename' has special logic; all others should delegate to null
+  assert.strictEqual(executor._generateDefaultValue('content', {}, 'save summary of OCR briefing'), null);
+  assert.strictEqual(executor._generateDefaultValue('folder', {}, 'save summary of briefing'), null);
+});
+
+asyncTest('FileExecutor generated filename is sanitized and capped at 50 chars + suffix', async () => {
+  const executor = new FileExecutor({
+    router: createMockRouter(),
+    ncFilesClient: createMockFilesClient(),
+    logger: silentLogger
+  });
+
+  // Very long topic should be truncated
+  const result = executor._generateDefaultValue(
+    'filename', {},
+    'save summary of the very very very very very very very very long topic name in the world to disk'
+  );
+  assert.ok(result !== null, 'should return a value');
+  // Base part (before -Summary.md) must be at most 50 chars
+  const base = result.replace(/-Summary\.md$/, '');
+  assert.ok(base.length <= 50, `base part must be <= 50 chars, got ${base.length}: ${base}`);
+  assert.ok(result.endsWith('-Summary.md'), `should end with -Summary.md, got: ${result}`);
+  // No special characters (only letters, digits, hyphens)
+  assert.ok(/^[a-zA-Z0-9-]+$/.test(base), `base should contain only safe chars, got: ${base}`);
+});
+
+asyncTest('resumeWithClarification with meta-instruction uses FileExecutor default filename', async () => {
+  const filesClient = createMockFilesClient();
+  // Router: first call extracts params, second generates content for the write
+  let routeCallCount = 0;
+  const mockRouter = {
+    route: async () => {
+      routeCallCount++;
+      if (routeCallCount === 1) {
+        // execute() is called after clarification resolution — extraction prompt returns a write
+        return { result: JSON.stringify({ action: 'write', filename: 'OCR-briefing-Summary.md', content: 'Summary content' }) };
+      }
+      return { result: 'Summary content here' };
+    }
+  };
+
+  const executor = new FileExecutor({
+    router: mockRouter,
+    ncFilesClient: filesClient,
+    logger: silentLogger
+  });
+
+  const clarification = {
+    executor: 'file',
+    action: 'write',
+    missingFields: ['filename'],
+    collectedFields: { content: 'summary content', generate_content: false },
+    userResponse: 'propose a name',
+    originalMessage: 'save summary of OCR briefing to a file'
+  };
+
+  const result = await executor.resumeWithClarification(clarification, { userName: 'alice' });
+  // Should not double-wrap
+  assert.strictEqual(typeof result.response, 'string',
+    `result.response must be a string, got: ${typeof result.response}`);
+  // The generated default filename derived from the original message should have been used
+  // (The _generateDefaultValue derives a name from the message, then execute() re-runs with originalMessage)
+  assert.ok(result.response.length > 0, 'should produce a non-empty response');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

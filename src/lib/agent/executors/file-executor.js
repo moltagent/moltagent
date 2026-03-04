@@ -898,6 +898,29 @@ Be concise but thorough. Do NOT dump the raw content. Speak as someone who just 
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
+
+  /**
+   * Generate a default filename when the user says "you pick" / "propose a name".
+   * Tries to derive a meaningful name from the original request context.
+   *
+   * @param {string} fieldName - Field that needs a default
+   * @param {Object} collectedFields - Fields already collected
+   * @param {string} originalMessage - The original user message
+   * @returns {string|null} A derived filename, or null if one cannot be inferred
+   */
+  _generateDefaultValue(fieldName, collectedFields, originalMessage) {
+    if (fieldName === 'filename') {
+      const summaryMatch = (originalMessage || '').match(/summary of (?:the )?(.+?)(?:\s+to|\s+in|$)/i);
+      if (summaryMatch) {
+        return summaryMatch[1]
+          .replace(/[^a-zA-Z0-9\s]/g, '')
+          .trim()
+          .replace(/\s+/g, '-')
+          .substring(0, 50) + '-Summary.md';
+      }
+    }
+    return null;
+  }
 }
 
 module.exports = FileExecutor;

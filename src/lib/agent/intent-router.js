@@ -216,7 +216,7 @@ class IntentRouter {
     let contextBlock = '';
     if (recentContext.length > 0) {
       const formatted = recentContext.slice(-6).map(c => {
-        const safe = (c.content || '').substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const safe = (typeof c.content === 'string' ? c.content : String(c.content || '')).substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;');
         return `${c.role}: ${safe}`;
       }).join('\n');
       contextBlock = `\n<conversation>\n${formatted}\n</conversation>\n\n`;
@@ -242,7 +242,7 @@ class IntentRouter {
     if (/\b(emails?|mail|send.*to|inbox)\b/.test(lower)) {
       return { intent: 'domain', domain: 'email', needsHistory: false, confidence: 0.5 };
     }
-    if (/\b(tasks?|cards?|boards?|deck|todos?)\b/.test(lower)) {
+    if (/\b(tasks?|cards?|boards?|deck|todos?|move\b.+\b(to done|to doing|to inbox|to working|to queued))\b/.test(lower)) {
       return { intent: 'domain', domain: 'deck', needsHistory: false, confidence: 0.5 };
     }
     if (/\b(wiki|page|knowledge|note)\b/.test(lower)) {

@@ -92,6 +92,7 @@ class MicroPipeline {
     this.toolGuard = config.toolGuard || null;
     this.executors = config.executors || {};
     this.activityLogger = config.activityLogger || null;
+    this.memoryContextEnricher = config.memoryContextEnricher || null;
     this.timezone = config.timezone || 'UTC';
     this.domainToolTimeout = config.domainToolTimeout || 90000;
     this.logger = config.logger || console;
@@ -122,6 +123,21 @@ class MicroPipeline {
       const intent = classification.intent || INTENTS.CHITCHAT;
 
       this.stats.byIntent[intent] = (this.stats.byIntent[intent] || 0) + 1;
+
+      // Memory enrichment: search wiki for entities mentioned in the message
+      // and inject matches into warmMemory so all handlers see the agent's knowledge.
+      if (this.memoryContextEnricher) {
+        try {
+          const enrichment = await this.memoryContextEnricher.enrich(message, intent);
+          if (enrichment) {
+            context.warmMemory = context.warmMemory
+              ? context.warmMemory + '\n' + enrichment
+              : enrichment;
+          }
+        } catch (err) {
+          this.logger.warn(`[MicroPipeline] Memory enrichment failed: ${err.message}`);
+        }
+      }
 
       // Stage 2: Route to handler
       switch (intent) {
@@ -255,7 +271,7 @@ class MicroPipeline {
       const recent = context.getRecentContext();
       if (Array.isArray(recent) && recent.length > 0) {
         const formatted = recent.slice(-8).map(c => {
-          const safe = (c.content || '').substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          const safe = (typeof c.content === 'string' ? c.content : String(c.content || '')).substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;');
           return `${c.role}: ${safe}`;
         }).join('\n');
         parts.push(`\n<conversation>\n${formatted}\n</conversation>`);
