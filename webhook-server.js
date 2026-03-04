@@ -1256,9 +1256,10 @@ async function initialize() {
   if (sessionManager) {
     sessionCleanupTimer = setInterval(() => {
       try {
+        const mapBefore = sessionManager.sessions.size;
         const result = sessionManager.cleanup();
-        if (result.sessions > 0 || result.approvals > 0 || result.idle > 0) {
-          console.log(`[SessionManager] Cleanup: ${result.sessions} sessions expired, ${result.approvals} approvals expired, ${result.idle} idle consolidated`);
+        if (result.sessions > 0 || result.approvals > 0 || result.idle > 0 || mapBefore > 0) {
+          console.log(`[SessionManager] Cleanup: ${result.sessions} sessions expired, ${result.approvals} approvals expired, ${result.idle} idle consolidated (map: ${mapBefore} → ${sessionManager.sessions.size})`);
         }
       } catch (err) {
         console.error('[SessionManager] Cleanup error:', err.message);
@@ -2129,8 +2130,9 @@ async function shutdown(signal) {
   // Persist all active sessions before losing them (in-memory Map vanishes on exit)
   if (sessionManager && sessionPersister) {
     try {
+      const mapSize = sessionManager.sessions ? sessionManager.sessions.size : 'N/A';
       const activeSessions = sessionManager.getAllSessions ? sessionManager.getAllSessions() : [];
-      console.log(`[SHUTDOWN] ${activeSessions.length} active session(s) to persist`);
+      console.log(`[SHUTDOWN] ${activeSessions.length} active session(s) to persist (map size: ${mapSize})`);
       let persisted = 0;
       for (const session of activeSessions) {
         const messageCount = (session.context || []).length;
