@@ -371,18 +371,18 @@ function createWikilinkMockNC(overrides = {}) {
   });
 }
 
-asyncTest('resolveWikilinks replaces [[Page]] with Nextcloud file link', async () => {
+asyncTest('resolveWikilinks replaces [[Page]] with Nextcloud deep link', async () => {
   const mockNC = createWikilinkMockNC();
   const client = new CollectivesClient(mockNC);
   const result = await client.resolveWikilinks('See [[People]] for details.');
-  assert.strictEqual(result, 'See [People](https://cloud.example.com/apps/collectives/Moltagent%20Knowledge/People) for details.');
+  assert.strictEqual(result, 'See [People](https://cloud.example.com/apps/collectives/Moltagent-Knowledge-10/People-100) for details.');
 });
 
 asyncTest('resolveWikilinks resolves [[Section/Page]] using leaf title', async () => {
   const mockNC = createWikilinkMockNC();
   const client = new CollectivesClient(mockNC);
   const result = await client.resolveWikilinks('Contact [[People/John Smith]].');
-  assert.strictEqual(result, 'Contact [John Smith](https://cloud.example.com/apps/collectives/Moltagent%20Knowledge/People/John%20Smith).');
+  assert.strictEqual(result, 'Contact [John Smith](https://cloud.example.com/apps/collectives/Moltagent-Knowledge-10/John-Smith-200).');
 });
 
 asyncTest('resolveWikilinks replaces unfound pages with plain text', async () => {
@@ -396,8 +396,8 @@ asyncTest('resolveWikilinks handles multiple wikilinks in one string', async () 
   const mockNC = createWikilinkMockNC();
   const client = new CollectivesClient(mockNC);
   const result = await client.resolveWikilinks('Check [[People]] and [[Projects]] and [[Missing]].');
-  assert.ok(result.includes('[People](https://cloud.example.com/apps/collectives/Moltagent%20Knowledge/People)'));
-  assert.ok(result.includes('[Projects](https://cloud.example.com/apps/collectives/Moltagent%20Knowledge/Projects)'));
+  assert.ok(result.includes('[People](https://cloud.example.com/apps/collectives/Moltagent-Knowledge-10/People-100)'));
+  assert.ok(result.includes('[Projects](https://cloud.example.com/apps/collectives/Moltagent-Knowledge-10/Projects-101)'));
   assert.ok(result.includes('Missing (page not found)'));
 });
 
@@ -457,8 +457,8 @@ asyncTest('writePageWithFrontmatter resolves wikilinks before writing', async ()
   const client = new CollectivesClient(mockNC);
   await client.writePageWithFrontmatter('Test Page', { type: 'note' }, 'Links to [[People]] and [[John Smith]].');
   assert.ok(writtenContent, 'Should have written content');
-  assert.ok(writtenContent.includes('[People](https://cloud.example.com/apps/collectives/Moltagent%20Knowledge/People)'), 'Should resolve People wikilink');
-  assert.ok(writtenContent.includes('[John Smith](https://cloud.example.com/apps/collectives/Moltagent%20Knowledge/People/John%20Smith)'), 'Should resolve John Smith wikilink');
+  assert.ok(writtenContent.includes('[People](https://cloud.example.com/apps/collectives/Moltagent-Knowledge-10/People-100)'), 'Should resolve People wikilink');
+  assert.ok(writtenContent.includes('[John Smith](https://cloud.example.com/apps/collectives/Moltagent-Knowledge-10/John-Smith-200)'), 'Should resolve John Smith wikilink');
   assert.ok(!writtenContent.includes('[['), 'Should not contain raw wikilinks');
 });
 

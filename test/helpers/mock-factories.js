@@ -211,9 +211,10 @@ function createMockCollectivesClient(responses = {}) {
     baseUrl,
     collectiveName,
     _wikilinkMap: responses._wikilinkMap || null,
-    _collectivesPageUrl(pagePath) {
-      const encodedName = encodeURIComponent(this.collectiveName);
-      return `${this.baseUrl}/apps/collectives/${encodedName}/${pagePath}`;
+    _cache: { collectiveId: responses.collectiveId || 10 },
+    buildPageUrl(pageTitle, pageId) {
+      const slug = (text) => (text || '').replace(/[^\w]+/g, '-').replace(/^-+|-+$/g, '');
+      return `${this.baseUrl}/apps/collectives/${slug(this.collectiveName)}-${this._cache.collectiveId}/${slug(pageTitle)}-${pageId}`;
     },
     trashPage: async () => responses.trashPage || {},
     _ensureWikilinkCache: async () => {}

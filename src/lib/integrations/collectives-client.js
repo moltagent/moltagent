@@ -12,6 +12,11 @@
 
 const appConfig = require('../config');
 
+/** Slugify a title for Collectives URLs: non-alphanumeric → hyphens */
+function _slugify(text) {
+  return (text || '').replace(/[^\w]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
 /**
  * Custom error class for Collectives API errors
  */
@@ -50,7 +55,7 @@ class CollectivesClient {
       collectivesTTL: 0
     };
 
-    // Cache for wikilink resolution (title → collectivesPath), populated once per session
+    // Cache for wikilink resolution (title → {title, pageId}), populated once per session
     this._wikilinkMap = null;
 
     // OCS API base path
@@ -457,51 +462,41 @@ class CollectivesClient {
   }
 
   /**
-   * Build an absolute Collectives UI URL for a page path.
-   * @param {string} pagePath - URI-encoded path segments (e.g. "Meta/Pending%20Questions")
-   * @returns {string} Full URL like https://nc.example.com/apps/collectives/Moltagent%20Knowledge/Meta/Pending%20Questions
+   * Build an absolute Collectives deep-link URL for a page.
+   * Format: /apps/collectives/{collective-slug}-{collectiveId}/{page-slug}-{pageId}
+   * Example: /apps/collectives/Moltagent-Knowledge-10/Carlos-26950
+   *
+   * @param {string} pageTitle - Page title (e.g. "Carlos" or "John Smith")
+   * @param {number} pageId - Page ID from the Collectives API
+   * @returns {string} Full clickable URL
    */
-  _collectivesPageUrl(pagePath) {
-    const encodedName = encodeURIComponent(this.collectiveName);
-    return `${this.baseUrl}/apps/collectives/${encodedName}/${pagePath}`;
+  buildPageUrl(pageTitle, pageId) {
+    const collectiveId = this._cache.collectiveId;
+    if (!collectiveId || !pageId) {
+      return `${this.baseUrl}/apps/collectives/${encodeURIComponent(this.collectiveName)}`;
+    }
+    const collectiveSlug = _slugify(this.collectiveName);
+    const pageSlug = _slugify(pageTitle);
+    return `${this.baseUrl}/apps/collectives/${collectiveSlug}-${collectiveId}/${pageSlug}-${pageId}`;
   }
 
   /**
-   * Ensure the wikilink title→collectivesPath cache is populated.
+   * Ensure the wikilink title→{title, pageId} cache is populated.
    * Loads all pages from listPages() once per session.
-   * Stores the Collectives UI path (not fileId) for each page.
+   * Stores the page title and ID for deep-link URL construction.
    * @private
    */
   async _ensureWikilinkCache() {
     if (this._wikilinkMap) return;
     this._wikilinkMap = new Map();
     try {
-      const collectiveId = await this.resolveCollective();
-      const pages = await this.listPages(collectiveId);
+      await this.resolveCollective();
+      const pages = await this.listPages(this._cache.collectiveId);
       const pageList = Array.isArray(pages) ? pages : [];
 
-      // Build parent lookup: id → { title, parentId }
-      const idToInfo = new Map();
       for (const page of pageList) {
-        if (page.id && page.title) {
-          idToInfo.set(page.id, { title: page.title, parentId: page.parentId });
-        }
-      }
-
-      // For each page, build Collectives UI path by walking up parents
-      for (const page of pageList) {
-        if (!page.title) continue;
-        const segments = [page.title];
-        let cur = page.parentId;
-        while (cur && idToInfo.has(cur)) {
-          const parent = idToInfo.get(cur);
-          // Stop at root pages (parentId 0 or self-referencing)
-          if (!parent.parentId || parent.parentId === cur) break;
-          segments.unshift(parent.title);
-          cur = parent.parentId;
-        }
-        const collectivesPath = segments.map(s => encodeURIComponent(s)).join('/');
-        this._wikilinkMap.set(page.title.toLowerCase(), collectivesPath);
+        if (!page.title || !page.id) continue;
+        this._wikilinkMap.set(page.title.toLowerCase(), { title: page.title, pageId: page.id });
       }
     } catch {
       // Cache stays empty — resolveWikilinks will fall back to plain text
@@ -509,8 +504,8 @@ class CollectivesClient {
   }
 
   /**
-   * Resolve [[wikilink]] patterns to absolute Collectives UI links.
-   * [[Page/Name]] → [Name](https://ncUrl/apps/collectives/CollectiveName/Section/Name)
+   * Resolve [[wikilink]] patterns to absolute Collectives deep links.
+   * [[Page/Name]] → [Name](https://ncUrl/apps/collectives/Collective-Slug-ID/Page-Slug-PageID)
    * If page not found: Page/Name (page not found)
    * @param {string} content - Markdown content with potential wikilinks
    * @returns {Promise<string>} Content with wikilinks resolved
@@ -529,9 +524,9 @@ class CollectivesClient {
       const label = target.includes('/') ? target.split('/').pop() : target;
       const leafTitle = label.toLowerCase();
 
-      const pagePath = this._wikilinkMap.get(leafTitle);
-      const replacement = pagePath
-        ? `[${label}](${this._collectivesPageUrl(pagePath)})`
+      const cached = this._wikilinkMap.get(leafTitle);
+      const replacement = cached
+        ? `[${label}](${this.buildPageUrl(cached.title, cached.pageId)})`
         : `${target} (page not found)`;
 
       result = result.slice(0, match.index) + replacement + result.slice(match.index + match[0].length);

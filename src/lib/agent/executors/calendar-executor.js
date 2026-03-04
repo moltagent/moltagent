@@ -297,7 +297,13 @@ Message: "${message.substring(0, 300)}"`;
       context
     );
 
-    const response = `Created event "${params.summary}" on ${formattedDate} at ${formattedTime} (${durationMinutes} min)${attendeeList}. Event ID: ${uid}`;
+    // Build calendar day link: /apps/calendar/dayGridMonth/{YYYY-MM-DD}
+    const calendarDayUrl = this.calendarClient.ncUrl
+      ? `${this.calendarClient.ncUrl}/apps/calendar/dayGridMonth/${resolvedDate}`
+      : '';
+    const calendarLink = calendarDayUrl ? ` [View day](${calendarDayUrl})` : '';
+
+    const response = `Created event "${params.summary}" on ${formattedDate} at ${formattedTime} (${durationMinutes} min)${attendeeList}. Event ID: ${uid}${calendarLink}`;
     return {
       response,
       actionRecord: {

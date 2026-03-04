@@ -2383,7 +2383,7 @@ class ToolRegistry {
               } catch { /* best effort */ }
             }
 
-            const updateUrl = wiki._collectivesPageUrl(args.page_title.split('/').map(s => encodeURIComponent(s)).join('/'));
+            const updateUrl = wiki.buildPageUrl(existing.page.title, existing.page.id);
             return `Updated wiki page "${args.page_title}" at ${existing.path}. [View](${updateUrl})`;
           }
 
@@ -2419,7 +2419,7 @@ class ToolRegistry {
             if (existingByList.id) {
               await wiki.touchPage(collectiveId, existingByList.id);
             }
-            const dedupUrl = wiki._collectivesPageUrl(args.page_title.split('/').map(s => encodeURIComponent(s)).join('/'));
+            const dedupUrl = wiki.buildPageUrl(existingByList.title, existingByList.id);
             return `Updated wiki page "${leafTitle}" (dedup: found via list scan). [View](${dedupUrl})`;
           }
 
@@ -2450,7 +2450,7 @@ class ToolRegistry {
             } catch { /* best effort */ }
           }
 
-          const createUrl = wiki._collectivesPageUrl(args.page_title.split('/').map(s => encodeURIComponent(s)).join('/'));
+          const createUrl = wiki.buildPageUrl(leafTitle, created.id);
           return `Created wiki page "${leafTitle}" (page #${created.id})${parentHint ? ` under ${parentHint}` : ''}. [View](${createUrl})`;
         } catch (err) {
           if (err.statusCode >= 500) {
@@ -2493,17 +2493,12 @@ class ToolRegistry {
           return `No wiki pages found matching "${args.query}".`;
         }
 
-        // Ensure wikilink cache is populated for path resolution
-        await wiki._ensureWikilinkCache();
-
         return results.map(p => {
           let line = `- "${p.title}"`;
           if (p.emoji) line += ` ${p.emoji}`;
           if (p.excerpt || p.snippet) line += ` — ${(p.excerpt || p.snippet).substring(0, 100)}`;
-          // Append clickable Collectives link
-          const cachedPath = wiki._wikilinkMap && wiki._wikilinkMap.get((p.title || '').toLowerCase());
-          if (cachedPath) {
-            line += ` [View](${wiki._collectivesPageUrl(cachedPath)})`;
+          if (p.id) {
+            line += ` [View](${wiki.buildPageUrl(p.title, p.id)})`;
           }
           return line;
         }).join('\n');

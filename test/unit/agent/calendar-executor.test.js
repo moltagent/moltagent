@@ -353,4 +353,38 @@ asyncTest('resumeWithClarification() propagates actionRecord', async () => {
   assert.strictEqual(result.actionRecord.refs.title, 'Team Sync');
 });
 
+// -- Test 17: Create event includes calendar day link when ncUrl available --
+asyncTest('Create event includes calendar day link when ncUrl available', async () => {
+  const calClient = createMockCalendarClient({ uid: 'evt-link-1' });
+  calClient.ncUrl = 'https://cloud.example.com';
+  const executor = new CalendarExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'create', summary: 'Link Test', date: 'tomorrow', time: '11:00' })
+    }),
+    calendarClient: calClient,
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('Create event Link Test tomorrow 11am', { userName: 'alice' });
+
+  assert.ok(result.response.includes('[View day]'), 'Should include [View day] link');
+  assert.ok(result.response.includes('https://cloud.example.com/apps/calendar/dayGridMonth/'), 'Should include calendar URL');
+});
+
+// -- Test 18: Create event omits calendar link when ncUrl missing --
+asyncTest('Create event omits calendar link when ncUrl missing', async () => {
+  const calClient = createMockCalendarClient({ uid: 'evt-nolink-1' });
+  const executor = new CalendarExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'create', summary: 'No Link', date: 'tomorrow', time: '11:00' })
+    }),
+    calendarClient: calClient,
+    logger: silentLogger
+  });
+
+  const result = await executor.execute('Create event No Link tomorrow 11am', { userName: 'alice' });
+
+  assert.ok(!result.response.includes('[View day]'), 'Should not include [View day] link when ncUrl missing');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);
