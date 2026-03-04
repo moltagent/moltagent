@@ -231,10 +231,38 @@ class MemoryContextEnricher {
    * @private
    */
   async _searchDeck(searchTerms) {
-    if (!this.deckClient) return [];
+    if (!this.deckClient) {
+      this.logger.info('[MemoryEnrich] Deck search skipped: no deckClient');
+      return [];
+    }
 
     try {
       const state = await this._getDeckState();
+      const stacks = Object.keys(state || {});
+      const cardCount = stacks.reduce((n, k) => n + (state[k] || []).length, 0);
+      this.logger.info(`[MemoryEnrich] Deck search: ${cardCount} cards in ${stacks.length} stacks, terms: ${searchTerms.join(', ')}`);
+
+      // Build keyword set: split multi-word search terms into individual words,
+      // filter out short/common words so "the status of the onboarding automation work"
+      // becomes ["status", "onboarding", "automation", "work"] and can match card titles.
+      const STOP_WORDS = new Set([
+        'the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'is', 'it',
+        'my', 'and', 'or', 'do', 'you', 'your', 'what', 'how', 'about', 'with'
+      ]);
+      const keywords = new Set();
+      for (const term of searchTerms) {
+        const lower = term.toLowerCase();
+        // Keep the full term for exact substring matching
+        keywords.add(lower);
+        // Also split into individual words for fuzzy matching
+        for (const word of lower.split(/\s+/)) {
+          if (word.length >= 4 && !STOP_WORDS.has(word)) {
+            keywords.add(word);
+          }
+        }
+      }
+      const keywordArr = Array.from(keywords);
+
       const results = [];
 
       for (const [stackKey, cards] of Object.entries(state || {})) {
@@ -242,8 +270,8 @@ class MemoryContextEnricher {
           const titleLower = (card.title || '').toLowerCase();
           const descLower = (card.description || '').toLowerCase();
 
-          const titleMatch = searchTerms.some(term => titleLower.includes(term.toLowerCase()));
-          const descMatch = card.description && searchTerms.some(term => descLower.includes(term.toLowerCase()));
+          const titleMatch = keywordArr.some(kw => titleLower.includes(kw));
+          const descMatch = card.description && keywordArr.some(kw => descLower.includes(kw));
 
           if (titleMatch || descMatch) {
             results.push({
@@ -263,10 +291,14 @@ class MemoryContextEnricher {
         }
       }
 
+      if (results.length > 0) {
+        this.logger.info(`[MemoryEnrich] Deck matched ${results.length} cards`);
+      }
+
       return results.sort((a, b) => b.score - a.score).slice(0, 3);
     } catch (err) {
       this.logger.warn(`[MemoryEnrich] Deck search failed: ${err.message}`);
-      return []; // Never block. Deck failure is invisible. Wiki results still flow.
+      return [];
     }
   }
 

@@ -568,6 +568,22 @@ class MessageProcessor {
             this.agentLoop.llmProvider.skipLocalForConversation();
           }
 
+          // Pre-enrich: run MemoryContextEnricher so cloud path sees wiki + deck knowledge
+          let cloudSuffix = flushPrompt || '';
+          const enricher = this.microPipeline && this.microPipeline.memoryContextEnricher;
+          if (enricher) {
+            try {
+              const enrichment = await enricher.enrich(pipelineMessage, intent);
+              if (enrichment) {
+                cloudSuffix = cloudSuffix
+                  ? cloudSuffix + '\n\n' + enrichment
+                  : enrichment;
+              }
+            } catch (err) {
+              console.warn(`[Message] Cloud path enrichment failed: ${err.message}`);
+            }
+          }
+
           const voiceReplyEnabled = extracted._isVoice && this.voiceManager && this.voiceManager.mode === 'full';
           const agentOpts = {
             messageId: extracted.messageId,
@@ -584,7 +600,7 @@ class MessageProcessor {
 
           response = await this.agentLoop.process(pipelineMessage, extracted.token, {
             ...agentOpts,
-            systemSuffix: flushPrompt
+            systemSuffix: cloudSuffix || undefined
           });
           result = { intent: `smart_mix_cloud:${intent}`, provider: 'agent' };
           response = response || 'Sorry, I encountered an error processing your message.';
