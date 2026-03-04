@@ -26,13 +26,14 @@
  * - Pattern: Tick-driven incremental refresh — process at most 2 pages per heartbeat to stay cheap;
  *   bootstrap from scratch on first tick if the store is empty
  * - Key Dependencies: EmbeddingClient (Ollama), VectorStore (upsert/count/metadata), CollectivesClient
- * - Data Flow: tick() → getPageList() → check updated_at vs 24h threshold → embed stale pages → upsert
+ * - Data Flow: tick() → resolveCollective() → listPages() → check updated_at vs 24h threshold
+ *              → readPageContent(path) → embed → upsert
  * - Dependency Map: heartbeat-manager.js → embedding-refresher.js → embedding-client.js
  *                                                                   → vector-store (injected)
  *                                                                   → collectives-client.js
  *
  * @module memory/embedding-refresher
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 /** Pages that have not been re-embedded within this window are considered stale. */
@@ -45,8 +46,8 @@ class EmbeddingRefresher {
   /**
    * @param {Object} deps
    * @param {Object} deps.embeddingClient  - EmbeddingClient instance (embed(text) → Float64Array)
-   * @param {Object} deps.vectorStore      - VectorStore instance (upsert / count / getMetadata / list)
-   * @param {Object} deps.collectivesClient - CollectivesClient (getPageList / readPageContent)
+   * @param {Object} deps.vectorStore      - VectorStore instance (upsert / count / getMetadata)
+   * @param {Object} deps.collectivesClient - CollectivesClient (resolveCollective / listPages / readPageContent)
    * @param {Object} [deps.ncFilesClient]  - NCFilesClient (unused directly but kept for symmetry)
    * @param {Object} [deps.logger]         - Logger (defaults to console)
    */
@@ -87,9 +88,9 @@ class EmbeddingRefresher {
 
     let pages;
     try {
-      pages = await this.collectives.getPageList();
+      pages = await this._getPages();
     } catch (err) {
-      this.logger.warn(`[EmbeddingRefresher] refreshAll: getPageList failed — ${err.message}`);
+      this.logger.warn(`[EmbeddingRefresher] refreshAll: getPages failed — ${err.message}`);
       return { processed: 0, errors: 1 };
     }
 
@@ -105,7 +106,7 @@ class EmbeddingRefresher {
       if (!title) continue;
 
       try {
-        const embedded = await this._embedAndUpsert(title);
+        const embedded = await this._embedAndUpsert(page);
         if (embedded) processed++;
       } catch (err) {
         errors++;
@@ -146,9 +147,9 @@ class EmbeddingRefresher {
 
     let pages;
     try {
-      pages = await this.collectives.getPageList();
+      pages = await this._getPages();
     } catch (err) {
-      this.logger.warn(`[EmbeddingRefresher] refreshStale: getPageList failed — ${err.message}`);
+      this.logger.warn(`[EmbeddingRefresher] refreshStale: getPages failed — ${err.message}`);
       return { processed: 0, errors: 1 };
     }
 
@@ -163,7 +164,7 @@ class EmbeddingRefresher {
       if (!this._isStale(title)) continue;
 
       try {
-        const embedded = await this._embedAndUpsert(title);
+        const embedded = await this._embedAndUpsert(page);
         if (embedded) processed++;
       } catch (err) {
         errors++;
@@ -227,13 +228,13 @@ class EmbeddingRefresher {
       // Normal incremental tick — pick the MAX_PER_TICK stalest pages
       const candidates = await this._stalestPages(MAX_PER_TICK);
 
-      for (const title of candidates) {
+      for (const page of candidates) {
         try {
-          const embedded = await this._embedAndUpsert(title);
+          const embedded = await this._embedAndUpsert(page);
           if (embedded) refreshed++;
         } catch (err) {
           errors++;
-          this.logger.warn(`[EmbeddingRefresher] tick: failed to embed "${title}" — ${err.message}`);
+          this.logger.warn(`[EmbeddingRefresher] tick: failed to embed "${page.title}" — ${err.message}`);
         }
       }
     } catch (err) {
@@ -250,26 +251,56 @@ class EmbeddingRefresher {
   // ---------------------------------------------------------------------------
 
   /**
-   * Read, embed, and upsert a single wiki page by title.
+   * Fetch all wiki pages via the CollectivesClient OCS API.
+   * Handles resolveCollective() + listPages() in one call.
    *
-   * @param {string} title - Page title as returned by getPageList()
+   * @returns {Promise<Array>} Array of page objects with title, filePath, fileName, etc.
+   * @private
+   */
+  async _getPages() {
+    const collectiveId = await this.collectives.resolveCollective();
+    return await this.collectives.listPages(collectiveId);
+  }
+
+  /**
+   * Build the WebDAV content path for a page from its OCS metadata.
+   *
+   * @param {Object} page - Page object from listPages()
+   * @returns {string} Path suitable for readPageContent()
+   * @private
+   */
+  _pagePath(page) {
+    if (page.filePath && page.fileName) {
+      return `${page.filePath}/${page.fileName}`;
+    }
+    if (page.fileName) {
+      return page.fileName;
+    }
+    // Fallback: title-based path (less reliable but better than nothing)
+    return `${page.title}/Readme.md`;
+  }
+
+  /**
+   * Read, embed, and upsert a single wiki page.
+   *
+   * @param {Object} page - Page object from listPages() (must have title, filePath, fileName)
    * @returns {Promise<boolean>} true if embedded, false if skipped (empty/null content)
    * @throws {Error} If embedding or upsert fails
    * @private
    */
-  async _embedAndUpsert(title) {
-    const content = await this.collectives.readPageContent(title);
+  async _embedAndUpsert(page) {
+    const path = this._pagePath(page);
+    const content = await this.collectives.readPageContent(path);
 
     // readPageContent returns null for 404; skip rather than embed empty string
     if (!content || typeof content !== 'string' || content.trim() === '') {
-      this.logger.warn(`[EmbeddingRefresher] _embedAndUpsert: no content for "${title}" — skipping`);
       return false;
     }
 
     const vector = await this.embedder.embed(content);
 
-    await this.store.upsert(title, vector, {
-      title,
+    await this.store.upsert(page.title, vector, {
+      title: page.title,
       source: 'wiki',
       updated_at: new Date().toISOString()
     });
@@ -303,19 +334,19 @@ class EmbeddingRefresher {
   }
 
   /**
-   * Return the titles of up to `limit` pages sorted by oldest embedding first.
+   * Return page objects of up to `limit` pages sorted by oldest embedding first.
    * Pages not in the vector store rank as oldest (epoch 0).
    *
    * @param {number} limit
-   * @returns {Promise<string[]>}
+   * @returns {Promise<Object[]>} Page objects ready for _embedAndUpsert()
    * @private
    */
   async _stalestPages(limit) {
     let pages;
     try {
-      pages = await this.collectives.getPageList();
+      pages = await this._getPages();
     } catch (err) {
-      this.logger.warn(`[EmbeddingRefresher] _stalestPages: getPageList failed — ${err.message}`);
+      this.logger.warn(`[EmbeddingRefresher] _stalestPages: getPages failed — ${err.message}`);
       return [];
     }
 
@@ -335,7 +366,7 @@ class EmbeddingRefresher {
         } catch {
           // Absent metadata → ts stays 0 (oldest)
         }
-        return { title: p.title, ts };
+        return { page: p, ts };
       });
 
     // Sort ascending by timestamp so oldest come first
@@ -344,7 +375,7 @@ class EmbeddingRefresher {
     // Only return pages that are actually stale — no point re-embedding fresh ones
     const stale = scored.filter(s => (Date.now() - s.ts) > STALE_THRESHOLD_MS);
 
-    return stale.slice(0, limit).map(s => s.title);
+    return stale.slice(0, limit).map(s => s.page);
   }
 
   /**
@@ -361,7 +392,8 @@ class EmbeddingRefresher {
       typeof this.embedder.embed === 'function' &&
       typeof this.store.upsert === 'function' &&
       typeof this.store.count === 'function' &&
-      typeof this.collectives.getPageList === 'function' &&
+      typeof this.collectives.resolveCollective === 'function' &&
+      typeof this.collectives.listPages === 'function' &&
       typeof this.collectives.readPageContent === 'function'
     );
   }

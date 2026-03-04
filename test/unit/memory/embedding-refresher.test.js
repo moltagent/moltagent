@@ -36,11 +36,27 @@ function createMockVectorStore(metaByTitle = {}) {
   };
 }
 
-function createMockCollectives(pages) {
+/**
+ * Create a mock CollectivesClient using the real API surface:
+ * resolveCollective() → id, listPages(id) → pages, readPageContent(path) → string.
+ * Each page object must have { title, filePath, fileName }.
+ */
+function createMockCollectives(pages, contentByPath = {}) {
   return {
-    getPageList: async () => pages,
-    readPageContent: async (title) => `Content of ${title}`
+    resolveCollective: async () => 10,
+    listPages: async () => pages,
+    readPageContent: async (path) => {
+      if (contentByPath[path] !== undefined) return contentByPath[path];
+      return `Content of ${path}`;
+    }
   };
+}
+
+/** Helper: build a page object with the fields the rewritten refresher expects. */
+function makePage(title, filePath, fileName) {
+  filePath = filePath || title;
+  fileName = fileName || 'Readme.md';
+  return { title, filePath, fileName };
 }
 
 // TC-ER-01: tick() embeds stale page — store has old updated_at, tick embeds it
@@ -51,7 +67,7 @@ asyncTest('TC-ER-01: tick() embeds stale page when store has old updated_at', as
   const oldTimestamp = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
   const store = createMockVectorStore({ 'PageA': { title: 'PageA', updated_at: oldTimestamp } });
 
-  const collectives = createMockCollectives([{ title: 'PageA' }]);
+  const collectives = createMockCollectives([makePage('PageA')]);
 
   const refresher = new EmbeddingRefresher({
     embeddingClient: embedder,
@@ -77,7 +93,7 @@ asyncTest('TC-ER-02: tick() skips recently-refreshed page', async () => {
   const freshTimestamp = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
   const store = createMockVectorStore({ 'PageA': { title: 'PageA', updated_at: freshTimestamp } });
 
-  const collectives = createMockCollectives([{ title: 'PageA' }]);
+  const collectives = createMockCollectives([makePage('PageA')]);
 
   const refresher = new EmbeddingRefresher({
     embeddingClient: embedder,
@@ -99,9 +115,9 @@ asyncTest('TC-ER-03: refreshAll() embeds all pages', async () => {
   const embedder = createMockEmbedder();
   const store = createMockVectorStore();
   const collectives = createMockCollectives([
-    { title: 'Page1' },
-    { title: 'Page2' },
-    { title: 'Page3' }
+    makePage('Page1'),
+    makePage('Page2'),
+    makePage('Page3')
   ]);
 
   const refresher = new EmbeddingRefresher({
@@ -138,9 +154,9 @@ asyncTest('TC-ER-04: refreshStale() only re-embeds stale pages', async () => {
   });
 
   const collectives = createMockCollectives([
-    { title: 'Page1' },
-    { title: 'Page2' },
-    { title: 'Page3' }
+    makePage('Page1'),
+    makePage('Page2'),
+    makePage('Page3')
   ]);
 
   const refresher = new EmbeddingRefresher({
@@ -168,7 +184,7 @@ asyncTest('TC-ER-05: tick() handles Ollama connection failure gracefully', async
 
   const oldTimestamp = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
   const store = createMockVectorStore({ 'PageA': { title: 'PageA', updated_at: oldTimestamp } });
-  const collectives = createMockCollectives([{ title: 'PageA' }]);
+  const collectives = createMockCollectives([makePage('PageA')]);
 
   const refresher = new EmbeddingRefresher({
     embeddingClient: failingEmbedder,
@@ -200,8 +216,8 @@ asyncTest('TC-ER-06: tick() limits to 2 pages per pulse (MAX_PER_TICK)', async (
   // All 5 pages are stale (no metadata)
   const store = createMockVectorStore();
   const collectives = createMockCollectives([
-    { title: 'P1' }, { title: 'P2' }, { title: 'P3' },
-    { title: 'P4' }, { title: 'P5' }
+    makePage('P1'), makePage('P2'), makePage('P3'),
+    makePage('P4'), makePage('P5')
   ]);
 
   const refresher = new EmbeddingRefresher({
@@ -230,17 +246,11 @@ asyncTest('TC-ER-06: tick() limits to 2 pages per pulse (MAX_PER_TICK)', async (
 asyncTest('TC-ER-07: backfillAll() processes all pages with content', async () => {
   const embedder = createMockEmbedder();
   const store = createMockVectorStore();
-  const collectives = {
-    getPageList: async () => [
-      { title: 'FullPage' },
-      { title: 'StubPage' },
-      { title: 'AnotherPage' }
-    ],
-    readPageContent: async (title) => {
-      if (title === 'StubPage') return '';  // empty content — should be skipped
-      return `Full content of ${title} with enough text to be meaningful`;
-    }
+  const pages = [makePage('FullPage'), makePage('StubPage'), makePage('AnotherPage')];
+  const contentByPath = {
+    'StubPage/Readme.md': '',  // empty content — should be skipped
   };
+  const collectives = createMockCollectives(pages, contentByPath);
 
   const refresher = new EmbeddingRefresher({
     embeddingClient: embedder,
@@ -259,13 +269,11 @@ asyncTest('TC-ER-07: backfillAll() processes all pages with content', async () =
 asyncTest('TC-ER-08: backfillAll() skips stubs gracefully', async () => {
   const embedder = createMockEmbedder();
   const store = createMockVectorStore();
-  const collectives = {
-    getPageList: async () => [
-      { title: 'Stub1' },
-      { title: 'Stub2' }
-    ],
-    readPageContent: async () => null  // all stubs
-  };
+  const pages = [makePage('Stub1'), makePage('Stub2')];
+  const collectives = createMockCollectives(pages, {
+    'Stub1/Readme.md': null,
+    'Stub2/Readme.md': null
+  });
 
   const refresher = new EmbeddingRefresher({
     embeddingClient: embedder,
@@ -292,14 +300,8 @@ asyncTest('TC-ER-09: One embedding failure does not abort the batch', async () =
   };
 
   const store = createMockVectorStore();
-  const collectives = {
-    getPageList: async () => [
-      { title: 'GoodPage1' },
-      { title: 'BadPage' },
-      { title: 'GoodPage2' }
-    ],
-    readPageContent: async (title) => `Content of ${title} with enough detail`
-  };
+  const pages = [makePage('GoodPage1'), makePage('BadPage'), makePage('GoodPage2')];
+  const collectives = createMockCollectives(pages);
 
   const refresher = new EmbeddingRefresher({
     embeddingClient: partialEmbedder,
@@ -327,7 +329,7 @@ asyncTest('TC-ER-10: Bootstrap retries on next tick if first attempt produced 0'
   };
 
   const store = createMockVectorStore();
-  const collectives = createMockCollectives([{ title: 'PageX' }]);
+  const collectives = createMockCollectives([makePage('PageX')]);
 
   const refresher = new EmbeddingRefresher({
     embeddingClient: eventualEmbedder,
