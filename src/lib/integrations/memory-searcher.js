@@ -61,6 +61,27 @@ const SOURCE_PRIORITY = {
   calendar:                    6,
 };
 
+// Frontmatter-typed sections: pages under these paths have structured
+// knowledge (person, project, procedure, decision). Boost 2x.
+const TYPED_SECTIONS = /\/(people|projects|procedures|decisions)\//i;
+
+// Meta infrastructure pages (Learning Log, Pending Questions, etc.).
+// Useful for the system, rarely useful as context for the user. Demote 0.3x.
+const META_SECTION = /\/meta\//i;
+
+/**
+ * Score multiplier based on page path/section.
+ * Pages with structured frontmatter types get 2x; Meta/ pages get 0.3x.
+ * @param {Object} result - Search result with link field
+ * @returns {number} Multiplier
+ */
+function _pageScoreMultiplier(result) {
+  const link = result.link || '';
+  if (META_SECTION.test(link)) return 0.3;
+  if (TYPED_SECTIONS.test(link)) return 2.0;
+  return 1.0;
+}
+
 class MemorySearcher {
   /**
    * @param {Object} options
@@ -449,6 +470,12 @@ class MemorySearcher {
         cs.keyword * CHANNEL_WEIGHTS.keyword +
         cs.vector * CHANNEL_WEIGHTS.vector +
         cs.graph * CHANNEL_WEIGHTS.graph;
+
+      // Frontmatter-aware score adjustment:
+      // Pages with structured type (person, project, etc.) are higher-value knowledge.
+      // Meta/ pages (Learning Log, Pending Questions, Knowledge Stats) are infrastructure.
+      r._fusionScore *= _pageScoreMultiplier(r);
+
       // Clean up internal score fields
       delete r._kwScore;
       delete r._vecScore;

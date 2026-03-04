@@ -420,6 +420,78 @@ console.log('\n=== MemorySearcher Three-Channel Fusion Tests ===\n');
   });
 
   // --------------------------------------------------------------------------
+  // Test 9: page score multiplier — typed sections get 2x boost
+  // --------------------------------------------------------------------------
+  await asyncTest('fusion scoring applies 2x multiplier for typed section pages', async () => {
+    // Two results: one from /People/ path, one from generic path
+    // Both have the same keyword score, so the typed page should rank higher
+    const ncClient = createMockNCSearchClient([
+      { title: 'Carlos', excerpt: 'Contact at TheCatalyne', link: '/apps/collectives/Moltagent Knowledge/People/Carlos' },
+      { title: 'Meeting Notes', excerpt: 'Discussed TheCatalyne', link: '/apps/collectives/Moltagent Knowledge/Meeting Notes' }
+    ]);
+    const searcher = new MemorySearcher({
+      ncSearchClient: ncClient,
+      logger: silentLogger
+    });
+
+    const results = await searcher.search('TheCatalyne');
+
+    assert.ok(results.length >= 2, 'Should return both results');
+    // Carlos (People path, 2x) should rank above Meeting Notes (no multiplier)
+    const carlosIdx = results.findIndex(r => r.title === 'Carlos');
+    const meetingIdx = results.findIndex(r => r.title === 'Meeting Notes');
+    assert.ok(carlosIdx < meetingIdx, `Carlos (People/ 2x) should rank above Meeting Notes, got idx ${carlosIdx} vs ${meetingIdx}`);
+  });
+
+  // --------------------------------------------------------------------------
+  // Test 10: page score multiplier — Meta/ pages get 0.3x demotion
+  // --------------------------------------------------------------------------
+  await asyncTest('fusion scoring applies 0.3x demotion for Meta/ pages', async () => {
+    const ncClient = createMockNCSearchClient([
+      { title: 'Meta Config', excerpt: 'internal config page', link: '/apps/collectives/Moltagent Knowledge/Meta/Config' },
+      { title: 'Onboarding Guide', excerpt: 'how to onboard', link: '/apps/collectives/Moltagent Knowledge/Onboarding Guide' }
+    ]);
+    const searcher = new MemorySearcher({
+      ncSearchClient: ncClient,
+      logger: silentLogger
+    });
+
+    const results = await searcher.search('config onboarding');
+
+    assert.ok(results.length >= 2, 'Should return both results');
+    // Onboarding Guide (1x) should rank above Meta Config (0.3x)
+    const metaIdx = results.findIndex(r => r.title === 'Meta Config');
+    const guideIdx = results.findIndex(r => r.title === 'Onboarding Guide');
+    assert.ok(guideIdx < metaIdx, `Onboarding Guide (1x) should rank above Meta Config (0.3x), got idx ${guideIdx} vs ${metaIdx}`);
+  });
+
+  // --------------------------------------------------------------------------
+  // Test 11: page score multiplier — Projects/Procedures/Decisions also get 2x
+  // --------------------------------------------------------------------------
+  await asyncTest('fusion scoring applies 2x multiplier for projects, procedures, decisions paths', async () => {
+    const ncClient = createMockNCSearchClient([
+      { title: 'Project Atlas', excerpt: 'main project', link: '/apps/collectives/Moltagent Knowledge/Projects/Atlas' },
+      { title: 'Hiring Procedure', excerpt: 'hiring steps', link: '/apps/collectives/Moltagent Knowledge/Procedures/Hiring' },
+      { title: 'Budget Decision', excerpt: 'Q1 budget', link: '/apps/collectives/Moltagent Knowledge/Decisions/Budget Q1' },
+      { title: 'Random Note', excerpt: 'untyped page', link: '/apps/collectives/Moltagent Knowledge/Random Note' }
+    ]);
+    const searcher = new MemorySearcher({
+      ncSearchClient: ncClient,
+      logger: silentLogger
+    });
+
+    const results = await searcher.search('project hiring budget');
+
+    // All three typed pages should rank above the untyped Random Note
+    const randomIdx = results.findIndex(r => r.title === 'Random Note');
+    for (const typed of ['Project Atlas', 'Hiring Procedure', 'Budget Decision']) {
+      const typedIdx = results.findIndex(r => r.title === typed);
+      assert.ok(typedIdx >= 0, `Should contain "${typed}"`);
+      assert.ok(typedIdx < randomIdx, `"${typed}" (2x) should rank above "Random Note" (1x), got idx ${typedIdx} vs ${randomIdx}`);
+    }
+  });
+
+  // --------------------------------------------------------------------------
   // Summary & exit
   // --------------------------------------------------------------------------
   setTimeout(() => { summary(); exitWithCode(); }, 500);
