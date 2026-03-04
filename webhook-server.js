@@ -2130,21 +2130,29 @@ async function shutdown(signal) {
   if (sessionManager && sessionPersister) {
     try {
       const activeSessions = sessionManager.getAllSessions ? sessionManager.getAllSessions() : [];
+      console.log(`[SHUTDOWN] ${activeSessions.length} active session(s) to persist`);
       let persisted = 0;
       for (const session of activeSessions) {
+        const messageCount = (session.context || []).length;
+        console.log(`[SHUTDOWN] Persisting session ${session.id} (room=${session.roomToken}, messages=${messageCount})`);
         try {
           const page = await sessionPersister.persistSession(session);
-          if (page) persisted++;
+          if (page) {
+            persisted++;
+            console.log(`[SHUTDOWN] Persisted session ${session.id} → ${page}`);
+          } else {
+            console.log(`[SHUTDOWN] Session ${session.id} returned null (skipped by persister)`);
+          }
         } catch (err) {
           console.warn(`[SHUTDOWN] Session persist failed for ${session.roomToken}: ${err.message}`);
         }
       }
-      if (persisted > 0) {
-        console.log(`[SHUTDOWN] Persisted ${persisted} active session(s) to wiki`);
-      }
+      console.log(`[SHUTDOWN] Session persistence complete: ${persisted}/${activeSessions.length} persisted`);
     } catch (err) {
       console.warn(`[SHUTDOWN] Session persistence sweep failed: ${err.message}`);
     }
+  } else {
+    console.log(`[SHUTDOWN] Session persistence skipped: sessionManager=${!!sessionManager}, sessionPersister=${!!sessionPersister}`);
   }
 
   // Stop NC Flow modules
