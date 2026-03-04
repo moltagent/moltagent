@@ -91,7 +91,9 @@ asyncTest('enrich returns formatted context when wiki has matches', async () => 
   assert.ok(result !== null, 'Should return enrichment');
   assert.ok(result.includes('Sarah'), 'Should include Sarah page');
   assert.ok(result.includes('ManeraMedia'), 'Should include ManeraMedia page');
-  assert.ok(result.includes('knowledge base'), 'Should have knowledge base prefix');
+  assert.ok(result.includes('<agent_knowledge>'), 'Should wrap in agent_knowledge tags');
+  assert.ok(result.includes('source:'), 'Should include source tag');
+  assert.ok(result.includes('confidence:'), 'Should include confidence tag');
 });
 
 // -- Test 8: enrich returns null when no search results --
@@ -155,6 +157,36 @@ asyncTest('enrich handles search error gracefully', async () => {
 
   const result = await enricher.enrich('Tell me about Carlos', 'search');
   assert.strictEqual(result, null, 'Should return null on search error');
+});
+
+// -- Test 13: _computeConfidence returns high for strong keyword match --
+test('_computeConfidence returns high for strong keyword match', () => {
+  const enricher = new MemoryContextEnricher({ memorySearcher: {}, logger: silentLogger });
+
+  assert.strictEqual(enricher._computeConfidence({ channelScores: { keyword: 1.0, vector: 0, graph: 0 } }), 'high');
+  assert.strictEqual(enricher._computeConfidence({ channelScores: { keyword: 0.8, vector: 0, graph: 0 } }), 'high');
+  assert.strictEqual(enricher._computeConfidence({ channelScores: { keyword: 0.5, vector: 0, graph: 0 } }), 'medium');
+  assert.strictEqual(enricher._computeConfidence({ channelScores: { keyword: 0.1, vector: 0.2, graph: 0 } }), 'low');
+  assert.strictEqual(enricher._computeConfidence({}), 'medium', 'No channelScores defaults to medium');
+});
+
+// -- Test 14: enricher output wraps in agent_knowledge tags with source metadata --
+asyncTest('enricher output includes source and confidence per result', async () => {
+  const enricher = new MemoryContextEnricher({
+    memorySearcher: {
+      search: async () => [
+        { source: 'Wiki', title: 'Carlos', excerpt: 'Contact at TheCatalyne', channelScores: { keyword: 1.0, vector: 0, graph: 0 } }
+      ]
+    },
+    logger: silentLogger
+  });
+
+  const result = await enricher.enrich('Tell me about Carlos', 'search');
+  assert.ok(result.includes('<agent_knowledge>'), 'Should open agent_knowledge tag');
+  assert.ok(result.includes('</agent_knowledge>'), 'Should close agent_knowledge tag');
+  assert.ok(result.includes('source: wiki'), 'Should include source tag');
+  assert.ok(result.includes('confidence: high'), 'Should compute high confidence for keyword 1.0');
+  assert.ok(result.includes('Carlos'), 'Should include title');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 1000);

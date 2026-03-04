@@ -141,26 +141,47 @@ class MemoryContextEnricher {
 
       if (!results || results.length === 0) return null;
 
-      // Format as concise context block
+      // Format as context block with source tags and confidence
       const contextParts = results
         .filter(r => r.title || r.excerpt)
         .map(r => {
           const title = r.title || 'Untitled';
           const snippet = (r.excerpt || r.subline || '').substring(0, 300);
-          return `[${r.source || 'Wiki'}: ${title}] ${snippet}`;
+          const source = (r.source || 'Wiki').toLowerCase();
+          const confidence = this._computeConfidence(r);
+          return `[source: ${source}, confidence: ${confidence}]\n${title}\n${snippet}`;
         });
 
       if (contextParts.length === 0) return null;
 
-      this.logger.info(`[MemoryEnrich] Found ${contextParts.length} wiki matches for: ${searchTerms.join(', ')}`);
+      this.logger.info(`[MemoryEnrich] Found ${contextParts.length} matches for: ${searchTerms.join(', ')}`);
 
-      return `Your knowledge base contains:\n${contextParts.join('\n')}`;
+      return `<agent_knowledge>\n${contextParts.join('\n\n')}\n</agent_knowledge>`;
     } catch (err) {
       if (err.message !== 'timeout') {
         this.logger.warn(`[MemoryEnrich] Search failed: ${err.message}`);
       }
       return null;
     }
+  }
+
+  /**
+   * Compute confidence label from search result metadata.
+   * Uses channelScores if available, otherwise defaults to medium.
+   * @param {Object} result - Search result with optional channelScores
+   * @returns {string} 'high' | 'medium' | 'low'
+   * @private
+   */
+  _computeConfidence(result) {
+    const cs = result.channelScores;
+    if (!cs) return 'medium';
+
+    // Title-level keyword match (score ~1.0) = high confidence
+    if (cs.keyword >= 0.8) return 'high';
+    // Any strong single-channel match
+    if (cs.keyword >= 0.5 || cs.vector >= 0.7 || cs.graph >= 0.7) return 'medium';
+    // Weak or tangential match
+    return 'low';
   }
 }
 

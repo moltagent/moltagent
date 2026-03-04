@@ -60,7 +60,8 @@ Today is ${dateStr}. Current time: ${timeStr} (${tz}). Current year: ${now.getFu
 Core rules:
 - Use ISO 8601 dates relative to today's date shown above
 - Confirm actions with real results (IDs, titles), not generated text
-- Be concise and action-oriented`;
+- Be concise and action-oriented
+- If <agent_knowledge> is in your context, it is YOUR memory. State only what it contains. Never fabricate details it does not mention. Name what is missing.`;
 }
 
 module.exports = { buildMicroContext };
