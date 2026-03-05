@@ -402,6 +402,18 @@ class DeckClient {
     });
   }
 
+  /**
+   * Share a board with a user granting full permissions (edit, share, manage).
+   * Convenience wrapper over shareBoard() for admin-level sharing.
+   * @param {number} boardId
+   * @param {string} username - NC username to share with
+   * @returns {Promise<Object>} ACL entry object
+   */
+  async shareBoardWithUser(boardId, username) {
+    if (!boardId || !username) throw new DeckApiError('boardId and username are required');
+    return await this.shareBoard(boardId, username, 0, true, true, true);
+  }
+
   // ============================================================
   // GENERIC BOARD CRUD (v2 — any board, not just MoltAgent Tasks)
   // ============================================================

@@ -1126,6 +1126,7 @@ class MessageProcessor {
         this.microPipeline.executors.deck = new DeckExecutor({
           router, toolRegistry,
           deckClient: toolRegistry.clients?.deckClient || null,
+          adminUser: process.env.KNOWLEDGE_ADMIN_USER || this.adminUser || null,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
           activityLogger: aLog, timezone: tz, logger: console
         });

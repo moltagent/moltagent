@@ -67,6 +67,7 @@ class DeckExecutor extends BaseExecutor {
     super(config);
     this.toolRegistry = config.toolRegistry;
     this.deckClient = config.deckClient || null;
+    this.adminUser = config.adminUser || process.env.KNOWLEDGE_ADMIN_USER || null;
   }
 
   /**
@@ -239,6 +240,7 @@ Message: "${message.substring(0, 400)}"`;
     }
 
     const board = await this.deckClient.createNewBoard(name, params.color || '0800fd');
+    await this._shareBoardWithAdmin(board.id, board.title);
 
     this._logActivity('deck_create_board',
       `Created board: ${board.title}`,
@@ -607,6 +609,7 @@ Respond ONLY with JSON, no markdown, no explanation:
 
     result.board = await this.deckClient.createNewBoard(plan.board_name);
     this.logger.info(`[DeckExec] Created board "${plan.board_name}" (${result.board.id})`);
+    await this._shareBoardWithAdmin(result.board.id, plan.board_name);
 
     for (let i = 0; i < plan.stacks.length; i++) {
       const stackPlan = plan.stacks[i];
@@ -689,6 +692,16 @@ Respond ONLY with JSON, no markdown, no explanation:
    * @returns {Promise<Object|null>} Board object or null
    * @private
    */
+  async _shareBoardWithAdmin(boardId, boardTitle) {
+    if (!this.adminUser || !this.deckClient) return;
+    try {
+      await this.deckClient.shareBoardWithUser(boardId, this.adminUser);
+      this.logger.info(`[DeckExec] Shared board "${boardTitle}" (${boardId}) with ${this.adminUser}`);
+    } catch (err) {
+      this.logger.warn(`[DeckExec] Board share failed for "${boardTitle}": ${err.message}`);
+    }
+  }
+
   async _resolveBoard(boardName) {
     if (!boardName || !this.deckClient) return null;
 
