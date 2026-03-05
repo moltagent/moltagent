@@ -307,6 +307,15 @@ User question: "${message.substring(0, 300)}"`;
       context
     );
 
+    if (this.entityExtractor) {
+      try {
+        const pagePath = parent ? `${parent}/${pageTitle}` : pageTitle;
+        await this.entityExtractor.extractFromPage(pagePath, content);
+      } catch (err) {
+        this.logger.warn(`[WikiExecutor] Entity extraction failed: ${err.message}`);
+      }
+    }
+
     const parentInfo = parent ? ` under "${parent}"` : '';
     const response = `Saved to wiki: "${pageTitle}"${parentInfo}. ${writeResult.result || ''}`.trim();
     return {
@@ -365,6 +374,15 @@ User question: "${message.substring(0, 300)}"`;
         { page: pageTitle, topic: params.topic, appended: true },
         context
       );
+
+      if (this.entityExtractor) {
+        try {
+          const pagePath = parent ? `${parent}/${pageTitle}` : pageTitle;
+          await this.entityExtractor.extractFromPage(pagePath, merged);
+        } catch (err) {
+          this.logger.warn(`[WikiExecutor] Entity extraction failed: ${err.message}`);
+        }
+      }
 
       return {
         response: `Appended to wiki page "${pageTitle}". ${writeResult.result || ''}`.trim(),

@@ -441,4 +441,50 @@ asyncTest('Synthesis failure falls through to not-found gracefully', async () =>
   assert.ok(resp.includes("I don't have anything about"), `Should fall through on synthesis error, got: ${resp}`);
 });
 
+// -- Test 16: _executeWrite calls entityExtractor.extractFromPage --
+asyncTest('_executeWrite calls entityExtractor.extractFromPage with correct path and content', async () => {
+  const extractCalls = [];
+  const registry = createMockToolRegistry({
+    wiki_write: { success: true, result: 'Page created' }
+  });
+  const executor = new WikiExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'write', page_title: 'Project Alpha', content: 'Alpha details', parent: 'Projects' })
+    }),
+    toolRegistry: registry,
+    entityExtractor: { extractFromPage: async (p, c) => { extractCalls.push({ p, c }); } },
+    logger: silentLogger
+  });
+
+  await executor.execute('Write wiki page Project Alpha under Projects', { userName: 'alice' });
+
+  assert.strictEqual(extractCalls.length, 1, 'Should call extractFromPage once');
+  assert.strictEqual(extractCalls[0].p, 'Projects/Project Alpha', 'Path should include parent');
+  assert.strictEqual(extractCalls[0].c, 'Alpha details', 'Content should be the written content');
+});
+
+// -- Test 17: _executeAppend calls entityExtractor.extractFromPage with merged content --
+asyncTest('_executeAppend calls entityExtractor.extractFromPage with merged content', async () => {
+  const extractCalls = [];
+  const registry = createMockToolRegistry({
+    wiki_read: { success: true, result: 'Existing line.' },
+    wiki_write: { success: true, result: 'Page updated' }
+  });
+  const executor = new WikiExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({ action: 'append', page_title: 'Daily Log', content: 'New entry', topic: 'log' })
+    }),
+    toolRegistry: registry,
+    entityExtractor: { extractFromPage: async (p, c) => { extractCalls.push({ p, c }); } },
+    logger: silentLogger
+  });
+
+  await executor.execute('Append to daily log', { userName: 'alice' });
+
+  assert.strictEqual(extractCalls.length, 1, 'Should call extractFromPage once');
+  assert.strictEqual(extractCalls[0].p, 'Daily Log', 'Path should be the page title');
+  assert.ok(extractCalls[0].c.includes('Existing line.'), 'Content should include original');
+  assert.ok(extractCalls[0].c.includes('New entry'), 'Content should include appended text');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

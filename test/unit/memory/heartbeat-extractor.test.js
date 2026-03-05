@@ -258,4 +258,29 @@ asyncTest('tick() handles wiki write failures gracefully (continues to next)', a
   assert.strictEqual(writeCount, 2, 'Should attempt both writes');
 });
 
+// -- Test 11: Entity extraction reads actual page content (not empty string) --
+asyncTest('Entity extraction passes actual page content to extractFromPage', async () => {
+  const extractCalls = [];
+  const wiki = createMockWikiClient();
+  const extractor = new HeartbeatExtractor({
+    activityLogger: createMockActivityLogger(makeEntries(5)),
+    wikiClient: wiki,
+    llmRouter: createMockRouter(JSON.stringify({
+      people: [{ name: 'Alice', fact: 'Likes coffee' }]
+    })),
+    logger: silentLogger
+  });
+  extractor._lastExtraction = 0;
+  extractor.entityExtractor = {
+    extractFromPage: async (path, content) => { extractCalls.push({ path, content }); }
+  };
+
+  await extractor.tick();
+
+  assert.strictEqual(extractCalls.length, 1, 'Should call extractFromPage once');
+  assert.strictEqual(extractCalls[0].path, 'People/Alice', 'Path should match written page');
+  assert.ok(extractCalls[0].content.includes('Likes coffee'), `Content should be actual page content, got: ${extractCalls[0].content}`);
+  assert.ok(extractCalls[0].content.length > 0, 'Content should not be empty string');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

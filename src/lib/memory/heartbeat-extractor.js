@@ -231,7 +231,7 @@ Rules:
       this.memory.invalidateCache();
     }
 
-    // Entity extraction: fire-and-forget title parsing for knowledge graph
+    // Entity extraction: read actual page content for knowledge graph
     if (writesAttempted > 0 && this.entityExtractor) {
       const pagePaths = [];
       if (Array.isArray(extracted.people)) {
@@ -239,10 +239,21 @@ Rules:
           if (p.name) pagePaths.push(`People/${p.name.replace(/[^a-zA-Z0-9 ]/g, '')}`);
         }
       }
+      if (Array.isArray(extracted.preferences)) {
+        for (const pref of extracted.preferences) {
+          const page = pref.who
+            ? `People/${pref.who.replace(/[^a-zA-Z0-9 ]/g, '')}`
+            : 'General/Preferences';
+          if (!pagePaths.includes(page)) pagePaths.push(page);
+        }
+      }
       if (Array.isArray(extracted.decisions)) pagePaths.push('Decisions Index');
       if (Array.isArray(extracted.gaps)) pagePaths.push('Meta/Pending Questions');
       for (const path of pagePaths) {
-        this.entityExtractor.extractFromPage(path, '').catch(() => {});
+        try {
+          const pageContent = await this.wiki.readPageContent(path) || '';
+          await this.entityExtractor.extractFromPage(path, pageContent);
+        } catch (_err) { /* non-blocking — graph enrichment is best-effort */ }
       }
     }
 
