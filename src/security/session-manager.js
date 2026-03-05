@@ -169,16 +169,27 @@ class SessionManager extends EventEmitter {
    * @param {Object} session - Session object
    * @param {string} role - Role (e.g., 'user', 'assistant')
    * @param {string} content - Message content
+   * @param {Object} [meta] - Optional metadata (Layer 1: provenance tagging)
+   * @param {Array} [meta.provenance] - Per-segment provenance annotations
+   * @param {number} [meta.groundedRatio] - Fraction of grounded segments (0.0-1.0)
    * @returns {{ flushNeeded: boolean }} Flush signal
    */
-  addContext(session, role, content) {
+  addContext(session, role, content, meta) {
     const now = Date.now();
 
-    session.context.push({
+    const entry = {
       role,
       content,
       timestamp: now,
-    });
+    };
+
+    // Layer 1 Bullshit Protection: attach provenance metadata to assistant messages
+    if (meta && meta.provenance) {
+      entry.provenance = meta.provenance;
+      entry.groundedRatio = meta.groundedRatio;
+    }
+
+    session.context.push(entry);
 
     session.lastActivityAt = now;
 

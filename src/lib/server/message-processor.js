@@ -40,6 +40,7 @@
 
 const { createErrorHandler } = require('../errors/error-handler');
 const { MODES } = require('../integrations/cockpit-modes');
+const ProvenanceAnnotator = require('../security/provenance-annotator');
 
 /** Domain intents that can be handled locally with focused tool subsets. */
 const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search']);
@@ -197,6 +198,10 @@ class MessageProcessor {
 
     /** @type {Map<string, Array>} - Silent observation buffer per room */
     this.roomContext = new Map();
+
+    // Layer 1 Bullshit Protection: Provenance tagging at generation time
+    /** @type {ProvenanceAnnotator} */
+    this._provenanceAnnotator = new ProvenanceAnnotator({ logger: console });
 
     /** @type {import('../errors/error-handler').ErrorHandler} */
     this.errorHandler = createErrorHandler({
@@ -414,6 +419,7 @@ class MessageProcessor {
     try {
       let response;
       let result;
+      let _enrichmentBlock = null; // Layer 1: captured agent_knowledge for provenance tagging
 
       // Pre-routing reference resolution
       // Enriches "read the biggest one" → "Read file X.md from Moltagent DEV/docs"
@@ -575,6 +581,7 @@ class MessageProcessor {
             try {
               const enrichment = await enricher.enrich(pipelineMessage, intent);
               if (enrichment) {
+                _enrichmentBlock = enrichment; // Layer 1: capture for provenance tagging
                 cloudSuffix = cloudSuffix
                   ? cloudSuffix + '\n\n' + enrichment
                   : enrichment;
@@ -679,7 +686,24 @@ class MessageProcessor {
       // reply lands at threshold).  Capture that signal and carry it forward as a
       // pending flag so the NEXT user-message turn injects the flush prompt.
       if (session && response) {
-        const { flushNeeded: assistantFlush } = this.sessionManager.addContext(session, 'assistant', response);
+        // Layer 1 Bullshit Protection: Tag response with provenance before storing in context
+        let provenance = null;
+        let groundedRatio = null;
+        try {
+          const annotation = this._provenanceAnnotator.annotate(response, {
+            agentKnowledge: _enrichmentBlock,
+            userMessage: extracted.content,
+            actionLedger: session.actionLedger || []
+          });
+          provenance = annotation.segments;
+          groundedRatio = annotation.groundedRatio;
+        } catch (err) {
+          console.warn(`[Provenance] Annotation failed: ${err.message}`);
+        }
+
+        const { flushNeeded: assistantFlush } = this.sessionManager.addContext(
+          session, 'assistant', response, { provenance, groundedRatio }
+        );
         if (assistantFlush && !flushPrompt) {
           // Flush fired on the assistant side — store pending for next user turn
           session._pendingFlush = true;
