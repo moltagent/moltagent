@@ -290,4 +290,161 @@ asyncTest('EntityExtractor deep extraction parses LLM JSON response', async () =
   assert.ok(worksOnTriple != null, 'Should have a "works_on" triple from deep LLM extraction');
 });
 
+// Test 13: flush() with empty graph is no-op (no write)
+asyncTest('flush() with empty dirty graph skips write', async () => {
+  let writeCount = 0;
+  const wiki = {
+    readPageContent: async () => null,
+    writePageContent: async () => { writeCount++; }
+  };
+  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  graph._loaded = true;
+
+  // Make dirty but with no entities/triples
+  graph._dirty = true;
+
+  await graph.flush();
+
+  assert.strictEqual(writeCount, 0, 'Should not write empty graph');
+  assert.strictEqual(graph._dirty, false, '_dirty should be cleared');
+});
+
+// Test 14: flush() failure logs LOUD error and propagates
+asyncTest('flush() failure logs error and propagates', async () => {
+  const errors = [];
+  const loudLogger = { log() {}, info() {}, warn() {}, error(msg) { errors.push(msg); } };
+  const wiki = {
+    readPageContent: async () => null,
+    writePageContent: async () => { throw new Error('WebDAV 409'); }
+  };
+  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: loudLogger });
+  graph._loaded = true;
+  graph.addEntity('Alice', 'person');
+
+  let threw = false;
+  try {
+    await graph.flush();
+  } catch (err) {
+    threw = true;
+    assert.ok(err.message.includes('WebDAV 409'), 'Should propagate original error');
+  }
+
+  assert.ok(threw, 'flush() should throw on write failure');
+  assert.ok(errors.length > 0, 'Should have logged an error');
+  assert.ok(errors[0].includes('Flush FAILED'), 'Error should mention Flush FAILED');
+  assert.ok(errors[0].includes('1 entities'), 'Error should include entity count');
+  assert.ok(graph._dirty, '_dirty should remain true on failure');
+});
+
+// Test 15: flush() round-trip — write then load recovers data
+asyncTest('flush() round-trip — write then load recovers data', async () => {
+  const wiki = createMockWikiClient(null);
+  const graph1 = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  graph1._loaded = true;
+
+  graph1.addEntity('Alice', 'person');
+  graph1.addEntity('Project X', 'project');
+  graph1.addTriple('person_alice', 'works_on', 'project_project_x');
+
+  await graph1.flush();
+
+  // Load into a fresh graph
+  const graph2 = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  await graph2.load();
+
+  assert.strictEqual(graph2._entities.size, 2, 'Should load 2 entities');
+  assert.strictEqual(graph2._triples.length, 1, 'Should load 1 triple');
+  assert.ok(graph2._entities.has('person_alice'), 'Should have person_alice');
+  assert.ok(graph2._entities.has('project_project_x'), 'Should have project_project_x');
+});
+
+// ---------------------------------------------------------------------------
+// EntityExtractor backfillAll tests
+// ---------------------------------------------------------------------------
+
+// Test 16: backfillAll processes non-Meta, non-stub pages
+asyncTest('backfillAll processes non-Meta, non-stub pages', async () => {
+  const wiki = createMockWikiClient(null);
+  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  graph._loaded = true;
+
+  const extractor = new EntityExtractor({ knowledgeGraph: graph, logger: silentLogger });
+
+  const mockCollectives = {
+    resolveCollective: async () => 1,
+    listPages: async () => [
+      { title: 'Sarah Chen', filePath: 'People/Sarah Chen.md' },
+      { title: 'Project Phoenix', filePath: 'Projects/Project Phoenix.md' },
+      { title: 'Meta Index', filePath: 'Meta/Index.md' },  // should be skipped
+      { title: 'Stub', filePath: 'Notes/Stub.md' }          // content < 50 chars
+    ],
+    readPageContent: async (path) => {
+      if (path.includes('Meta')) return 'meta content';
+      if (path.includes('Stub')) return 'short';  // < 50 chars
+      if (path.includes('Sarah')) return 'Sarah Chen is a developer at TheCatalyne. She works with [[Project Phoenix]].';
+      if (path.includes('Phoenix')) return 'Project Phoenix is the Q1 internal tooling initiative led by Fu.';
+      return null;
+    }
+  };
+
+  const result = await extractor.backfillAll(mockCollectives);
+
+  assert.strictEqual(result.processed, 2, 'Should process 2 pages (skip Meta + stub)');
+  assert.strictEqual(result.failed, 0, 'Should have 0 failures');
+  assert.ok(graph._entities.size > 0, 'Graph should have entities after backfill');
+});
+
+// Test 17: backfillAll handles read failure on one page without aborting
+asyncTest('backfillAll handles read failure without aborting', async () => {
+  const wiki = createMockWikiClient(null);
+  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  graph._loaded = true;
+
+  const extractor = new EntityExtractor({ knowledgeGraph: graph, logger: silentLogger });
+
+  const mockCollectives = {
+    resolveCollective: async () => 1,
+    listPages: async () => [
+      { title: 'Good Page', filePath: 'Notes/Good Page.md' },
+      { title: 'Bad Page', filePath: 'Notes/Bad Page.md' }
+    ],
+    readPageContent: async (path) => {
+      if (path.includes('Bad')) throw new Error('API timeout');
+      return 'This is a good page with some substantial content that is long enough to process.';
+    }
+  };
+
+  const result = await extractor.backfillAll(mockCollectives);
+
+  assert.strictEqual(result.processed, 1, 'Should process 1 page');
+  assert.strictEqual(result.failed, 1, 'Should have 1 failure');
+});
+
+// Test 18: backfillAll without collectivesClient returns early
+asyncTest('backfillAll without collectivesClient returns early', async () => {
+  const wiki = createMockWikiClient(null);
+  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  graph._loaded = true;
+
+  const extractor = new EntityExtractor({ knowledgeGraph: graph, logger: silentLogger });
+
+  const result = await extractor.backfillAll(null);
+
+  assert.strictEqual(result.processed, 0, 'Should process 0 pages');
+  assert.strictEqual(result.failed, 0, 'Should have 0 failures');
+});
+
+// Test 19: flush() includes lastFlushed timestamp
+asyncTest('flush() includes lastFlushed timestamp', async () => {
+  const wiki = createMockWikiClient(null);
+  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  graph._loaded = true;
+
+  graph.addEntity('Test', 'note');
+  await graph.flush();
+
+  const content = wiki.getPages()['Memory/_index'];
+  assert.ok(content.includes('lastFlushed'), 'Should include lastFlushed timestamp');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

@@ -1338,9 +1338,12 @@ class MessageProcessor {
     this._lastConsolidateTime = now;
 
     // Build a continuation summary from recent context
+    // TRUST FILTER: Only write user messages and tool results to WARM.md.
+    // Assistant output is where hallucinations live — excluded until
+    // the full Bullshit Protection Layer ships.
     const recent = ctx.slice(-6); // Last 3 exchanges
     const continuation = recent
-      .filter(c => c.role === 'user' || c.role === 'assistant')
+      .filter(c => c.role === 'user' || c.role === 'tool')
       .map(c => {
         const text = (typeof c.content === 'string' ? c.content : String(c.content || '')).substring(0, 150);
         return `${c.role}: ${text}`;

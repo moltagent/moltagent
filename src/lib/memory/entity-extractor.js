@@ -234,6 +234,82 @@ Rules:
   }
 
   /**
+   * Backfill the knowledge graph from all existing wiki pages.
+   * Requires a collectivesClient to list and read pages.
+   * Skips Meta/ pages and stubs (< 50 chars).
+   * Flushes the graph after processing.
+   *
+   * @param {Object} collectivesClient - CollectivesClient instance
+   * @returns {Promise<{ processed: number, failed: number }>}
+   */
+  async backfillAll(collectivesClient) {
+    if (!collectivesClient) {
+      this.logger.warn('[EntityExtractor] backfillAll requires collectivesClient');
+      return { processed: 0, failed: 0 };
+    }
+
+    let processed = 0;
+    let failed = 0;
+
+    try {
+      const collectiveId = await collectivesClient.resolveCollective();
+      const pages = await collectivesClient.listPages(collectiveId);
+
+      for (const page of pages) {
+        const path = page.filePath || page.title || '';
+        if (path.includes('/Meta') || path.includes('Meta/')) continue;
+
+        try {
+          const pagePath = this._buildPagePath(page);
+          if (!pagePath) continue;
+          const content = await collectivesClient.readPageContent(pagePath);
+          if (!content || content.length < 50) continue;
+
+          await this.extractFromPage(pagePath, content);
+          processed++;
+        } catch (err) {
+          this.logger.warn(
+            `[EntityExtractor] Backfill failed for ${page.title}: ${err.message}`
+          );
+          failed++;
+        }
+      }
+    } catch (err) {
+      this.logger.error(`[EntityExtractor] Backfill aborted: ${err.message}`);
+    }
+
+    this.logger.info(
+      `[EntityExtractor] Backfill complete: ${processed} pages, ${failed} failed`
+    );
+
+    // Flush graph immediately after backfill
+    try {
+      await this.graph.flush();
+    } catch (err) {
+      this.logger.warn(`[EntityExtractor] Post-backfill flush failed: ${err.message}`);
+    }
+
+    return { processed, failed };
+  }
+
+  /**
+   * Build a WebDAV-compatible page path from a Collectives page object.
+   * @param {Object} page - Page object from listPages()
+   * @returns {string}
+   * @private
+   */
+  _buildPagePath(page) {
+    // Collectives API pages have filePath like "People/Sarah Chen.md"
+    // or a title field. Prefer filePath, strip .md, add /Readme.md for WebDAV
+    if (page.filePath) {
+      const clean = page.filePath.replace(/\.md$/, '');
+      return `${clean}/Readme.md`;
+    }
+    if (!page.title) return null;
+    return `${page.title}/Readme.md`;
+  }
+
+  /**
    * Return a snapshot of internal counters for monitoring.
    *
    * @returns {{ lightweight: number, deep: number, entities: number, triples: number }}

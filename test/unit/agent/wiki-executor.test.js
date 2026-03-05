@@ -487,4 +487,170 @@ asyncTest('_executeAppend calls entityExtractor.extractFromPage with merged cont
   assert.ok(extractCalls[0].c.includes('New entry'), 'Content should include appended text');
 });
 
+// -- Entity extraction: project type fields --
+asyncTest('Entity extraction returns project-type frontmatter fields', async () => {
+  const registry = createMockToolRegistry({
+    wiki_write: { success: true, result: 'Page created' }
+  });
+  const executor = new WikiExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({
+        action: 'remember',
+        fact: 'Project Phoenix is our Q1 internal tooling initiative, led by Fu',
+        topic: 'phoenix'
+      })
+    }),
+    toolRegistry: registry,
+    logger: silentLogger
+  });
+
+  executor._extractEntityInfo = async () => ({
+    page_title: 'Project Phoenix',
+    section: 'Projects',
+    entity_type: 'project',
+    fields: { name: 'Project Phoenix', lead: 'Fu', goal: 'internal tooling initiative', timeline: 'Q1' }
+  });
+
+  await executor.execute('Remember this: Project Phoenix is our Q1 internal tooling initiative, led by Fu', { userName: 'alice' });
+
+  const writes = registry.getCallsFor('wiki_write');
+  assert.strictEqual(writes.length, 1, 'Should write once');
+  const body = writes[0].args.content || '';
+  assert.ok(body.includes('type: project'), 'Frontmatter should have type: project');
+  assert.ok(body.includes('lead: Fu'), 'Frontmatter should include lead field');
+  assert.ok(body.includes('goal: internal tooling initiative'), 'Frontmatter should include goal field');
+  assert.ok(body.includes('timeline: Q1'), 'Frontmatter should include timeline field');
+});
+
+// -- Entity extraction: decision type fields --
+asyncTest('Entity extraction returns decision-type frontmatter fields', async () => {
+  const registry = createMockToolRegistry({
+    wiki_write: { success: true, result: 'Page created' }
+  });
+  const executor = new WikiExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({
+        action: 'remember',
+        fact: 'We decided to move to Postgres on Jan 15',
+        topic: 'postgres'
+      })
+    }),
+    toolRegistry: registry,
+    logger: silentLogger
+  });
+
+  executor._extractEntityInfo = async () => ({
+    page_title: 'Move to Postgres',
+    section: 'Decisions',
+    entity_type: 'decision',
+    fields: { name: 'Move to Postgres', date: 'Jan 15', outcome: 'move to Postgres', rationale: 'better JSON support' }
+  });
+
+  await executor.execute('We decided to move to Postgres on Jan 15, rationale: better JSON support', { userName: 'alice' });
+
+  const writes = registry.getCallsFor('wiki_write');
+  assert.strictEqual(writes.length, 1);
+  const body = writes[0].args.content || '';
+  assert.ok(body.includes('type: decision'), 'Frontmatter should have type: decision');
+  assert.ok(body.includes('date: Jan 15'), 'Frontmatter should include date field');
+  assert.ok(body.includes('rationale: better JSON support'), 'Frontmatter should include rationale');
+});
+
+// -- Entity extraction: procedure type fields --
+asyncTest('Entity extraction returns procedure-type frontmatter fields', async () => {
+  const registry = createMockToolRegistry({
+    wiki_write: { success: true, result: 'Page created' }
+  });
+  const executor = new WikiExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({
+        action: 'remember',
+        fact: 'The deploy procedure runs weekly, depends on CI passing',
+        topic: 'deploy'
+      })
+    }),
+    toolRegistry: registry,
+    logger: silentLogger
+  });
+
+  executor._extractEntityInfo = async () => ({
+    page_title: 'Deploy Procedure',
+    section: 'Procedures',
+    entity_type: 'procedure',
+    fields: { name: 'Deploy Procedure', frequency: 'weekly', dependencies: 'CI passing' }
+  });
+
+  await executor.execute('The deploy procedure runs weekly, depends on CI passing', { userName: 'alice' });
+
+  const writes = registry.getCallsFor('wiki_write');
+  assert.strictEqual(writes.length, 1);
+  const body = writes[0].args.content || '';
+  assert.ok(body.includes('type: procedure'), 'Frontmatter should have type: procedure');
+  assert.ok(body.includes('frequency: weekly'), 'Frontmatter should include frequency');
+  assert.ok(body.includes('dependencies: CI passing'), 'Frontmatter should include dependencies');
+});
+
+// -- Entity extraction: tool type fields --
+asyncTest('Entity extraction returns tool-type frontmatter fields', async () => {
+  const registry = createMockToolRegistry({
+    wiki_write: { success: true, result: 'Page created' }
+  });
+  const executor = new WikiExecutor({
+    router: createMockRouter({
+      result: JSON.stringify({
+        action: 'remember',
+        fact: 'We use Sentry for error tracking, url: https://sentry.io/our-org',
+        topic: 'sentry'
+      })
+    }),
+    toolRegistry: registry,
+    logger: silentLogger
+  });
+
+  executor._extractEntityInfo = async () => ({
+    page_title: 'Sentry',
+    section: 'Research',
+    entity_type: 'tool',
+    fields: { name: 'Sentry', purpose: 'error tracking', url: 'https://sentry.io/our-org' }
+  });
+
+  await executor.execute('We use Sentry for error tracking, url: https://sentry.io/our-org', { userName: 'alice' });
+
+  const writes = registry.getCallsFor('wiki_write');
+  assert.strictEqual(writes.length, 1);
+  const body = writes[0].args.content || '';
+  assert.ok(body.includes('type: tool'), 'Frontmatter should have type: tool');
+  assert.ok(body.includes('purpose: error tracking'), 'Frontmatter should include purpose');
+  assert.ok(body.includes('url: https://sentry.io/our-org'), 'Frontmatter should include url');
+});
+
+// -- Frontmatter extraction logging --
+asyncTest('Entity extraction logs type and field count', async () => {
+  const logs = [];
+  const trackingLogger = { log() {}, info(msg) { logs.push(msg); }, warn() {}, error() {} };
+  const executor = new WikiExecutor({
+    router: createMockRouter(),
+    toolRegistry: createMockToolRegistry(),
+    logger: trackingLogger
+  });
+
+  // Call _extractEntityInfo directly with a mock _extractJSON that returns valid entity data
+  executor._extractJSON = async () => ({
+    page_title: 'Test Project',
+    section: 'Projects',
+    entity_type: 'project',
+    fields: { name: 'Test Project', lead: 'Alice', goal: 'testing' }
+  });
+
+  const result = await executor._extractEntityInfo('Test Project led by Alice for testing', {});
+
+  assert.strictEqual(result.entity_type, 'project', 'Should return project type');
+  assert.strictEqual(Object.keys(result.fields).length, 3, 'Should have 3 fields');
+
+  const frontmatterLog = logs.find(l => l.includes('[WikiExec] Frontmatter extraction'));
+  assert.ok(frontmatterLog, 'Should log frontmatter extraction info');
+  assert.ok(frontmatterLog.includes('type=project'), 'Log should include entity type');
+  assert.ok(frontmatterLog.includes('fields=3'), 'Log should include field count');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

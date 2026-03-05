@@ -553,18 +553,31 @@ User question: "${message.substring(0, 300)}"`;
 Rules:
 - page_title MUST be the specific entity name (person name, company name, project name). NEVER generic words like "contacts", "notes", "info", "people".
 - section: where this belongs — People, Projects, Research, Procedures, Decisions, or Notes. Default: Notes
-- entity_type: person | company | project | decision | procedure | topic
-- fields: key-value pairs from the content. For a person: { name, email, company, role, context }. For a company: { name, domain, contacts, description }. For a project: { name, status, description }. Only include fields that are explicitly stated.
+- entity_type: person | company | project | decision | procedure | tool | topic
+- fields: type-appropriate key-value pairs from the content. Only include fields that are explicitly stated.
+
+Field templates by entity_type:
+- person: { name, company, email, role, context }
+- company: { name, domain, contacts, description }
+- project: { name, lead, goal, status, timeline }
+- procedure: { name, domain, frequency, dependencies }
+- decision: { name, date, participants, outcome, rationale }
+- tool: { name, purpose, url, credentials_ref }
+- topic: { name, summary }
 
 Examples:
 - "Carlos from TheCatalyne, email carlos@thecatalyne.com" → page_title: "Carlos", section: "People", entity_type: "person", fields: { name: "Carlos", company: "TheCatalyne", email: "carlos@thecatalyne.com" }
-- "Project X is our Q3 initiative for automation" → page_title: "Project X", section: "Projects", entity_type: "project", fields: { name: "Project X", description: "Q3 initiative for automation" }
+- "Project Phoenix is our Q1 internal tooling initiative, led by Fu" → page_title: "Project Phoenix", section: "Projects", entity_type: "project", fields: { name: "Project Phoenix", lead: "Fu", goal: "internal tooling initiative", timeline: "Q1" }
+- "We decided to move to Postgres on Jan 15, rationale: better JSON support" → page_title: "Move to Postgres", section: "Decisions", entity_type: "decision", fields: { name: "Move to Postgres", date: "Jan 15", outcome: "move to Postgres", rationale: "better JSON support" }
+- "The deploy procedure runs weekly, depends on CI passing" → page_title: "Deploy Procedure", section: "Procedures", entity_type: "procedure", fields: { name: "Deploy Procedure", frequency: "weekly", dependencies: "CI passing" }
+- "We use Sentry for error tracking, url: https://sentry.io/our-org" → page_title: "Sentry", section: "Research", entity_type: "tool", fields: { name: "Sentry", purpose: "error tracking", url: "https://sentry.io/our-org" }
 
 Content: "${content.substring(0, 500)}"`;
 
     try {
       const result = await this._extractJSON(content, prompt, ENTITY_SCHEMA);
       if (result && result.page_title && result.page_title.length >= 2) {
+        this.logger.info(`[WikiExec] Frontmatter extraction: type=${result.entity_type || 'unknown'}, fields=${Object.keys(result.fields || {}).length}`);
         return result;
       }
     } catch (err) {

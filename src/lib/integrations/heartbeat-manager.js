@@ -331,6 +331,16 @@ class HeartbeatManager {
       }
     }
 
+    // Flush knowledge graph to wiki before shutdown
+    if (this.knowledgeGraph) {
+      try {
+        await this.knowledgeGraph.flush();
+        console.log('[Heartbeat] Knowledge graph flushed');
+      } catch (err) {
+        console.warn('[Heartbeat] Knowledge graph flush on shutdown failed:', err.message);
+      }
+    }
+
     // Flush pending learning log writes
     if (this.knowledgeLog) {
       try {
@@ -795,6 +805,18 @@ class HeartbeatManager {
         } catch (err) {
           console.warn('[Heartbeat] Knowledge graph flush failed:', err.message);
           results.errors.push({ component: 'knowledgeGraph', error: err.message });
+        }
+      }
+
+      // MetadataGardener: ensure all wiki pages have frontmatter type
+      if (level >= 2 && this.metadataGardener) {
+        try {
+          const gardenResult = await this.metadataGardener.tend();
+          results.pagesGardened = gardenResult.gardened;
+          results.gardenQueue = gardenResult.queued;
+        } catch (err) {
+          console.warn('[Heartbeat] MetadataGardener failed:', err.message);
+          results.errors.push({ component: 'metadataGardener', error: err.message });
         }
       }
 

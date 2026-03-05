@@ -116,19 +116,34 @@ class KnowledgeGraph {
   async flush() {
     if (!this._dirty) return;
 
+    if (this._entities.size === 0 && this._triples.length === 0) {
+      // Nothing meaningful to flush — don't write an empty index
+      this._dirty = false;
+      return;
+    }
+
     const data = {
       entities: Array.from(this._entities.values()),
-      triples: this._triples
+      triples: this._triples,
+      lastFlushed: new Date().toISOString()
     };
 
     const content =
       `# Knowledge Graph Index\n\n\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\`\n`;
 
-    await this.wiki.writePageContent(WIKI_PATH, content);
-    this._dirty = false;
-    this.logger.info(
-      `[KnowledgeGraph] Flushed — ${this._entities.size} entities, ${this._triples.length} triples`
-    );
+    try {
+      await this.wiki.writePageContent(WIKI_PATH, content);
+      this._dirty = false;
+      this.logger.info(
+        `[KnowledgeGraph] Flushed — ${this._entities.size} entities, ${this._triples.length} triples`
+      );
+    } catch (err) {
+      this.logger.error(
+        `[KnowledgeGraph] Flush FAILED: ${err.message} ` +
+        `(${this._entities.size} entities, ${this._triples.length} triples at risk)`
+      );
+      throw err; // propagate so heartbeat/shutdown can log it
+    }
   }
 
   // ===========================================================================

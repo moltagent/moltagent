@@ -2015,6 +2015,22 @@ async function initialize() {
         ncFlowWebhookReceiver.on('event', (event) => heartbeatManager.enqueueExternalEvent(event));
       }
 
+      // Wire MetadataGardener into HeartbeatManager
+      if (collectivesClient && llmRouter) {
+        try {
+          const MetadataGardener = require('./src/lib/memory/metadata-gardener');
+          heartbeatManager.metadataGardener = new MetadataGardener({
+            collectivesClient,
+            router: llmRouter.router,
+            logger: console,
+            pagesPerTick: 2
+          });
+          console.log('[INIT] MetadataGardener wired to heartbeat');
+        } catch (err) {
+          console.warn(`[INIT] MetadataGardener failed: ${err.message}`);
+        }
+      }
+
       console.log('[INIT] HeartbeatManager ready');
     } catch (err) {
       console.warn(`[INIT] HeartbeatManager setup failed: ${err.message}`);
