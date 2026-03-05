@@ -242,4 +242,47 @@ asyncTest('Top-level page with empty filePath builds correct path', async () => 
   assert.ok(written.includes('type: note'), 'Should include type');
 });
 
+// -- Test 10: First failed typing attempt → logged, page re-queued --
+asyncTest('First failed typing attempt logs warning, page re-queued', async () => {
+  const content = 'Hotfix test page with enough content for processing.';
+  const client = createMockCollectivesClient(
+    [{ id: 99, title: 'Hotfix Test', filePath: 'Notes', fileName: 'Hotfix Test.md' }],
+    { 'Notes/Hotfix Test.md': content }
+  );
+  // Router returns no type field
+  const router = createMockRouter('confidence: low\ntopic: unknown');
+  const warnings = [];
+  const logger = { log() {}, info() {}, warn(m) { warnings.push(m); }, error() {} };
+  const gardener = new MetadataGardener({ collectivesClient: client, router, logger, pagesPerTick: 10 });
+
+  await gardener.tend();
+
+  assert.strictEqual(Object.keys(client.getWritten()).length, 0, 'Should not write on first fail');
+  assert.ok(warnings.some(w => w.includes('attempt 1/2')), 'Should log attempt 1/2');
+});
+
+// -- Test 11: Second failed attempt → type: note assigned --
+asyncTest('Second failed attempt assigns type: note with gardener_assigned', async () => {
+  const content = 'Hotfix test page with enough content for processing.';
+  const client = createMockCollectivesClient(
+    [{ id: 99, title: 'Hotfix Test', filePath: 'Notes', fileName: 'Hotfix Test.md' }],
+    { 'Notes/Hotfix Test.md': content }
+  );
+  const router = createMockRouter('confidence: low\ntopic: unknown');
+  const infos = [];
+  const logger = { log() {}, info(m) { infos.push(m); }, warn() {}, error() {} };
+  const gardener = new MetadataGardener({ collectivesClient: client, router, logger, pagesPerTick: 10 });
+
+  // First attempt — fails, re-queued
+  await gardener.tend();
+  // Second attempt — should fallback to type: note
+  await gardener.tend();
+
+  const written = client.getWritten()['Notes/Hotfix Test.md'];
+  assert.ok(written, 'Should have written page on second attempt');
+  assert.ok(written.includes('type: note'), 'Should assign type: note');
+  assert.ok(written.includes('gardener_assigned: true'), 'Should mark gardener_assigned');
+  assert.ok(infos.some(i => i.includes('assigning type: note')), 'Should log assignment');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

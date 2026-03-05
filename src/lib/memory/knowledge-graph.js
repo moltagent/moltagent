@@ -27,10 +27,20 @@
 const FILE_PATH = 'Memory/_index.json';
 const FILE_DIR = 'Memory';
 const VALID_PREDICATES = new Set([
-  'reports_to', 'leads', 'works_on', 'belongs_to', 'located_at',
-  'client_of', 'contacts', 'depends_on', 'related_to', 'references'
+  'reports_to', 'leads', 'led_by', 'managed_by', 'works_on', 'works_at',
+  'belongs_to', 'located_at', 'employed_by', 'affiliated_with',
+  'client_of', 'contacts', 'contact_for', 'responsible_for',
+  'depends_on', 'related_to', 'references',
+  'has_goal', 'has_status', 'has_deadline', 'blocks'
 ]);
 const MAX_HOPS = 10;
+
+// Type specificity ranking — domain types beat generic types
+const TYPE_PRIORITY = {
+  project: 3, procedure: 3, decision: 3, tool: 3, research: 3, organization: 3,
+  person: 2, team: 2,
+  page: 1, concept: 1, note: 1
+};
 
 class KnowledgeGraph {
   /**
@@ -171,7 +181,9 @@ class KnowledgeGraph {
 
   /**
    * Add a named entity of a given type to the graph.
-   * Deduplicates by (name, type) — returns existing id if already present.
+   * Deduplicates by normalized name across types — keeps the most specific type.
+   * Type priority: domain types (project, procedure, decision, tool, research,
+   * organization) > person > generic (page, concept, note).
    *
    * @param {string} name - Human-readable entity name
    * @param {string} type - Entity type (e.g. 'person', 'project', 'team')
@@ -184,8 +196,31 @@ class KnowledgeGraph {
 
     const id = this._makeId(name, type);
 
-    // Dedup: if entity already exists, return its id without modification
+    // Exact match: same name + same type → return existing
     if (this._entities.has(id)) return id;
+
+    // Cross-type dedup: same name, different type → keep more specific
+    const normalizedName = name.toLowerCase().trim();
+    for (const [existingId, existing] of this._entities) {
+      if (existing.name.toLowerCase().trim() === normalizedName) {
+        const newPri = TYPE_PRIORITY[type] || 0;
+        const existingPri = TYPE_PRIORITY[existing.type] || 0;
+
+        if (newPri > existingPri) {
+          // New type is more specific — re-type existing entity under new id
+          this._entities.delete(existingId);
+          const newId = this._makeId(name, type);
+          const updated = { ...existing, id: newId, type };
+          this._entities.set(newId, updated);
+          // Update triples that referenced the old id
+          this._rewriteTripleIds(existingId, newId);
+          this._dirty = true;
+          return newId;
+        }
+        // Existing type is equal or more specific — keep it
+        return existingId;
+      }
+    }
 
     this._entities.set(id, {
       id,
@@ -393,6 +428,20 @@ class KnowledgeGraph {
    */
   _makeId(name, type) {
     return `${type}_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')}`;
+  }
+
+  /**
+   * Rewrite all triples that reference oldId to use newId.
+   * Called when an entity is re-typed and its id changes.
+   * @param {string} oldId
+   * @param {string} newId
+   * @private
+   */
+  _rewriteTripleIds(oldId, newId) {
+    for (const triple of this._triples) {
+      if (triple.subject === oldId) triple.subject = newId;
+      if (triple.object === oldId) triple.object = newId;
+    }
   }
 }
 

@@ -161,14 +161,23 @@ ${truncated}
 Respond ONLY with JSON:
 {
   "entities": [{"name": "...", "type": "person|project|organization|tool|concept"}],
-  "relationships": [{"from": "...", "predicate": "works_on|leads|reports_to|belongs_to|depends_on|related_to|client_of|contacts", "to": "..."}]
+  "relationships": [{"from": "...", "predicate": "...", "to": "..."}]
 }
 
-Rules:
-- Only extract clearly stated entities and relationships
+ENTITY rules:
+- Each entity should appear ONLY ONCE with its most accurate type
+- "Project Phoenix" is a project, not a person. Only use "person" for actual people (e.g. "Fu", "Sarah", "Carlos")
+- When in doubt, prefer the more specific type (project, organization, tool) over "person"
 - Type must be one of: person, project, organization, tool, concept
-- Predicate must be from the allowed list above
-- If nothing worth extracting, respond: {"entities":[],"relationships":[]}`;
+
+RELATIONSHIP rules:
+- Extract relationships that are explicitly stated in the text
+- Predicates: leads, led_by, managed_by, works_on, works_at, reports_to, belongs_to, employed_by, affiliated_with, client_of, contacts, contact_for, responsible_for, depends_on, related_to, has_goal, has_status, blocks
+- "led by Fu" → {"from": "Project Phoenix", "predicate": "led_by", "to": "Fu"}
+- "works at TheCatalyne" → {"from": "Sarah", "predicate": "works_at", "to": "TheCatalyne"}
+- Do NOT infer relationships that aren't clearly stated
+
+If nothing worth extracting, respond: {"entities":[],"relationships":[]}`;
 
     try {
       const rawResponse = await this.router.route({

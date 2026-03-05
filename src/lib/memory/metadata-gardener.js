@@ -44,6 +44,8 @@ class MetadataGardener {
     this._lastFullScan = 0;
     this._scanInterval = 3600000; // Full scan every hour
     this._gardenQueue = [];
+    this._failedAttempts = new Map(); // pageId → attempt count
+    this._maxAttempts = 2;
   }
 
   /**
@@ -221,10 +223,27 @@ Respond with ONLY the YAML key-value pairs (NO --- delimiters, no other text):`;
     const generatedFields = this._parseYamlFields(responseText);
 
     if (!generatedFields.type) {
-      this.logger.warn(
-        `[MetadataGardener] Generated frontmatter for ${page.title} has no type. Skipping.`
-      );
-      return;
+      // Track failed attempts — fallback to type: note after _maxAttempts
+      const attempts = (this._failedAttempts.get(page.id) || 0) + 1;
+      this._failedAttempts.set(page.id, attempts);
+
+      if (attempts >= this._maxAttempts) {
+        this.logger.info(
+          `[MetadataGardener] ${page.title}: ${attempts} attempts, assigning type: note`
+        );
+        generatedFields.type = 'note';
+        generatedFields.confidence = 'low';
+        generatedFields.gardener_assigned = 'true';
+        this._failedAttempts.delete(page.id);
+      } else {
+        this.logger.warn(
+          `[MetadataGardener] ${page.title}: no type (attempt ${attempts}/${this._maxAttempts})`
+        );
+        return;
+      }
+    } else {
+      // Success — clear any failed attempt tracking
+      this._failedAttempts.delete(page.id);
     }
 
     // Merge: existing frontmatter fields win over generated ones

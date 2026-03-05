@@ -487,4 +487,75 @@ asyncTest('Legacy wikiClient flush/load round-trip still works', async () => {
   assert.ok(graph2._entities.has('person_alice'), 'Should have person_alice');
 });
 
+// ---------------------------------------------------------------------------
+// Entity dedup tests (cross-type)
+// ---------------------------------------------------------------------------
+
+// Test 21: Same name, different types → one entity, more specific type wins
+test('addEntity() same name different types — specific type wins', () => {
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
+  graph._loaded = true;
+
+  // Add as person first, then as project (more specific)
+  const id1 = graph.addEntity('Project Phoenix', 'person');
+  const id2 = graph.addEntity('Project Phoenix', 'project');
+
+  assert.strictEqual(graph._entities.size, 1, 'Should have exactly 1 entity');
+  const entity = graph._entities.get(id2);
+  assert.ok(entity, 'Entity should exist under project id');
+  assert.strictEqual(entity.type, 'project', 'Type should be project (more specific)');
+});
+
+// Test 22: Person type does not override project type
+test('addEntity() person does not override project for same name', () => {
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
+  graph._loaded = true;
+
+  const id1 = graph.addEntity('Project Phoenix', 'project');
+  const id2 = graph.addEntity('Project Phoenix', 'person');
+
+  assert.strictEqual(graph._entities.size, 1, 'Should have exactly 1 entity');
+  assert.strictEqual(id2, id1, 'Should return existing project id');
+  assert.strictEqual(graph._entities.get(id1).type, 'project', 'Type should stay project');
+});
+
+// Test 23: Re-type updates triple references
+test('addEntity() re-type rewrites triple ids', () => {
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
+  graph._loaded = true;
+
+  const oldId = graph.addEntity('Project Phoenix', 'person');
+  const fuId = graph.addEntity('Fu', 'person');
+  graph.addTriple(oldId, 'leads', fuId);
+
+  // Re-type: person → project (more specific)
+  const newId = graph.addEntity('Project Phoenix', 'project');
+
+  assert.strictEqual(graph._triples[0].subject, newId, 'Triple subject should be updated to new id');
+  assert.strictEqual(graph._triples[0].object, fuId, 'Triple object should be unchanged');
+});
+
+// Test 24: Expanded predicates accepted by addTriple
+test('addTriple() accepts expanded predicates (led_by, works_at, etc)', () => {
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
+  graph._loaded = true;
+
+  const projId = graph.addEntity('Project Phoenix', 'project');
+  const fuId = graph.addEntity('Fu', 'person');
+  const coId = graph.addEntity('TheCatalyne', 'organization');
+
+  graph.addTriple(projId, 'led_by', fuId);
+  graph.addTriple(fuId, 'works_at', coId);
+  graph.addTriple(projId, 'has_goal', coId);
+
+  assert.strictEqual(graph._triples.length, 3, 'Should have 3 triples with new predicates');
+  assert.strictEqual(graph._triples[0].predicate, 'led_by');
+  assert.strictEqual(graph._triples[1].predicate, 'works_at');
+  assert.strictEqual(graph._triples[2].predicate, 'has_goal');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);
