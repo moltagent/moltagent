@@ -1125,6 +1125,7 @@ class MessageProcessor {
         const DeckExecutor = require('../agent/executors/deck-executor');
         this.microPipeline.executors.deck = new DeckExecutor({
           router, toolRegistry,
+          deckClient: toolRegistry.clients?.deckClient || null,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
           activityLogger: aLog, timezone: tz, logger: console
         });
