@@ -98,22 +98,36 @@ class KnowledgeGraph {
       if (raw) {
         const parsed = JSON.parse(raw);
 
+        // Replay entities through addEntity() to collapse cross-type duplicates.
+        // addEntity() handles name-based dedup and keeps the most specific type.
+        this._loaded = true; // enable addEntity() before the loop
+        const idRemap = new Map(); // old id → new id (after dedup)
+
         if (Array.isArray(parsed.entities)) {
           for (const entity of parsed.entities) {
-            if (entity && entity.id) {
-              this._entities.set(entity.id, {
-                id: entity.id,
-                name: entity.name,
-                type: entity.type,
-                created: entity.created
-              });
+            if (!entity || !entity.name || !entity.type) continue;
+            const newId = this.addEntity(entity.name, entity.type, { created: entity.created });
+            if (entity.id && newId && entity.id !== newId) {
+              idRemap.set(entity.id, newId);
             }
           }
         }
 
         if (Array.isArray(parsed.triples)) {
-          this._triples = parsed.triples.filter(
-            t => t && t.subject && t.predicate && t.object
+          this._triples = parsed.triples
+            .filter(t => t && t.subject && t.predicate && t.object)
+            .map(t => ({
+              ...t,
+              subject: idRemap.get(t.subject) || t.subject,
+              object: idRemap.get(t.object) || t.object
+            }));
+        }
+
+        // If dedup collapsed entities, mark dirty so next flush writes clean data
+        if (idRemap.size > 0) {
+          this._dirty = true;
+          this.logger.info(
+            `[KnowledgeGraph] Load dedup: collapsed ${idRemap.size} duplicate(s)`
           );
         }
       }

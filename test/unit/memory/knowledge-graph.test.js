@@ -558,4 +558,39 @@ test('addTriple() accepts expanded predicates (led_by, works_at, etc)', () => {
   assert.strictEqual(graph._triples[2].predicate, 'has_goal');
 });
 
+// Test 25: load() deduplicates same-name entities with different types
+asyncTest('load() collapses cross-type duplicates from persisted data', async () => {
+  // Pre-populate with duplicate: Project Phoenix as both project and person
+  const dupeData = JSON.stringify({
+    entities: [
+      { id: 'project_project_phoenix', name: 'Project Phoenix', type: 'project', created: '2026-03-05T00:00:00Z' },
+      { id: 'person_project_phoenix', name: 'Project Phoenix', type: 'person', created: '2026-03-05T00:01:00Z' },
+      { id: 'person_fu', name: 'Fu', type: 'person', created: '2026-03-05T00:00:00Z' }
+    ],
+    triples: [
+      { subject: 'person_project_phoenix', predicate: 'leads', object: 'person_fu', verified: '2026-03-05T00:00:00Z' }
+    ]
+  });
+
+  const fc = createMockFilesClient(dupeData);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
+  await graph.load();
+
+  // Should have collapsed to 2 entities (Project Phoenix once + Fu)
+  assert.strictEqual(graph._entities.size, 2, 'Should collapse to 2 entities');
+
+  // Project Phoenix should be type: project (more specific)
+  const phoenix = Array.from(graph._entities.values()).find(e => e.name === 'Project Phoenix');
+  assert.ok(phoenix, 'Project Phoenix should exist');
+  assert.strictEqual(phoenix.type, 'project', 'Should keep project type (more specific than person)');
+
+  // Triple should reference the project id, not the person id
+  assert.strictEqual(graph._triples.length, 1, 'Should have 1 triple');
+  assert.strictEqual(graph._triples[0].subject, 'project_project_phoenix',
+    'Triple subject should be remapped to project id');
+
+  // Should be marked dirty so next flush writes clean data
+  assert.strictEqual(graph._dirty, true, 'Should be dirty after dedup');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);
