@@ -402,6 +402,100 @@ class DeckClient {
     });
   }
 
+  // ============================================================
+  // GENERIC BOARD CRUD (v2 — any board, not just MoltAgent Tasks)
+  // ============================================================
+
+  /**
+   * Create a new board with a given title and color.
+   * Unlike createBoard(), this does NOT auto-create stacks or labels.
+   * @param {string} title - Board name
+   * @param {string} [color='0800fd'] - Hex color (no #)
+   * @returns {Promise<Object>} Created board with id, title, color
+   */
+  async createNewBoard(title, color = '0800fd') {
+    if (!title || typeof title !== 'string') {
+      throw new DeckApiError('Board title is required');
+    }
+    return await this._request('POST', '/index.php/apps/deck/api/v1.0/boards', { title, color });
+  }
+
+  /**
+   * Update board properties (title, color, archived).
+   * @param {number} boardId
+   * @param {Object} updates - { title?, color?, archived? }
+   * @returns {Promise<Object>} Updated board
+   */
+  async updateBoard(boardId, updates) {
+    if (!boardId) throw new DeckApiError('boardId is required');
+    return await this._request('PUT', `/index.php/apps/deck/api/v1.0/boards/${boardId}`, updates);
+  }
+
+  /**
+   * Delete a board permanently.
+   * @param {number} boardId
+   * @returns {Promise<void>}
+   */
+  async deleteBoard(boardId) {
+    if (!boardId) throw new DeckApiError('boardId is required');
+    return await this._request('DELETE', `/index.php/apps/deck/api/v1.0/boards/${boardId}`);
+  }
+
+  /**
+   * Archive a board (soft delete — recoverable).
+   * @param {number} boardId
+   * @returns {Promise<Object>} Updated board with archived: true
+   */
+  async archiveBoard(boardId) {
+    return await this.updateBoard(boardId, { archived: true });
+  }
+
+  // ============================================================
+  // GENERIC STACK CRUD (v2 — any board)
+  // ============================================================
+
+  /**
+   * Update a stack (rename, reorder).
+   * @param {number} boardId
+   * @param {number} stackId
+   * @param {Object} updates - { title?, order? }
+   * @returns {Promise<Object>} Updated stack
+   */
+  async updateStack(boardId, stackId, updates) {
+    if (!boardId || !stackId) throw new DeckApiError('boardId and stackId are required');
+    return await this._request('PUT',
+      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}`, updates);
+  }
+
+  /**
+   * Delete a stack and all its cards.
+   * @param {number} boardId
+   * @param {number} stackId
+   * @returns {Promise<void>}
+   */
+  async deleteStack(boardId, stackId) {
+    if (!boardId || !stackId) throw new DeckApiError('boardId and stackId are required');
+    return await this._request('DELETE',
+      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}`);
+  }
+
+  /**
+   * Create a card on any board/stack by IDs (not just default MoltAgent board).
+   * Unlike createCard(stackName, card), this uses raw IDs for board-agnostic creation.
+   * @param {number} boardId - Board ID
+   * @param {number} stackId - Stack ID
+   * @param {string} title - Card title
+   * @param {Object} [opts] - { description? }
+   * @returns {Promise<Object>} Created card
+   */
+  async createCardOnBoard(boardId, stackId, title, opts = {}) {
+    if (!boardId || !stackId) throw new DeckApiError('boardId and stackId are required');
+    if (!title || typeof title !== 'string') throw new DeckApiError('Card title is required');
+    return await this._request('POST',
+      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards`,
+      { title, description: opts.description || '', type: 'plain', order: 0 });
+  }
+
   /**
    * Ensure the board exists with all required stacks
    * Creates if missing, verifies structure if exists
