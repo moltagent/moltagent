@@ -469,6 +469,7 @@ class MessageProcessor {
             this.sessionManager.setPendingClarification(session, response.pendingClarification);
           }
           this._captureActionRecord(session, response.actionRecord);
+          if (response.enrichmentBlock) _enrichmentBlock = response.enrichmentBlock;
           response = response.response || 'Done.';
         }
         result = { intent: 'micro_pipeline', provider: 'local' };
@@ -513,6 +514,7 @@ class MessageProcessor {
                 this.sessionManager.setPendingClarification(session, response.pendingClarification);
               }
               this._captureActionRecord(session, response.actionRecord);
+              if (response.enrichmentBlock) _enrichmentBlock = response.enrichmentBlock;
               response = response.response || 'Done.';
             }
             result = { intent: `smart_mix_domain:${intent}`, provider: 'local-tools' };
@@ -552,6 +554,7 @@ class MessageProcessor {
                 this.sessionManager.setPendingClarification(session, response.pendingClarification);
               }
               this._captureActionRecord(session, response.actionRecord);
+              if (response.enrichmentBlock) _enrichmentBlock = response.enrichmentBlock;
               response = response.response || 'Done.';
             }
             result = { intent: `smart_mix_local:${intent}`, provider: 'local' };
@@ -697,6 +700,7 @@ class MessageProcessor {
           });
           provenance = annotation.segments;
           groundedRatio = annotation.groundedRatio;
+          console.log(`[Provenance] ${provenance.length} segments, groundedRatio=${groundedRatio.toFixed(2)}, enrichment=${_enrichmentBlock ? 'yes' : 'no'}`);
         } catch (err) {
           console.warn(`[Provenance] Annotation failed: ${err.message}`);
         }

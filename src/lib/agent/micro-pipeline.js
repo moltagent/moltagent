@@ -126,10 +126,12 @@ class MicroPipeline {
 
       // Memory enrichment: search wiki for entities mentioned in the message
       // and inject matches into warmMemory so all handlers see the agent's knowledge.
+      let _enrichmentBlock = null;
       if (this.memoryContextEnricher) {
         try {
           const enrichment = await this.memoryContextEnricher.enrich(message, intent);
           if (enrichment) {
+            _enrichmentBlock = enrichment;
             context.warmMemory = context.warmMemory
               ? context.warmMemory + '\n' + enrichment
               : enrichment;
@@ -140,13 +142,17 @@ class MicroPipeline {
       }
 
       // Stage 2: Route to handler
+      let result;
       switch (intent) {
         case INTENTS.QUESTION:
-          return await this._handleQuestion(message, classification, context);
+          result = await this._handleQuestion(message, classification, context);
+          break;
         case INTENTS.TASK:
-          return await this._handleTask(message, classification, context);
+          result = await this._handleTask(message, classification, context);
+          break;
         case INTENTS.COMPLEX:
-          return await this._handleComplex(message, classification, context);
+          result = await this._handleComplex(message, classification, context);
+          break;
         // Domain-specific intents → local tool-calling with focused subsets
         case INTENTS.DECK:
         case INTENTS.CALENDAR:
@@ -154,12 +160,27 @@ class MicroPipeline {
         case INTENTS.WIKI:
         case INTENTS.FILE:
         case INTENTS.SEARCH:
-          return await this._handleDomainTask(message, intent, context);
+          result = await this._handleDomainTask(message, intent, context);
+          break;
         case INTENTS.COMMAND:
         case INTENTS.CHITCHAT:
         default:
-          return await this._handleChat(message, context);
+          result = await this._handleChat(message, context);
+          break;
       }
+
+      // Layer 1 Bullshit Protection: Surface enrichment block for provenance tagging.
+      // The annotator in message-processor needs the agent_knowledge block to ground
+      // the response. Attach it to structured results, or wrap string results.
+      if (_enrichmentBlock) {
+        if (typeof result === 'object' && result !== null) {
+          result.enrichmentBlock = _enrichmentBlock;
+        } else {
+          result = { response: result, enrichmentBlock: _enrichmentBlock };
+        }
+      }
+
+      return result;
     } catch (err) {
       // Domain escalation errors must propagate to MessageProcessor for cloud fallback
       if (err.code === 'DOMAIN_ESCALATE') throw err;
