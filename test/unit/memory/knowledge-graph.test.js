@@ -10,6 +10,11 @@
 
 'use strict';
 
+// NOTE: Collectives WebDAV requires pages to exist in
+// OCS database before PUT. Mocks should reject PUT to
+// non-existent pages to catch this class of bug.
+// See: 2026-03-05 triple production failure diagnostic.
+
 const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 const KnowledgeGraph = require('../../../src/lib/memory/knowledge-graph');
@@ -17,6 +22,21 @@ const EntityExtractor = require('../../../src/lib/memory/entity-extractor');
 
 const silentLogger = { log() {}, info() {}, warn() {}, error() {} };
 
+function createMockFilesClient(initialJson = null) {
+  const files = {};
+  if (initialJson) files['Memory/_index.json'] = initialJson;
+  return {
+    readFile: async (path) => {
+      if (files[path] !== undefined) return { content: files[path], truncated: false, totalSize: files[path].length };
+      throw new Error('404');
+    },
+    writeFile: async (path, content) => { files[path] = content; return { success: true }; },
+    mkdir: async () => {},
+    getFiles: () => files
+  };
+}
+
+// Legacy wiki mock for backward-compat tests
 function createMockWikiClient(initialContent = null) {
   const pages = {};
   if (initialContent) pages['Memory/_index'] = initialContent;
@@ -34,24 +54,24 @@ function createMockRouter(jsonResult) {
 }
 
 // ---------------------------------------------------------------------------
-// KnowledgeGraph tests
+// KnowledgeGraph tests (NCFilesClient path)
 // ---------------------------------------------------------------------------
 
-// Test 1: load() on empty wiki starts with empty graph
-asyncTest('load() on empty wiki starts with empty graph', async () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+// Test 1: load() on empty store starts with empty graph
+asyncTest('load() on empty store starts with empty graph', async () => {
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
 
   await graph.load();
 
-  assert.strictEqual(graph._entities.size, 0, 'Should have 0 entities after loading empty wiki');
-  assert.strictEqual(graph._triples.length, 0, 'Should have 0 triples after loading empty wiki');
+  assert.strictEqual(graph._entities.size, 0, 'Should have 0 entities after loading empty store');
+  assert.strictEqual(graph._triples.length, 0, 'Should have 0 triples after loading empty store');
 });
 
 // Test 2: addEntity() creates normalized ID (person_sarah_chen)
 test('addEntity() creates normalized ID (person_sarah_chen)', () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   const id = graph.addEntity('Sarah Chen', 'person');
@@ -67,8 +87,8 @@ test('addEntity() creates normalized ID (person_sarah_chen)', () => {
 
 // Test 3: addEntity() deduplicates same name+type
 test('addEntity() deduplicates same name+type', () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   const id1 = graph.addEntity('Alice Doe', 'person');
@@ -80,8 +100,8 @@ test('addEntity() deduplicates same name+type', () => {
 
 // Test 4: addTriple() deduplicates — second call refreshes verified timestamp
 asyncTest('addTriple() deduplicates — second call refreshes verified timestamp', async () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   const idA = graph.addEntity('Alice Doe', 'person');
@@ -105,8 +125,8 @@ asyncTest('addTriple() deduplicates — second call refreshes verified timestamp
 
 // Test 5: relatedTo() traverses 1 hop
 test('relatedTo() traverses 1 hop', () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   const idA = graph.addEntity('Alice Doe', 'person');
@@ -122,8 +142,8 @@ test('relatedTo() traverses 1 hop', () => {
 
 // Test 6: relatedTo() traverses 2 hops with cycle protection
 test('relatedTo() traverses 2 hops with cycle protection', () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   const idA = graph.addEntity('Alice Doe', 'person');
@@ -145,8 +165,8 @@ test('relatedTo() traverses 2 hops with cycle protection', () => {
 
 // Test 7: relatedTo() filters by predicate
 test('relatedTo() filters by predicate', () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   const idA = graph.addEntity('Alice Doe', 'person');
@@ -165,8 +185,8 @@ test('relatedTo() filters by predicate', () => {
 
 // Test 8: findPath() returns shortest path
 test('findPath() returns shortest path', () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   const idA = graph.addEntity('Alice Doe', 'person');
@@ -184,8 +204,8 @@ test('findPath() returns shortest path', () => {
 
 // Test 9: findPath() returns null when no connection
 test('findPath() returns null when no connection', () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   const idA = graph.addEntity('Alice Doe', 'person');
@@ -197,33 +217,31 @@ test('findPath() returns null when no connection', () => {
   assert.strictEqual(result, null, 'findPath should return null when there is no path');
 });
 
-// Test 10: flush() writes JSON to wiki; second flush without changes is no-op
-asyncTest('flush() writes JSON to wiki; second flush without changes is no-op', async () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+// Test 10: flush() writes JSON file; second flush without changes is no-op
+asyncTest('flush() writes JSON file; second flush without changes is no-op', async () => {
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   graph.addEntity('Alice Doe', 'person');
 
   await graph.flush();
 
-  const pages = wiki.getPages();
-  assert.ok(pages['Memory/_index'] != null, 'Wiki page should have been written by flush()');
-  assert.ok(
-    pages['Memory/_index'].includes('```json'),
-    'Written content should include a JSON code fence'
-  );
+  const files = fc.getFiles();
+  assert.ok(files['Memory/_index.json'] != null, 'JSON file should have been written by flush()');
+  const parsed = JSON.parse(files['Memory/_index.json']);
+  assert.ok(Array.isArray(parsed.entities), 'Written JSON should have entities array');
   assert.strictEqual(graph._dirty, false, '_dirty should be false after flush()');
 
   // Record content before second flush to verify no-op behaviour
-  const contentAfterFirst = pages['Memory/_index'];
+  const contentAfterFirst = files['Memory/_index.json'];
 
   await graph.flush(); // _dirty is false — should be a no-op
 
   assert.strictEqual(
-    pages['Memory/_index'],
+    files['Memory/_index.json'],
     contentAfterFirst,
-    'Second flush() on a clean graph should not modify the wiki page'
+    'Second flush() on a clean graph should not modify the file'
   );
 });
 
@@ -233,8 +251,8 @@ asyncTest('flush() writes JSON to wiki; second flush without changes is no-op', 
 
 // Test 11: EntityExtractor lightweight extracts wikilinks and page title entity
 asyncTest('EntityExtractor lightweight extracts wikilinks and page title entity', async () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   // No router — lightweight only
@@ -261,8 +279,8 @@ asyncTest('EntityExtractor lightweight extracts wikilinks and page title entity'
 
 // Test 12: EntityExtractor deep extraction parses LLM JSON response
 asyncTest('EntityExtractor deep extraction parses LLM JSON response', async () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   const mockRouter = createMockRouter({
@@ -293,11 +311,12 @@ asyncTest('EntityExtractor deep extraction parses LLM JSON response', async () =
 // Test 13: flush() with empty graph is no-op (no write)
 asyncTest('flush() with empty dirty graph skips write', async () => {
   let writeCount = 0;
-  const wiki = {
-    readPageContent: async () => null,
-    writePageContent: async () => { writeCount++; }
+  const fc = {
+    readFile: async () => { throw new Error('404'); },
+    writeFile: async () => { writeCount++; return { success: true }; },
+    mkdir: async () => {}
   };
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   // Make dirty but with no entities/triples
@@ -313,11 +332,12 @@ asyncTest('flush() with empty dirty graph skips write', async () => {
 asyncTest('flush() failure logs error and propagates', async () => {
   const errors = [];
   const loudLogger = { log() {}, info() {}, warn() {}, error(msg) { errors.push(msg); } };
-  const wiki = {
-    readPageContent: async () => null,
-    writePageContent: async () => { throw new Error('WebDAV 409'); }
+  const fc = {
+    readFile: async () => { throw new Error('404'); },
+    writeFile: async () => { throw new Error('WebDAV 409'); },
+    mkdir: async () => {}
   };
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: loudLogger });
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: loudLogger });
   graph._loaded = true;
   graph.addEntity('Alice', 'person');
 
@@ -338,8 +358,8 @@ asyncTest('flush() failure logs error and propagates', async () => {
 
 // Test 15: flush() round-trip — write then load recovers data
 asyncTest('flush() round-trip — write then load recovers data', async () => {
-  const wiki = createMockWikiClient(null);
-  const graph1 = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph1 = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph1._loaded = true;
 
   graph1.addEntity('Alice', 'person');
@@ -349,7 +369,7 @@ asyncTest('flush() round-trip — write then load recovers data', async () => {
   await graph1.flush();
 
   // Load into a fresh graph
-  const graph2 = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const graph2 = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   await graph2.load();
 
   assert.strictEqual(graph2._entities.size, 2, 'Should load 2 entities');
@@ -364,8 +384,8 @@ asyncTest('flush() round-trip — write then load recovers data', async () => {
 
 // Test 16: backfillAll processes non-Meta, non-stub pages
 asyncTest('backfillAll processes non-Meta, non-stub pages', async () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   const extractor = new EntityExtractor({ knowledgeGraph: graph, logger: silentLogger });
@@ -373,10 +393,10 @@ asyncTest('backfillAll processes non-Meta, non-stub pages', async () => {
   const mockCollectives = {
     resolveCollective: async () => 1,
     listPages: async () => [
-      { title: 'Sarah Chen', filePath: 'People/Sarah Chen.md' },
-      { title: 'Project Phoenix', filePath: 'Projects/Project Phoenix.md' },
-      { title: 'Meta Index', filePath: 'Meta/Index.md' },  // should be skipped
-      { title: 'Stub', filePath: 'Notes/Stub.md' }          // content < 50 chars
+      { title: 'Sarah Chen', filePath: 'People', fileName: 'Sarah Chen.md' },
+      { title: 'Project Phoenix', filePath: 'Projects', fileName: 'Project Phoenix.md' },
+      { title: 'Meta Index', filePath: 'Meta', fileName: 'Index.md' },  // should be skipped
+      { title: 'Stub', filePath: 'Notes', fileName: 'Stub.md' }          // content < 50 chars
     ],
     readPageContent: async (path) => {
       if (path.includes('Meta')) return 'meta content';
@@ -396,8 +416,8 @@ asyncTest('backfillAll processes non-Meta, non-stub pages', async () => {
 
 // Test 17: backfillAll handles read failure on one page without aborting
 asyncTest('backfillAll handles read failure without aborting', async () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   const extractor = new EntityExtractor({ knowledgeGraph: graph, logger: silentLogger });
@@ -405,8 +425,8 @@ asyncTest('backfillAll handles read failure without aborting', async () => {
   const mockCollectives = {
     resolveCollective: async () => 1,
     listPages: async () => [
-      { title: 'Good Page', filePath: 'Notes/Good Page.md' },
-      { title: 'Bad Page', filePath: 'Notes/Bad Page.md' }
+      { title: 'Good Page', filePath: 'Notes', fileName: 'Good Page.md' },
+      { title: 'Bad Page', filePath: 'Notes', fileName: 'Bad Page.md' }
     ],
     readPageContent: async (path) => {
       if (path.includes('Bad')) throw new Error('API timeout');
@@ -422,8 +442,8 @@ asyncTest('backfillAll handles read failure without aborting', async () => {
 
 // Test 18: backfillAll without collectivesClient returns early
 asyncTest('backfillAll without collectivesClient returns early', async () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   const extractor = new EntityExtractor({ knowledgeGraph: graph, logger: silentLogger });
@@ -436,15 +456,35 @@ asyncTest('backfillAll without collectivesClient returns early', async () => {
 
 // Test 19: flush() includes lastFlushed timestamp
 asyncTest('flush() includes lastFlushed timestamp', async () => {
-  const wiki = createMockWikiClient(null);
-  const graph = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  const fc = createMockFilesClient(null);
+  const graph = new KnowledgeGraph({ ncFilesClient: fc, logger: silentLogger });
   graph._loaded = true;
 
   graph.addEntity('Test', 'note');
   await graph.flush();
 
-  const content = wiki.getPages()['Memory/_index'];
+  const content = fc.getFiles()['Memory/_index.json'];
   assert.ok(content.includes('lastFlushed'), 'Should include lastFlushed timestamp');
+});
+
+// Test 20: Legacy wikiClient path still works for backward compat
+asyncTest('Legacy wikiClient flush/load round-trip still works', async () => {
+  const wiki = createMockWikiClient(null);
+  const graph1 = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  graph1._loaded = true;
+
+  graph1.addEntity('Alice', 'person');
+  await graph1.flush();
+
+  const pages = wiki.getPages();
+  assert.ok(pages['Memory/_index'] != null, 'Legacy path should write to wiki page');
+  assert.ok(pages['Memory/_index'].includes('```json'), 'Legacy path should use code fence');
+
+  const graph2 = new KnowledgeGraph({ wikiClient: wiki, logger: silentLogger });
+  await graph2.load();
+
+  assert.strictEqual(graph2._entities.size, 1, 'Should load entity from legacy wiki');
+  assert.ok(graph2._entities.has('person_alice'), 'Should have person_alice');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);

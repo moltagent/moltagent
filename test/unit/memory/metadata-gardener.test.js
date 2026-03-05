@@ -8,6 +8,11 @@
  * (at your option) any later version.
  */
 
+// NOTE: Collectives WebDAV requires pages to exist in
+// OCS database before PUT. Mocks should reject PUT to
+// non-existent pages to catch this class of bug.
+// See: 2026-03-05 triple production failure diagnostic.
+
 'use strict';
 
 const assert = require('assert');
@@ -42,8 +47,8 @@ function createMockCollectivesClient(pages = [], contentMap = {}) {
 asyncTest('Page without frontmatter gets type + fields added', async () => {
   const content = 'Sarah Chen is a senior developer at TheCatalyne. She works on the onboarding pipeline.';
   const client = createMockCollectivesClient(
-    [{ title: 'Sarah Chen', filePath: 'People/Sarah Chen.md' }],
-    { 'People/Sarah Chen/Readme.md': content }
+    [{ title: 'Sarah Chen', filePath: 'People', fileName: 'Sarah Chen.md' }],
+    { 'People/Sarah Chen.md': content }
   );
   const router = createMockRouter('type: person\nconfidence: high\ncompany: TheCatalyne\nrole: senior developer');
   const gardener = new MetadataGardener({ collectivesClient: client, router, logger: silentLogger });
@@ -51,7 +56,7 @@ asyncTest('Page without frontmatter gets type + fields added', async () => {
   const result = await gardener.tend();
 
   assert.strictEqual(result.gardened, 1, 'Should garden 1 page');
-  const written = client.getWritten()['People/Sarah Chen/Readme.md'];
+  const written = client.getWritten()['People/Sarah Chen.md'];
   assert.ok(written, 'Should have written page back');
   assert.ok(written.includes('type: person'), 'Should include type: person');
   assert.ok(written.includes('company: TheCatalyne'), 'Should include company field');
@@ -62,8 +67,8 @@ asyncTest('Page without frontmatter gets type + fields added', async () => {
 asyncTest('Partial frontmatter preserved — type added, last_accessed kept', async () => {
   const content = '---\nlast_accessed: "2026-03-05T13:00:00Z"\naccess_count: 5\n---\n\nSome project details.';
   const client = createMockCollectivesClient(
-    [{ title: 'Project X', filePath: 'Projects/Project X.md' }],
-    { 'Projects/Project X/Readme.md': content }
+    [{ title: 'Project X', filePath: 'Projects', fileName: 'Project X.md' }],
+    { 'Projects/Project X.md': content }
   );
   const router = createMockRouter('type: project\nconfidence: medium\ngoal: automation');
   const gardener = new MetadataGardener({ collectivesClient: client, router, logger: silentLogger });
@@ -71,7 +76,7 @@ asyncTest('Partial frontmatter preserved — type added, last_accessed kept', as
   const result = await gardener.tend();
 
   assert.strictEqual(result.gardened, 1);
-  const written = client.getWritten()['Projects/Project X/Readme.md'];
+  const written = client.getWritten()['Projects/Project X.md'];
   assert.ok(written.includes('type: project'), 'Should add type');
   assert.ok(written.includes('last_accessed:'), 'Should preserve last_accessed');
   assert.ok(written.includes('access_count: 5'), 'Should preserve access_count');
@@ -81,8 +86,8 @@ asyncTest('Partial frontmatter preserved — type added, last_accessed kept', as
 asyncTest('Page with complete frontmatter is skipped', async () => {
   const content = '---\ntype: person\nconfidence: high\n---\n\nAlready typed content.';
   const client = createMockCollectivesClient(
-    [{ title: 'Complete Page', filePath: 'People/Complete Page.md' }],
-    { 'People/Complete Page/Readme.md': content }
+    [{ title: 'Complete Page', filePath: 'People', fileName: 'Complete Page.md' }],
+    { 'People/Complete Page.md': content }
   );
   const router = createMockRouter('type: person');
   const gardener = new MetadataGardener({ collectivesClient: client, router, logger: silentLogger });
@@ -97,12 +102,12 @@ asyncTest('Page with complete frontmatter is skipped', async () => {
 asyncTest('Meta/ pages excluded from gardening', async () => {
   const client = createMockCollectivesClient(
     [
-      { title: 'Learning Log', filePath: 'Meta/Learning Log.md' },
-      { title: 'Real Page', filePath: 'Notes/Real Page.md' }
+      { title: 'Learning Log', filePath: 'Meta', fileName: 'Learning Log.md' },
+      { title: 'Real Page', filePath: 'Notes', fileName: 'Real Page.md' }
     ],
     {
-      'Meta/Learning Log/Readme.md': 'Some meta documentation content here, enough chars.',
-      'Notes/Real Page/Readme.md': 'This is a real knowledge page with enough content.'
+      'Meta/Learning Log.md': 'Some meta documentation content here, enough chars.',
+      'Notes/Real Page.md': 'This is a real knowledge page with enough content.'
     }
   );
   const router = createMockRouter('type: note\nconfidence: low');
@@ -112,14 +117,14 @@ asyncTest('Meta/ pages excluded from gardening', async () => {
 
   assert.strictEqual(result.gardened, 1, 'Should garden 1 page (Meta skipped)');
   const written = client.getWritten();
-  assert.ok(!written['Meta/Learning Log/Readme.md'], 'Meta page should not be written');
+  assert.ok(!written['Meta/Learning Log.md'], 'Meta page should not be written');
 });
 
 // -- Test 5: Stub pages (< 30 chars) are skipped --
 asyncTest('Stub pages under 30 chars are skipped', async () => {
   const client = createMockCollectivesClient(
-    [{ title: 'Stub', filePath: 'Notes/Stub.md' }],
-    { 'Notes/Stub/Readme.md': 'too short' }
+    [{ title: 'Stub', filePath: 'Notes', fileName: 'Stub.md' }],
+    { 'Notes/Stub.md': 'too short' }
   );
   const router = createMockRouter('type: note');
   const gardener = new MetadataGardener({ collectivesClient: client, router, logger: silentLogger });
@@ -136,12 +141,12 @@ asyncTest('Priority ordering: recently accessed pages first', async () => {
   const oldDate = '2025-01-01T00:00:00Z';
   const client = createMockCollectivesClient(
     [
-      { title: 'Old Page', filePath: 'Notes/Old Page.md' },
-      { title: 'Recent Page', filePath: 'Notes/Recent Page.md' }
+      { title: 'Old Page', filePath: 'Notes', fileName: 'Old Page.md' },
+      { title: 'Recent Page', filePath: 'Notes', fileName: 'Recent Page.md' }
     ],
     {
-      'Notes/Old Page/Readme.md': `---\nlast_accessed: "${oldDate}"\n---\n\nOld content that needs gardening and is long enough.`,
-      'Notes/Recent Page/Readme.md': `---\nlast_accessed: "${today}"\n---\n\nRecent content that needs gardening and is long enough.`
+      'Notes/Old Page.md': `---\nlast_accessed: "${oldDate}"\n---\n\nOld content that needs gardening and is long enough.`,
+      'Notes/Recent Page.md': `---\nlast_accessed: "${today}"\n---\n\nRecent content that needs gardening and is long enough.`
     }
   );
   const gardenOrder = [];
@@ -167,12 +172,12 @@ asyncTest('LLM failure on one page does not abort batch', async () => {
   let callCount = 0;
   const client = createMockCollectivesClient(
     [
-      { title: 'Page A', filePath: 'Notes/Page A.md' },
-      { title: 'Page B', filePath: 'Notes/Page B.md' }
+      { title: 'Page A', filePath: 'Notes', fileName: 'Page A.md' },
+      { title: 'Page B', filePath: 'Notes', fileName: 'Page B.md' }
     ],
     {
-      'Notes/Page A/Readme.md': 'Page A has content that is long enough for processing here.',
-      'Notes/Page B/Readme.md': 'Page B also has content that is long enough for processing.'
+      'Notes/Page A.md': 'Page A has content that is long enough for processing here.',
+      'Notes/Page B.md': 'Page B also has content that is long enough for processing.'
     }
   );
   const router = {
@@ -195,14 +200,14 @@ asyncTest('LLM failure on one page does not abort batch', async () => {
 asyncTest('pagesPerTick=1 limits gardening to 1 page per tick', async () => {
   const client = createMockCollectivesClient(
     [
-      { title: 'P1', filePath: 'Notes/P1.md' },
-      { title: 'P2', filePath: 'Notes/P2.md' },
-      { title: 'P3', filePath: 'Notes/P3.md' }
+      { title: 'P1', filePath: 'Notes', fileName: 'P1.md' },
+      { title: 'P2', filePath: 'Notes', fileName: 'P2.md' },
+      { title: 'P3', filePath: 'Notes', fileName: 'P3.md' }
     ],
     {
-      'Notes/P1/Readme.md': 'Page 1 content that is long enough for the gardener to process.',
-      'Notes/P2/Readme.md': 'Page 2 content that is long enough for the gardener to process.',
-      'Notes/P3/Readme.md': 'Page 3 content that is long enough for the gardener to process.'
+      'Notes/P1.md': 'Page 1 content that is long enough for the gardener to process.',
+      'Notes/P2.md': 'Page 2 content that is long enough for the gardener to process.',
+      'Notes/P3.md': 'Page 3 content that is long enough for the gardener to process.'
     }
   );
   const router = createMockRouter('type: note\nconfidence: low');
@@ -217,6 +222,24 @@ asyncTest('pagesPerTick=1 limits gardening to 1 page per tick', async () => {
   const result2 = await gardener.tend();
   assert.strictEqual(result2.gardened, 1, 'Second tick: garden 1');
   assert.strictEqual(result2.queued, 1, 'Second tick: 1 remaining');
+});
+
+// -- Test 9: Top-level page (empty filePath) builds path from fileName --
+asyncTest('Top-level page with empty filePath builds correct path', async () => {
+  const content = 'Landing page content that is long enough for the gardener.';
+  const client = createMockCollectivesClient(
+    [{ title: 'Landing', filePath: '', fileName: 'Landing.md' }],
+    { 'Landing.md': content }
+  );
+  const router = createMockRouter('type: note\nconfidence: low');
+  const gardener = new MetadataGardener({ collectivesClient: client, router, logger: silentLogger });
+
+  const result = await gardener.tend();
+
+  assert.strictEqual(result.gardened, 1, 'Should garden top-level page');
+  const written = client.getWritten()['Landing.md'];
+  assert.ok(written, 'Should write to fileName-only path');
+  assert.ok(written.includes('type: note'), 'Should include type');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);

@@ -1199,12 +1199,12 @@ async function initialize() {
   }
 
   // Knowledge Graph + Entity Extractor + Daily Digest
-  if (collectivesClient) {
+  if (ncFilesClient) {
     try {
       const KnowledgeGraph = require('./src/lib/memory/knowledge-graph');
-      knowledgeGraph = new KnowledgeGraph({ wikiClient: collectivesClient, logger: console });
+      knowledgeGraph = new KnowledgeGraph({ ncFilesClient, logger: console });
       await knowledgeGraph.load();
-      console.log('[INIT] KnowledgeGraph ready');
+      console.log('[INIT] KnowledgeGraph ready (NCFilesClient)');
     } catch (err) {
       console.warn(`[INIT] KnowledgeGraph failed: ${err.message}`);
     }

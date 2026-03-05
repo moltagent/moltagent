@@ -149,7 +149,7 @@ class IntentRouter {
 
     // Send thinking indicator for slow model
     if (useSmartModel && context.replyFn) {
-      context.replyFn('\u{1F914} Let me think about that...').catch(() => {});
+      context.replyFn('\u{1F914} Let me think deeper about that...').catch(() => {});
     }
 
     try {

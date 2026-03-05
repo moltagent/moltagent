@@ -273,26 +273,32 @@ User question: "${message.substring(0, 300)}"`;
    */
   async _executeWrite(params, context) {
     const pageTitle = params.page_title || params.topic;
-    const content = params.content || params.fact || '';
+    const rawContent = params.content || params.fact || '';
 
-    if (!pageTitle || !content) {
+    if (!pageTitle || !rawContent) {
       const missing = [];
       if (!pageTitle) missing.push('page title');
-      if (!content) missing.push('content');
+      if (!rawContent) missing.push('content');
       return { response: `Could you clarify: ${missing.join(', ')}?` };
     }
 
-    const parent = params.parent || this._autoCategory(params.topic, params.category, params.fact);
+    // Smart entity extraction: generate frontmatter for any write, not just remember
+    const entityInfo = await this._extractEntityInfo(rawContent, params);
+    const resolvedTitle = entityInfo.page_title || pageTitle;
+    const parent = entityInfo.section || params.parent || this._autoCategory(params.topic, params.category, params.fact);
 
     // Guardrail check
-    const guardResult = await this._checkGuardrails('wiki_write', { page_title: pageTitle }, context.roomToken || null);
+    const guardResult = await this._checkGuardrails('wiki_write', { page_title: resolvedTitle }, context.roomToken || null);
     if (!guardResult.allowed) {
       return { response: `Action blocked: ${guardResult.reason}` };
     }
 
+    // Format with frontmatter
+    const formattedContent = this._formatKnowledgePage(resolvedTitle, entityInfo, rawContent);
+
     const writeResult = await this.toolRegistry.execute('wiki_write', {
-      page_title: pageTitle,
-      content,
+      page_title: resolvedTitle,
+      content: formattedContent,
       parent: parent || undefined,
       type: 'create'
     });
@@ -302,25 +308,25 @@ User question: "${message.substring(0, 300)}"`;
     }
 
     this._logActivity('wiki_write',
-      `Created wiki: ${pageTitle} — ${content.substring(0, 80)}`,
-      { page: pageTitle, topic: params.topic, category: parent },
+      `Created wiki: ${resolvedTitle} — ${rawContent.substring(0, 80)}`,
+      { page: resolvedTitle, topic: params.topic, category: parent },
       context
     );
 
     if (this.entityExtractor) {
       try {
-        const pagePath = parent ? `${parent}/${pageTitle}` : pageTitle;
-        await this.entityExtractor.extractFromPage(pagePath, content);
+        const pagePath = parent ? `${parent}/${resolvedTitle}` : resolvedTitle;
+        await this.entityExtractor.extractFromPage(pagePath, formattedContent);
       } catch (err) {
         this.logger.warn(`[WikiExecutor] Entity extraction failed: ${err.message}`);
       }
     }
 
     const parentInfo = parent ? ` under "${parent}"` : '';
-    const response = `Saved to wiki: "${pageTitle}"${parentInfo}. ${writeResult.result || ''}`.trim();
+    const response = `Saved to wiki: "${resolvedTitle}"${parentInfo}. ${writeResult.result || ''}`.trim();
     return {
       response,
-      actionRecord: { type: 'wiki_write', refs: { pageTitle, parent: parent || null } }
+      actionRecord: { type: 'wiki_write', refs: { pageTitle: resolvedTitle, parent: parent || null } }
     };
   }
 

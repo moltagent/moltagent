@@ -97,7 +97,7 @@ class MetadataGardener {
       for (const page of pages) {
         const path = page.filePath || page.title || '';
         // Skip Meta/ pages — documentation, not knowledge
-        if (path.includes('/Meta') || path.includes('Meta/')) continue;
+        if (path.includes('/Meta') || path.includes('Meta/') || path === 'Meta') continue;
 
         try {
           const pagePath = this._buildPagePath(page);
@@ -289,17 +289,19 @@ Respond with ONLY the YAML key-value pairs (NO --- delimiters, no other text):`;
 
   /**
    * Build WebDAV page path from Collectives page object.
-   * @param {Object} page
-   * @returns {string}
+   * Uses filePath/fileName pattern matching CollectivesClient._buildPagePath().
+   * @param {Object} page - Page object with fileName and filePath from API
+   * @returns {string|null}
    * @private
    */
   _buildPagePath(page) {
-    if (page.filePath) {
-      const clean = page.filePath.replace(/\.md$/, '');
-      return `${clean}/Readme.md`;
+    if (page.fileName) {
+      return page.filePath
+        ? `${page.filePath}/${page.fileName}`
+        : page.fileName;
     }
     if (!page.title) return null;
-    return `${page.title}/Readme.md`;
+    return `${page.title}.md`;
   }
 }
 

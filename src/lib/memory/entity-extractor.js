@@ -257,7 +257,7 @@ Rules:
 
       for (const page of pages) {
         const path = page.filePath || page.title || '';
-        if (path.includes('/Meta') || path.includes('Meta/')) continue;
+        if (path.includes('/Meta') || path.includes('Meta/') || path === 'Meta') continue;
 
         try {
           const pagePath = this._buildPagePath(page);
@@ -294,19 +294,19 @@ Rules:
 
   /**
    * Build a WebDAV-compatible page path from a Collectives page object.
+   * Uses filePath/fileName pattern matching CollectivesClient._buildPagePath().
    * @param {Object} page - Page object from listPages()
-   * @returns {string}
+   * @returns {string|null}
    * @private
    */
   _buildPagePath(page) {
-    // Collectives API pages have filePath like "People/Sarah Chen.md"
-    // or a title field. Prefer filePath, strip .md, add /Readme.md for WebDAV
-    if (page.filePath) {
-      const clean = page.filePath.replace(/\.md$/, '');
-      return `${clean}/Readme.md`;
+    if (page.fileName) {
+      return page.filePath
+        ? `${page.filePath}/${page.fileName}`
+        : page.fileName;
     }
     if (!page.title) return null;
-    return `${page.title}/Readme.md`;
+    return `${page.title}.md`;
   }
 
   /**

@@ -11,20 +11,21 @@
 'use strict';
 
 /**
- * KnowledgeGraph — In-memory entity/triple graph with wiki persistence.
+ * KnowledgeGraph — In-memory entity/triple graph with file persistence.
  *
  * Architecture Brief:
  * - Problem: Keyword and vector search cannot traverse entity relationships
- * - Pattern: In-memory graph with BFS traversal, persisted to wiki page as JSON
- * - Key Dependencies: CollectivesClient (wiki persistence at Memory/_index)
- * - Data Flow: addEntity/addTriple → in-memory graph → flush() → wiki page
- * - Dependency Map: entity-extractor.js → knowledge-graph.js → collectives-client.js
+ * - Pattern: In-memory graph with BFS traversal, persisted as JSON file via NCFilesClient
+ * - Key Dependencies: NCFilesClient (file persistence at Memory/_index.json)
+ * - Data Flow: addEntity/addTriple → in-memory graph → flush() → JSON file
+ * - Dependency Map: entity-extractor.js → knowledge-graph.js → nc-files-client.js
  *
  * @module memory/knowledge-graph
- * @version 1.0.0
+ * @version 1.1.0
  */
 
-const WIKI_PATH = 'Memory/_index';
+const FILE_PATH = 'Memory/_index.json';
+const FILE_DIR = 'Memory';
 const VALID_PREDICATES = new Set([
   'reports_to', 'leads', 'works_on', 'belongs_to', 'located_at',
   'client_of', 'contacts', 'depends_on', 'related_to', 'references'
@@ -34,12 +35,16 @@ const MAX_HOPS = 10;
 class KnowledgeGraph {
   /**
    * @param {Object} deps
-   * @param {Object} deps.wikiClient - CollectivesClient with readPageContent/writePageContent
+   * @param {Object} deps.ncFilesClient - NCFilesClient with readFile/writeFile/mkdir
+   * @param {Object} [deps.wikiClient] - DEPRECATED: use ncFilesClient instead
    * @param {Object} [deps.logger]
    */
-  constructor({ wikiClient, logger } = {}) {
-    if (!wikiClient) throw new Error('KnowledgeGraph requires wikiClient');
-    this.wiki = wikiClient;
+  constructor({ ncFilesClient, wikiClient, logger } = {}) {
+    this.filesClient = ncFilesClient || null;
+    this.wiki = wikiClient || null;
+    if (!this.filesClient && !this.wiki) {
+      throw new Error('KnowledgeGraph requires ncFilesClient (or legacy wikiClient)');
+    }
     this.logger = logger || console;
 
     /** @type {Map<string, { id: string, name: string, type: string, created: string }>} */
@@ -65,38 +70,45 @@ class KnowledgeGraph {
    */
   async load() {
     try {
-      const content = await this.wiki.readPageContent(WIKI_PATH);
+      let raw = null;
 
-      if (content) {
-        // Extract JSON from markdown fenced code block: ```json\n...\n```
-        const match = content.match(/```json\s*\n([\s\S]*?)\n```/);
-        if (match) {
-          const parsed = JSON.parse(match[1]);
+      if (this.filesClient) {
+        // NCFilesClient path: read plain JSON file
+        const result = await this.filesClient.readFile(FILE_PATH);
+        raw = result && result.content ? result.content : null;
+      } else {
+        // Legacy CollectivesClient path: extract JSON from markdown code fence
+        const content = await this.wiki.readPageContent('Memory/_index');
+        if (content) {
+          const match = content.match(/```json\s*\n([\s\S]*?)\n```/);
+          raw = match ? match[1] : null;
+        }
+      }
 
-          // Populate entities map
-          if (Array.isArray(parsed.entities)) {
-            for (const entity of parsed.entities) {
-              if (entity && entity.id) {
-                this._entities.set(entity.id, {
-                  id: entity.id,
-                  name: entity.name,
-                  type: entity.type,
-                  created: entity.created
-                });
-              }
+      if (raw) {
+        const parsed = JSON.parse(raw);
+
+        if (Array.isArray(parsed.entities)) {
+          for (const entity of parsed.entities) {
+            if (entity && entity.id) {
+              this._entities.set(entity.id, {
+                id: entity.id,
+                name: entity.name,
+                type: entity.type,
+                created: entity.created
+              });
             }
           }
+        }
 
-          // Populate triples array
-          if (Array.isArray(parsed.triples)) {
-            this._triples = parsed.triples.filter(
-              t => t && t.subject && t.predicate && t.object
-            );
-          }
+        if (Array.isArray(parsed.triples)) {
+          this._triples = parsed.triples.filter(
+            t => t && t.subject && t.predicate && t.object
+          );
         }
       }
     } catch (err) {
-      // 404 on first run, parse error, or missing block — start with empty graph
+      // 404 on first run, parse error — start with empty graph
       this._entities = new Map();
       this._triples = [];
     }
@@ -128,11 +140,18 @@ class KnowledgeGraph {
       lastFlushed: new Date().toISOString()
     };
 
-    const content =
-      `# Knowledge Graph Index\n\n\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\`\n`;
+    const jsonContent = JSON.stringify(data, null, 2);
 
     try {
-      await this.wiki.writePageContent(WIKI_PATH, content);
+      if (this.filesClient) {
+        // NCFilesClient path: ensure directory exists, write plain JSON
+        try { await this.filesClient.mkdir(FILE_DIR); } catch (_mkdirErr) { /* already exists */ }
+        await this.filesClient.writeFile(FILE_PATH, jsonContent);
+      } else {
+        // Legacy CollectivesClient path: wrap in markdown code fence
+        const content = `# Knowledge Graph Index\n\n\`\`\`json\n${jsonContent}\n\`\`\`\n`;
+        await this.wiki.writePageContent('Memory/_index', content);
+      }
       this._dirty = false;
       this.logger.info(
         `[KnowledgeGraph] Flushed — ${this._entities.size} entities, ${this._triples.length} triples`
