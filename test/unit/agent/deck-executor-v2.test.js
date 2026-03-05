@@ -78,7 +78,8 @@ function createMockDeckClient(overrides = {}) {
     createStack: track('createStack', { id: 200, title: 'New Stack' }),
     updateStack: track('updateStack', { id: 100, title: 'Renamed Stack' }),
     deleteStack: track('deleteStack', undefined),
-    createCardOnBoard: track('createCardOnBoard', { id: 500, title: 'New Card' })
+    createCardOnBoard: track('createCardOnBoard', { id: 500, title: 'New Card' }),
+    shareBoardWithUser: track('shareBoardWithUser', { id: 61, boardId: 1 })
   };
 }
 
@@ -663,6 +664,95 @@ asyncTest('delete_stack includes card count', async () => {
   const result = await executor.execute('Delete the Inbox stack on MoltAgent Tasks', { userName: 'alice' });
   const resp = getResponse(result);
   assert.ok(resp.includes('2 cards'), `Should report card count, got: ${resp}`);
+});
+
+// ============================================================
+// Troubleshoot action
+// ============================================================
+
+asyncTest('troubleshoot: specific board found and shared', async () => {
+  const dc = createMockDeckClient({
+    shareBoardWithUser: (boardId, user) => Promise.resolve({ id: 61, boardId, participant: user })
+  });
+  const executor = new DeckExecutor({
+    router: createMockRouter({ result: JSON.stringify({ action: 'troubleshoot', board_name: 'Content Pipeline' }) }),
+    toolRegistry: createMockToolRegistry(),
+    deckClient: dc,
+    logger: silentLogger
+  });
+
+  const result = await executor.execute("I can't see the Content Pipeline board", { userName: 'Funana' });
+  const resp = getResponse(result);
+  assert.ok(resp.includes('shared it with you'), `Should confirm sharing, got: ${resp}`);
+  assert.ok(resp.includes('Content Pipeline'), `Should mention board name, got: ${resp}`);
+  assert.strictEqual(dc.getCalls('shareBoardWithUser').length, 1);
+});
+
+asyncTest('troubleshoot: board already shared returns refresh advice', async () => {
+  const dc = createMockDeckClient({
+    shareBoardWithUser: () => { throw new Error('HTTP 400: already shared'); }
+  });
+  const executor = new DeckExecutor({
+    router: createMockRouter({ result: JSON.stringify({ action: 'troubleshoot', board_name: 'Content Pipeline' }) }),
+    toolRegistry: createMockToolRegistry(),
+    deckClient: dc,
+    logger: silentLogger
+  });
+
+  const result = await executor.execute("I can't find the Content Pipeline board", { userName: 'Funana' });
+  const resp = getResponse(result);
+  assert.ok(resp.includes('already shared'), `Should say already shared, got: ${resp}`);
+  assert.ok(resp.includes('refresh'), `Should suggest refresh, got: ${resp}`);
+});
+
+asyncTest('troubleshoot: unknown board returns suggestions', async () => {
+  const dc = createMockDeckClient();
+  const executor = new DeckExecutor({
+    router: createMockRouter({ result: JSON.stringify({ action: 'troubleshoot', board_name: 'Ghost Board' }) }),
+    toolRegistry: createMockToolRegistry(),
+    deckClient: dc,
+    logger: silentLogger
+  });
+
+  const result = await executor.execute("I can't access Ghost Board", { userName: 'Funana' });
+  const resp = getResponse(result);
+  assert.ok(resp.includes("couldn't find"), `Should report not found, got: ${resp}`);
+  assert.ok(resp.includes('MoltAgent Tasks'), `Should list available boards, got: ${resp}`);
+});
+
+asyncTest('troubleshoot: no board mentioned shares all and lists', async () => {
+  let shareCount = 0;
+  const dc = createMockDeckClient({
+    shareBoardWithUser: () => { shareCount++; return Promise.resolve({}); }
+  });
+  const executor = new DeckExecutor({
+    router: createMockRouter({ result: JSON.stringify({ action: 'troubleshoot', board_name: '' }) }),
+    toolRegistry: createMockToolRegistry(),
+    deckClient: dc,
+    logger: silentLogger
+  });
+
+  const result = await executor.execute("I can't see my boards", { userName: 'Funana' });
+  const resp = getResponse(result);
+  assert.ok(resp.includes('MoltAgent Tasks'), `Should list boards, got: ${resp}`);
+  assert.ok(resp.includes('Content Pipeline'), `Should list all active boards, got: ${resp}`);
+  assert.ok(shareCount >= 2, `Should share multiple boards, shared: ${shareCount}`);
+  assert.ok(resp.includes('sharing'), `Should mention sharing update, got: ${resp}`);
+});
+
+asyncTest('troubleshoot: "I cant see the board" is NOT classified as create_card', async () => {
+  const dc = createMockDeckClient();
+  const registry = createMockToolRegistry();
+  const executor = new DeckExecutor({
+    router: createMockRouter({ result: JSON.stringify({ action: 'troubleshoot', board_name: 'Content Pipeline' }) }),
+    toolRegistry: registry,
+    deckClient: dc,
+    logger: silentLogger
+  });
+
+  await executor.execute("I can't see the board", { userName: 'Funana' });
+  assert.strictEqual(registry.getCallsFor('deck_create_card').length, 0, 'Should NOT call deck_create_card');
+  assert.strictEqual(registry.getCallsFor('deck_list_cards').length, 0, 'Should NOT call deck_list_cards');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);

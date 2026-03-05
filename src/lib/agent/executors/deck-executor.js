@@ -86,7 +86,7 @@ class DeckExecutor extends BaseExecutor {
           'list', 'get', 'create', 'move', 'update', 'delete', 'assign', 'label',
           'create_board', 'list_boards', 'rename_board', 'archive_board', 'delete_board',
           'create_stack', 'rename_stack', 'delete_stack',
-          'setup_workflow'
+          'setup_workflow', 'troubleshoot'
         ] },
         board_name: { type: 'string' },
         card_title: { type: 'string' },
@@ -156,6 +156,14 @@ Card level:
 
 If the message describes a high-level goal ("set up a content pipeline") without specifying individual boards/stacks/cards, use action: setup_workflow.
 
+Troubleshooting:
+- "I can't see/find/access the board/deck" → action: troubleshoot, board_name: [board if mentioned]
+- "The board isn't showing up" → action: troubleshoot
+- "Where is my board?" → action: troubleshoot
+- "I don't have access to X" → action: troubleshoot, board_name: X
+- Any complaint about visibility, permissions, sharing, or access → action: troubleshoot
+IMPORTANT: Problem reports ("I can't see X", "X isn't working") are NOT create/list/get actions. They are troubleshoot.
+
 delegated: true if the user is asking you to decide, propose, or use your judgment rather than specifying exact values ("you decide", "whatever makes sense", "propose something", "use your best judgment"). false if they gave explicit names/values.
 
 Message: "${message.substring(0, 400)}"`;
@@ -203,6 +211,8 @@ Message: "${message.substring(0, 400)}"`;
       case 'delete_stack':    return this._executeDeleteStack(params, context);
       // Compound operations
       case 'setup_workflow':  return this._executeSetupWorkflow(params, context);
+      // Troubleshooting
+      case 'troubleshoot':    return this._executeTroubleshoot(params, context);
       // Card-level operations (existing)
       case 'create': return this._executeCreate(params, context);
       case 'move':   return this._executeMove(params, context);
@@ -679,6 +689,112 @@ Respond ONLY with JSON, no markdown, no explanation:
           cardCount: result.cards.length
         }
       }
+    };
+  }
+
+  // ============================================================
+  // Troubleshooting (v2)
+  // ============================================================
+
+  /**
+   * Handle access/visibility complaints by checking board existence and sharing.
+   * "I can't see the board" → check if board exists, try to share with user.
+   * @private
+   */
+  async _executeTroubleshoot(params, context) {
+    if (!this.deckClient) {
+      return { response: 'Board management is not available.' };
+    }
+
+    const boards = await this.deckClient.listBoards();
+    const activeBoards = boards.filter(b => !b.archived);
+
+    // If a specific board was mentioned, try to find and share it
+    if (params.board_name) {
+      const board = await this._resolveBoard(params.board_name);
+      if (!board) {
+        const suggestions = activeBoards.length > 0
+          ? `\n\nBoards I can see:\n${activeBoards.map(b => `- ${b.title}`).join('\n')}`
+          : '';
+        return {
+          response: `I couldn't find a board matching "${params.board_name}".${suggestions}`,
+          actionRecord: { type: 'deck_troubleshoot', refs: { query: params.board_name, found: false } }
+        };
+      }
+
+      // Board exists — try sharing with the user
+      const userName = context.userName || this.adminUser;
+      if (userName) {
+        try {
+          await this.deckClient.shareBoardWithUser(board.id, userName);
+          this.logger.info(`[DeckExec] Troubleshoot: shared "${board.title}" with ${userName}`);
+
+          this._logActivity('deck_troubleshoot',
+            `Shared board "${board.title}" with ${userName} (access fix)`,
+            { boardId: board.id, title: board.title, sharedWith: userName },
+            context
+          );
+
+          return {
+            response: `Found board "${board.title}" — I've shared it with you. It should appear in your Deck app now. Try refreshing the page.`,
+            actionRecord: { type: 'deck_troubleshoot', refs: { boardId: board.id, title: board.title, shared: true } }
+          };
+        } catch (err) {
+          // 400 = already shared
+          if (err.message && err.message.includes('400')) {
+            return {
+              response: `Board "${board.title}" exists and is already shared with you. Try refreshing your Deck app — if it still doesn't appear, it may be a Nextcloud caching issue.`,
+              actionRecord: { type: 'deck_troubleshoot', refs: { boardId: board.id, title: board.title, alreadyShared: true } }
+            };
+          }
+          this.logger.warn(`[DeckExec] Troubleshoot share failed: ${err.message}`);
+          return {
+            response: `Board "${board.title}" exists (ID ${board.id}) but I couldn't update the sharing settings: ${err.message}. You may need to check permissions in the Deck app.`,
+            actionRecord: { type: 'deck_troubleshoot', refs: { boardId: board.id, error: err.message } }
+          };
+        }
+      }
+
+      return {
+        response: `Board "${board.title}" exists (ID ${board.id}). If you can't see it, it may not be shared with your account. Let me know your Nextcloud username and I'll fix the sharing.`,
+        actionRecord: { type: 'deck_troubleshoot', refs: { boardId: board.id, title: board.title } }
+      };
+    }
+
+    // No specific board mentioned — list what's available
+    if (activeBoards.length === 0) {
+      return {
+        response: "There aren't any boards yet. Want me to create one?",
+        actionRecord: { type: 'deck_troubleshoot', refs: { boardCount: 0 } }
+      };
+    }
+
+    // Share all boards with user as a fix
+    const userName = context.userName || this.adminUser;
+    let sharedCount = 0;
+    if (userName) {
+      for (const board of activeBoards) {
+        try {
+          await this.deckClient.shareBoardWithUser(board.id, userName);
+          sharedCount++;
+        } catch (_err) { /* already shared or permission issue — skip */ }
+      }
+    }
+
+    const list = activeBoards.map(b => `- **${b.title}**`).join('\n');
+    const shareMsg = sharedCount > 0
+      ? `\n\nI've updated the sharing on ${sharedCount} board(s) — try refreshing your Deck app.`
+      : '';
+
+    this._logActivity('deck_troubleshoot',
+      `Troubleshoot: listed ${activeBoards.length} boards, shared ${sharedCount}`,
+      { boardCount: activeBoards.length, sharedCount },
+      context
+    );
+
+    return {
+      response: `Here are the boards I have:\n${list}${shareMsg}\n\nIf a specific board isn't showing up, let me know which one.`,
+      actionRecord: { type: 'deck_troubleshoot', refs: { boardCount: activeBoards.length, sharedCount } }
     };
   }
 
