@@ -2171,14 +2171,14 @@ async function shutdown(signal) {
       const activeSessions = sessionManager.getAllSessions ? sessionManager.getAllSessions() : [];
       console.log(`[SHUTDOWN] ${activeSessions.length} active session(s) to persist`);
       let persisted = 0;
-      const PERSIST_TIMEOUT_MS = 90000; // 90s per session — leaves 30s buffer in 120s grace
+      const PERSIST_TIMEOUT_MS = 60000; // 60s per session — leaves 60s for cleanup + fallback
       for (const session of activeSessions) {
         const messageCount = (session.context || []).length;
         console.log(`[SHUTDOWN] Persisting session ${session.id} (room=${session.roomToken}, messages=${messageCount})`);
         try {
           const persistPromise = sessionPersister.persistSession(session);
           const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Shutdown persist timeout (90s)')), PERSIST_TIMEOUT_MS)
+            setTimeout(() => reject(new Error('Shutdown persist timeout (60s)')), PERSIST_TIMEOUT_MS)
           );
           const page = await Promise.race([persistPromise, timeoutPromise]);
           if (page) {
@@ -2190,6 +2190,26 @@ async function shutdown(signal) {
           }
         } catch (err) {
           console.warn(`[SHUTDOWN] Session persist failed for ${session.roomToken}: ${err.message}`);
+          // Raw fallback: dump transcript without LLM summary / trust pipeline
+          // Marked trust_level: raw so downstream (gardener, enricher) can process later
+          if (resilientWriter && session.context && session.context.length >= 6) {
+            try {
+              const fallback = session.context
+                .filter(c => c.role === 'user' || c.role === 'assistant')
+                .map(c => `[${c.role}] ${(c.content || '').substring(0, 500)}`)
+                .join('\n\n');
+              const leafTitle = `raw-${(session.id || '').substring(0, 8)}-${Date.now()}`;
+              await resilientWriter.createPage(
+                'Sessions',
+                leafTitle,
+                `---\ntype: session\ntrust_level: raw\nroom: ${session.roomToken || 'unknown'}\ndate: ${new Date().toISOString().split('T')[0]}\n---\n\n# Raw Session Transcript\n\n${fallback}`
+              );
+              persisted++;
+              console.log(`[SHUTDOWN] Raw fallback saved for session ${session.id} → Sessions/${leafTitle}`);
+            } catch (fbErr) {
+              console.error(`[SHUTDOWN] Even raw fallback failed for ${session.id}: ${fbErr.message}`);
+            }
+          }
         }
       }
       console.log(`[SHUTDOWN] Session persistence complete: ${persisted}/${activeSessions.length} persisted`);
