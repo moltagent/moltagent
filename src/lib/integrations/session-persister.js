@@ -16,6 +16,8 @@
 'use strict';
 
 const { JOBS } = require('../llm/router');
+const TrustGate = require('../security/trust-gate');
+const MythDetector = require('../security/myth-detector');
 
 /**
  * SessionPersister - Session Transcript Persistence
@@ -61,7 +63,7 @@ class SessionPersister {
    * @param {Object} [options.rhythmTracker] - RhythmTracker for behavioral pattern recording
    * @param {Object} [options.config] - Configuration
    */
-  constructor({ wikiClient, llmRouter, rhythmTracker, config = {} }) {
+  constructor({ wikiClient, llmRouter, rhythmTracker, deckClient, trustLevel, config = {} }) {
     this.wiki = wikiClient;
     this.router = llmRouter;
     this.rhythmTracker = rhythmTracker || null;
@@ -69,6 +71,12 @@ class SessionPersister {
     this.minContextForPersistence = 6;
     this.minExchanges = 4; // At least 4 user/assistant messages (2 exchanges)
     this.lastSummary = null; // Stored for warm memory consolidation after persistence
+
+    // Layer 2: Trust-gated persistence — filter ungrounded claims before summary
+    this.trustGate = new TrustGate({ trustLevel: trustLevel || 'balanced', logger: console });
+
+    // Layer 4: Myth detector — catch self-referential fiction before persistence
+    this.mythDetector = new MythDetector({ logger: console, deckClient: deckClient || null });
 
     // Cache the Sessions parent page ID to avoid repeated OCS lookups per heartbeat cycle
     this._sessionsParentId = null;
@@ -95,12 +103,42 @@ class SessionPersister {
       return null;
     }
 
-    // Generate summary using local model (sovereign role — zero cloud cost)
-    const summary = await this._generateSummary(session, userAssistantMessages);
+    // Layer 4: Detect self-referential myths before any filtering
+    const myths = this.mythDetector.detect(session.context);
+    if (myths.length > 0) {
+      this.mythDetector.alert(myths).catch(err =>
+        console.warn('[SessionPersister] Myth alert failed:', err.message)
+      );
+    }
+
+    // Layer 2: Trust gate — filter ungrounded claims before summary generation
+    const { kept, filtered: filteredSegments } = this.trustGate.filter(session.context);
+    const keptMessages = kept.filter(c => c.role === 'user' || c.role === 'assistant');
+
+    // Generate summary from trust-gated context (sovereign role — zero cloud cost)
+    const summary = await this._generateSummary(session, keptMessages);
 
     if (!summary) {
       this.lastSummary = null;
       return null;
+    }
+
+    // Build filtered claims section for transparency
+    let filteredSection = '';
+    if (filteredSegments.length > 0) {
+      const items = filteredSegments
+        .map(s => `- "${s.text}" [${s.trust}]`)
+        .join('\n');
+      filteredSection = `\n\n## Filtered (did not meet trust threshold)\n${items}`;
+    }
+
+    // Build myth alerts section
+    let mythSection = '';
+    if (myths.length > 0) {
+      const items = myths
+        .map(m => `- "${m.claim.substring(0, 200)}" — repeated ${m.occurrences}x without source [myth detected, severity: ${m.severity}]`)
+        .join('\n');
+      mythSection = `\n\n## Myth Alerts\n${items}`;
     }
 
     // Build page title: Sessions/{date}-{roomToken-prefix}
@@ -117,11 +155,15 @@ class SessionPersister {
       created: new Date(session.createdAt).toISOString(),
       expired: new Date().toISOString(),
       messages: session.context.length,
+      trust_level: this.trustGate.trustLevel,
+      filtered_claims: filteredSegments.length,
+      myths_detected: myths.length,
       decay_days: 90,
     };
 
     try {
-      await this._writeSessionPage(leafTitle, frontmatter, summary);
+      const fullBody = summary + mythSection + filteredSection;
+      await this._writeSessionPage(leafTitle, frontmatter, fullBody);
       this.lastSummary = summary; // Set only after successful wiki write
 
       // Rhythm tracking: compute and record session behavioral metadata

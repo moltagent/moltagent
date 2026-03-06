@@ -69,9 +69,35 @@ const TYPED_SECTIONS = /\/(people|projects|procedures|decisions)\//i;
 // Useful for the system, rarely useful as context for the user. Demote 0.3x.
 const META_SECTION = /\/meta\//i;
 
+// Session pages: compressed conversations that may contain ungrounded content.
+const SESSION_SECTION = /\/(sessions)\//i;
+
+// Pattern to detect inline ungrounded markers left by Layer 2 relaxed mode.
+const UNGROUNDED_MARKER = /\[ungrounded\]/i;
+
+/**
+ * Layer 3: Trust-aware scoring for session-sourced results.
+ * Session summaries are the lowest-trust knowledge source in the system.
+ * Wiki pages are curated; deck cards are actionable state; session summaries
+ * are compressed conversations that may contain ungrounded assistant output.
+ *
+ * @param {Object} result - Search result with subline/snippet content
+ * @returns {number} Multiplier (0.2 for ungrounded, 0.7 for legacy, 1.0 for trusted)
+ */
+function _sessionTrustMultiplier(result) {
+  const snippet = (result.subline || result.snippet || '');
+
+  // Content with inline [ungrounded] markers → heavily demoted
+  if (UNGROUNDED_MARKER.test(snippet)) return 0.2;
+
+  // Legacy sessions (pre-Layer 1, no trust metadata) → moderate caution
+  return 0.7;
+}
+
 /**
  * Score multiplier based on page path/section.
  * Pages with structured frontmatter types get 2x; Meta/ pages get 0.3x.
+ * Session pages are scored by trust metadata (Layer 3 Bullshit Protection).
  * @param {Object} result - Search result with link field
  * @returns {number} Multiplier
  */
@@ -79,6 +105,12 @@ function _pageScoreMultiplier(result) {
   const link = result.link || '';
   if (META_SECTION.test(link)) return 0.3;
   if (TYPED_SECTIONS.test(link)) return 2.0;
+
+  // Layer 3: Trust-aware retrieval — session pages scored by trust metadata
+  if (SESSION_SECTION.test(link)) {
+    return _sessionTrustMultiplier(result);
+  }
+
   return 1.0;
 }
 
