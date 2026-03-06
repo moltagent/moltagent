@@ -2185,8 +2185,7 @@ async function shutdown(signal) {
             persisted++;
             console.log(`[SHUTDOWN] Persisted session ${session.id} → ${page}`);
           } else {
-            const msgCount = (session.context || []).length;
-            console.log(`[SHUTDOWN] Session ${session.id} skipped (${msgCount} messages — need ≥6 context entries)`);
+            console.log(`[SHUTDOWN] Session ${session.id} skipped by persister (check SessionPersister logs for reason)`);
           }
         } catch (err) {
           console.warn(`[SHUTDOWN] Session persist failed for ${session.roomToken}: ${err.message}`);

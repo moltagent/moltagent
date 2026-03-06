@@ -101,6 +101,7 @@ class SessionPersister {
     );
 
     if (userAssistantMessages.length < this.minExchanges) {
+      console.log(`[SessionPersister] Skipped: only ${userAssistantMessages.length} user/assistant messages (need ≥${this.minExchanges})`);
       return null;
     }
 
@@ -117,9 +118,11 @@ class SessionPersister {
     const keptMessages = kept.filter(c => c.role === 'user' || c.role === 'assistant');
 
     // Generate summary from trust-gated context (sovereign role — zero cloud cost)
+    console.log(`[SessionPersister] Generating summary from ${keptMessages.length} trust-gated messages (${filteredSegments.length} filtered)`);
     const summary = await this._generateSummary(session, keptMessages);
 
     if (!summary) {
+      console.warn('[SessionPersister] Summary generation returned empty — session not persisted');
       this.lastSummary = null;
       return null;
     }
@@ -390,7 +393,15 @@ class SessionPersister {
         context: { trigger: 'session_summary' },
       });
 
-      return result?.content || null;
+      let content = result?.content || null;
+      // Strip think tags (qwen3 may wrap entire output in <think>...</think>)
+      if (content) {
+        content = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim() || null;
+      }
+      if (!content) {
+        console.warn(`[SessionPersister] LLM returned empty summary (result keys: ${result ? Object.keys(result).join(',') : 'null'})`);
+      }
+      return content;
     } catch (err) {
       console.error('[SessionPersister] Summary generation failed:', err.message);
       return null;
