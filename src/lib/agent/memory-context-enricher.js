@@ -165,7 +165,7 @@ class MemoryContextEnricher {
         .map(r => {
           if (r.source === 'deck') {
             const confidence = r.matchType === 'title' ? 'high' : 'medium';
-            return `[source: deck, match: ${r.matchType}, confidence: ${confidence}]\nCard #${r.cardId}: "${r.title}"\nStack: ${r.stackName}${r.duedate ? ` | Due: ${r.duedate}` : ''}${r.description ? '\n' + r.description.substring(0, 300) : ''}`;
+            return `[source: deck, match: ${r.matchType}, confidence: ${confidence}]\nCard #${r.cardId}: "${r.title}"${r.boardTitle ? `\nBoard: ${r.boardTitle}` : ''}\nStack: ${r.stackName}${r.duedate ? ` | Due: ${r.duedate}` : ''}${r.description ? '\n' + r.description.substring(0, 300) : ''}`;
           }
           const title = r.title || 'Untitled';
           const snippet = (r.excerpt || r.subline || '').substring(0, 300);
@@ -207,8 +207,9 @@ class MemoryContextEnricher {
   }
 
   /**
-   * Get cached deck board state. Refreshes every 2 minutes.
-   * @returns {Promise<Object>} Board state: { stackName: cards[] }
+   * Get cached multi-board deck state. Refreshes every 2 minutes.
+   * Fetches all non-archived boards and their stacks with cards.
+   * @returns {Promise<Object>} Board state: { "BoardTitle/StackTitle": cards[] }
    * @private
    */
   async _getDeckState() {
@@ -216,10 +217,48 @@ class MemoryContextEnricher {
     if (this._deckCache && (now - this._deckCacheTime) < this._deckCacheTTL) {
       return this._deckCache;
     }
-    const state = await this.deckClient.getAllCards();
-    this._deckCache = state;
-    this._deckCacheTime = now;
-    return state;
+
+    try {
+      const boards = await this.deckClient.listBoards();
+      const activeBoards = (boards || []).filter(b => !b.archived);
+      const state = {};
+
+      // Fetch stacks (with cards) for each board in parallel
+      const stackResults = await Promise.allSettled(
+        activeBoards.map(b => this.deckClient.getStacks(b.id).then(stacks => ({ board: b, stacks })))
+      );
+
+      for (const result of stackResults) {
+        if (result.status !== 'fulfilled') continue;
+        const { board, stacks } = result.value;
+        for (const stack of (stacks || [])) {
+          const key = `${board.title}/${stack.title}`;
+          const cards = (stack.cards || []).map(c => ({ ...c, _boardTitle: board.title, _boardId: board.id }));
+          state[key] = cards;
+        }
+      }
+
+      const boardCount = activeBoards.length;
+      const cardCount = Object.values(state).reduce((n, cards) => n + cards.length, 0);
+      if (boardCount > 1) {
+        this.logger.info(`[MemoryEnrich] Deck: ${cardCount} cards across ${boardCount} boards`);
+      }
+
+      this._deckCache = state;
+      this._deckCacheTime = now;
+      return state;
+    } catch (err) {
+      this.logger.warn(`[MemoryEnrich] Deck multi-board fetch failed: ${err.message}`);
+      // Fallback: try single-board getAllCards
+      try {
+        const state = await this.deckClient.getAllCards();
+        this._deckCache = state;
+        this._deckCacheTime = now;
+        return state;
+      } catch {
+        return this._deckCache || {};
+      }
+    }
   }
 
   /**
@@ -274,16 +313,21 @@ class MemoryContextEnricher {
           const descMatch = card.description && keywordArr.some(kw => descLower.includes(kw));
 
           if (titleMatch || descMatch) {
+            const boardTitle = card._boardTitle || '';
+            const stackLabel = stackKey.includes('/') ? stackKey.split('/').pop() : stackKey;
             results.push({
               source: 'deck',
               title: card.title,
-              snippet: `Stack: ${stackKey} | Card #${card.id}` +
+              snippet: (boardTitle ? `Board: ${boardTitle} | ` : '') +
+                `Stack: ${stackLabel} | Card #${card.id}` +
                 `${card.duedate ? ` | Due: ${card.duedate}` : ''}` +
                 `${card.description ? '\n' + card.description.substring(0, 300) : ''}`,
               matchType: titleMatch ? 'title' : 'content',
               score: titleMatch ? 0.9 : 0.6,
               cardId: card.id,
-              stackName: stackKey,
+              boardTitle: boardTitle,
+              boardId: card._boardId || null,
+              stackName: stackLabel,
               duedate: card.duedate || null,
               description: card.description || null
             });

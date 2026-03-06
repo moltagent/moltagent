@@ -195,20 +195,30 @@ asyncTest('enricher output includes source and confidence per result', async () 
 // Deck Enrichment Tests (Ring 2)
 // ============================================================
 
-function createMockDeckClient(cardsByStack = {}) {
+function createMockDeckClient(cardsByStack = {}, boards = null) {
+  // Default: single board with all stacks
+  const defaultBoards = [{ id: 1, title: 'MoltAgent Tasks', archived: false }];
+  const boardList = boards || defaultBoards;
+
+  // Convert cardsByStack to stacks array for getStacks()
+  const stacks = Object.entries(cardsByStack).map(([name, cards], idx) => ({
+    id: idx + 1, title: name, cards: cards || []
+  }));
+
   return {
+    listBoards: async () => boardList,
+    getStacks: async () => stacks,
     getAllCards: async () => cardsByStack,
     _callCount: 0,
-    get callCount() { return this._callCount; },
-    _origGetAllCards: null
+    get callCount() { return this._callCount; }
   };
 }
 
-function enricherWithDeck(deckCards, wikiResults = []) {
-  const deckClient = createMockDeckClient(deckCards);
-  // Track getAllCards call count
-  const origFn = deckClient.getAllCards;
-  deckClient.getAllCards = async function() {
+function enricherWithDeck(deckCards, wikiResults = [], boards = null) {
+  const deckClient = createMockDeckClient(deckCards, boards);
+  // Track listBoards call count
+  const origFn = deckClient.listBoards;
+  deckClient.listBoards = async function() {
     deckClient._callCount++;
     return origFn.call(this);
   };
@@ -324,6 +334,7 @@ asyncTest('invalidateDeckCache forces fresh fetch on next enrich', async () => {
 // -- Test 22: Deck API failure doesn't block wiki enrichment --
 asyncTest('Deck API failure does not block wiki enrichment', async () => {
   const failingDeckClient = {
+    listBoards: async () => { throw new Error('Deck API 503'); },
     getAllCards: async () => { throw new Error('Deck API 503'); }
   };
 
@@ -341,6 +352,102 @@ asyncTest('Deck API failure does not block wiki enrichment', async () => {
   assert.ok(result !== null, 'Should still return wiki results');
   assert.ok(result.includes('Carlos'), 'Wiki result should be present despite deck failure');
   assert.ok(!result.includes('source: deck'), 'No deck results should be present');
+});
+
+// ============================================================
+// Multi-Board Deck Tests
+// ============================================================
+
+// -- Test 23: Multi-board fetch returns cards from all boards --
+asyncTest('Multi-board: finds card on secondary board', async () => {
+  const boards = [
+    { id: 1, title: 'MoltAgent Tasks', archived: false },
+    { id: 2, title: 'Client Project', archived: false }
+  ];
+  const deckClient = {
+    listBoards: async () => boards,
+    getStacks: async (boardId) => {
+      if (boardId === 1) return [{ id: 1, title: 'Working', cards: [] }];
+      if (boardId === 2) return [{ id: 10, title: 'To Do', cards: [
+        { id: 500, title: 'Redesign landing page', description: 'New branding' }
+      ] }];
+      return [];
+    },
+    getAllCards: async () => ({})
+  };
+
+  const enricher = new MemoryContextEnricher({
+    memorySearcher: { search: async () => [] },
+    deckClient,
+    logger: silentLogger
+  });
+
+  const result = await enricher.enrich('What about the "landing page redesign"?', 'question');
+  assert.ok(result !== null, 'Should find card on secondary board');
+  assert.ok(result.includes('Redesign landing page'), 'Should include card title');
+  assert.ok(result.includes('Client Project'), 'Should include board name');
+});
+
+// -- Test 24: Archived boards are excluded --
+asyncTest('Multi-board: archived boards are excluded', async () => {
+  const boards = [
+    { id: 1, title: 'Active Board', archived: false },
+    { id: 2, title: 'Old Board', archived: true }
+  ];
+  let fetchedBoardIds = [];
+  const deckClient = {
+    listBoards: async () => boards,
+    getStacks: async (boardId) => {
+      fetchedBoardIds.push(boardId);
+      return [{ id: 1, title: 'Stack', cards: [
+        { id: 1, title: 'Test Card', description: '' }
+      ] }];
+    },
+    getAllCards: async () => ({})
+  };
+
+  const enricher = new MemoryContextEnricher({
+    memorySearcher: { search: async () => [] },
+    deckClient,
+    logger: silentLogger
+  });
+
+  await enricher.enrich('Test Card status', 'question');
+  assert.ok(fetchedBoardIds.includes(1), 'Should fetch active board');
+  assert.ok(!fetchedBoardIds.includes(2), 'Should NOT fetch archived board');
+});
+
+// -- Test 25: Results include board name in snippet --
+asyncTest('Multi-board: search results include board name in snippet', async () => {
+  const { enricher } = enricherWithDeck(
+    { working: [{ id: 42, title: 'Fix API endpoint', description: 'Bug in auth' }] },
+    [],
+    [{ id: 1, title: 'Sprint 5', archived: false }]
+  );
+
+  const result = await enricher.enrich('What about the API endpoint fix?', 'question');
+  assert.ok(result !== null);
+  assert.ok(result.includes('Sprint 5'), 'Should include board name in enrichment');
+});
+
+// -- Test 26: listBoards failure falls back to getAllCards --
+asyncTest('Multi-board: listBoards failure falls back to single board', async () => {
+  const deckClient = {
+    listBoards: async () => { throw new Error('503'); },
+    getAllCards: async () => ({
+      inbox: [{ id: 1, title: 'Fallback card', description: '' }]
+    })
+  };
+
+  const enricher = new MemoryContextEnricher({
+    memorySearcher: { search: async () => [] },
+    deckClient,
+    logger: silentLogger
+  });
+
+  const result = await enricher.enrich('What about the "fallback card"?', 'question');
+  assert.ok(result !== null, 'Should find card via getAllCards fallback');
+  assert.ok(result.includes('Fallback card'), 'Should include fallback card title');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 1000);
