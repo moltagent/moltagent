@@ -65,6 +65,8 @@ class EmbeddingRefresher {
 
     /** Set to true after the first tick so we never bootstrap again. */
     this._bootstrapped = false;
+    /** Pages with no content — skip in stale queue to avoid blocking real candidates. */
+    this._emptyPages = new Set();
   }
 
   // ---------------------------------------------------------------------------
@@ -227,6 +229,9 @@ class EmbeddingRefresher {
 
       // Normal incremental tick — pick the MAX_PER_TICK stalest pages
       const candidates = await this._stalestPages(MAX_PER_TICK);
+      if (candidates.length > 0) {
+        this.logger.info(`[EmbeddingRefresher] tick: ${candidates.length} stale page(s): ${candidates.map(p => p.title).join(', ')}`);
+      }
 
       for (const page of candidates) {
         try {
@@ -292,8 +297,10 @@ class EmbeddingRefresher {
     const path = this._pagePath(page);
     const content = await this.collectives.readPageContent(path);
 
-    // readPageContent returns null for 404; skip rather than embed empty string
+    // readPageContent returns null for 404; skip rather than embed empty string.
+    // Track empty pages so they don't permanently block the stale queue.
     if (!content || typeof content !== 'string' || content.trim() === '') {
+      this._emptyPages.add(page.title);
       return false;
     }
 
@@ -305,6 +312,7 @@ class EmbeddingRefresher {
       updated_at: new Date().toISOString()
     });
 
+    this.logger.info(`[EmbeddingRefresher] Embedded: ${page.title}`);
     return true;
   }
 
@@ -354,7 +362,7 @@ class EmbeddingRefresher {
 
     // Score each page by its last embedded timestamp (0 = never embedded)
     const scored = pages
-      .filter(p => p && p.title)
+      .filter(p => p && p.title && !this._emptyPages.has(p.title))
       .map(p => {
         let ts = 0;
         try {
