@@ -190,5 +190,34 @@ function makeWriter(ocsOverrides = {}, webdavOverrides = {}, opts = {}) {
     assert.strictEqual(result.pages[0].title, 'page1');
   });
 
+  // 11. 404 error does NOT mark OCS unhealthy
+  await asyncTest('_markOCSDown: 404 does not flip health flag', async () => {
+    const writer = makeWriter();
+    assert.strictEqual(writer.isOCSHealthy, true);
+
+    const err404 = new Error('HTTP 404 Not Found');
+    err404.statusCode = 404;
+    writer._markOCSDown(err404);
+
+    assert.strictEqual(writer.isOCSHealthy, true, 'OCS should stay healthy after 404');
+  });
+
+  // 12. 500 error DOES mark OCS unhealthy
+  await asyncTest('_markOCSDown: 500 flips health flag', async () => {
+    const writer = makeWriter();
+    const err500 = new Error('HTTP 500 Internal Server Error');
+    err500.statusCode = 500;
+    writer._markOCSDown(err500);
+
+    assert.strictEqual(writer.isOCSHealthy, false, 'OCS should be unhealthy after 500');
+  });
+
+  // 13. Error message containing "404" (no statusCode) also skips marking unhealthy
+  await asyncTest('_markOCSDown: message-only 404 does not flip health flag', async () => {
+    const writer = makeWriter();
+    writer._markOCSDown(new Error('WebDAV 404 path not found'));
+    assert.strictEqual(writer.isOCSHealthy, true);
+  });
+
   setTimeout(() => { summary(); exitWithCode(); }, 200);
 })();

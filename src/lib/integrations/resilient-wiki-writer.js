@@ -270,6 +270,13 @@ class ResilientWikiWriter {
   }
 
   _markOCSDown(err) {
+    // 404 = bad path, not a service outage — don't mark OCS unhealthy
+    const status = err.statusCode || err.status || 0;
+    const is404 = status === 404 || (err.message && err.message.includes('404'));
+    if (is404) {
+      this.logger.warn?.(`[ResilientWikiWriter] OCS 404 (bad path, not marking unhealthy): ${err.message}`);
+      return;
+    }
     this._ocsHealthy = false;
     this._ocsLastFailure = Date.now();
     this.logger.warn?.(`[ResilientWikiWriter] OCS marked unhealthy: ${err.message}`);

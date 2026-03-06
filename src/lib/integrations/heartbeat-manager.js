@@ -728,9 +728,9 @@ class HeartbeatManager {
             const hash = this._simpleHash(logFile.content);
             if (hash !== this._lastLearningLogHash) {
               if (this.resilientWriter) {
-                await this.resilientWriter.updatePage('Meta/Learning Log/Readme.md', logFile.content);
+                await this.resilientWriter.updatePage('Meta/Learning Log.md', logFile.content);
               } else {
-                await this.collectivesClient.writePageContent('Meta/Learning Log/Readme.md', logFile.content);
+                await this.collectivesClient.writePageContent('Meta/Learning Log.md', logFile.content);
               }
               this._lastLearningLogHash = hash;
               console.log('[Heartbeat] Synced LearningLog to Collectives');
@@ -1537,9 +1537,9 @@ class HeartbeatManager {
     // Format and write
     const markdown = this._formatKnowledgeStats(stats);
     if (this.resilientWriter) {
-      await this.resilientWriter.updatePage('Meta/Knowledge Stats/Readme.md', markdown);
+      await this.resilientWriter.updatePage('Meta/Knowledge Stats.md', markdown);
     } else {
-      await this.collectivesClient.writePageContent('Meta/Knowledge Stats/Readme.md', markdown);
+      await this.collectivesClient.writePageContent('Meta/Knowledge Stats.md', markdown);
     }
     this._lastStatsHash = statsHash;
     console.log('[Heartbeat] Updated Knowledge Stats wiki page');
