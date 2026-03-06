@@ -41,6 +41,7 @@
 const { createErrorHandler } = require('../errors/error-handler');
 const { MODES } = require('../integrations/cockpit-modes');
 const ProvenanceAnnotator = require('../security/provenance-annotator');
+const { getFeedbackMessage } = require('../talk/feedback-messages');
 
 /** Domain intents that can be handled locally with focused tool subsets. */
 const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search']);
@@ -478,6 +479,12 @@ class MessageProcessor {
         const { useLocal, useDomainTools, intent } = await this._smartMixClassify(pipelineMessage, session, extracted.token);
         console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}`);
 
+        // Intent-specific feedback: acknowledge the user immediately (fire-and-forget)
+        const feedbackMsg = getFeedbackMessage(intent);
+        if (feedbackMsg && extracted.token) {
+          this.sendTalkReply(extracted.token, feedbackMsg).catch(() => {});
+        }
+
         if (flushPrompt) {
           // Memory flush pending — escalate to agentLoop regardless of smart-mix classification
           // (wiki_write requires the full agent loop, MicroPipeline can't persist)
@@ -617,6 +624,11 @@ class MessageProcessor {
         }
       } else if (this.agentLoop) {
         // Session 14: AgentLoop handles all natural language via tool-calling LLM
+        // Generic feedback — no classification available in this path
+        if (extracted.token) {
+          const agentFeedback = getFeedbackMessage('complex');
+          if (agentFeedback) this.sendTalkReply(extracted.token, agentFeedback).catch(() => {});
+        }
         const voiceReplyEnabled = extracted._isVoice && this.voiceManager && this.voiceManager.mode === 'full';
         const agentOpts = {
           messageId: extracted.messageId,
