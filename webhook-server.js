@@ -2171,11 +2171,16 @@ async function shutdown(signal) {
       const activeSessions = sessionManager.getAllSessions ? sessionManager.getAllSessions() : [];
       console.log(`[SHUTDOWN] ${activeSessions.length} active session(s) to persist`);
       let persisted = 0;
+      const PERSIST_TIMEOUT_MS = 90000; // 90s per session — leaves 30s buffer in 120s grace
       for (const session of activeSessions) {
         const messageCount = (session.context || []).length;
         console.log(`[SHUTDOWN] Persisting session ${session.id} (room=${session.roomToken}, messages=${messageCount})`);
         try {
-          const page = await sessionPersister.persistSession(session);
+          const persistPromise = sessionPersister.persistSession(session);
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Shutdown persist timeout (90s)')), PERSIST_TIMEOUT_MS)
+          );
+          const page = await Promise.race([persistPromise, timeoutPromise]);
           if (page) {
             persisted++;
             console.log(`[SHUTDOWN] Persisted session ${session.id} → ${page}`);

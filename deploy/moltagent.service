@@ -49,6 +49,9 @@ Environment=SEARXNG_URL=http://localhost:8080
 Environment=KNOWLEDGE_ADMIN_USER=Funana
 Environment=TEST_NC_PASSWORDS=false
 
+# Graceful shutdown: LLM summary + trust pipeline needs up to 90s per session
+TimeoutStopSec=120
+
 # Restart policy
 Restart=on-failure
 RestartSec=30
