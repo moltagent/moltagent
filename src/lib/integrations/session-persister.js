@@ -393,7 +393,7 @@ class SessionPersister {
         context: { trigger: 'session_summary' },
       });
 
-      let content = result?.content || null;
+      let content = result?.result || result?.content || null;
       // Strip think tags (qwen3 may wrap entire output in <think>...</think>)
       if (content) {
         content = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim() || null;

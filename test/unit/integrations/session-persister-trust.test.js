@@ -56,7 +56,7 @@ function mockWiki() {
 // Mock LLM router
 function mockRouter(summaryText = '## Summary\nTest summary.') {
   return {
-    route: async () => ({ content: summaryText })
+    route: async () => ({ result: summaryText })
   };
 }
 

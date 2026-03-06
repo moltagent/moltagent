@@ -33,7 +33,7 @@ function createMockWikiClient(overrides = {}) {
 function createMockLLMRouter(overrides = {}) {
   return {
     route: overrides.route || async function () {
-      return { content: '- Decision: approved budget\n- Action: schedule meeting\n- Fact: Q3 shortfall confirmed' };
+      return { result: '- Decision: approved budget\n- Action: schedule meeting\n- Fact: Q3 shortfall confirmed' };
     },
     ...overrides
   };
@@ -125,7 +125,7 @@ async function runTests() {
     const router = createMockLLMRouter({
       route: async (request) => {
         routeCalledWith = request;
-        return { content: '- Summary point 1\n- Summary point 2' };
+        return { result: '- Summary point 1\n- Summary point 2' };
       }
     });
     const wiki = createMockWikiClient();

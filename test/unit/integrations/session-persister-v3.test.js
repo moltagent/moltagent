@@ -124,7 +124,7 @@ function createOcsWikiClient(opts = {}) {
 function createMockLLMRouter(overrides = {}) {
   return {
     route: overrides.route || async function () {
-      return { content: STRUCTURED_SUMMARY };
+      return { result: STRUCTURED_SUMMARY };
     },
     ...overrides
   };
@@ -450,7 +450,7 @@ async function runTests() {
     const router = {
       route: async ({ content }) => {
         promptContent = content;
-        return { content: STRUCTURED_SUMMARY };
+        return { result: STRUCTURED_SUMMARY };
       }
     };
     const persister = new SessionPersister({ wikiClient: wiki, llmRouter: router });
