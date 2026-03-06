@@ -2486,33 +2486,59 @@ class ToolRegistry {
         required: ['query']
       },
       handler: async (args) => {
-        const collectiveId = await wiki.resolveCollective();
-        if (!collectiveId) return 'Could not find the knowledge wiki collective.';
+        const ncSearch = this.clients.ncSearchClient;
+        let results = [];
 
-        let results;
-        try {
-          results = await wiki.searchPages(collectiveId, args.query);
-        } catch (err) {
-          // Collectives search endpoint often returns HTTP 500 — fall back to list + filter
-          this.logger.warn(`[wiki_search] searchPages failed (${err.message}), falling back to listPages`);
-          const allPages = await wiki.listPages(collectiveId);
-          const queryLower = (args.query || '').toLowerCase();
-          results = (allPages || []).filter(p =>
-            (p.title || '').toLowerCase().includes(queryLower)
-          );
+        // Primary: NC Unified Search (collectives-page-content + collectives-pages)
+        if (ncSearch) {
+          try {
+            const [contentHits, titleHits] = await Promise.allSettled([
+              ncSearch.searchProvider('collectives-page-content', args.query, 5),
+              ncSearch.searchProvider('collectives-pages', args.query, 5)
+            ]);
+            const content = contentHits.status === 'fulfilled' ? contentHits.value : [];
+            const titles = titleHits.status === 'fulfilled' ? titleHits.value : [];
+
+            // Merge, deduplicate by title
+            const seen = new Set();
+            for (const entry of [...titles, ...content]) {
+              const key = (entry.title || '').toLowerCase();
+              if (key && !seen.has(key)) {
+                seen.add(key);
+                results.push(entry);
+              }
+            }
+          } catch (err) {
+            this.logger.warn(`[wiki_search] NC Unified Search failed: ${err.message}`);
+          }
         }
 
-        if (!Array.isArray(results) || results.length === 0) {
+        // Fallback: listPages + client-side filter
+        if (results.length === 0) {
+          try {
+            const collectiveId = await wiki.resolveCollective();
+            if (collectiveId) {
+              const allPages = await wiki.listPages(collectiveId);
+              const queryLower = (args.query || '').toLowerCase();
+              results = (allPages || []).filter(p =>
+                (p.title || '').toLowerCase().includes(queryLower)
+              );
+            }
+          } catch (err) {
+            this.logger.warn(`[wiki_search] listPages fallback failed: ${err.message}`);
+          }
+        }
+
+        if (results.length === 0) {
           return `No wiki pages found matching "${args.query}".`;
         }
 
         return results.map(p => {
           let line = `- "${p.title}"`;
           if (p.emoji) line += ` ${p.emoji}`;
-          if (p.excerpt || p.snippet) line += ` — ${(p.excerpt || p.snippet).substring(0, 100)}`;
-          if (p.id) {
-            line += ` [View](${wiki.buildPageUrl(p.title, p.id)})`;
-          }
+          if (p.excerpt || p.subline || p.snippet) line += ` — ${(p.excerpt || p.subline || p.snippet).substring(0, 100)}`;
+          if (p.resourceUrl) line += ` [View](${p.resourceUrl})`;
+          else if (p.id) line += ` [View](${wiki.buildPageUrl(p.title, p.id)})`;
           return line;
         }).join('\n');
       }

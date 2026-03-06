@@ -115,27 +115,40 @@ asyncTest('wiki_write updates page when found', async () => {
 
 // -- wiki_search --
 
-asyncTest('wiki_search returns formatted results', async () => {
-  const mockCollectives = createMockCollectivesClient({
-    resolveCollective: 10,
-    searchPages: [
-      { title: 'John Smith', excerpt: 'VP of Marketing' },
-      { title: 'Q3 Campaign', excerpt: 'Led by John' }
+asyncTest('wiki_search returns formatted results via NC Unified Search', async () => {
+  const mockCollectives = createMockCollectivesClient({ resolveCollective: 10 });
+  const mockSearchClient = {
+    searchProvider: async (providerId, query) => [
+      { title: 'John Smith', subline: 'VP of Marketing', resourceUrl: '/wiki/John' },
+      { title: 'Q3 Campaign', subline: 'Led by John', resourceUrl: '/wiki/Q3' }
     ]
-  });
-  const registry = new ToolRegistry({ collectivesClient: mockCollectives });
+  };
+  const registry = new ToolRegistry({ collectivesClient: mockCollectives, ncSearchClient: mockSearchClient });
   const result = await registry.execute('wiki_search', { query: 'John' });
   assert.ok(result.success);
   assert.ok(result.result.includes('John Smith'));
   assert.ok(result.result.includes('Q3 Campaign'));
 });
 
-asyncTest('wiki_search returns no results message', async () => {
+asyncTest('wiki_search falls back to listPages when no ncSearchClient', async () => {
   const mockCollectives = createMockCollectivesClient({
     resolveCollective: 10,
-    searchPages: []
+    listPages: [
+      { title: 'John Smith', excerpt: 'VP of Marketing' },
+      { title: 'Q3 Campaign', excerpt: 'Led by John' },
+      { title: 'Budget Report', excerpt: 'Q4 figures' }
+    ]
   });
   const registry = new ToolRegistry({ collectivesClient: mockCollectives });
+  const result = await registry.execute('wiki_search', { query: 'John' });
+  assert.ok(result.success);
+  assert.ok(result.result.includes('John Smith'));
+});
+
+asyncTest('wiki_search returns no results message', async () => {
+  const mockCollectives = createMockCollectivesClient({ resolveCollective: 10 });
+  const mockSearchClient = { searchProvider: async () => [] };
+  const registry = new ToolRegistry({ collectivesClient: mockCollectives, ncSearchClient: mockSearchClient });
   const result = await registry.execute('wiki_search', { query: 'nonexistent' });
   assert.ok(result.success);
   assert.ok(result.result.includes('No wiki pages found'));

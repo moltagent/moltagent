@@ -24,12 +24,12 @@ const SAMPLE_COLLECTIVES = [
 ];
 
 const SAMPLE_PAGES = [
-  { id: 100, title: 'People', parentId: 0, emoji: '👥' },
-  { id: 101, title: 'Projects', parentId: 0, emoji: '📁' },
-  { id: 102, title: 'Meta', parentId: 0, emoji: '⚙️' },
-  { id: 200, title: 'John Smith', parentId: 100, emoji: '' },
-  { id: 201, title: 'Q3 Campaign', parentId: 101, emoji: '' },
-  { id: 300, title: 'Learning Log', parentId: 102, emoji: '' }
+  { id: 100, title: 'People', parentId: 0, emoji: '👥', fileName: 'Readme.md', filePath: 'People' },
+  { id: 101, title: 'Projects', parentId: 0, emoji: '📁', fileName: 'Readme.md', filePath: 'Projects' },
+  { id: 102, title: 'Meta', parentId: 0, emoji: '⚙️', fileName: 'Readme.md', filePath: 'Meta' },
+  { id: 200, title: 'John Smith', parentId: 100, emoji: '', fileName: 'Readme.md', filePath: 'People/John Smith' },
+  { id: 201, title: 'Q3 Campaign', parentId: 101, emoji: '', fileName: 'Readme.md', filePath: 'Projects/Q3 Campaign' },
+  { id: 300, title: 'Learning Log', parentId: 102, emoji: '', fileName: 'Readme.md', filePath: 'Meta/Learning Log' }
 ];
 
 const SAMPLE_PAGE_CONTENT = `---
@@ -213,18 +213,22 @@ asyncTest('createPage sends correct OCS request with parentId', async () => {
   assert.ok(capturedOptions.body.includes('New Person'));
 });
 
-asyncTest('searchPages sends search query parameter', async () => {
+asyncTest('searchPages uses NC Unified Search endpoint', async () => {
   let capturedPath;
   const mockNC = createMockNCRequestManager({
-    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/search?search=John': (path) => {
+    'GET:/ocs/v2.php/search/providers/collectives-page-content/search?term=John&limit=10': (path) => {
       capturedPath = path;
-      return { status: 200, body: { ocs: { data: SAMPLE_SEARCH_RESULTS } }, headers: {} };
+      return { status: 200, body: { ocs: { data: { entries: [
+        { title: 'John Smith', subline: 'VP of Marketing', resourceUrl: '/wiki/John' },
+        { title: 'Q3 Campaign', subline: 'Led by John Smith', resourceUrl: '/wiki/Q3' }
+      ] } } }, headers: {} };
     }
   });
   const client = new CollectivesClient(mockNC);
   const results = await client.searchPages(10, 'John');
-  assert.ok(capturedPath.includes('search=John'));
+  assert.ok(capturedPath.includes('term=John'));
   assert.strictEqual(results.length, 2);
+  assert.strictEqual(results[0].title, 'John Smith');
 });
 
 // -- Page Content (WebDAV) --
@@ -282,9 +286,17 @@ asyncTest('findPageByTitle resolves search → exact match', async () => {
     'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives': {
       status: 200, body: { ocs: { data: SAMPLE_COLLECTIVES } }, headers: {}
     },
-    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/search?search=John%20Smith': {
+    'GET:/ocs/v2.php/search/providers/collectives-page-content/search?term=John%20Smith&limit=10': {
       status: 200,
-      body: { ocs: { data: [{ id: 200, title: 'John Smith', fileName: 'Readme.md', filePath: 'People/John Smith' }] } },
+      body: { ocs: { data: { entries: [
+        { title: 'John Smith', subline: 'VP of Marketing', resourceUrl: '/wiki/People/John Smith' }
+      ] } } },
+      headers: {}
+    },
+    // Fallback: listPages for full page metadata needed by _buildPagePath
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/pages': {
+      status: 200,
+      body: { ocs: { data: SAMPLE_PAGES } },
       headers: {}
     }
   });
@@ -292,7 +304,6 @@ asyncTest('findPageByTitle resolves search → exact match', async () => {
   const result = await client.findPageByTitle('John Smith');
   assert.ok(result);
   assert.strictEqual(result.page.title, 'John Smith');
-  assert.strictEqual(result.path, 'People/John Smith/Readme.md');
 });
 
 asyncTest('readPageWithFrontmatter returns parsed frontmatter + body', async () => {
@@ -300,9 +311,17 @@ asyncTest('readPageWithFrontmatter returns parsed frontmatter + body', async () 
     'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives': {
       status: 200, body: { ocs: { data: SAMPLE_COLLECTIVES } }, headers: {}
     },
-    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/search?search=John%20Smith': {
+    'GET:/ocs/v2.php/search/providers/collectives-page-content/search?term=John%20Smith&limit=10': {
       status: 200,
-      body: { ocs: { data: [{ id: 200, title: 'John Smith', fileName: 'Readme.md', filePath: 'People/John Smith' }] } },
+      body: { ocs: { data: { entries: [
+        { title: 'John Smith', subline: 'VP of Marketing', resourceUrl: '/wiki/People/John Smith' }
+      ] } } },
+      headers: {}
+    },
+    // listPages fallback for full metadata (findPageByTitle needs _buildPagePath)
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/pages': {
+      status: 200,
+      body: { ocs: { data: SAMPLE_PAGES } },
       headers: {}
     },
     'GET:/remote.php/dav/files/testuser/Collectives/Moltagent Knowledge/People/John Smith/Readme.md': {

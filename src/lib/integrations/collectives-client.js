@@ -239,13 +239,38 @@ class CollectivesClient {
   }
 
   /**
-   * Search pages in a collective
-   * @param {number} collectiveId - Collective ID
+   * Search pages in a collective via NC Unified Search.
+   * The Collectives OCS search endpoint (/collectives/{id}/search) returns HTTP 500,
+   * so we use the NC Unified Search provider 'collectives-page-content' instead.
+   * Falls back to listPages + client-side filter if Unified Search fails.
+   * @param {number} collectiveId - Collective ID (unused — Unified Search searches all collectives)
    * @param {string} query - Search query
-   * @returns {Promise<Array>} Matching pages
+   * @returns {Promise<Array>} Matching pages with at least { title }
    */
   async searchPages(collectiveId, query) {
-    return await this._ocsRequest('GET', `/collectives/${collectiveId}/search?search=${encodeURIComponent(query)}`);
+    try {
+      const response = await this.nc.request(
+        `/ocs/v2.php/search/providers/collectives-page-content/search?term=${encodeURIComponent(query)}&limit=10`,
+        { method: 'GET', headers: { 'OCS-APIRequest': 'true', 'Accept': 'application/json' } }
+      );
+      const entries = response.body?.ocs?.data?.entries;
+      if (Array.isArray(entries) && entries.length > 0) {
+        return entries.map(e => ({
+          title: e.title || '',
+          excerpt: e.subline || '',
+          resourceUrl: e.resourceUrl || ''
+        }));
+      }
+    } catch {
+      // Unified Search failed — fall through to listPages filter
+    }
+
+    // Fallback: list all pages + client-side title filter
+    const allPages = await this.listPages(collectiveId);
+    const queryLower = (query || '').toLowerCase();
+    return (allPages || []).filter(p =>
+      (p.title || '').toLowerCase().includes(queryLower)
+    );
   }
 
   /**
@@ -396,22 +421,10 @@ class CollectivesClient {
     const parts = title.split('/');
     const leafTitle = parts[parts.length - 1];
 
-    // Try search first, fall back to listPages scan if search fails
-    let candidates = [];
-    try {
-      const results = await this.searchPages(collectiveId, leafTitle);
-      if (Array.isArray(results) && results.length > 0) {
-        candidates = results;
-      }
-    } catch {
-      // Search endpoint may be unavailable (500) — fall back to page list
-    }
-
-    if (candidates.length === 0) {
-      // Fallback: scan all pages
-      const allPages = await this.listPages(collectiveId);
-      candidates = Array.isArray(allPages) ? allPages : [];
-    }
+    // listPages provides full metadata (fileName, filePath) needed by _buildPagePath.
+    // Unified Search results lack these fields, so we go direct to listPages.
+    const allPages = await this.listPages(collectiveId);
+    const candidates = Array.isArray(allPages) ? allPages : [];
 
     // Exact title match on the leaf name (case-insensitive)
     const exact = candidates.find(p =>

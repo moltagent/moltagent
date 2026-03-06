@@ -226,10 +226,7 @@ Rules:
       }
     }
 
-    // Invalidate memory search cache so new knowledge is findable
-    if (writesAttempted > 0 && this.memory?.invalidateCache) {
-      this.memory.invalidateCache();
-    }
+
 
     // Entity extraction: read actual page content for knowledge graph
     if (writesAttempted > 0 && this.entityExtractor) {

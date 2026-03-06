@@ -37,13 +37,6 @@ function createMockRouter(result) {
   };
 }
 
-function createMockMemorySearcher() {
-  let invalidated = false;
-  return {
-    invalidateCache: () => { invalidated = true; },
-    wasInvalidated: () => invalidated
-  };
-}
 
 function makeEntries(count) {
   const entries = [];
@@ -209,9 +202,9 @@ asyncTest('tick() handles {"nothing": true} gracefully (no writes)', async () =>
   assert.strictEqual(actLog.getProcessedCount(), 5, 'Should still mark entries as processed');
 });
 
-// -- Test 9: tick() invalidates memory search cache after writes --
-asyncTest('tick() invalidates memory search cache after writes', async () => {
-  const memSearcher = createMockMemorySearcher();
+// -- Test 9: tick() works without invalidateCache (NC indexes automatically) --
+asyncTest('tick() does not require invalidateCache on memorySearcher', async () => {
+  const memSearcher = {}; // No invalidateCache method — NC handles indexing
   const extractor = new HeartbeatExtractor({
     activityLogger: createMockActivityLogger(makeEntries(5)),
     wikiClient: createMockWikiClient(),
@@ -225,7 +218,8 @@ asyncTest('tick() invalidates memory search cache after writes', async () => {
 
   await extractor.tick();
 
-  assert.strictEqual(memSearcher.wasInvalidated(), true, 'Should invalidate cache');
+  // Should complete without error — no invalidateCache needed
+  assert.ok(true, 'tick() completes without invalidateCache');
 });
 
 // -- Test 10: tick() handles wiki write failures gracefully --
