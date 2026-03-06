@@ -309,7 +309,7 @@ class FreshnessChecker {
           flagged.push(page);
         }
       } catch (err) {
-        console.warn(`[Freshness] Error checking page ${page.title}:`, err.message);
+        console.warn(`[FreshnessChecker] Check failed for "${page.title}": ${err.message}`);
       }
     }
 

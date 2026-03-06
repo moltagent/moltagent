@@ -893,7 +893,7 @@ class HeartbeatManager {
         workflowBoards: results.workflow?.boardsProcessed || 0,
         workflowCards: results.workflow?.cardsProcessed || 0,
         cockpitUpdated: results.cockpit?.updated ? 1 : 0,
-        freshnessChecked: typeof results.freshness?.checked === 'number' ? results.freshness.checked : (results.freshness?.checked === false ? -1 : 0),
+        freshnessChecked: typeof results.freshness?.checked === 'number' ? results.freshness.checked : 0,
         freshnessFlagged: results.freshness?.flagged || 0,
         meetingsPrepped: results.meetingPrep?.prepped || 0,
         ocsHealthy: this.resilientWriter?.isOCSHealthy ?? 'unknown',

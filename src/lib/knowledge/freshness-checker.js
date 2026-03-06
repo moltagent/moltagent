@@ -92,7 +92,7 @@ class FreshnessChecker {
           staleCount++;
         }
       } catch (err) {
-        console.error(`[FreshnessChecker] Error checking "${page.title}":`, err.message);
+        console.warn(`[FreshnessChecker] Check failed for "${page.title}": ${err.message}`);
       }
     }
 
