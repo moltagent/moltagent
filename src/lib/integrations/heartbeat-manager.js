@@ -168,6 +168,7 @@ class HeartbeatManager {
     // Collectives + NC Files (optional, for LearningLog sync to wiki)
     this.collectivesClient = config.collectivesClient || null;
     this.ncFilesClient = config.ncFilesClient || null;
+    this.resilientWriter = config.resilientWriter || null;
     this._lastLearningLogHash = null;
     this._lastStatsHash = null;
     this._lastFreshnessResult = null;
@@ -726,7 +727,11 @@ class HeartbeatManager {
           if (logFile && logFile.content) {
             const hash = this._simpleHash(logFile.content);
             if (hash !== this._lastLearningLogHash) {
-              await this.collectivesClient.writePageContent('Meta/Learning Log/Readme.md', logFile.content);
+              if (this.resilientWriter) {
+                await this.resilientWriter.updatePage('Meta/Learning Log/Readme.md', logFile.content);
+              } else {
+                await this.collectivesClient.writePageContent('Meta/Learning Log/Readme.md', logFile.content);
+              }
               this._lastLearningLogHash = hash;
               console.log('[Heartbeat] Synced LearningLog to Collectives');
             }
@@ -891,6 +896,7 @@ class HeartbeatManager {
         freshnessChecked: typeof results.freshness?.checked === 'number' ? results.freshness.checked : (results.freshness?.checked === false ? -1 : 0),
         freshnessFlagged: results.freshness?.flagged || 0,
         meetingsPrepped: results.meetingPrep?.prepped || 0,
+        ocsHealthy: this.resilientWriter?.isOCSHealthy ?? 'unknown',
         errors: results.errors.length
       });
 
@@ -1530,7 +1536,11 @@ class HeartbeatManager {
 
     // Format and write
     const markdown = this._formatKnowledgeStats(stats);
-    await this.collectivesClient.writePageContent('Meta/Knowledge Stats/Readme.md', markdown);
+    if (this.resilientWriter) {
+      await this.resilientWriter.updatePage('Meta/Knowledge Stats/Readme.md', markdown);
+    } else {
+      await this.collectivesClient.writePageContent('Meta/Knowledge Stats/Readme.md', markdown);
+    }
     this._lastStatsHash = statsHash;
     console.log('[Heartbeat] Updated Knowledge Stats wiki page');
   }

@@ -29,8 +29,8 @@ class ToolRegistry {
    * @param {Object} [options.searchAdapters] - Map of commercial search adapters { brave, perplexity, exa }
    * @param {Object} [options.logger]
    */
-  constructor({ deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, logger }) {
-    this.clients = { deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler };
+  constructor({ deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter, logger }) {
+    this.clients = { deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter };
     this.logger = logger || console;
 
     /** @type {Map<string, {name: string, description: string, parameters: Object, handler: Function}>} */
@@ -2282,6 +2282,7 @@ class ToolRegistry {
   _registerWikiTools() {
     const wiki = this.clients.collectivesClient;
     if (!wiki) return;
+    const resilientWriter = this.clients.resilientWriter;
 
     this.register({
       name: 'wiki_read',
@@ -2365,8 +2366,12 @@ class ToolRegistry {
           }
 
           if (existing) {
-            // Update existing page
-            await wiki.writePageContent(existing.path, writeContent);
+            // Update existing page — resilient path if available
+            if (resilientWriter) {
+              await resilientWriter.updatePage(existing.path, writeContent);
+            } else {
+              await wiki.writePageContent(existing.path, writeContent);
+            }
 
             // Touch page to invalidate NC Text editor cache
             if (existing.page && existing.page.id) {
@@ -2414,7 +2419,11 @@ class ToolRegistry {
             const fallbackPath = existingByList.filePath
               ? `${existingByList.filePath}/${existingByList.fileName}`
               : existingByList.fileName || `${leafTitle}.md`;
-            await wiki.writePageContent(fallbackPath, writeContent);
+            if (resilientWriter) {
+              await resilientWriter.updatePage(fallbackPath, writeContent);
+            } else {
+              await wiki.writePageContent(fallbackPath, writeContent);
+            }
             // Touch page to invalidate NC Text editor cache
             if (existingByList.id) {
               await wiki.touchPage(collectiveId, existingByList.id);
@@ -2435,11 +2444,15 @@ class ToolRegistry {
             ? `${created.filePath}/${created.fileName}`
             : created.fileName || `${leafTitle}.md`;
 
-          // Write content
-          await wiki.writePageContent(pagePath, writeContent);
+          // Write content — resilient path if available
+          if (resilientWriter) {
+            await resilientWriter.updatePage(pagePath, writeContent);
+          } else {
+            await wiki.writePageContent(pagePath, writeContent);
+          }
 
           // Touch page to invalidate NC Text editor cache
-          await wiki.touchPage(collectiveId, created.id);
+          try { await wiki.touchPage(collectiveId, created.id); } catch { /* best effort */ }
 
           // Log to learning log
           if (this.clients.learningLog) {

@@ -34,10 +34,11 @@ class MetadataGardener {
    * @param {Object} [options.logger]
    * @param {number} [options.pagesPerTick=2] - Max pages to garden per heartbeat
    */
-  constructor({ collectivesClient, router, logger, pagesPerTick = 2 } = {}) {
+  constructor({ collectivesClient, router, logger, pagesPerTick = 2, resilientWriter } = {}) {
     if (!collectivesClient) throw new Error('MetadataGardener requires collectivesClient');
     if (!router) throw new Error('MetadataGardener requires router');
     this.collectivesClient = collectivesClient;
+    this.resilientWriter = resilientWriter || null;
     this.router = router;
     this.logger = logger || console;
     this.pagesPerTick = pagesPerTick;
@@ -260,7 +261,11 @@ Respond with ONLY the YAML key-value pairs (NO --- delimiters, no other text):`;
       .join('\n');
     const updatedContent = `---\n${yamlLines}\n---\n\n${contentWithoutFM.trim()}`;
 
-    await this.collectivesClient.writePageContent(page.path, updatedContent);
+    if (this.resilientWriter) {
+      await this.resilientWriter.updatePage(page.path, updatedContent);
+    } else {
+      await this.collectivesClient.writePageContent(page.path, updatedContent);
+    }
 
     this.logger.info(
       `[MetadataGardener] Enriched ${page.title}: type=${merged.type}`

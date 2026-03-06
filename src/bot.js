@@ -236,6 +236,8 @@ try {
   CollectivesClient = null;
 }
 
+const ResilientWikiWriter = require('./lib/integrations/resilient-wiki-writer');
+
 let ContactsClient;
 try {
   ContactsClient = require('./lib/integrations/contacts-client');
@@ -589,6 +591,22 @@ async function main() {
     }
   }
 
+  let resilientWriter = null;
+  if (collectivesClient && ncFilesClient) {
+    try {
+      resilientWriter = new ResilientWikiWriter({
+        collectivesClient,
+        ncFilesClient,
+        collectivePath: 'Collectives/' + (appConfig.knowledge?.collectiveName || 'Moltagent Knowledge'),
+        logger: console,
+        ocsTimeoutMs: 10000
+      });
+      console.log('[INIT] ResilientWikiWriter (bot) ready');
+    } catch (err) {
+      console.warn(`[INIT] ResilientWikiWriter (bot) failed: ${err.message}`);
+    }
+  }
+
   if (ContactsClient && ncRequestManager) {
     try {
       contactsClient = new ContactsClient(ncRequestManager, {
@@ -619,6 +637,7 @@ async function main() {
           wikiClient: collectivesClient,
           llmRouter: llmRouter,
           rhythmTracker,
+          resilientWriter,
           config: appConfig
         });
         sessionMgr.on('sessionExpired', async (session) => {
@@ -973,7 +992,10 @@ async function main() {
     ncFlow: { activityPoller, webhookReceiver, systemTags },
     talkSendQueue: talkQueue,
     primaryRoomToken: CONFIG.talk.primaryRoom,
-    ownerIds
+    ownerIds,
+    collectivesClient,
+    ncFilesClient,
+    resilientWriter
   });
 
   // Wire Semantic Awareness components into HeartbeatManager

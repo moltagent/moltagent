@@ -1,0 +1,194 @@
+/**
+ * Tests for ResilientWikiWriter
+ *
+ * Validates dual-path (OCS + WebDAV) write logic, health tracking,
+ * cooldown behavior, and fallback paths.
+ *
+ * @license AGPL-3.0
+ */
+
+'use strict';
+
+const assert = require('assert');
+const { asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
+const ResilientWikiWriter = require('../../../src/lib/integrations/resilient-wiki-writer');
+
+// ── Mock factories ──
+
+function makeCollectivesClient(overrides = {}) {
+  return {
+    resolveCollective: overrides.resolveCollective || (async () => 42),
+    listPages: overrides.listPages || (async () => [
+      { id: 1, parentId: 0, title: 'Moltagent Knowledge' },
+      { id: 10, parentId: 1, title: 'Sessions' }
+    ]),
+    createPage: overrides.createPage || (async (cId, parentId, title) => ({ id: 99, title })),
+    writePageContent: overrides.writePageContent || (async () => {}),
+  };
+}
+
+function makeNCFilesClient(overrides = {}) {
+  return {
+    mkdir: overrides.mkdir || (async () => ({ success: true })),
+    writeFile: overrides.writeFile || (async () => ({ success: true })),
+    readFile: overrides.readFile || (async () => ({ content: '# Hello', truncated: false })),
+    listDirectory: overrides.listDirectory || (async () => [
+      { name: 'page1.md', type: 'file', size: 100, modified: '2026-03-06' }
+    ]),
+  };
+}
+
+function makeSilentLogger() {
+  return { warn: () => {}, error: () => {}, info: () => {} };
+}
+
+function makeWriter(ocsOverrides = {}, webdavOverrides = {}, opts = {}) {
+  return new ResilientWikiWriter({
+    collectivesClient: makeCollectivesClient(ocsOverrides),
+    ncFilesClient: makeNCFilesClient(webdavOverrides),
+    logger: makeSilentLogger(),
+    ocsTimeoutMs: opts.ocsTimeoutMs || 500,
+    ...opts,
+  });
+}
+
+// ── Tests ──
+
+(async () => {
+  // 1. OCS succeeds → page created via OCS
+  await asyncTest('createPage: OCS succeeds → returns method ocs', async () => {
+    const writer = makeWriter();
+    const result = await writer.createPage('Sessions', 'Test Page', '# Content');
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.method, 'ocs');
+  });
+
+  // 2. OCS fails (500) → fallback to WebDAV
+  await asyncTest('createPage: OCS fails → fallback to WebDAV', async () => {
+    const writer = makeWriter({
+      resolveCollective: async () => { throw new Error('HTTP 500'); }
+    });
+    const result = await writer.createPage('Sessions', 'Test Page', '# Content');
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.method, 'webdav');
+  });
+
+  // 3. OCS timeout → fallback to WebDAV
+  await asyncTest('createPage: OCS timeout → fallback to WebDAV', async () => {
+    const writer = makeWriter({
+      resolveCollective: () => new Promise((resolve) => setTimeout(resolve, 5000))
+    }, {}, { ocsTimeoutMs: 50 });
+    const result = await writer.createPage('Sessions', 'Test Page', '# Content');
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.method, 'webdav');
+  });
+
+  // 4. Both OCS and WebDAV fail → returns null
+  await asyncTest('createPage: both fail → success false, method null', async () => {
+    const writer = makeWriter(
+      { resolveCollective: async () => { throw new Error('OCS down'); } },
+      { mkdir: async () => { throw new Error('WebDAV down'); } }
+    );
+    const result = await writer.createPage('Sessions', 'Test Page', '# Content');
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result.method, null);
+    assert.ok(result.error);
+  });
+
+  // 5. After OCS failure → cooldown skips OCS, goes straight to WebDAV
+  await asyncTest('createPage: cooldown skips OCS after failure', async () => {
+    let ocsCallCount = 0;
+    const writer = makeWriter({
+      resolveCollective: async () => { ocsCallCount++; throw new Error('OCS down'); }
+    });
+
+    // First call: tries OCS (fails), falls back to WebDAV
+    await writer.createPage('Sessions', 'Page1', '# One');
+    assert.strictEqual(ocsCallCount, 1);
+
+    // Second call: should skip OCS due to cooldown
+    const result = await writer.createPage('Sessions', 'Page2', '# Two');
+    assert.strictEqual(ocsCallCount, 1); // No additional OCS attempt
+    assert.strictEqual(result.method, 'webdav');
+  });
+
+  // 6. After cooldown expires → retries OCS
+  await asyncTest('createPage: cooldown expires → retries OCS', async () => {
+    let ocsCallCount = 0;
+    const writer = makeWriter({
+      resolveCollective: async () => {
+        ocsCallCount++;
+        if (ocsCallCount === 1) throw new Error('OCS down');
+        return 42;
+      }
+    });
+
+    // First call: OCS fails
+    await writer.createPage('Sessions', 'Page1', '# One');
+    assert.strictEqual(ocsCallCount, 1);
+
+    // Simulate cooldown expiry by backdating the failure
+    writer._ocsLastFailure = Date.now() - (6 * 60 * 1000);
+
+    // Should retry OCS now
+    const result = await writer.createPage('Sessions', 'Page2', '# Two');
+    assert.strictEqual(ocsCallCount, 2);
+    assert.strictEqual(result.method, 'ocs');
+  });
+
+  // 7. updatePage → WebDAV primary
+  await asyncTest('updatePage: WebDAV primary → returns method webdav', async () => {
+    let webdavCalled = false;
+    const writer = makeWriter({}, {
+      writeFile: async () => { webdavCalled = true; return { success: true }; }
+    });
+    const result = await writer.updatePage('Sessions/test.md', '# Updated');
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.method, 'webdav');
+    assert.strictEqual(webdavCalled, true);
+  });
+
+  // 8. updatePage WebDAV fails → OCS fallback
+  await asyncTest('updatePage: WebDAV fails → OCS fallback', async () => {
+    let ocsCalled = false;
+    const writer = makeWriter({
+      writePageContent: async () => { ocsCalled = true; }
+    }, {
+      writeFile: async () => { throw new Error('WebDAV write failed'); }
+    });
+    const result = await writer.updatePage('Sessions/test.md', '# Updated');
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.method, 'ocs');
+    assert.strictEqual(ocsCalled, true);
+  });
+
+  // 9. listPages OCS works → returns OCS result
+  await asyncTest('listPages: OCS works → returns OCS result', async () => {
+    const writer = makeWriter({
+      listPages: async () => [
+        { id: 10, parentId: 1, title: 'Sessions', filePath: 'Sessions/' },
+        { id: 20, parentId: 10, title: 'Day1', filePath: 'Sessions/Day1.md' }
+      ]
+    });
+    const result = await writer.listPages('Sessions');
+    assert.strictEqual(result.method, 'ocs');
+    assert.ok(result.pages.length > 0);
+  });
+
+  // 10. listPages OCS fails → WebDAV PROPFIND fallback
+  await asyncTest('listPages: OCS fails → WebDAV fallback', async () => {
+    const writer = makeWriter({
+      resolveCollective: async () => { throw new Error('OCS down'); }
+    }, {
+      listDirectory: async () => [
+        { name: 'page1.md', type: 'file', size: 50, modified: '2026-03-06' }
+      ]
+    });
+    const result = await writer.listPages('Sessions');
+    assert.strictEqual(result.method, 'webdav');
+    assert.strictEqual(result.pages.length, 1);
+    assert.strictEqual(result.pages[0].title, 'page1');
+  });
+
+  setTimeout(() => { summary(); exitWithCode(); }, 200);
+})();

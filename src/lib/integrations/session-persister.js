@@ -63,8 +63,9 @@ class SessionPersister {
    * @param {Object} [options.rhythmTracker] - RhythmTracker for behavioral pattern recording
    * @param {Object} [options.config] - Configuration
    */
-  constructor({ wikiClient, llmRouter, rhythmTracker, deckClient, trustLevel, config = {} }) {
+  constructor({ wikiClient, llmRouter, rhythmTracker, deckClient, trustLevel, resilientWriter, config = {} }) {
     this.wiki = wikiClient;
+    this.resilientWriter = resilientWriter || null;
     this.router = llmRouter;
     this.rhythmTracker = rhythmTracker || null;
     this.config = config;
@@ -212,9 +213,18 @@ class SessionPersister {
    */
   async _writeSessionPage(leafTitle, frontmatter, body) {
     const { serializeFrontmatter } = require('../knowledge/frontmatter');
+    const content = serializeFrontmatter(frontmatter, body);
 
-    // If the wiki client doesn't expose OCS methods, fall back to the
-    // high-level writePageWithFrontmatter helper (used by tests with minimal mocks).
+    // Resilient path: dual OCS/WebDAV writer handles failover automatically
+    if (this.resilientWriter) {
+      const result = await this.resilientWriter.createPage('Sessions', leafTitle, content);
+      if (!result || !result.success) {
+        throw new Error(`ResilientWikiWriter failed to create session page: ${result?.error || 'unknown'}`);
+      }
+      return;
+    }
+
+    // Legacy path: direct OCS calls (backward compat for tests without resilientWriter)
     const hasOcsApi = typeof this.wiki.resolveCollective === 'function' &&
                       typeof this.wiki.listPages === 'function' &&
                       typeof this.wiki.createPage === 'function' &&
@@ -225,10 +235,7 @@ class SessionPersister {
       return;
     }
 
-    // Ensure the Sessions parent page exists (OCS-created, not raw WebDAV)
     const sessionsParentId = await this._ensureSessionsParent();
-
-    // Check if a session page with this title already exists under Sessions
     const collectiveId = await this.wiki.resolveCollective();
     const allPages = await this.wiki.listPages(collectiveId);
     const pageList = Array.isArray(allPages) ? allPages : [];
@@ -240,12 +247,10 @@ class SessionPersister {
 
     let pagePath;
     if (existing) {
-      // Page already exists — derive its WebDAV path from API metadata
       pagePath = existing.filePath
         ? `${existing.filePath}/${existing.fileName}`
         : existing.fileName || `Sessions/${leafTitle}.md`;
     } else {
-      // Create the page via OCS so Collectives owns its hierarchy
       const created = await this.wiki.createPage(collectiveId, sessionsParentId, leafTitle);
       pagePath = created && created.filePath
         ? `${created.filePath}/${created.fileName}`
@@ -254,8 +259,6 @@ class SessionPersister {
           : `Sessions/${leafTitle}.md`;
     }
 
-    // Serialize frontmatter + body and write content via WebDAV
-    const content = serializeFrontmatter(frontmatter, body);
     await this.wiki.writePageContent(pagePath, content);
   }
 

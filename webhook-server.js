@@ -118,6 +118,8 @@ try {
   CollectivesClient = null;
 }
 
+const ResilientWikiWriter = require('./src/lib/integrations/resilient-wiki-writer');
+
 let SearXNGClient, WebReader;
 try {
   ({ SearXNGClient } = require('./src/lib/integrations/searxng-client'));
@@ -439,6 +441,7 @@ let ncFilesClient = null;
 let ncSearchClient = null;
 let textExtractor = null;
 let collectivesClient = null;
+let resilientWriter = null;
 let contactsClient = null;
 let rsvpTracker = null;   // Initialized here; consumed by HeartbeatManager in bot.js
 let skillForgeHandler = null;
@@ -879,6 +882,22 @@ async function initialize() {
     }
   }
 
+  // 7b3b. Initialize ResilientWikiWriter (dual OCS/WebDAV fallback)
+  if (collectivesClient && ncFilesClient) {
+    try {
+      resilientWriter = new ResilientWikiWriter({
+        collectivesClient,
+        ncFilesClient,
+        collectivePath: 'Collectives/' + (appConfig.knowledge?.collectiveName || 'Moltagent Knowledge'),
+        logger: console,
+        ocsTimeoutMs: 10000
+      });
+      console.log('[INIT] ResilientWikiWriter ready (OCS + WebDAV dual-path)');
+    } catch (err) {
+      console.warn(`[INIT] ResilientWikiWriter failed: ${err.message}`);
+    }
+  }
+
   // 7b3a. Wiki bootstrap (non-blocking)
   if (collectivesClient) {
     (async () => {
@@ -1036,6 +1055,7 @@ async function initialize() {
         sessionPersister = new SessionPersister({
           wikiClient: collectivesClient,
           llmRouter: llmRouter,
+          resilientWriter: resilientWriter,
           config: appConfig
         });
         sessionManager.on('sessionExpired', async (session) => {
@@ -1482,7 +1502,8 @@ async function initialize() {
         webReader: webReaderInstance,
         contactsClient: contactsClient,
         memorySearcher: memorySearcher,
-        emailHandler: emailHandler
+        emailHandler: emailHandler,
+        resilientWriter: resilientWriter
       });
       console.log(`[INIT] ToolRegistry ready (${toolRegistry.size} tools)`);
 
@@ -1914,6 +1935,7 @@ async function initialize() {
         agentLoop,
         collectivesClient,
         ncFilesClient,
+        resilientWriter,
         costTracker,
         dailyBriefing,
         talkSendQueue: talkQueue,
@@ -2021,6 +2043,7 @@ async function initialize() {
           const MetadataGardener = require('./src/lib/memory/metadata-gardener');
           heartbeatManager.metadataGardener = new MetadataGardener({
             collectivesClient,
+            resilientWriter,
             router: llmRouter.router,
             logger: console,
             pagesPerTick: 2
