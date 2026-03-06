@@ -1381,11 +1381,11 @@ async function initialize() {
         provider: ollamaProvider,
         config: {
           classifyTimeout: appConfig.ollama.classifyTimeout,
-          fastModel: appConfig.ollama.model || 'phi4-mini',
+          fastModel: appConfig.ollama.classifyModel || 'qwen2.5:3b',
           smartModel: appConfig.ollama.smartModel || 'qwen3:8b'
         }
       }) : null;
-      if (intentRouter) console.log(`[INIT] IntentRouter ready (fast: ${appConfig.ollama.model || 'phi4-mini'}, smart: ${appConfig.ollama.smartModel || 'qwen3:8b'}, timeout: ${appConfig.ollama.classifyTimeout}ms)`);
+      if (intentRouter) console.log(`[INIT] IntentRouter ready (fast: ${appConfig.ollama.classifyModel || 'qwen2.5:3b'}, smart: ${appConfig.ollama.smartModel || 'qwen3:8b'}, timeout: ${appConfig.ollama.classifyTimeout}ms)`);
 
       const claudeProvider = new ClaudeToolsProvider({
         model: claudeConfig.model || CONFIG.claude.modelPremium,

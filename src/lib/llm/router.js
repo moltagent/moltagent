@@ -589,7 +589,7 @@ class LLMRouter {
 
       for (const job of VALID_JOBS) {
         if (job === JOBS.QUICK) {
-          // Classification: local-first (phi4-mini 89% in 1s, free; regex pre-router escalates ambiguous to qwen3:8b)
+          // Classification: local-first (qwen2.5:3b ~420ms, free; regex pre-router escalates ambiguous to qwen3:8b)
           roster[job] = [...new Set([...localIds, workhorse, ...rest].filter(Boolean))];
         } else if (job === JOBS.TOOLS) {
           // Extraction/tools: workhorse cloud first (Sonnet handles structured output well), local fallback

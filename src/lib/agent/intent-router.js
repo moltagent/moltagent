@@ -1,8 +1,8 @@
 /**
  * IntentRouter — Dual-model intent classification with regex pre-router.
  *
- * Regex pre-router (~0ms) sends ~70% of messages to phi4-mini (~1s)
- * and ~30% ambiguous messages to qwen3:8b (~20-30s). If phi4-mini
+ * Regex pre-router (~0ms) sends ~70% of messages to qwen2.5:3b (~420ms)
+ * and ~30% ambiguous messages to qwen3:8b (~20-30s). If qwen2.5:3b
  * returns 'unknown', auto-escalates to qwen3:8b before cloud. If
  * either model times out, falls back to the other. If both fail,
  * regex fallback keeps most messages local.
@@ -91,7 +91,7 @@ Respond with JSON only.`;
 
 /**
  * Detect messages that require deeper comprehension (qwen3:8b)
- * vs messages with explicit verbs that phi4-mini handles fine.
+ * vs messages with explicit verbs that the fast model handles fine.
  *
  * Two failure clusters identified in benchmarking:
  * 1. Wiki/memory language — conversational verbs phi misclassifies
@@ -119,13 +119,13 @@ class IntentRouter {
    * @param {Object} opts.provider - OllamaToolsProvider (uses .chat() with model override)
    * @param {Object} [opts.config]
    * @param {number} [opts.config.classifyTimeout=10000]
-   * @param {string} [opts.config.fastModel='phi4-mini'] - Fast model for explicit intents
+   * @param {string} [opts.config.fastModel='qwen2.5:3b'] - Fast model for explicit intents
    * @param {string} [opts.config.smartModel='qwen3:8b'] - Smart model for ambiguous intents
    */
   constructor({ provider, config = {} } = {}) {
     this.provider = provider;
     this.timeout = config.classifyTimeout || 10000;
-    this.fastModel = config.fastModel || 'phi4-mini';
+    this.fastModel = config.fastModel || 'qwen2.5:3b';
     this.smartModel = config.smartModel || 'qwen3:8b';
   }
 

@@ -215,7 +215,7 @@ asyncTest('classify() fallback model uses appropriate timeout', async () => {
   });
   await router.classify('create a card');
   assert.strictEqual(calls.length, 2);
-  assert.strictEqual(calls[0].model, 'phi4-mini', 'First call is fast model (explicit message)');
+  assert.strictEqual(calls[0].model, 'qwen2.5:3b', 'First call is fast model (explicit message)');
   assert.strictEqual(calls[0].timeout, 5000, 'Fast model uses base timeout');
   assert.strictEqual(calls[1].model, 'qwen3:8b', 'Fallback is smart model');
   assert.strictEqual(calls[1].timeout, 20000, 'Smart model uses 4× timeout');
