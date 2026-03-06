@@ -193,6 +193,12 @@ class SessionManager extends EventEmitter {
 
     session.lastActivityAt = now;
 
+    // Log first context entry per session to confirm map registration
+    if (session.context.length === 1) {
+      const inMap = this.sessions.has(this._getSessionKey(session.roomToken, session.userId));
+      console.log(`[SessionManager] First context for session ${session.id} (room=${session.roomToken}, inMap=${inMap}, mapSize=${this.sessions.size})`);
+    }
+
     // Check if approaching context limit (80% threshold)
     const threshold = Math.floor(this.maxContextLength * 0.8);
 

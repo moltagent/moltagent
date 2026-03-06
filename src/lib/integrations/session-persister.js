@@ -388,7 +388,7 @@ class SessionPersister {
           `One sentence: what should we pick up next time?\n\n` +
           `## Open Items\n` +
           `Bullet list of unresolved questions or pending tasks. Write "None" if all resolved.\n\n` +
-          `Be concise. No preamble. Start directly with ## Summary.\n\n${transcript}`,
+          `Be concise. No preamble. No <think> tags. Start directly with ## Summary.\n\n${transcript}`,
         requirements: { role: 'sovereign' },
         context: { trigger: 'session_summary' },
       });

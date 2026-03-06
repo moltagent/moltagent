@@ -2171,7 +2171,7 @@ async function shutdown(signal) {
       const activeSessions = sessionManager.getAllSessions ? sessionManager.getAllSessions() : [];
       console.log(`[SHUTDOWN] ${activeSessions.length} active session(s) to persist`);
       let persisted = 0;
-      const PERSIST_TIMEOUT_MS = 60000; // 60s per session — leaves 60s for cleanup + fallback
+      const PERSIST_TIMEOUT_MS = 90000; // 90s per session — leaves 30s for cleanup + fallback
       for (const session of activeSessions) {
         const messageCount = (session.context || []).length;
         console.log(`[SHUTDOWN] Persisting session ${session.id} (room=${session.roomToken}, messages=${messageCount})`);
