@@ -9,6 +9,7 @@
  */
 
 'use strict';
+// Mock type: LEGACY — TODO: migrate to realistic mocks
 
 const assert = require('assert');
 const { asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');

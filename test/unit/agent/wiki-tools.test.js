@@ -1,3 +1,4 @@
+// Mock type: LEGACY — TODO: migrate to realistic mocks
 /**
  * Wiki Tools Integration Tests
  *

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Mock type: LEGACY — TODO: migrate to realistic mocks
 /**
  * Comprehensive tests for Credential Broker
  */

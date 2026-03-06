@@ -1,3 +1,4 @@
+// Mock type: LEGACY — TODO: migrate to realistic mocks
 /**
  * Job Classification Tests (Session B3)
  *

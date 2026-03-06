@@ -1,4 +1,5 @@
 'use strict';
+// Mock type: LEGACY — TODO: migrate to realistic mocks
 
 /**
  * Unit Tests for MemorySearcher — Access Tracking + Archive Search

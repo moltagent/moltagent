@@ -14,6 +14,7 @@
  */
 
 'use strict';
+// Mock type: LEGACY — TODO: migrate to realistic mocks
 
 /**
  * Unit Tests for SessionPersister v3

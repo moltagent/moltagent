@@ -1,3 +1,4 @@
+// Mock type: LEGACY — TODO: migrate to realistic mocks
 /**
  * VoiceManager Unit Tests
  *

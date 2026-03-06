@@ -9,6 +9,7 @@
  */
 
 'use strict';
+// Mock type: LEGACY — TODO: migrate to realistic mocks
 
 // NOTE: Collectives WebDAV requires pages to exist in
 // OCS database before PUT. Mocks should reject PUT to

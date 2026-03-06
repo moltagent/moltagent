@@ -1,3 +1,4 @@
+// Mock type: LEGACY — TODO: migrate to realistic mocks
 /**
  * CollectivesClient Bootstrap & Sharing Unit Tests
  *

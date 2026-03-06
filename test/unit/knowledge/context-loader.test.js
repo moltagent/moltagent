@@ -1,3 +1,4 @@
+// Mock type: LEGACY — TODO: migrate to realistic mocks
 /*
  * MoltAgent - Sovereign AI Security Layer
  * Copyright (C) 2026 MoltAgent Contributors
