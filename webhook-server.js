@@ -1375,6 +1375,20 @@ async function initialize() {
         console.log(`[INIT] OllamaToolsProvider (credential) ready (${CONFIG.ollama.modelCredential})`);
       }
 
+      // Fast local provider: qwen2.5:3b for QUICK tasks (classification, session summaries)
+      // 10-20s vs 83-90s on qwen3:8b — same quality for compression/summary tasks
+      const fastModel = appConfig.ollama.classifyModel || 'qwen2.5:3b';
+      let ollamaFastProvider = null;
+      if (OllamaToolsProvider && fastModel !== (ollamaConfig.model || CONFIG.ollama.model)) {
+        ollamaFastProvider = new OllamaToolsProvider({
+          endpoint: ollamaConfig.endpoint || CONFIG.ollama.url,
+          model: fastModel,
+          timeout: 30000,
+          toolTimeout: 30000
+        });
+        console.log(`[INIT] OllamaToolsProvider (fast) ready (${fastModel})`);
+      }
+
       // IntentRouter: LLM-powered intent classification with conversation context
       const IntentRouter = require('./src/lib/agent/intent-router');
       intentRouter = ollamaProvider ? new IntentRouter({
@@ -1425,12 +1439,33 @@ async function initialize() {
           const chatProviders = new Map();
           if (ollamaCredentialProvider) chatProviders.set('ollama-credential', ollamaCredentialProvider);
           if (ollamaProvider) chatProviders.set('ollama-local', ollamaProvider);
+          if (ollamaFastProvider) chatProviders.set('ollama-fast', ollamaFastProvider);
           chatProviders.set('anthropic-claude', claudeProvider);
           chatProviders.set('claude-sonnet', sonnetProvider);
+
+          // Register ollama-fast in the router so roster can reference it
+          if (ollamaFastProvider) {
+            llmRouter.router.registerProvider('ollama-fast', {
+              adapter: 'ollama',
+              endpoint: ollamaConfig.endpoint || CONFIG.ollama.url,
+              model: fastModel,
+              type: 'local'
+            });
+          }
 
           // Activate smart-mix preset on LLMRouter v3
           llmRouter.router.setPreset('smart-mix');
           console.log('[INIT] LLMRouter preset activated: smart-mix');
+
+          // Override QUICK chain: ollama-fast (qwen2.5:3b) first for speed
+          if (ollamaFastProvider) {
+            const roster = llmRouter.router.getRoster();
+            if (roster && roster.quick) {
+              roster.quick = ['ollama-fast', ...roster.quick.filter(id => id !== 'ollama-fast')];
+              llmRouter.router.setRoster(roster);
+              console.log(`[INIT] QUICK chain: ollama-fast (${fastModel}) → ${roster.quick.slice(1).join(' → ')}`);
+            }
+          }
 
           llmProvider = new RouterChatBridge({
             router: llmRouter.router,
