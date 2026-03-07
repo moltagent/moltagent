@@ -27,7 +27,8 @@ const INTENTS = Object.freeze({
   EMAIL: 'email',
   WIKI: 'wiki',
   FILE: 'file',
-  SEARCH: 'search'
+  SEARCH: 'search',
+  KNOWLEDGE: 'knowledge'
 });
 
 // Domain-specific regex patterns for classification hints and heuristic fallback
@@ -160,6 +161,7 @@ class MicroPipeline {
         case INTENTS.WIKI:
         case INTENTS.FILE:
         case INTENTS.SEARCH:
+        case INTENTS.KNOWLEDGE:
           result = await this._handleDomainTask(message, intent, context);
           break;
         case INTENTS.COMMAND:
@@ -254,6 +256,7 @@ class MicroPipeline {
       if (raw.includes('wiki')) return { intent: INTENTS.WIKI };
       if (raw.includes('file')) return { intent: INTENTS.FILE };
       if (raw.includes('search')) return { intent: INTENTS.SEARCH };
+      if (raw.includes('knowledge')) return { intent: INTENTS.KNOWLEDGE };
       if (raw.includes('complex')) return { intent: INTENTS.COMPLEX };
       if (raw.includes('chitchat')) return { intent: INTENTS.CHITCHAT };
       // Legacy intents as fallback
@@ -633,6 +636,11 @@ Sub-questions:`;
         }
         // Structured return — propagate {response, pendingClarification} to caller
         if (typeof result === 'object' && result !== null && result.response) {
+          // Option B safety net: if executor says "not found" and enricher has knowledge, synthesize
+          if (this._isNotFoundResponse(result.response) && this.memoryContextEnricher) {
+            const fallback = await this._enricherFallback(message, context);
+            if (fallback) return fallback;
+          }
           return result;
         }
         return result;
@@ -857,6 +865,51 @@ Sub-questions:`;
       const escalateErr = new Error(`Chat provider unavailable: ${err.message}`);
       escalateErr.code = 'DOMAIN_ESCALATE';
       throw escalateErr;
+    }
+  }
+
+  /**
+   * Check if an executor response indicates "not found" / empty results.
+   * @private
+   */
+  _isNotFoundResponse(response) {
+    if (typeof response !== 'string') return false;
+    const lower = response.toLowerCase();
+    return /\b(don't have|not found|no information|no results|couldn't find|could not find|nothing about)\b/.test(lower);
+  }
+
+  /**
+   * Option B safety net: when a domain executor returns "not found",
+   * check enricher results and synthesize from those before giving up.
+   * @private
+   */
+  async _enricherFallback(message, context) {
+    try {
+      const enrichment = await this.memoryContextEnricher.enrich(message, 'knowledge');
+      if (!enrichment || typeof enrichment !== 'string' || !enrichment.includes('<agent_knowledge>')) {
+        return null;
+      }
+
+      if (!this.router) return null;
+
+      const result = await this.router.route({
+        job: 'quick',
+        task: 'enricher_fallback',
+        content: `Answer this question using ONLY the following knowledge:\n\n${enrichment}\n\nBe direct. State facts. Name gaps. Don't fabricate.\n\nQuestion: ${message.substring(0, 300)}`,
+        requirements: { maxTokens: 400, temperature: 0.3 }
+      });
+
+      const answer = (result?.result || result?.content || '').trim();
+      if (!answer || answer.length < 10) return null;
+
+      this.logger.info(`[MicroPipeline] Enricher fallback synthesized answer for: ${message.substring(0, 60)}`);
+      return {
+        response: answer,
+        actionRecord: { type: 'enricher_fallback', refs: { query: message.substring(0, 200) } }
+      };
+    } catch (err) {
+      this.logger.warn(`[MicroPipeline] Enricher fallback failed: ${err.message}`);
+      return null;
     }
   }
 }

@@ -70,6 +70,11 @@ const FEEDBACK_MESSAGES = {
     default:         '\u{1F4C4} Handling files...'
   },
 
+  // Knowledge queries — cross-domain information synthesis
+  knowledge: {
+    default:         '\u{1F50D} Searching my knowledge base...'
+  },
+
   // Complex / escalation (cloud path)
   complex: {
     default:         '\u{1F914} Let me think about that...'

@@ -16,6 +16,7 @@
 const VALID_INTENTS = new Set([
   'greeting', 'chitchat', 'confirmation', 'selection',
   'deck', 'calendar', 'email', 'wiki', 'file', 'search',
+  'knowledge',
   'complex',
   // Fine-grained intents from Path C prompt (mapped to broad domains)
   'calendar_create', 'calendar_query', 'calendar_update', 'calendar_delete',
@@ -36,7 +37,7 @@ const INTENT_TO_DOMAIN = {
   file_upload: 'file', file_query: 'file',
 };
 
-const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search']);
+const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search', 'knowledge']);
 
 const COMPLEX_FALLBACK = Object.freeze({ intent: 'complex', domain: null, needsHistory: true, confidence: 0 });
 
@@ -56,6 +57,8 @@ const INTENT_SCHEMA = Object.freeze({
 const CLASSIFICATION_SYSTEM_PROMPT = `Classify the LAST user message into exactly one intent.
 
 Available intents:
+
+TOOL INTENTS (the user wants you to DO something):
 - calendar_create: Create a new calendar event or meeting
 - calendar_query: List or check existing events
 - calendar_update: Modify, reschedule, or add people to an existing event
@@ -64,14 +67,37 @@ Available intents:
 - deck_move: Move a task card to a different column or mark complete
 - deck_query: List or check existing tasks
 - wiki_write: Store or remember information for later
-- wiki_read: Recall or look up previously stored information
 - email_send: Compose or send an email
 - email_read: Check or search emails
 - file_upload: Upload or save a file
 - file_query: Find or list files
-- search: Find information, look up, research a topic
+- search: Research a topic on the web
+
+KNOWLEDGE INTENT (the user wants to KNOW something):
+- knowledge: Any question about people, projects, status, or information
+  "Who is Carlos?" → knowledge (NOT email)
+  "What's Carlos's email?" → knowledge (NOT email)
+  "What's the status of onboarding?" → knowledge (NOT calendar or deck)
+  "Tell me about the Paradiesgarten client" → knowledge
+  "Summarize what you know about X" → knowledge
+  "What do you know about Y?" → knowledge
+  "What meetings do I have?" → knowledge (asking for information)
+
+OTHER INTENTS:
+- wiki_read: ONLY when user asks to read a specific wiki page by name
 - chitchat: Greetings, small talk, casual conversation
 - unknown: Unclear or doesn't match any intent
+
+CRITICAL DISTINCTION — action vs question:
+- "Send an email to Carlos" → email_send (ACTION: send)
+- "What's Carlos's email?" → knowledge (QUESTION: asking for info)
+- "Book a meeting tomorrow" → calendar_create (ACTION: create)
+- "What meetings do I have?" → knowledge (QUESTION: asking for info)
+- "Create a board" → deck_create (ACTION: create)
+- "What boards do I have?" → deck_query (ACTION: list is a tool action)
+- "Move the onboarding card to done" → deck_move (ACTION: move)
+- "What's the status of onboarding?" → knowledge (QUESTION: asking for info)
+- When in doubt → knowledge (safer to search than call the wrong API)
 
 Rules:
 - CRITICAL: Read the <conversation> block FIRST. The user's message usually continues the current topic.
@@ -85,7 +111,8 @@ Rules:
 - "Send it" after an email draft = email_send (not unknown)
 - "Read the most recent one" after a file listing = file_query (not wiki_read)
 - Only classify as unknown if the task genuinely doesn't match any intent AND is not a continuation of the current topic.
-- When uncertain, prefer the domain of the most recent assistant action over a generic classification.
+- When uncertain, prefer the domain of the most recent assistant action for continuations.
+- When uncertain and NOT continuing a conversation, prefer knowledge over a domain executor.
 
 Respond with JSON only.`;
 
@@ -251,11 +278,20 @@ class IntentRouter {
     if (/\b(file|folder|document|upload|download)\b/.test(lower)) {
       return { intent: 'domain', domain: 'file', needsHistory: false, confidence: 0.5 };
     }
-    if (/\b(search|find|look up|what do you know)\b/.test(lower)) {
+    if (/\b(search|find|look up|look for)\b/.test(lower)) {
+      // Knowledge questions take priority over generic search
+      if (/\b(who is|what is|what do you know|tell me about|what'?s the status|what about)\b/.test(lower)) {
+        return { intent: 'domain', domain: 'knowledge', needsHistory: false, confidence: 0.5 };
+      }
       return { intent: 'domain', domain: 'search', needsHistory: false, confidence: 0.5 };
     }
 
-    // Memory language → wiki (catches what regex pre-router would send to smart model)
+    // Knowledge queries — questions about people, projects, status
+    if (/\b(who is|what is|what do you know|tell me about|what'?s the status|what about|what'?s .{0,20} email|summarize)\b/.test(lower)) {
+      return { intent: 'domain', domain: 'knowledge', needsHistory: false, confidence: 0.5 };
+    }
+
+    // Memory language → wiki write (catches what regex pre-router would send to smart model)
     if (/\b(remember|forget|forgot|told you|decision|stored)\b/.test(lower)) {
       return { intent: 'domain', domain: 'wiki', needsHistory: false, confidence: 0.5 };
     }

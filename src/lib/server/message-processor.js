@@ -44,7 +44,7 @@ const ProvenanceAnnotator = require('../security/provenance-annotator');
 const { getFeedbackMessage } = require('../talk/feedback-messages');
 
 /** Domain intents that can be handled locally with focused tool subsets. */
-const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search']);
+const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search', 'knowledge']);
 
 // -----------------------------------------------------------------------------
 // Types
@@ -500,8 +500,36 @@ class MessageProcessor {
           });
           result = { intent: `smart_mix_flush:${intent}`, provider: 'agent' };
           response = response || 'Sorry, I encountered an error processing your message.';
+        } else if (useLocal && useDomainTools && intent === 'knowledge') {
+          // Path 2a: Knowledge query — synthesize from enricher + multi-source probes
+          if (this.agentLoop?.llmProvider?.clearLocalSkip) {
+            this.agentLoop.llmProvider.clearLocalSkip();
+          }
+          try {
+            const knowledgeResult = await this._handleKnowledgeQuery(pipelineMessage, session);
+            if (typeof knowledgeResult === 'object' && knowledgeResult !== null) {
+              this._captureActionRecord(session, knowledgeResult.actionRecord);
+              if (knowledgeResult.enrichmentBlock) _enrichmentBlock = knowledgeResult.enrichmentBlock;
+              response = knowledgeResult.response || "I don't have any information about that.";
+            } else {
+              response = knowledgeResult || "I don't have any information about that.";
+            }
+            result = { intent: 'smart_mix_knowledge', provider: 'local' };
+          } catch (knowledgeErr) {
+            console.warn(`[Message] Knowledge query failed, escalating to cloud: ${knowledgeErr.message}`);
+            if (this.agentLoop?.llmProvider?.skipLocalForConversation) {
+              this.agentLoop.llmProvider.skipLocalForConversation();
+            }
+            response = await this.agentLoop.process(pipelineMessage, extracted.token, {
+              messageId: extracted.messageId,
+              inputType: extracted._isVoice ? 'voice' : 'text',
+              user: extracted.user
+            });
+            result = { intent: 'smart_mix_escalated:knowledge', provider: 'agent' };
+            response = response || 'Sorry, I encountered an error processing your message.';
+          }
         } else if (useLocal && useDomainTools) {
-          // Path 2: Domain-specific — local tool-calling with focused subset
+          // Path 2b: Domain-specific — local tool-calling with focused subset
           if (this.agentLoop.llmProvider?.clearLocalSkip) {
             this.agentLoop.llmProvider.clearLocalSkip();
           }
@@ -1347,6 +1375,208 @@ class MessageProcessor {
       console.warn(`[Message] Smart-mix classification failed: ${err.message}`);
       return { useLocal: false, useDomainTools: false, intent: 'error' };
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Knowledge Mode: Cross-domain information synthesis
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Handle a knowledge query through multi-source probes + LLM synthesis.
+   *
+   * Instead of routing to a single domain executor:
+   * 1. Extract search terms from the query
+   * 2. Probe wiki, deck, vector store, graph, sessions in parallel
+   * 3. Aggregate results with provenance tags
+   * 4. One LLM synthesis call reads all gathered data
+   *
+   * @param {string} message - User message
+   * @param {Object} [session] - SessionManager session
+   * @returns {Promise<{response: string, actionRecord: Object, enrichmentBlock?: string}>}
+   * @private
+   */
+  async _handleKnowledgeQuery(message, session) {
+    const enricher = this.microPipeline?.memoryContextEnricher;
+    const searcher = this.microPipeline?.memorySearcher;
+    const router = this.microPipeline?.router;
+
+    if (!router) {
+      throw new Error('No LLM router available for knowledge synthesis');
+    }
+
+    // Step 1: Extract search terms (reuse enricher's extraction if available)
+    let searchTerms = enricher?._extractSearchTerms
+      ? enricher._extractSearchTerms(message)
+      : this._extractBasicSearchTerms(message);
+    // Fallback: if extraction yields nothing, use truncated raw message
+    if (searchTerms.length === 0) {
+      searchTerms = [message.substring(0, 100).replace(/[^\w\s]/g, ' ').trim()];
+    }
+    const query = message;
+
+    console.log(`[Message] Knowledge query: "${message.substring(0, 80)}" → terms: [${searchTerms.join(', ')}]`);
+
+    // Step 2: Parallel multi-source probes
+    const probeResults = await this._executeKnowledgeProbes(searchTerms, query, enricher, searcher);
+
+    // Step 3: Aggregate with provenance
+    const aggregated = this._aggregateProbeResults(probeResults);
+    const sourcesConsulted = probeResults.map(p => p.source);
+    const sourcesWithResults = probeResults.filter(p => p.results.length > 0).map(p => p.source);
+
+    console.log(`[Message] Knowledge probes: ${sourcesConsulted.length} sources consulted, ${sourcesWithResults.length} returned results (${sourcesWithResults.join(', ')})`);
+
+    // Step 4: Synthesis — one LLM call
+    const response = await this._synthesizeKnowledge(query, aggregated, session, router);
+
+    return {
+      response,
+      enrichmentBlock: aggregated || undefined,
+      actionRecord: {
+        type: 'knowledge_query',
+        refs: { query: message.substring(0, 200), sourcesConsulted, sourcesWithResults }
+      }
+    };
+  }
+
+  /**
+   * Execute parallel probes across knowledge sources.
+   * Each probe is lightweight — API call or cache read, no LLM.
+   * @private
+   */
+  async _executeKnowledgeProbes(searchTerms, query, enricher, searcher) {
+    const probes = [];
+
+    // Probe 1: MemorySearcher unified search (wiki keyword + vector + graph — all in one)
+    if (searcher) {
+      probes.push(
+        searcher.search(searchTerms.join(' '), { maxResults: 5, scope: 'all' })
+          .then(results => ({
+            source: 'memory',
+            results: (results || []).map(r => ({
+              title: r.title || '',
+              snippet: r.snippet || r.content || '',
+              sourceTag: r.source || 'wiki'
+            })),
+            provenance: 'stored_knowledge'
+          }))
+          .catch(() => ({ source: 'memory', results: [], provenance: 'stored_knowledge' }))
+      );
+    }
+
+    // Probe 2: Deck (cached board state — keyword match on cards)
+    if (enricher?._searchDeck) {
+      probes.push(
+        enricher._searchDeck(searchTerms)
+          .then(results => ({
+            source: 'deck',
+            results: (results || []).map(r => ({
+              title: r.title || '',
+              snippet: r.stack ? `[${r.stack}] ${r.title}` : r.title,
+              sourceTag: 'deck'
+            })),
+            provenance: 'task_state'
+          }))
+          .catch(() => ({ source: 'deck', results: [], provenance: 'task_state' }))
+      );
+    }
+
+    // Probe 3: Session history (past conversations about this topic)
+    if (searcher?.nc) {
+      probes.push(
+        searcher.nc.searchProvider('collectives-page-content', searchTerms.join(' '), 3)
+          .then(results => {
+            const sessionResults = (results || []).filter(r =>
+              (r.subline || r.title || '').toLowerCase().includes('session')
+            );
+            return {
+              source: 'sessions',
+              results: sessionResults.map(r => ({
+                title: r.title || '',
+                snippet: r.subline || '',
+                sourceTag: 'conversation_history'
+              })),
+              provenance: 'conversation_history'
+            };
+          })
+          .catch(() => ({ source: 'sessions', results: [], provenance: 'conversation_history' }))
+      );
+    }
+
+    const settled = await Promise.allSettled(probes);
+
+    return settled
+      .filter(r => r.status === 'fulfilled')
+      .map(r => r.value);
+  }
+
+  /**
+   * Aggregate probe results into a structured knowledge block with provenance.
+   * @private
+   */
+  _aggregateProbeResults(probeResults) {
+    const withResults = probeResults.filter(p => p.results && p.results.length > 0);
+    if (withResults.length === 0) return '';
+
+    let block = '';
+    for (const probe of withResults) {
+      block += `\n[Source: ${probe.source} | Provenance: ${probe.provenance}]\n`;
+      for (const result of probe.results) {
+        block += `${result.title || ''}: ${result.snippet || ''}\n`;
+      }
+    }
+    return block;
+  }
+
+  /**
+   * Synthesize an answer from pre-gathered, source-tagged knowledge.
+   * One LLM call — the model's job is ONLY synthesis.
+   * @private
+   */
+  async _synthesizeKnowledge(query, aggregatedKnowledge, session, router) {
+    if (!aggregatedKnowledge) {
+      return "I don't have any information about that in my knowledge base.";
+    }
+
+    const warmMemory = session?.warmMemory || '';
+
+    const prompt = `You are answering a knowledge question. Here is what was found across your data sources:
+
+${aggregatedKnowledge}
+${warmMemory ? `\nRecent context:\n${warmMemory}\n` : ''}
+
+RULES:
+- Answer ONLY from the data above. Each fact has a [Source] tag — trust it.
+- If multiple sources mention the same entity, combine their information.
+- State what you found. Name what's missing. Never fabricate.
+- No hedging ("might", "could", "possibly"). Either you found it or you didn't.
+- Be concise. Lead with the most relevant facts.`;
+
+    const result = await router.route({
+      job: 'quick',
+      task: 'knowledge_synthesis',
+      content: prompt + '\n\nQuestion: ' + query.substring(0, 300),
+      requirements: { maxTokens: 500, temperature: 0.3 }
+    });
+
+    return result?.result || result?.content || "I couldn't synthesize an answer from the available information.";
+  }
+
+  /**
+   * Basic search term extraction when enricher is not available.
+   * @private
+   */
+  _extractBasicSearchTerms(message) {
+    const stopWords = new Set(['what', 'who', 'where', 'when', 'how', 'why', 'is', 'are', 'was',
+      'were', 'do', 'does', 'did', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at',
+      'to', 'for', 'of', 'with', 'by', 'about', 'you', 'know', 'tell', 'me', 'my', 'your',
+      'can', 'could', 'would', 'should', 'have', 'has', 'had', 'be', 'been', 'being', 'that',
+      'this', 'from', 'it', 'its', 'i', 'we', 'they', 'he', 'she']);
+    return message
+      .replace(/[^\w\s'-]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 3 && !stopWords.has(w.toLowerCase()))
+      .map(w => w.toLowerCase());
   }
 
   // ---------------------------------------------------------------------------
