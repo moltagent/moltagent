@@ -312,7 +312,8 @@ class IntentDecomposer {
         context += `Error: ${result.error}\n`;
       } else if (result.results && result.results.length > 0) {
         for (const r of result.results) {
-          context += `[${result.provenance}] ${r.title || ''}: ${r.snippet || r.content || ''}\n`;
+          const urlTag = r.url ? ` [url: ${r.url}]` : '';
+          context += `[${result.provenance}] ${r.title || ''}${urlTag}: ${r.snippet || r.content || ''}\n`;
         }
       } else {
         context += `No results found.\n`;
@@ -331,7 +332,8 @@ Compose a clear, concise response that:
 1. Reports what was found in each probe
 2. Reports what actions were taken (and which were skipped and why)
 3. Uses natural language, not step numbers
-4. States facts. Names gaps. No fabrication.`;
+4. States facts. Names gaps. No fabrication.
+5. When referencing entities that have a [url: ...] tag, format as markdown links: [Title](url).`;
 
     try {
       const result = await this.llmRouter.route({
@@ -341,7 +343,7 @@ Compose a clear, concise response that:
           { role: 'system', content: prompt },
           { role: 'user', content: plan.originalMessage || 'Summarize the results.' }
         ],
-        requirements: { maxTokens: 500, temperature: 0.3 }
+        requirements: { maxTokens: 1000, temperature: 0.3 }
       });
 
       return result?.result || result?.content || this._formatResultsPlain(plan, results);

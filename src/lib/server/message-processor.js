@@ -1488,18 +1488,21 @@ class MessageProcessor {
     const probes = [];
 
     // Probe 1: MemorySearcher unified search (wiki keyword + vector + graph — all in one)
+    // Then deep-read top 3 pages for actual content (search snippets are too shallow)
     if (searcher) {
       probes.push(
         searcher.search(searchTerms.join(' '), { maxResults: 5, scope: 'all' })
-          .then(results => ({
-            source: 'memory',
-            results: (results || []).map(r => ({
+          .then(async (results) => {
+            const items = (results || []).map(r => ({
               title: r.title || '',
-              snippet: r.snippet || r.content || '',
-              sourceTag: r.source || 'wiki'
-            })),
-            provenance: 'stored_knowledge'
-          }))
+              snippet: r.snippet || r.content || r.excerpt || '',
+              sourceTag: r.source || 'wiki',
+              url: r.link || ''
+            }));
+            // Deep-read: fetch actual page content for top 3 wiki results
+            await this._deepReadWikiResults(items, searcher);
+            return { source: 'memory', results: items, provenance: 'stored_knowledge' };
+          })
           .catch(() => ({ source: 'memory', results: [], provenance: 'stored_knowledge' }))
       );
     }
@@ -1513,7 +1516,8 @@ class MessageProcessor {
             results: (results || []).map(r => ({
               title: r.title || '',
               snippet: r.stack ? `[${r.stack}] ${r.title}` : r.title,
-              sourceTag: 'deck'
+              sourceTag: 'deck',
+              url: r.cardId ? `/apps/deck/card/${r.cardId}` : ''
             })),
             provenance: 'task_state'
           }))
@@ -1522,22 +1526,23 @@ class MessageProcessor {
     }
 
     // Probe 3: Session history (past conversations about this topic)
+    // Deep-read top 2 session pages for actual content
     if (searcher?.nc) {
       probes.push(
         searcher.nc.searchProvider('collectives-page-content', searchTerms.join(' '), 3)
-          .then(results => {
+          .then(async (results) => {
             const sessionResults = (results || []).filter(r =>
               (r.subline || r.title || '').toLowerCase().includes('session')
             );
-            return {
-              source: 'sessions',
-              results: sessionResults.map(r => ({
-                title: r.title || '',
-                snippet: r.subline || '',
-                sourceTag: 'conversation_history'
-              })),
-              provenance: 'conversation_history'
-            };
+            const items = sessionResults.map(r => ({
+              title: r.title || '',
+              snippet: r.subline || '',
+              sourceTag: 'conversation_history',
+              url: r.resourceUrl || ''
+            }));
+            // Deep-read session pages
+            await this._deepReadWikiResults(items, searcher, 2);
+            return { source: 'sessions', results: items, provenance: 'conversation_history' };
           })
           .catch(() => ({ source: 'sessions', results: [], provenance: 'conversation_history' }))
       );
@@ -1548,6 +1553,40 @@ class MessageProcessor {
     return settled
       .filter(r => r.status === 'fulfilled')
       .map(r => r.value);
+  }
+
+  /**
+   * Deep-read wiki page content for top N search results.
+   * Replaces shallow search snippets with actual page content (truncated to 800 chars).
+   * @param {Array} items - Probe result items (mutated in place)
+   * @param {Object} searcher - MemorySearcher with .wiki (CollectivesClient)
+   * @param {number} [maxReads=3] - Max pages to read
+   * @private
+   */
+  async _deepReadWikiResults(items, searcher, maxReads = 3) {
+    const wiki = searcher?.wiki;
+    if (!wiki || !wiki.readPageContent) return;
+
+    const toRead = items.filter(r => r.title && r.sourceTag !== 'graph').slice(0, maxReads);
+    const reads = toRead.map(async (item) => {
+      try {
+        const found = await wiki.findPageByTitle(item.title);
+        if (!found) return;
+
+        const content = await wiki.readPageContent(found.path);
+        if (content) {
+          item.snippet = content.substring(0, 800);
+        }
+        // Build proper URL if we have page metadata
+        if (found.page?.id && wiki.buildPageUrl) {
+          item.url = wiki.buildPageUrl(item.title, found.page.id);
+        }
+      } catch {
+        // Keep the search snippet on read failure
+      }
+    });
+
+    await Promise.allSettled(reads);
   }
 
   /**
@@ -1562,7 +1601,8 @@ class MessageProcessor {
     for (const probe of withResults) {
       block += `\n[Source: ${probe.source} | Provenance: ${probe.provenance}]\n`;
       for (const result of probe.results) {
-        block += `${result.title || ''}: ${result.snippet || ''}\n`;
+        const urlTag = result.url ? ` [url: ${result.url}]` : '';
+        block += `${result.title || ''}${urlTag}: ${result.snippet || ''}\n`;
       }
     }
     return block;
@@ -1590,13 +1630,14 @@ RULES:
 - If multiple sources mention the same entity, combine their information.
 - State what you found. Name what's missing. Never fabricate.
 - No hedging ("might", "could", "possibly"). Either you found it or you didn't.
-- Be concise. Lead with the most relevant facts.`;
+- Be concise. Lead with the most relevant facts.
+- When referencing entities that have a [url: ...] tag, format as markdown links: [Title](url). This makes references clickable in chat.`;
 
     const result = await router.route({
       job: 'quick',
       task: 'knowledge_synthesis',
       content: prompt + '\n\nQuestion: ' + query.substring(0, 300),
-      requirements: { maxTokens: 500, temperature: 0.3 }
+      requirements: { maxTokens: 1000, temperature: 0.3 }
     });
 
     return result?.result || result?.content || "I couldn't synthesize an answer from the available information.";
@@ -1684,17 +1725,21 @@ RULES:
   _buildProbeExecutor() {
     const enricher = this.microPipeline?.memoryContextEnricher;
     const searcher = this.microPipeline?.memorySearcher;
+    const self = this;
 
     return {
       probeWiki: async (terms) => {
         if (!searcher) return [];
         try {
           const results = await searcher.search(terms.join(' '), { maxResults: 5, scope: 'all' });
-          return (results || []).map(r => ({
+          const items = (results || []).map(r => ({
             title: r.title || '',
-            snippet: r.snippet || r.content || '',
-            sourceTag: r.source || 'wiki'
+            snippet: r.snippet || r.content || r.excerpt || '',
+            sourceTag: r.source || 'wiki',
+            url: r.link || ''
           }));
+          await self._deepReadWikiResults(items, searcher);
+          return items;
         } catch { return []; }
       },
 
@@ -1705,13 +1750,13 @@ RULES:
           return (results || []).map(r => ({
             title: r.title || '',
             snippet: r.stack ? `[${r.stack}] ${r.title}` : r.title,
-            sourceTag: 'deck'
+            sourceTag: 'deck',
+            url: r.cardId ? `/apps/deck/card/${r.cardId}` : ''
           }));
         } catch { return []; }
       },
 
       probeCalendar: async (query) => {
-        // Use CalendarExecutor's query if available through MicroPipeline
         const calExec = this.microPipeline?.executors?.calendar;
         if (!calExec) return [];
         try {
@@ -1742,11 +1787,14 @@ RULES:
           const sessionResults = (results || []).filter(r =>
             (r.subline || r.title || '').toLowerCase().includes('session')
           );
-          return sessionResults.map(r => ({
+          const items = sessionResults.map(r => ({
             title: r.title || '',
             snippet: r.subline || '',
-            sourceTag: 'conversation_history'
+            sourceTag: 'conversation_history',
+            url: r.resourceUrl || ''
           }));
+          await self._deepReadWikiResults(items, searcher, 2);
+          return items;
         } catch { return []; }
       }
     };
