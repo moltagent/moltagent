@@ -16,6 +16,7 @@ const CalDAVClient = require('./caldav-client');
 const appConfig = require('../config');
 const { MODES, normalizeModeName } = require('./cockpit-modes');
 const { filterOwnerEvents } = require('./calendar-scoping');
+const ollamaGate = require('../shared/ollama-gate');
 
 class HeartbeatManager {
   /**
@@ -689,7 +690,8 @@ class HeartbeatManager {
       }
 
       // Layer 2: Extract knowledge from activity log
-      if (this.heartbeatExtractor) {
+      // Skip when user message is active — avoid Ollama contention
+      if (this.heartbeatExtractor && !ollamaGate.isUserActive()) {
         try {
           await this.heartbeatExtractor.tick();
         } catch (err) {
@@ -793,7 +795,8 @@ class HeartbeatManager {
       }
 
       // Episodic daily digest: generate once per day at level >= 2
-      if (level >= 2 && this.dailyDigest) {
+      // Skip when user message is active — avoid Ollama contention
+      if (level >= 2 && this.dailyDigest && !ollamaGate.isUserActive()) {
         try {
           const digestResult = await this.dailyDigest.generate();
           if (digestResult && digestResult.written) results.digest = digestResult;
@@ -826,7 +829,8 @@ class HeartbeatManager {
       }
 
       // Semantic Awareness: embedding refresh (lightweight — checks 1-2 pages per pulse)
-      if (this.embeddingRefresher) {
+      // Skip when user message is active — embedding model swap blocks Ollama
+      if (this.embeddingRefresher && !ollamaGate.isUserActive()) {
         try {
           await this.embeddingRefresher.tick();
         } catch (err) {

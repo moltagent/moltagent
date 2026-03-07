@@ -43,6 +43,7 @@ const { MODES } = require('../integrations/cockpit-modes');
 const ProvenanceAnnotator = require('../security/provenance-annotator');
 const { getFeedbackMessage } = require('../talk/feedback-messages');
 const IntentDecomposer = require('../agent/intent-decomposer');
+const ollamaGate = require('../shared/ollama-gate');
 
 /** Domain intents that can be handled locally with focused tool subsets. */
 const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search', 'knowledge']);
@@ -245,6 +246,9 @@ class MessageProcessor {
       console.log(`[Message] Ignoring own message from: ${extracted.user}`);
       return { skipped: true };
     }
+
+    // Signal Ollama gate: user message needs LLM — heartbeat should yield
+    ollamaGate.markUserActive();
 
     // Immediate status indicator: "Processing..." within ~100ms of message arrival.
     // This is the peripheral sidebar signal — the user sees it before classification.
@@ -835,6 +839,7 @@ class MessageProcessor {
       }
 
       // Set status back to ready after successful processing
+      ollamaGate.markUserDone();
       await this.statusIndicator?.setStatus('ready');
 
       return { response };
@@ -862,6 +867,7 @@ class MessageProcessor {
       }
 
       // Set status back to ready after error handling
+      ollamaGate.markUserDone();
       await this.statusIndicator?.setStatus('ready');
 
       return { error: errorResponse };
@@ -869,6 +875,7 @@ class MessageProcessor {
 
     } catch (outerError) {
       console.error('[Process] Unhandled processing error:', outerError.message);
+      ollamaGate.markUserDone();
       await this.statusIndicator?.setStatus('ready');
       // Guarantee a response to the user even when pre-routing logic throws
       if (extracted.token) {
