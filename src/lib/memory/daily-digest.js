@@ -11,6 +11,7 @@
 'use strict';
 
 const { serializeFrontmatter } = require('../knowledge/frontmatter');
+const ollamaGate = require('../shared/ollama-gate');
 
 /**
  * DailyDigest — Hippocampal replay: daily episode wiki pages.
@@ -180,6 +181,10 @@ Rules:
 - Plain text, no markdown formatting`;
 
     try {
+      // Yield to user messages — don't block Ollama when user is waiting
+      if (ollamaGate.isUserActive()) {
+        return 'Activity recorded.';
+      }
       const rawResponse = await this.router.route({
         job: 'quick',
         content: prompt,

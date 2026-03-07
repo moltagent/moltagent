@@ -11,6 +11,7 @@
 'use strict';
 
 const { serializeFrontmatter } = require('../knowledge/frontmatter');
+const ollamaGate = require('../shared/ollama-gate');
 
 /**
  * HeartbeatExtractor — Layer 2 of the Two-Layer Memory System.
@@ -129,6 +130,11 @@ Rules:
       },
       required: []
     };
+
+    // Yield to user messages — don't block Ollama when user is waiting
+    if (ollamaGate.isUserActive()) {
+      return;
+    }
 
     const rawResponse = await this.router.route({
       job: 'quick',

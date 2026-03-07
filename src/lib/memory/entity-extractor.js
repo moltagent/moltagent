@@ -10,6 +10,8 @@
 
 'use strict';
 
+const ollamaGate = require('../shared/ollama-gate');
+
 /**
  * EntityExtractor — Two-mode entity extraction from wiki page content.
  *
@@ -180,6 +182,9 @@ RELATIONSHIP rules:
 If nothing worth extracting, respond: {"entities":[],"relationships":[]}`;
 
     try {
+      // Yield to user messages — don't block Ollama when user is waiting
+      if (ollamaGate.isUserActive()) return;
+
       const rawResponse = await this.router.route({
         job: 'quick',
         content: prompt,
