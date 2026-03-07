@@ -100,6 +100,22 @@ CRITICAL DISTINCTION — action vs question:
 - "What's the status of onboarding?" → knowledge (QUESTION: asking for info)
 - When in doubt → knowledge (safer to search than call the wrong API)
 
+THESE ARE NOT EMAIL REQUESTS — they are knowledge queries:
+- "What's Carlos's email?" → knowledge (asking for information)
+- "Who has the email for the Berlin office?" → knowledge
+- "Do we have Sarah's email address?" → knowledge
+- "Who is Carlos and what's his email?" → knowledge
+- "What contact info do we have for the client?" → knowledge
+The word "email" in a question does NOT make it an email intent.
+
+THESE ARE email requests — they ask you to OPERATE email:
+- "Send an email to Carlos" → email_send
+- "Draft a reply to Sarah's message" → email_send
+- "Check my inbox" → email_read
+- "Forward that email to the team" → email_send
+
+The test: is the user asking you to OPERATE email (send, read, draft, reply, forward, check inbox) or asking for INFORMATION that happens to include the word "email"? Operate → email. Information → knowledge.
+
 COMPOUND DETECTION:
 Also set "compound": true if the message contains MULTIPLE distinct operations:
 - "and" connecting two different operations: "check X and create Y" → compound
@@ -195,21 +211,21 @@ class IntentRouter {
       // If fast model returns unknown, retry with smart model
       if (!useSmartModel && ((result.intent === 'complex' && result.confidence === 0) || result.intent === 'unknown')) {
         try {
-          return await this._classifyWithModel(this.smartModel, message, recentContext);
+          return this._postClassifyGuard(await this._classifyWithModel(this.smartModel, message, recentContext), message);
         } catch (_retryErr) {
-          return this._regexFallback(message);
+          return this._postClassifyGuard(this._regexFallback(message), message);
         }
       }
 
-      return result;
+      return this._postClassifyGuard(result, message);
     } catch (err) {
       // Primary model failed — try the other one
       const fallbackModel = model === this.fastModel ? this.smartModel : this.fastModel;
       try {
-        return await this._classifyWithModel(fallbackModel, message, recentContext);
+        return this._postClassifyGuard(await this._classifyWithModel(fallbackModel, message, recentContext), message);
       } catch (_fallbackErr) {
         // Both models failed — regex fallback
-        return this._regexFallback(message);
+        return this._postClassifyGuard(this._regexFallback(message), message);
       }
     }
   }
@@ -353,9 +369,9 @@ class IntentRouter {
         return { ...COMPLEX_FALLBACK, compound };
       }
 
-      // Fine-grained intents → map to domain
+      // Fine-grained intents → map to domain (preserve rawIntent for post-classification guard)
       if (INTENT_TO_DOMAIN[intent]) {
-        return { intent: 'domain', domain: INTENT_TO_DOMAIN[intent], needsHistory: false, confidence: 0.8, compound };
+        return { intent: 'domain', domain: INTENT_TO_DOMAIN[intent], needsHistory: false, confidence: 0.8, compound, rawIntent: intent };
       }
 
       // Broad domain intents (legacy / fallback)
@@ -378,6 +394,46 @@ class IntentRouter {
     } catch {
       return { ...COMPLEX_FALLBACK };
     }
+  }
+
+  /**
+   * Post-classification guard: catches keyword-based misclassifications.
+   *
+   * The fast model (qwen2.5:3b) pattern-matches on keywords like "email" and
+   * routes "What's Carlos's email?" to email_send. This guard reclassifies
+   * to knowledge when the message lacks email action verbs.
+   *
+   * Same pattern as WikiExecutor's introspect→read reclassification:
+   * the prompt teaches, the code catches what the prompt misses.
+   *
+   * @param {Object} result - Classification result
+   * @param {string} message - Original user message
+   * @returns {Object} Possibly corrected classification result
+   * @private
+   */
+  _postClassifyGuard(result, message) {
+    if (!result || !message) return result;
+    const lower = message.toLowerCase();
+
+    // Guard: email intent without email action verbs → reclassify as knowledge
+    // Skip when LLM returned a fine-grained action intent (email_send, email_read) —
+    // those indicate the LLM understood the action, not just keyword-matched.
+    if (result.domain === 'email' && !result.rawIntent) {
+      const hasEmailAction = /\b(send|draft|compose|reply|forward|check\s+(my\s+)?(inbox|email)|write\s+(an?\s+)?email|read\s+(my\s+)?email)\b/.test(lower);
+      if (!hasEmailAction) {
+        return { ...result, domain: 'knowledge' };
+      }
+    }
+
+    // Guard: email_read with question about someone's email address → knowledge
+    if (result.domain === 'email' && result.rawIntent === 'email_read') {
+      const asksAboutEmailAddress = /\b(what('?s| is).*email|email\s*(address|for)|who.*email|have.*email)\b/.test(lower);
+      if (asksAboutEmailAddress) {
+        return { ...result, domain: 'knowledge' };
+      }
+    }
+
+    return result;
   }
 
 }

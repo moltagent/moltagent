@@ -246,10 +246,16 @@ class MessageProcessor {
       return { skipped: true };
     }
 
+    // Immediate status indicator: "Processing..." within ~100ms of message arrival.
+    // This is the peripheral sidebar signal — the user sees it before classification.
+    // Fire-and-forget: never blocks the pipeline.
+    this.statusIndicator?.setStatus('processing').catch(() => {});
+
     // Skip messages consumed by HITL guardrail confirmation polling
     const enforcer = this.agentLoop?.guardrailEnforcer;
     if (enforcer?.isPendingConfirmation() && enforcer.isConfirmationResponse(extracted.content)) {
       console.log(`[Message] Skipping HITL confirmation response from ${extracted.user}`);
+      this.statusIndicator?.setStatus('ready').catch(() => {});
       return { skipped: true, reason: 'hitl_confirmation' };
     }
 

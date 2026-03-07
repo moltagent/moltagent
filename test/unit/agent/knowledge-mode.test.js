@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -23,7 +23,7 @@
  */
 
 const assert = require('assert');
-const { asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
+const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 const IntentRouter = require('../../../src/lib/agent/intent-router');
 
 console.log('\n=== Knowledge Mode Routing Tests ===\n');
@@ -173,6 +173,53 @@ asyncTest('TC-KM-015: Classification prompt includes "when in doubt → knowledg
   const prompt = IntentRouter.CLASSIFICATION_SYSTEM_PROMPT;
   assert.ok(prompt.includes('When in doubt'), 'Prompt should have "when in doubt" guidance');
   assert.ok(prompt.includes('knowledge'), 'Default should be knowledge');
+});
+
+// ============================================================
+// Post-Classification Guard Tests
+// ============================================================
+
+asyncTest('TC-KM-016: Guard reclassifies "What\'s Carlos\'s email?" from email to knowledge', async () => {
+  // LLM returns email_read (keyword match on "email") — guard should fix it
+  const router = createRouter('{"intent":"email_read"}');
+  const result = await router.classify("What's Carlos's email?");
+  assert.strictEqual(result.domain, 'knowledge', 'Should be reclassified to knowledge');
+});
+
+asyncTest('TC-KM-017: Guard reclassifies "Who is Carlos and what\'s his email?" to knowledge', async () => {
+  const router = createRouter('{"intent":"email_read"}');
+  const result = await router.classify("Who is Carlos and what's his email?");
+  assert.strictEqual(result.domain, 'knowledge');
+});
+
+asyncTest('TC-KM-018: Guard keeps "Send an email to Carlos" as email', async () => {
+  const router = createRouter('{"intent":"email_send"}');
+  const result = await router.classify('Send an email to Carlos');
+  assert.strictEqual(result.domain, 'email', 'Should stay as email — has action verb "send"');
+});
+
+asyncTest('TC-KM-019: Guard keeps "Check my inbox" as email', async () => {
+  const router = createRouter('{"intent":"email_read"}');
+  const result = await router.classify('Check my inbox');
+  assert.strictEqual(result.domain, 'email', 'Should stay as email — has "check inbox"');
+});
+
+asyncTest('TC-KM-020: Guard keeps "Draft a reply to Sarah" as email', async () => {
+  const router = createRouter('{"intent":"email_send"}');
+  const result = await router.classify('Draft a reply to Sarah');
+  assert.strictEqual(result.domain, 'email', 'Should stay as email — has action verb "draft"');
+});
+
+asyncTest('TC-KM-021: Guard reclassifies "Do we have Sarah\'s email address?" to knowledge', async () => {
+  const router = createRouter('{"intent":"email_read"}');
+  const result = await router.classify("Do we have Sarah's email address?");
+  assert.strictEqual(result.domain, 'knowledge');
+});
+
+test('TC-KM-022: Prompt includes negative email examples', () => {
+  const prompt = IntentRouter.CLASSIFICATION_SYSTEM_PROMPT;
+  assert.ok(prompt.includes('THESE ARE NOT EMAIL REQUESTS'), 'Should have negative email examples');
+  assert.ok(prompt.includes('OPERATE email'), 'Should explain the operate vs info test');
 });
 
 setTimeout(() => {

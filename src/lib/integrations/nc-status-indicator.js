@@ -64,13 +64,14 @@ const OCS_STATUS_BASE = '/ocs/v2.php/apps/user_status/api/v1/user_status';
  * @type {Object.<string, {statusType: string, icon: string|null, message: string|null}>}
  */
 const STATE_MAP = {
-  ready:     { statusType: 'online',  icon: '\u{1F7E2}', message: 'Ready' },
-  thinking:  { statusType: 'dnd',     icon: '\u{1F9E0}', message: 'Thinking...' },
-  heartbeat: { statusType: 'online',  icon: '\u{1F493}', message: 'Checking in...' },
-  error:     { statusType: 'away',    icon: '\u26A0\uFE0F', message: 'Having issues' },
-  budget:    { statusType: 'away',    icon: '\u{1F4B0}', message: 'Budget limit reached' },
-  startup:   { statusType: 'online',  icon: '\u{1F680}', message: 'Starting up...' },
-  shutdown:  { statusType: 'offline', icon: null,         message: null }
+  ready:      { statusType: 'online',  icon: '\u{1F7E2}', message: 'Ready' },
+  processing: { statusType: 'online',  icon: '\u{1F4E8}', message: 'Processing...' },
+  thinking:   { statusType: 'dnd',     icon: '\u{1F9E0}', message: 'Thinking...' },
+  heartbeat:  { statusType: 'online',  icon: '\u{1F493}', message: 'Checking in...' },
+  error:      { statusType: 'away',    icon: '\u26A0\uFE0F', message: 'Having issues' },
+  budget:     { statusType: 'away',    icon: '\u{1F4B0}', message: 'Budget limit reached' },
+  startup:    { statusType: 'online',  icon: '\u{1F680}', message: 'Starting up...' },
+  shutdown:   { statusType: 'offline', icon: null,         message: null }
 };
 
 /**
