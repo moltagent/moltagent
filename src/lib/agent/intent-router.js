@@ -44,7 +44,8 @@ const COMPLEX_FALLBACK = Object.freeze({ intent: 'complex', domain: null, needsH
 const INTENT_SCHEMA = Object.freeze({
   type: 'object',
   properties: {
-    intent: { type: 'string' }
+    intent: { type: 'string' },
+    compound: { type: 'boolean' }
   },
   required: ['intent']
 });
@@ -98,6 +99,15 @@ CRITICAL DISTINCTION — action vs question:
 - "Move the onboarding card to done" → deck_move (ACTION: move)
 - "What's the status of onboarding?" → knowledge (QUESTION: asking for info)
 - When in doubt → knowledge (safer to search than call the wrong API)
+
+COMPOUND DETECTION:
+Also set "compound": true if the message contains MULTIPLE distinct operations:
+- "and" connecting two different operations: "check X and create Y" → compound
+- "if/then" conditional logic: "if not, then do Z" → compound
+- Multiple question types: "what's the status AND when is the meeting" → compound
+- Sequential operations: "find X, then send it to Y" → compound
+Simple: "What's Carlos's email?" → compound: false (one operation)
+Compound: "Check Carlos's email and book a meeting with him" → compound: true (two operations)
 
 Rules:
 - CRITICAL: Read the <conversation> block FIRST. The user's message usually continues the current topic.
@@ -262,47 +272,52 @@ class IntentRouter {
   _regexFallback(message) {
     const lower = message.toLowerCase().trim();
 
+    // Compound detection: multiple operations linked by connectors
+    const compound = /\b(and\s+(then\s+)?(check|create|find|send|book|search|move|list|remind|look|tell|show))\b/.test(lower) ||
+      /\b(if\s+(not|no|none|empty|nothing)|then\s+(create|send|book|remind|add|move))\b/.test(lower) ||
+      /,\s*(and\s+)?(check|create|find|send|book|search|move|list|remind|look|tell|show)\b/.test(lower);
+
     // Domain keywords
     if (/\b(schedule\w*|calendar|events?|meetings?|appointments?|agenda)\b/.test(lower)) {
-      return { intent: 'domain', domain: 'calendar', needsHistory: false, confidence: 0.5 };
+      return { intent: 'domain', domain: 'calendar', needsHistory: false, confidence: 0.5, compound };
     }
     if (/\b(emails?|mail|send.*to|inbox)\b/.test(lower)) {
-      return { intent: 'domain', domain: 'email', needsHistory: false, confidence: 0.5 };
+      return { intent: 'domain', domain: 'email', needsHistory: false, confidence: 0.5, compound };
     }
     if (/\b(tasks?|cards?|boards?|deck|todos?|move\b.+\b(to done|to doing|to inbox|to working|to queued))\b/.test(lower)) {
-      return { intent: 'domain', domain: 'deck', needsHistory: false, confidence: 0.5 };
+      return { intent: 'domain', domain: 'deck', needsHistory: false, confidence: 0.5, compound };
     }
     if (/\b(wiki|page|knowledge|note)\b/.test(lower)) {
-      return { intent: 'domain', domain: 'wiki', needsHistory: false, confidence: 0.5 };
+      return { intent: 'domain', domain: 'wiki', needsHistory: false, confidence: 0.5, compound };
     }
     if (/\b(file|folder|document|upload|download)\b/.test(lower)) {
-      return { intent: 'domain', domain: 'file', needsHistory: false, confidence: 0.5 };
+      return { intent: 'domain', domain: 'file', needsHistory: false, confidence: 0.5, compound };
     }
     if (/\b(search|find|look up|look for)\b/.test(lower)) {
       // Knowledge questions take priority over generic search
       if (/\b(who is|what is|what do you know|tell me about|what'?s the status|what about)\b/.test(lower)) {
-        return { intent: 'domain', domain: 'knowledge', needsHistory: false, confidence: 0.5 };
+        return { intent: 'domain', domain: 'knowledge', needsHistory: false, confidence: 0.5, compound };
       }
-      return { intent: 'domain', domain: 'search', needsHistory: false, confidence: 0.5 };
+      return { intent: 'domain', domain: 'search', needsHistory: false, confidence: 0.5, compound };
     }
 
     // Knowledge queries — questions about people, projects, status
     if (/\b(who is|what is|what do you know|tell me about|what'?s the status|what about|what'?s .{0,20} email|summarize)\b/.test(lower)) {
-      return { intent: 'domain', domain: 'knowledge', needsHistory: false, confidence: 0.5 };
+      return { intent: 'domain', domain: 'knowledge', needsHistory: false, confidence: 0.5, compound };
     }
 
     // Memory language → wiki write (catches what regex pre-router would send to smart model)
     if (/\b(remember|forget|forgot|told you|decision|stored)\b/.test(lower)) {
-      return { intent: 'domain', domain: 'wiki', needsHistory: false, confidence: 0.5 };
+      return { intent: 'domain', domain: 'wiki', needsHistory: false, confidence: 0.5, compound };
     }
 
     // Short messages → greeting/chitchat
     if (lower.split(/\s+/).length <= 8) {
-      return { intent: 'chitchat', domain: null, needsHistory: false, confidence: 0.4 };
+      return { intent: 'chitchat', domain: null, needsHistory: false, confidence: 0.4, compound };
     }
 
     // Long unmatched → complex (cloud) — only case that still goes to cloud
-    return { ...COMPLEX_FALLBACK, confidence: 0.3 };
+    return { ...COMPLEX_FALLBACK, confidence: 0.3, compound };
   }
 
   /**
@@ -327,38 +342,39 @@ class IntentRouter {
     try {
       const parsed = JSON.parse(match[0]);
       const intent = (parsed.intent || '').toLowerCase().trim();
+      const compound = parsed.compound === true;
 
       if (!intent || !VALID_INTENTS.has(intent)) {
-        return { ...COMPLEX_FALLBACK };
+        return { ...COMPLEX_FALLBACK, compound };
       }
 
       // Unknown → complex (cloud escalation)
       if (intent === 'unknown') {
-        return { ...COMPLEX_FALLBACK };
+        return { ...COMPLEX_FALLBACK, compound };
       }
 
       // Fine-grained intents → map to domain
       if (INTENT_TO_DOMAIN[intent]) {
-        return { intent: 'domain', domain: INTENT_TO_DOMAIN[intent], needsHistory: false, confidence: 0.8 };
+        return { intent: 'domain', domain: INTENT_TO_DOMAIN[intent], needsHistory: false, confidence: 0.8, compound };
       }
 
       // Broad domain intents (legacy / fallback)
       if (DOMAIN_INTENTS.has(intent)) {
-        return { intent: 'domain', domain: intent, needsHistory: false, confidence: 0.8 };
+        return { intent: 'domain', domain: intent, needsHistory: false, confidence: 0.8, compound };
       }
 
       // Confirmation/selection need history
       if (intent === 'confirmation' || intent === 'selection') {
-        return { intent, domain: null, needsHistory: true, confidence: 0.8 };
+        return { intent, domain: null, needsHistory: true, confidence: 0.8, compound };
       }
 
       // Complex needs history
       if (intent === 'complex') {
-        return { intent: 'complex', domain: null, needsHistory: true, confidence: 0.7 };
+        return { intent: 'complex', domain: null, needsHistory: true, confidence: 0.7, compound };
       }
 
       // Greeting, chitchat
-      return { intent, domain: null, needsHistory: false, confidence: 0.9 };
+      return { intent, domain: null, needsHistory: false, confidence: 0.9, compound };
     } catch {
       return { ...COMPLEX_FALLBACK };
     }

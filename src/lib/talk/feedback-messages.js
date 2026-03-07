@@ -75,6 +75,15 @@ const FEEDBACK_MESSAGES = {
     default:         '\u{1F50D} Searching my knowledge base...'
   },
 
+  // Compound intents — multi-step decomposition
+  compound: {
+    decomposing:     '\u{1F9E9} Breaking that down into steps...',
+    probing:         '\u{1F50D} Gathering information...',
+    acting:          '\u{26A1} Taking action...',
+    synthesizing:    '\u{1F4DD} Putting it all together...',
+    default:         '\u{1F9E9} Breaking that down into steps...'
+  },
+
   // Complex / escalation (cloud path)
   complex: {
     default:         '\u{1F914} Let me think about that...'

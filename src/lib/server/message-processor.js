@@ -42,6 +42,7 @@ const { createErrorHandler } = require('../errors/error-handler');
 const { MODES } = require('../integrations/cockpit-modes');
 const ProvenanceAnnotator = require('../security/provenance-annotator');
 const { getFeedbackMessage } = require('../talk/feedback-messages');
+const IntentDecomposer = require('../agent/intent-decomposer');
 
 /** Domain intents that can be handled locally with focused tool subsets. */
 const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search', 'knowledge']);
@@ -476,11 +477,11 @@ class MessageProcessor {
         result = { intent: 'micro_pipeline', provider: 'local' };
       } else if (this.microPipeline && this.agentLoop && this._isSmartMixMode()) {
         // Smart-mix: three-path routing (local text / local tools / cloud)
-        const { useLocal, useDomainTools, intent } = await this._smartMixClassify(pipelineMessage, session, extracted.token);
-        console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}`);
+        const { useLocal, useDomainTools, intent, compound } = await this._smartMixClassify(pipelineMessage, session, extracted.token);
+        console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}${compound ? ' [COMPOUND]' : ''}`);
 
         // Intent-specific feedback: acknowledge the user immediately (fire-and-forget)
-        const feedbackMsg = getFeedbackMessage(intent);
+        const feedbackMsg = compound ? getFeedbackMessage('compound', 'decomposing') : getFeedbackMessage(intent);
         if (feedbackMsg && extracted.token) {
           this.sendTalkReply(extracted.token, feedbackMsg).catch(() => {});
         }
@@ -500,6 +501,45 @@ class MessageProcessor {
           });
           result = { intent: `smart_mix_flush:${intent}`, provider: 'agent' };
           response = response || 'Sorry, I encountered an error processing your message.';
+        } else if (compound && useLocal && useDomainTools) {
+          // Path 2c: Compound intent — decompose into multi-step plan
+          if (this.agentLoop?.llmProvider?.clearLocalSkip) {
+            this.agentLoop.llmProvider.clearLocalSkip();
+          }
+          try {
+            const compoundResult = await this._handleCompoundIntent(pipelineMessage, session, extracted.token);
+            if (typeof compoundResult === 'object' && compoundResult !== null) {
+              this._captureActionRecord(session, compoundResult.actionRecord);
+              if (compoundResult.enrichmentBlock) _enrichmentBlock = compoundResult.enrichmentBlock;
+              response = compoundResult.response || "I completed the steps but couldn't compose a summary.";
+            } else {
+              response = compoundResult || "I completed the steps but couldn't compose a summary.";
+            }
+            result = { intent: 'smart_mix_compound', provider: 'local' };
+          } catch (compoundErr) {
+            // Compound decomposition failed — fall back to knowledge mode
+            console.warn(`[Message] Compound decomposition failed, falling back to knowledge: ${compoundErr.message}`);
+            try {
+              const knowledgeResult = await this._handleKnowledgeQuery(pipelineMessage, session);
+              if (typeof knowledgeResult === 'object' && knowledgeResult !== null) {
+                this._captureActionRecord(session, knowledgeResult.actionRecord);
+                if (knowledgeResult.enrichmentBlock) _enrichmentBlock = knowledgeResult.enrichmentBlock;
+                response = knowledgeResult.response || "I don't have any information about that.";
+              } else {
+                response = knowledgeResult || "I don't have any information about that.";
+              }
+              result = { intent: 'smart_mix_compound_fallback', provider: 'local' };
+            } catch (fallbackErr) {
+              console.warn(`[Message] Compound fallback also failed: ${fallbackErr.message}`);
+              response = await this.agentLoop.process(pipelineMessage, extracted.token, {
+                messageId: extracted.messageId,
+                inputType: extracted._isVoice ? 'voice' : 'text',
+                user: extracted.user
+              });
+              result = { intent: 'smart_mix_escalated:compound', provider: 'agent' };
+              response = response || 'Sorry, I encountered an error processing your message.';
+            }
+          }
         } else if (useLocal && useDomainTools && intent === 'knowledge') {
           // Path 2a: Knowledge query — synthesize from enricher + multi-source probes
           if (this.agentLoop?.llmProvider?.clearLocalSkip) {
@@ -1336,7 +1376,7 @@ class MessageProcessor {
         }
       }
 
-      let { intent, domain } = classification;
+      let { intent, domain, compound } = classification;
 
       // Action-ledger override: when the last action was file_* and the message
       // is an ambiguous reference (no explicit domain keywords), force file domain.
@@ -1359,21 +1399,21 @@ class MessageProcessor {
       // Substantive messages disguised as greetings are a classification accuracy
       // issue — the word-count gate was leaking most natural chitchat to cloud.
       if (intent === 'greeting' || intent === 'chitchat') {
-        return { useLocal: true, useDomainTools: false, intent };
+        return { useLocal: true, useDomainTools: false, intent, compound: false };
       }
       // Confirmation/selection → cloud (needs full history)
       if (intent === 'confirmation' || intent === 'selection') {
-        return { useLocal: false, useDomainTools: false, intent };
+        return { useLocal: false, useDomainTools: false, intent, compound: false };
       }
       // Domain → local with focused tools
       if (intent === 'domain' && domain && DOMAIN_INTENTS.has(domain)) {
-        return { useLocal: true, useDomainTools: true, intent: domain };
+        return { useLocal: true, useDomainTools: true, intent: domain, compound: !!compound };
       }
       // Complex / fallback → cloud
-      return { useLocal: false, useDomainTools: false, intent: intent === 'domain' ? (domain || 'complex') : intent };
+      return { useLocal: false, useDomainTools: false, intent: intent === 'domain' ? (domain || 'complex') : intent, compound: !!compound };
     } catch (err) {
       console.warn(`[Message] Smart-mix classification failed: ${err.message}`);
-      return { useLocal: false, useDomainTools: false, intent: 'error' };
+      return { useLocal: false, useDomainTools: false, intent: 'error', compound: false };
     }
   }
 
@@ -1577,6 +1617,139 @@ RULES:
       .split(/\s+/)
       .filter(w => w.length >= 3 && !stopWords.has(w.toLowerCase()))
       .map(w => w.toLowerCase());
+  }
+
+  // ---------------------------------------------------------------------------
+  // Compound Intents: Multi-step plan decomposition + execution
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Handle a compound intent by decomposing into steps and executing the plan.
+   *
+   * @param {string} message - User message
+   * @param {Object} [session] - SessionManager session
+   * @param {string} [roomToken] - Talk room token for feedback messages
+   * @returns {Promise<{response: string, actionRecord: Object, enrichmentBlock?: string}>}
+   * @private
+   */
+  async _handleCompoundIntent(message, session, roomToken) {
+    const router = this.microPipeline?.router;
+    if (!router) {
+      throw new Error('No LLM router available for compound decomposition');
+    }
+
+    const decomposer = new IntentDecomposer({ llmRouter: router, logger: console });
+
+    // Step 1: Decompose
+    console.log(`[Message] Compound decomposition: "${message.substring(0, 80)}"`);
+    const plan = await decomposer.decompose(message);
+
+    if (!plan) {
+      throw new Error('Decomposition returned no plan');
+    }
+
+    console.log(`[Message] Compound plan: ${plan.steps.length} steps — ${plan.steps.map(s => `${s.type}:${s.source}`).join(', ')}`);
+
+    // Step 2: Build probe executor from existing knowledge probe infrastructure
+    const probeExecutor = this._buildProbeExecutor();
+
+    // Step 3: Execute plan
+    const replyFn = roomToken ? (text) => this.sendTalkReply(roomToken, text) : null;
+    const response = await decomposer.executePlan(plan, {
+      probeExecutor,
+      actionExecutor: this.microPipeline,
+      session,
+      replyFn
+    });
+
+    return {
+      response,
+      enrichmentBlock: undefined,
+      actionRecord: {
+        type: 'compound_intent',
+        refs: {
+          query: message.substring(0, 200),
+          stepCount: plan.steps.length,
+          steps: plan.steps.map(s => ({ id: s.id, type: s.type, source: s.source }))
+        }
+      }
+    };
+  }
+
+  /**
+   * Build a probe executor object that wraps existing knowledge probe methods.
+   * Reuses the same infrastructure as _executeKnowledgeProbes.
+   * @private
+   */
+  _buildProbeExecutor() {
+    const enricher = this.microPipeline?.memoryContextEnricher;
+    const searcher = this.microPipeline?.memorySearcher;
+
+    return {
+      probeWiki: async (terms) => {
+        if (!searcher) return [];
+        try {
+          const results = await searcher.search(terms.join(' '), { maxResults: 5, scope: 'all' });
+          return (results || []).map(r => ({
+            title: r.title || '',
+            snippet: r.snippet || r.content || '',
+            sourceTag: r.source || 'wiki'
+          }));
+        } catch { return []; }
+      },
+
+      probeDeck: async (terms) => {
+        if (!enricher?._searchDeck) return [];
+        try {
+          const results = await enricher._searchDeck(terms);
+          return (results || []).map(r => ({
+            title: r.title || '',
+            snippet: r.stack ? `[${r.stack}] ${r.title}` : r.title,
+            sourceTag: 'deck'
+          }));
+        } catch { return []; }
+      },
+
+      probeCalendar: async (query) => {
+        // Use CalendarExecutor's query if available through MicroPipeline
+        const calExec = this.microPipeline?.executors?.calendar;
+        if (!calExec) return [];
+        try {
+          const result = await calExec.queryEvents({ query_type: 'upcoming' }, {});
+          if (typeof result === 'string') {
+            return [{ title: 'Upcoming events', snippet: result }];
+          }
+          return [];
+        } catch { return []; }
+      },
+
+      probeGraph: async (terms) => {
+        if (!searcher?.graphSearch) return [];
+        try {
+          const results = await searcher.graphSearch(terms.join(' '), 3);
+          return (results || []).map(r => ({
+            title: r.entity || r.title || '',
+            snippet: r.summary || r.content || '',
+            sourceTag: 'graph'
+          }));
+        } catch { return []; }
+      },
+
+      probeSessions: async (terms) => {
+        if (!searcher?.nc) return [];
+        try {
+          const results = await searcher.nc.searchProvider('collectives-page-content', terms.join(' '), 3);
+          const sessionResults = (results || []).filter(r =>
+            (r.subline || r.title || '').toLowerCase().includes('session')
+          );
+          return sessionResults.map(r => ({
+            title: r.title || '',
+            snippet: r.subline || '',
+            sourceTag: 'conversation_history'
+          }));
+        } catch { return []; }
+      }
+    };
   }
 
   // ---------------------------------------------------------------------------
