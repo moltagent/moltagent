@@ -1189,11 +1189,30 @@ class LLMRouter {
    * @param {Object} roster - { quick: ['model1'], thinking: ['model2'], ... }
    */
   setLocalRoster(roster) {
-    this._localRoster = roster || null;
-    if (roster) {
-      const jobs = Object.keys(roster);
-      console.log(`[LLMRouter] Local roster set: ${jobs.length} jobs mapped`);
+    if (!roster) {
+      this._localRoster = null;
+      return;
     }
+
+    // Translate model names to provider IDs.
+    // ModelScout returns { quick: ['qwen2.5:3b'], thinking: ['qwen3:8b'] }.
+    // The router needs provider IDs like 'ollama-fast', 'ollama-local'.
+    // Build a model→providerId lookup from registered providers.
+    const modelToProvider = new Map();
+    for (const [id, provider] of this.providers) {
+      if (provider.model) {
+        modelToProvider.set(provider.model, id);
+      }
+    }
+
+    const resolved = {};
+    for (const [job, models] of Object.entries(roster)) {
+      resolved[job] = (models || []).map(m => modelToProvider.get(m) || m);
+    }
+
+    this._localRoster = resolved;
+    const jobs = Object.keys(resolved);
+    console.log(`[LLMRouter] Local roster set: ${jobs.length} jobs mapped`);
   }
 
   /**

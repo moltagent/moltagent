@@ -922,7 +922,27 @@ async function main() {
         const localRoster = modelScout.generateLocalRoster();
         if (localRoster && llmRouter) {
           llmRouter.router.setLocalRoster(localRoster);
-          console.log(`[INIT] Local roster (bot): ${modelScout.getSummary()}`);
+          console.log(`[INIT] Local roster: ${modelScout.getSummary()}`);
+
+          // Register ollama-fast provider and wire QUICK chain
+          const fastModel = CONFIG.ollama.modelFast;
+          if (fastModel && fastModel !== CONFIG.ollama.model) {
+            llmRouter.router.registerProvider('ollama-fast', {
+              adapter: 'ollama',
+              endpoint: CONFIG.ollama.url,
+              model: fastModel,
+              type: 'local'
+            });
+
+            // Activate smart-mix and override QUICK chain
+            llmRouter.router.setPreset('smart-mix');
+            const roster = llmRouter.router.getRoster();
+            if (roster && roster.quick) {
+              roster.quick = ['ollama-fast', ...roster.quick.filter(id => id !== 'ollama-fast')];
+              llmRouter.router.setRoster(roster);
+              console.log(`[INIT] QUICK chain: ollama-fast (${fastModel}) → ${roster.quick.slice(1).join(' → ')}`);
+            }
+          }
         }
       }).catch(err => {
         console.warn(`[INIT] ModelScout discovery failed (bot): ${err.message}`);

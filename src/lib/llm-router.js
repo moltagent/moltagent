@@ -45,6 +45,16 @@ class LegacyLLMRouter {
           model: credModel
         };
       }
+
+      // Fast model for QUICK jobs (classification, synthesis, extraction)
+      const fastModel = config.ollama.modelFast;
+      if (fastModel && fastModel !== (config.ollama.model || 'phi4-mini')) {
+        loadedConfig.providers['ollama-fast'] = {
+          adapter: 'ollama',
+          endpoint: config.ollama.url || 'http://localhost:11434',
+          model: fastModel
+        };
+      }
     }
 
     // Create the new router
