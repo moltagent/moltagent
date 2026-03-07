@@ -1492,28 +1492,83 @@ class MessageProcessor {
    */
   async _executeKnowledgeProbes(searchTerms, query, enricher, searcher) {
     const probes = [];
+    const searchQuery = searchTerms.join(' ');
+    const wiki = searcher?.wiki;
+    const ncSearch = searcher?.nc;
 
-    // Probe 1: MemorySearcher unified search (wiki keyword + vector + graph — all in one)
-    // Then deep-read top 3 pages for actual content (search snippets are too shallow)
-    if (searcher) {
+    // -----------------------------------------------------------------------
+    // Probe 0: Direct wiki page lookup — bypasses search ranking entirely.
+    // Extracts capitalized words (likely entity names like "Carlos", "Paradiesgarten")
+    // and calls findPageByTitle + readPageContent. This is the most reliable
+    // path because it doesn't depend on NC Search ranking or provider bugs.
+    // -----------------------------------------------------------------------
+    if (wiki && wiki.findPageByTitle && wiki.readPageContent) {
+      const entityNames = this._extractEntityNames(query);
+      if (entityNames.length > 0) {
+        probes.push(
+          this._directWikiLookup(entityNames, wiki)
+            .then(results => ({
+              source: 'wiki_direct',
+              results,
+              provenance: 'stored_knowledge'
+            }))
+            .catch(() => ({ source: 'wiki_direct', results: [], provenance: 'stored_knowledge' }))
+        );
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Probe 1: NC Unified Search — "collectives-pages" provider (page titles).
+    // Returns clean page titles with proper URLs. Most relevant for knowledge
+    // queries. Deep-read top 3 results for actual page content.
+    // -----------------------------------------------------------------------
+    if (ncSearch) {
       probes.push(
-        searcher.search(searchTerms.join(' '), { maxResults: 5, scope: 'all' })
+        ncSearch.searchProvider('collectives-pages', searchQuery, 5)
           .then(async (results) => {
             const items = (results || []).map(r => ({
               title: r.title || '',
-              snippet: r.snippet || r.content || r.excerpt || '',
-              sourceTag: r.source || 'wiki',
-              url: r.link || ''
+              snippet: r.subline || '',
+              sourceTag: 'wiki',
+              url: r.resourceUrl || ''
             }));
-            // Deep-read: fetch actual page content for top 3 wiki results
-            await this._deepReadWikiResults(items, searcher);
-            return { source: 'memory', results: items, provenance: 'stored_knowledge' };
+            await this._deepReadWikiResults(items, searcher, 3);
+            return { source: 'wiki_pages', results: items, provenance: 'stored_knowledge' };
           })
-          .catch(() => ({ source: 'memory', results: [], provenance: 'stored_knowledge' }))
+          .catch(() => ({ source: 'wiki_pages', results: [], provenance: 'stored_knowledge' }))
       );
     }
 
-    // Probe 2: Deck (cached board state — keyword match on cards)
+    // -----------------------------------------------------------------------
+    // Probe 2: NC Unified Search — "collectives-page-content" provider (full-text).
+    // Finds pages where the search term appears in the body. Titles are content
+    // snippets so need title extraction. Only keep People/Projects pages, skip
+    // session echoes (handled separately in Probe 4).
+    // -----------------------------------------------------------------------
+    if (ncSearch) {
+      probes.push(
+        ncSearch.searchProvider('collectives-page-content', searchQuery, 5)
+          .then(async (results) => {
+            // Split: structured knowledge vs session echoes
+            const knowledgeResults = (results || []).filter(r =>
+              !(r.subline || '').toLowerCase().includes('sessions')
+            );
+            const items = knowledgeResults.map(r => ({
+              title: r.title || '',
+              snippet: r.subline || '',
+              sourceTag: 'wiki',
+              url: r.resourceUrl || ''
+            }));
+            await this._deepReadWikiResults(items, searcher, 2);
+            return { source: 'wiki_content', results: items, provenance: 'stored_knowledge' };
+          })
+          .catch(() => ({ source: 'wiki_content', results: [], provenance: 'stored_knowledge' }))
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // Probe 3: Deck (cached board state — keyword match on cards)
+    // -----------------------------------------------------------------------
     if (enricher?._searchDeck) {
       probes.push(
         enricher._searchDeck(searchTerms)
@@ -1531,26 +1586,29 @@ class MessageProcessor {
       );
     }
 
-    // Probe 3: Session history (past conversations about this topic)
-    // Deep-read top 2 session pages for actual content
-    if (searcher?.nc) {
+    // -----------------------------------------------------------------------
+    // Probe 4: NC Unified Search — "files" provider.
+    // Catches wiki pages via their underlying file representation (Carlos.md).
+    // Clean titles, reliable. Deep-read top 2 for content.
+    // -----------------------------------------------------------------------
+    if (ncSearch) {
       probes.push(
-        searcher.nc.searchProvider('collectives-page-content', searchTerms.join(' '), 3)
+        ncSearch.searchProvider('files', searchQuery, 3)
           .then(async (results) => {
-            const sessionResults = (results || []).filter(r =>
-              (r.subline || r.title || '').toLowerCase().includes('session')
+            // Only keep Collectives files (wiki pages), skip random files
+            const wikiFiles = (results || []).filter(r =>
+              (r.subline || '').toLowerCase().includes('collectives')
             );
-            const items = sessionResults.map(r => ({
-              title: r.title || '',
+            const items = wikiFiles.map(r => ({
+              title: (r.title || '').replace(/\.md$/, ''),
               snippet: r.subline || '',
-              sourceTag: 'conversation_history',
+              sourceTag: 'wiki',
               url: r.resourceUrl || ''
             }));
-            // Deep-read session pages
             await this._deepReadWikiResults(items, searcher, 2);
-            return { source: 'sessions', results: items, provenance: 'conversation_history' };
+            return { source: 'files', results: items, provenance: 'stored_knowledge' };
           })
-          .catch(() => ({ source: 'sessions', results: [], provenance: 'conversation_history' }))
+          .catch(() => ({ source: 'files', results: [], provenance: 'stored_knowledge' }))
       );
     }
 
@@ -1573,19 +1631,41 @@ class MessageProcessor {
     const wiki = searcher?.wiki;
     if (!wiki || !wiki.readPageContent) return;
 
-    const toRead = items.filter(r => r.title && r.sourceTag !== 'graph').slice(0, maxReads);
+    const toRead = items.filter(r => (r.title || r.url) && r.sourceTag !== 'graph').slice(0, maxReads);
+
+    // Deduplicate by resolved page title to avoid reading the same page twice
+    const seenPages = new Set();
+
     const reads = toRead.map(async (item) => {
       try {
-        const found = await wiki.findPageByTitle(item.title);
+        // Search result titles from NC Unified Search are often content snippets,
+        // not actual page titles. Extract a cleaner title from the URL slug if available.
+        const candidates = this._extractPageTitleCandidates(item);
+
+        let found = null;
+        let resolvedTitle = null;
+        for (const candidate of candidates) {
+          found = await wiki.findPageByTitle(candidate);
+          if (found) {
+            resolvedTitle = candidate;
+            break;
+          }
+        }
+
         if (!found) return;
+
+        // Skip if we already read this page (dedup across items)
+        const pageKey = found.path || resolvedTitle;
+        if (seenPages.has(pageKey)) return;
+        seenPages.add(pageKey);
 
         const content = await wiki.readPageContent(found.path);
         if (content) {
           item.snippet = content.substring(0, 800);
+          item.title = found.page?.title || resolvedTitle;
         }
-        // Build proper URL if we have page metadata
         if (found.page?.id && wiki.buildPageUrl) {
-          item.url = wiki.buildPageUrl(item.title, found.page.id);
+          item.url = wiki.buildPageUrl(found.page?.title || resolvedTitle, found.page.id);
         }
       } catch {
         // Keep the search snippet on read failure
@@ -1596,6 +1676,51 @@ class MessageProcessor {
   }
 
   /**
+   * Extract page title candidates from a search result item.
+   * NC Unified Search "titles" are often content snippets. This extracts
+   * cleaner candidates from:
+   * 1. URL slug (e.g. /Carlos-27016 → "Carlos")
+   * 2. Markdown header in title (e.g. "# Carlos\n..." → "Carlos")
+   * 3. Raw title as fallback
+   * @private
+   */
+  _extractPageTitleCandidates(item) {
+    const candidates = [];
+
+    // 1. URL slug: /apps/collectives/.../PageName-12345 → "PageName"
+    if (item.url) {
+      const urlMatch = item.url.match(/\/([^/]+)-\d+\s*$/);
+      if (urlMatch) {
+        // URL-decode and replace hyphens with spaces
+        const slug = decodeURIComponent(urlMatch[1]).replace(/-/g, ' ');
+        candidates.push(slug);
+      }
+    }
+
+    // 2. Markdown header: "# Carlos\n..." → "Carlos"
+    if (item.title) {
+      const headerMatch = item.title.match(/^#\s+(.+)$/m);
+      if (headerMatch) {
+        candidates.push(headerMatch[1].trim());
+      }
+    }
+
+    // 3. Raw title (cleaned): take first line, strip markdown
+    if (item.title) {
+      const firstLine = item.title.split('\n').find(l => l.trim());
+      if (firstLine) {
+        const cleaned = firstLine.replace(/^#+\s*/, '').replace(/[*_`]/g, '').trim();
+        if (cleaned.length >= 2 && cleaned.length <= 100) {
+          candidates.push(cleaned);
+        }
+      }
+    }
+
+    // Deduplicate while preserving order
+    return [...new Set(candidates)];
+  }
+
+  /**
    * Aggregate probe results into a structured knowledge block with provenance.
    * @private
    */
@@ -1603,12 +1728,36 @@ class MessageProcessor {
     const withResults = probeResults.filter(p => p.results && p.results.length > 0);
     if (withResults.length === 0) return '';
 
+    // Deduplicate across probes: same page title from different providers
+    // should only appear once. Keep the version with the longest snippet.
+    const seenTitles = new Map(); // normalized title → { result, provenance }
+
     let block = '';
     for (const probe of withResults) {
-      block += `\n[Source: ${probe.source} | Provenance: ${probe.provenance}]\n`;
+      const uniqueResults = [];
       for (const result of probe.results) {
-        const urlTag = result.url ? ` [url: ${result.url}]` : '';
-        block += `${result.title || ''}${urlTag}: ${result.snippet || ''}\n`;
+        const key = (result.title || '').toLowerCase().replace(/[^\w]/g, '');
+        if (!key) { uniqueResults.push(result); continue; }
+
+        const existing = seenTitles.get(key);
+        if (existing) {
+          // Keep whichever has the longer snippet (more content)
+          if ((result.snippet || '').length > (existing.result.snippet || '').length) {
+            existing.result.snippet = result.snippet;
+            if (result.url) existing.result.url = result.url;
+          }
+          continue; // Skip duplicate
+        }
+        seenTitles.set(key, { result, provenance: probe.provenance });
+        uniqueResults.push(result);
+      }
+
+      if (uniqueResults.length > 0) {
+        block += `\n[Source: ${probe.source} | Provenance: ${probe.provenance}]\n`;
+        for (const result of uniqueResults) {
+          const urlTag = result.url ? ` [url: ${result.url}]` : '';
+          block += `${result.title || ''}${urlTag}: ${result.snippet || ''}\n`;
+        }
       }
     }
     return block;
@@ -1647,6 +1796,62 @@ RULES:
     });
 
     return result?.result || result?.content || "I couldn't synthesize an answer from the available information.";
+  }
+
+  /**
+   * Extract likely entity names (capitalized words) from a query.
+   * Returns unique names that might correspond to wiki pages.
+   * @private
+   */
+  _extractEntityNames(query) {
+    // Match capitalized words (2+ chars), skip sentence-initial words
+    const words = query.replace(/[^\w\s'-]/g, ' ').split(/\s+/);
+    const entities = new Set();
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      if (w.length < 2) continue;
+      // Capitalized and not sentence-initial (not after . or at position 0 after newline)
+      if (/^[A-Z][a-z]/.test(w)) {
+        // Skip common non-entity words
+        if (/^(Who|What|Where|When|How|Why|The|This|That|Please|Can|Could|Would|Should|Does|Did|Has|Have|Was|Were|Are|Is|Do|Tell|Check|Find|Show|Get|Give|Let|Look|Make|May|Might|Must|Need|Not|Some|Also|Just|Still|Very)$/.test(w)) continue;
+        entities.add(w);
+      }
+    }
+    return [...entities];
+  }
+
+  /**
+   * Direct wiki page lookup: try findPageByTitle for each entity name.
+   * Returns full page content (800 chars) with clickable URLs.
+   * Bypasses search ranking — if a page named "Carlos" exists, we find it directly.
+   * @private
+   */
+  async _directWikiLookup(entityNames, wiki) {
+    const results = [];
+    const reads = entityNames.slice(0, 3).map(async (name) => {
+      try {
+        const found = await wiki.findPageByTitle(name);
+        if (!found) return;
+
+        const content = await wiki.readPageContent(found.path);
+        if (!content) return;
+
+        const url = (found.page?.id && wiki.buildPageUrl)
+          ? wiki.buildPageUrl(found.page.title || name, found.page.id)
+          : '';
+
+        results.push({
+          title: found.page?.title || name,
+          snippet: content.substring(0, 800),
+          sourceTag: 'wiki',
+          url
+        });
+      } catch {
+        // Skip on error
+      }
+    });
+    await Promise.allSettled(reads);
+    return results;
   }
 
   /**
@@ -1735,16 +1940,33 @@ RULES:
 
     return {
       probeWiki: async (terms) => {
-        if (!searcher) return [];
+        const ncSearch = searcher?.nc;
+        const wiki = searcher?.wiki;
+        if (!ncSearch) return [];
         try {
-          const results = await searcher.search(terms.join(' '), { maxResults: 5, scope: 'all' });
-          const items = (results || []).map(r => ({
-            title: r.title || '',
-            snippet: r.snippet || r.content || r.excerpt || '',
-            sourceTag: r.source || 'wiki',
-            url: r.link || ''
-          }));
-          await self._deepReadWikiResults(items, searcher);
+          // Query collectives-pages (clean titles) + direct entity lookup in parallel
+          const query = terms.join(' ');
+          const [pageResults, entityResults] = await Promise.allSettled([
+            ncSearch.searchProvider('collectives-pages', query, 5),
+            wiki ? self._directWikiLookup(self._extractEntityNames(query), wiki) : []
+          ]);
+
+          const items = [];
+          // Direct entity lookups first (highest confidence)
+          if (entityResults.status === 'fulfilled') {
+            items.push(...(entityResults.value || []));
+          }
+          // Then collectives-pages results
+          if (pageResults.status === 'fulfilled') {
+            const pages = (pageResults.value || []).map(r => ({
+              title: r.title || '',
+              snippet: r.subline || '',
+              sourceTag: 'wiki',
+              url: r.resourceUrl || ''
+            }));
+            await self._deepReadWikiResults(pages, searcher, 3);
+            items.push(...pages);
+          }
           return items;
         } catch { return []; }
       },

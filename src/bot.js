@@ -700,6 +700,7 @@ async function main() {
     try {
       memorySearcher = new MemorySearcher({
         ncSearchClient,
+        collectivesClient,
         logger: console
       });
       memorySearcher.discoverProviders().catch(err =>

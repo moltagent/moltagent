@@ -26,7 +26,7 @@ const CHANNEL_WEIGHTS = { keyword: 0.4, vector: 0.35, graph: 0.25 };
 
 /** Map scope names to NC Unified Search provider IDs */
 const SCOPE_PROVIDERS = {
-  all:           ['collectives-page-content', 'talk-message', 'files'],
+  all:           ['collectives-pages', 'collectives-page-content', 'files'],
   wiki:          ['collectives-pages', 'collectives-page-content'],
   people:        ['collectives-page-content'],
   projects:      ['collectives-page-content'],
