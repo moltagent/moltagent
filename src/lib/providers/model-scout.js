@@ -17,13 +17,15 @@
  */
 const JOB_AFFINITY_MAP = Object.freeze({
   quick: {
-    description: 'Fast, low-latency responses',
+    description: 'Fast, low-latency responses — smallest viable model wins',
     preferred: [
-      { family: 'qwen3', maxParams: 14 },
-      { family: 'qwen2.5', maxParams: 14 },
-      { family: 'phi', maxParams: 14 },
-      { family: 'gemma', maxParams: 9 },
-      { family: 'llama', maxParams: 8 }
+      { family: 'qwen2', maxParams: 4 },
+      { family: 'gemma', maxParams: 3 },
+      { family: 'phi', maxParams: 4 },
+      { family: 'qwen3', maxParams: 4 },
+      { family: 'qwen2', maxParams: 14 },
+      { family: 'llama', maxParams: 8 },
+      { family: 'qwen3', maxParams: 14 }
     ]
   },
   tools: {
