@@ -1390,9 +1390,11 @@ async function initialize() {
       }
 
       // IntentRouter: LLM-powered intent classification with conversation context
+      // Use fast provider when available — avoids Ollama model swap latency
       const IntentRouter = require('./src/lib/agent/intent-router');
-      intentRouter = ollamaProvider ? new IntentRouter({
-        provider: ollamaProvider,
+      const intentProvider = ollamaFastProvider || ollamaProvider;
+      intentRouter = intentProvider ? new IntentRouter({
+        provider: intentProvider,
         config: {
           classifyTimeout: appConfig.ollama.classifyTimeout,
           fastModel: appConfig.ollama.classifyModel || 'qwen2.5:3b',
