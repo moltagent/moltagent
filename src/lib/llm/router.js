@@ -577,8 +577,14 @@ class LLMRouter {
     const roster = {};
 
     if (presetName === 'all-local') {
+      // Sort local providers: ollama-fast first for QUICK chain speed
+      const fastFirstLocal = [...localIds].sort((a, b) => {
+        if (a.includes('-fast')) return -1;
+        if (b.includes('-fast')) return 1;
+        return 0;
+      });
       for (const job of VALID_JOBS) {
-        roster[job] = [...localIds];
+        roster[job] = job === JOBS.QUICK ? [...fastFirstLocal] : [...localIds];
       }
     } else if (presetName === 'smart-mix') {
       // 3-tier routing: heavy (most expensive cloud) for depth,
@@ -587,10 +593,17 @@ class LLMRouter {
       // Additional cloud providers (3+) become late-chain fallbacks before local.
       const { heavy, workhorse, rest } = this._classifyCloudProviders(cloudIds);
 
+      // Sort local providers: ollama-fast first for QUICK chain speed
+      const fastFirst = [...localIds].sort((a, b) => {
+        if (a.includes('-fast')) return -1;
+        if (b.includes('-fast')) return 1;
+        return 0;
+      });
+
       for (const job of VALID_JOBS) {
         if (job === JOBS.QUICK) {
-          // Classification: local-first (qwen2.5:3b ~420ms, free; regex pre-router escalates ambiguous to qwen3:8b)
-          roster[job] = [...new Set([...localIds, workhorse, ...rest].filter(Boolean))];
+          // Classification/synthesis: fast local first (qwen2.5:3b ~420ms), then other local, then cloud
+          roster[job] = [...new Set([...fastFirst, workhorse, ...rest].filter(Boolean))];
         } else if (job === JOBS.TOOLS) {
           // Extraction/tools: workhorse cloud first (Sonnet handles structured output well), local fallback
           roster[job] = [...new Set([workhorse, ...rest, ...localIds].filter(Boolean))];
