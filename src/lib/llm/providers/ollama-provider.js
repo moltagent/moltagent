@@ -64,6 +64,7 @@ class OllamaProvider extends BaseProvider {
             model: this.model,
             messages: [{ role: 'user', content: prompt }],
             stream: false,
+            keep_alive: '10m',
             options: {
               temperature: options.temperature ?? 0.7,
               num_predict: options.maxTokens || 1024

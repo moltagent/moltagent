@@ -93,6 +93,7 @@ class OllamaToolsProvider {
       messages: ollamaMessages,
       stream: false,
       think: false,
+      keep_alive: '10m',
       options: {
         num_predict: 1024,
         ...(options || {})
