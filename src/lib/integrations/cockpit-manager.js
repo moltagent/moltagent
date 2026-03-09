@@ -1302,14 +1302,22 @@ class CockpitManager {
    * @param {string} preset - Preset name ('all-local', 'smart-mix', 'cloud-first')
    * @returns {string} Formatted state text
    */
-  _formatResolvedState(preset) {
+  _formatResolvedState(preset, existingConfig) {
     const header = '\u2699\ufe0f1 all-local / \u2699\ufe0f2 smart mix / \u2699\ufe0f3 cloud-first / \u2699\ufe0f4 custom';
     const presetDescriptions = {
       'all-local':   'Active preset: All-local\nEvery job \u2192 local models',
       'smart-mix':   'Active preset: Smart mix\nCloud for depth, local as fallback',
       'cloud-first': 'Active preset: Cloud-first\nMaximum quality, highest cost'
     };
-    return `${header}\n\n${presetDescriptions[preset] || ''}`;
+
+    // Preserve synthesis_provider from the existing config section
+    let spLine = '';
+    if (existingConfig) {
+      const spMatch = existingConfig.match(/synthesis_provider\s*:\s*\S+/i);
+      if (spMatch) spLine = `\n${spMatch[0]}`;
+    }
+
+    return `${header}${spLine}\n\n${presetDescriptions[preset] || ''}`;
   }
 
   /**
@@ -1323,8 +1331,8 @@ class CockpitManager {
    * @returns {Promise<void>}
    */
   async _writeResolvedStateToCard(card, preset) {
-    const stateText = this._formatResolvedState(preset);
     const currentConfig = (card.description || '').split('---')[0].trim();
+    const stateText = this._formatResolvedState(preset, currentConfig);
     if (currentConfig === stateText.trim()) return; // avoid API spam
 
     const docSection = (card.description || '').split('---').slice(1).join('---');
