@@ -433,6 +433,7 @@ class MessageProcessor {
       let response;
       let result;
       let _enrichmentBlock = null; // Layer 1: captured agent_knowledge for provenance tagging
+      let _probeResults = null;    // Probe results for post-processing (link entities)
 
       // Pre-routing reference resolution
       // Enriches "read the biggest one" → "Read file X.md from Moltagent DEV/docs"
@@ -535,6 +536,7 @@ class MessageProcessor {
               if (typeof knowledgeResult === 'object' && knowledgeResult !== null) {
                 this._captureActionRecord(session, knowledgeResult.actionRecord);
                 if (knowledgeResult.enrichmentBlock) _enrichmentBlock = knowledgeResult.enrichmentBlock;
+                if (knowledgeResult.probeResults) _probeResults = knowledgeResult.probeResults;
                 response = knowledgeResult.response || "I don't have any information about that.";
               } else {
                 response = knowledgeResult || "I don't have any information about that.";
@@ -561,6 +563,7 @@ class MessageProcessor {
             if (typeof knowledgeResult === 'object' && knowledgeResult !== null) {
               this._captureActionRecord(session, knowledgeResult.actionRecord);
               if (knowledgeResult.enrichmentBlock) _enrichmentBlock = knowledgeResult.enrichmentBlock;
+              if (knowledgeResult.probeResults) _probeResults = knowledgeResult.probeResults;
               response = knowledgeResult.response || "I don't have any information about that.";
             } else {
               response = knowledgeResult || "I don't have any information about that.";
@@ -812,6 +815,12 @@ class MessageProcessor {
         provider: result.provider,
         responsePreview: (typeof response === 'string' ? response : String(response)).substring(0, 100)
       });
+
+      // Post-process ALL outbound responses — one gate, every path.
+      // Strips leaked tags, links entity names from probe results.
+      if (typeof response === 'string') {
+        response = this._postProcessResponse(response, _probeResults || []);
+      }
 
       // Send reply asynchronously (fire-and-forget) - don't block webhook response
       if (extracted.token) {
@@ -1481,13 +1490,11 @@ class MessageProcessor {
     console.log(`[Message] Knowledge probes: ${sourcesConsulted.length} sources consulted, ${sourcesWithResults.length} returned results (${sourcesWithResults.join(', ')})`);
 
     // Step 4: Synthesis — one LLM call
-    const rawResponse = await this._synthesizeKnowledge(query, aggregated, session, router);
-
-    // Step 5: Post-process — link entities, strip leaked tags
-    const response = this._postProcessResponse(rawResponse, probeResults);
+    const response = await this._synthesizeKnowledge(query, aggregated, session, router);
 
     return {
       response,
+      probeResults,
       enrichmentBlock: aggregated || undefined,
       actionRecord: {
         type: 'knowledge_query',
@@ -1819,21 +1826,32 @@ RULES:
     processed = processed.replace(/\[Source:\s*[^\]]+\]/g, '').trim();
     processed = processed.replace(/\[url:\s*[^\]]+\]/g, '').trim();
 
-    // Link entity names that match probe results
+    // Deduplicate by normalized title: each entity name is linked at most once.
+    // Without this, a second probe with the same title would match the entity
+    // name inside the URL slug from the first pass's markdown link, creating
+    // nested broken links like [Carlos](…/[Carlos](…)-456).
+    const linkedTitles = new Map(); // normalized title → { title, url }
     for (const probe of probeResults) {
       for (const result of probe.results || []) {
         if (result.url && result.title) {
-          const fullUrl = result.url.startsWith('http')
-            ? result.url
-            : CONFIG.nextcloud.url + result.url;
-
-          // Replace first occurrence of the title with a markdown link
-          // Only if it's not already inside a markdown link
-          const escaped = result.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const titleRegex = new RegExp(`(?<!\\[)${escaped}(?!\\]|\\()`, 'i');
-          processed = processed.replace(titleRegex, `[${result.title}](${fullUrl})`);
+          const key = result.title.toLowerCase();
+          if (!linkedTitles.has(key)) {
+            const fullUrl = result.url.startsWith('http')
+              ? result.url
+              : CONFIG.nextcloud.url + result.url;
+            linkedTitles.set(key, { title: result.title, url: fullUrl });
+          }
         }
       }
+    }
+
+    // Link each unique entity name once
+    for (const { title, url } of linkedTitles.values()) {
+      const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Skip if response already contains a markdown link for this entity
+      if (processed.includes(`](`) && new RegExp(`\\[${escaped}\\]\\(`).test(processed)) continue;
+      const titleRegex = new RegExp(`(?<!\\[)${escaped}(?!\\]|\\()`, 'i');
+      processed = processed.replace(titleRegex, `[${title}](${url})`);
     }
 
     return processed;
