@@ -940,7 +940,27 @@ async function main() {
             if (roster && roster.quick) {
               roster.quick = ['ollama-fast', ...roster.quick.filter(id => id !== 'ollama-fast')];
               llmRouter.router.setRoster(roster);
-              console.log(`[INIT] QUICK chain: ollama-fast (${fastModel}) → ${roster.quick.slice(1).join(' → ')}`);
+
+              // Register claude-haiku for synthesis if configured
+              const synthesisProvider = CONFIG.ollama.synthesisProvider || 'local';
+              if (synthesisProvider === 'haiku') {
+                // claude-haiku is already registered from providers.yaml config-loader
+                // Insert into QUICK chain: ollama-fast → claude-haiku → ollama-local
+                const currentRoster = llmRouter.router.getRoster();
+                if (currentRoster && currentRoster.quick) {
+                  const quickChain = currentRoster.quick;
+                  // Insert claude-haiku after ollama-fast, before local fallback
+                  const fastIdx = quickChain.indexOf('ollama-fast');
+                  const insertAt = fastIdx >= 0 ? fastIdx + 1 : 0;
+                  if (!quickChain.includes('claude-haiku')) {
+                    quickChain.splice(insertAt, 0, 'claude-haiku');
+                    llmRouter.router.setRoster(currentRoster);
+                  }
+                  console.log(`[INIT] QUICK chain (haiku synthesis): ${currentRoster.quick.join(' → ')}`);
+                }
+              } else {
+                console.log(`[INIT] QUICK chain (local synthesis): ${roster.quick.join(' → ')}`);
+              }
             }
           }
         }

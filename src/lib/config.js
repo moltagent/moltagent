@@ -236,7 +236,8 @@ const config = {
     domainToolTimeout: envInt('OLLAMA_DOMAIN_TOOL_TIMEOUT', 90000),
     classifyTimeout: envInt('OLLAMA_CLASSIFY_TIMEOUT', 30000),
     classifyModel: envStr('OLLAMA_CLASSIFY_MODEL', 'qwen2.5:3b'),
-    smartModel: envStr('OLLAMA_SMART_MODEL', 'qwen3:8b')
+    smartModel: envStr('OLLAMA_SMART_MODEL', 'qwen3:8b'),
+    synthesisProvider: envStr('SYNTHESIS_PROVIDER', 'local')
   },
 
   // -------------------------------------------------------------------------

@@ -1,0 +1,183 @@
+{
+  "_meta": {
+    "description": "Moltagent dashboard data manifest. All mutable dashboard state lives here. CC updates this file as part of each session.",
+    "updated": "2026-03-08T00:00:00Z",
+    "updatedBy": "Fu + Claude Opus"
+  },
+
+  "guards": [
+    { "name": "ToolGuard",    "lines": 267,  "status": "VERIFIED", "file": "src/security/guards/tool-guard.js" },
+    { "name": "SecretsGuard", "lines": 247,  "status": "VERIFIED", "file": "src/security/guards/secrets-guard.js" },
+    { "name": "PromptGuard",  "lines": 941,  "status": "VERIFIED", "file": "src/security/guards/prompt-guard.js" },
+    { "name": "PathGuard",    "lines": 415,  "status": "VERIFIED", "file": "src/security/guards/path-guard.js" },
+    { "name": "EgressGuard",  "lines": 558,  "status": "VERIFIED", "file": "src/security/guards/egress-guard.js" }
+  ],
+
+  "memory": [
+    { "name": "KnowledgeGraph",      "status": "VERIFIED", "lines": 463,  "note": "Entity-relationship storage, wiki-backed JSON", "commit": "907a162" },
+    { "name": "EntityExtractor",     "status": "VERIFIED", "lines": 337,  "note": "Regex + LLM entity extraction from text", "commit": "907a162" },
+    { "name": "VectorStore",         "status": "VERIFIED", "lines": 312,  "note": "SQLite cosine similarity embeddings", "commit": "94f0258" },
+    { "name": "EmbeddingClient",     "status": "VERIFIED", "lines": 204,  "note": "Ollama nomic-embed-text API client", "commit": "94f0258" },
+    { "name": "EmbeddingRefresher",  "status": "VERIFIED", "lines": 411,  "note": "Heartbeat re-embed on content change", "commit": "94f0258" },
+    { "name": "BM25 Search",         "status": "VERIFIED", "lines": 555,  "note": "Keyword index over wiki pages + cache", "commit": "earlier" },
+    { "name": "Three-Channel Fusion","status": "VERIFIED", "lines": null, "note": "BM25 + vector + graph score fusion", "commit": "907a162" },
+    { "name": "DailyBriefing",       "status": "VERIFIED", "lines": null, "note": "Morning Talk digest — confirmed working", "commit": "06b27f9" },
+    { "name": "DailyDigest",         "status": "VERIFIED", "lines": 251,  "note": "Episodic daily wiki pages", "commit": "907a162" },
+    { "name": "CoAccessGraph",       "status": "VERIFIED", "lines": 269,  "note": "Decay-weighted co-access tracking", "commit": "94f0258" },
+    { "name": "GapDetector",         "status": "VERIFIED", "lines": 322,  "note": "Zero-result query gap detection", "commit": "94f0258" },
+    { "name": "RhythmTracker",       "status": "VERIFIED", "lines": 288,  "note": "Temporal behavior patterns", "commit": "94f0258" },
+    { "name": "SessionPersister",    "status": "VERIFIED", "lines": null, "note": "Session to wiki on expiry", "commit": "earlier" },
+    { "name": "ProactiveEvaluator",  "status": "BUILT",    "lines": 291,  "note": "Post-response knowledge gap eval", "commit": "8eff9fd" },
+    { "name": "ActionLedger",        "status": "BUILT",    "lines": null, "note": "Structured handler action records", "commit": "438cfbf" },
+    { "name": "ClarificationMgr",    "status": "BUILT",    "lines": 129,  "note": "Pending clarification state", "commit": "807c021" },
+    { "name": "OCR Fallback",        "status": "SPECCED",  "lines": null, "note": "Scanned PDF support" },
+    { "name": "Batch Ingestion",     "status": "SPECCED",  "lines": null, "note": "Mass document processing" }
+  ],
+
+  "features": {
+    "h1": [
+      { "name": "3-VM Hetzner Infrastructure",     "status": "VERIFIED" },
+      { "name": "HeartbeatManager + Deck loop",    "status": "VERIFIED", "lines": 1766 },
+      { "name": "LLM Router v3 (Jobs & Players)",  "status": "VERIFIED", "lines": 1276 },
+      { "name": "Security Guards (5x)",            "status": "VERIFIED", "lines": 2428 },
+      { "name": "GuardrailEnforcer",               "status": "VERIFIED", "lines": 1016 },
+      { "name": "Knowledge Graph + Vector",        "status": "VERIFIED" },
+      { "name": "Three-Channel Search Fusion",     "status": "VERIFIED" },
+      { "name": "Voice Pipeline (Speaches)",       "status": "BUILT",    "lines": 132 },
+      { "name": "Cockpit (Deck control plane)",    "status": "VERIFIED", "lines": 1894 },
+      { "name": "Skill Forge (YAML native)",       "status": "BUILT",    "lines": 305 },
+      { "name": "Cost Metering + BudgetEnforcer",  "status": "VERIFIED", "lines": 787 },
+      { "name": "SearXNG Sovereign Search",        "status": "BUILT",    "lines": 154 },
+      { "name": "File Operations + TextExtractor", "status": "VERIFIED" },
+      { "name": "Daily Briefing (Talk)",           "status": "VERIFIED" },
+      { "name": "Context-Aware Classification",    "status": "BUILT" },
+      { "name": "Session Manager + Isolation",     "status": "VERIFIED", "lines": 740 },
+      { "name": "Memory Integrity Checker",        "status": "VERIFIED", "lines": 577 },
+      { "name": "Deck @mention Workflows",         "status": "SPECCED" },
+      { "name": "Date Coordination (email)",       "status": "SPECCED" },
+      { "name": "Workflow Decks",                  "status": "SPECCED" },
+      { "name": "Batch Document Ingestion",        "status": "SPECCED" },
+      { "name": "OCR Fallback (TextExtractor)",    "status": "SPECCED" },
+      { "name": "GitHub Repo Public",              "status": "PLANNED" }
+    ],
+    "h2": [
+      { "name": "Proactive Research Mode",      "status": "SPECCED" },
+      { "name": "NC Mail Integration",          "status": "SPECCED" },
+      { "name": "Smart Meetings v2 (RSVP)",     "status": "SPECCED" },
+      { "name": "Collectives Wiki (browsable)", "status": "BUILT", "lines": 753 },
+      { "name": "GoToSocial / Fediverse Posts", "status": "SPECCED" },
+      { "name": "Reddit + Bluesky",             "status": "SPECCED" },
+      { "name": "Social Voice",                 "status": "PLANNED" },
+      { "name": "Biological Memory Decay",      "status": "SPECCED" },
+      { "name": "Deck Working Memory",          "status": "SPECCED" }
+    ],
+    "h3": [
+      { "name": "Agent Federation (ActivityPub)", "status": "SPECCED" },
+      { "name": "Trust Scoring Network",          "status": "SPECCED" },
+      { "name": "MoltCube Hardware Appliance",    "status": "PLANNED" },
+      { "name": "r/moltagent Autonomous Posts",   "status": "PLANNED" }
+    ]
+  },
+
+  "infrastructure": [
+    { "name": "Moltagent VM", "status": "VERIFIED", "role": "Node.js agent runtime",  "detail": "CPX22 · moltagent-bot-01 · 116.202.23.5" },
+    { "name": "Ollama VM",    "status": "VERIFIED", "role": "Local LLM inference",    "detail": "qwen2.5:3b · phi4-mini · nomic-embed-text" },
+    { "name": "NC Storage",   "status": "VERIFIED", "role": "Managed Nextcloud",      "detail": "Hetzner Storage Share · EU jurisdiction" }
+  ],
+
+  "llm": {
+    "routerStatus": "VERIFIED",
+    "routerVersion": "v3 Jobs & Players",
+    "routerLines": 1276,
+    "jobs": [
+      { "job": "credentials", "desc": "Passwords, API keys, secrets",    "player": "Always local",  "color": "#ef4444", "hardcoded": true },
+      { "job": "quick",       "desc": "Classify, route, label, triage",  "player": "qwen2.5:3b → Haiku (optional)", "color": "#22c55e", "hardcoded": false },
+      { "job": "tools",       "desc": "Deck, Calendar, Mail, Files",     "player": "Cloud primary",  "color": "#f59e0b", "hardcoded": false },
+      { "job": "thinking",    "desc": "Analysis, planning, reasoning",   "player": "Cloud primary",  "color": "#a78bfa", "hardcoded": false },
+      { "job": "writing",     "desc": "Emails, docs, creative content",  "player": "Cloud primary",  "color": "#38bdf8", "hardcoded": false },
+      { "job": "research",    "desc": "Web search + synthesis",          "player": "Cloud primary",  "color": "#06b6d4", "hardcoded": false },
+      { "job": "coding",      "desc": "Write, debug, review code",      "player": "Cloud primary",  "color": "#f472b6", "hardcoded": false }
+    ],
+    "players": [
+      { "name": "qwen2.5:3b",      "type": "local",  "status": "VERIFIED", "region": "EU", "note": "Fast classifier (~420ms)" },
+      { "name": "phi4-mini",        "type": "local",  "status": "VERIFIED", "region": "EU", "note": "Default local model" },
+      { "name": "nomic-embed-text", "type": "local",  "status": "BUILT",   "region": "EU", "note": "Embedding model (not LLM)" },
+      { "name": "Claude Opus",      "type": "cloud",  "status": "VERIFIED", "region": "US", "note": "Deep reasoning" },
+      { "name": "Claude Sonnet",    "type": "cloud",  "status": "VERIFIED", "region": "US", "note": "Standard tasks" },
+      { "name": "Claude Haiku",     "type": "cloud",  "status": "VERIFIED", "region": "US", "note": "Fast synthesis ($0.001/q)" }
+    ],
+    "presets": [
+      { "label": "G1", "name": "All local",   "desc": "Every job local. Free, private, slower." },
+      { "label": "G2", "name": "Smart mix",   "desc": "Quick tasks local, complex on cloud." },
+      { "label": "G3", "name": "Cloud first", "desc": "Everything cloud. Max quality, highest cost." },
+      { "label": "G4", "name": "Custom",      "desc": "Full job to player roster in Cockpit card." }
+    ]
+  },
+
+  "modules": [
+    { "module": "ToolRegistry",       "lines": 3216, "file": "src/lib/agent/tool-registry.js" },
+    { "module": "CockpitManager",     "lines": 1894, "file": "src/lib/integrations/cockpit-manager.js" },
+    { "module": "HeartbeatManager",   "lines": 1766, "file": "src/lib/integrations/heartbeat-manager.js" },
+    { "module": "DeckClient",         "lines": 1466, "file": "src/lib/integrations/deck-client.js" },
+    { "module": "LLMRouter",          "lines": 1276, "file": "src/lib/llm/router.js" },
+    { "module": "CalDAVClient",       "lines": 1223, "file": "src/lib/integrations/caldav-client.js" },
+    { "module": "AgentLoop",          "lines": 1051, "file": "src/lib/agent/agent-loop.js" },
+    { "module": "GuardrailEnforcer",  "lines": 1016, "file": "src/lib/agent/guardrail-enforcer.js" },
+    { "module": "PromptGuard",        "lines": 941,  "file": "src/security/guards/prompt-guard.js" },
+    { "module": "MicroPipeline",      "lines": 920,  "file": "src/lib/agent/micro-pipeline.js" },
+    { "module": "CollectivesClient",  "lines": 753,  "file": "src/lib/integrations/collectives-client.js" },
+    { "module": "SessionManager",     "lines": 740,  "file": "src/security/session-manager.js" },
+    { "module": "MemoryIntegrity",    "lines": 577,  "file": "src/security/memory-integrity.js" },
+    { "module": "Interceptor",        "lines": 566,  "file": "src/security/interceptor.js" },
+    { "module": "WorkflowEngine",     "lines": 560,  "file": "src/lib/workflows/workflow-engine.js" },
+    { "module": "MemorySearcher",     "lines": 555,  "file": "src/lib/integrations/memory-searcher.js" },
+    { "module": "BudgetEnforcer",     "lines": 501,  "file": "src/lib/llm/budget-enforcer.js" },
+    { "module": "KnowledgeGraph",     "lines": 463,  "file": "src/lib/memory/knowledge-graph.js" },
+    { "module": "IntentRouter",       "lines": 446,  "file": "src/lib/agent/intent-router.js" },
+    { "module": "EmbeddingRefresher", "lines": 411,  "file": "src/lib/memory/embedding-refresher.js" },
+    { "module": "PathGuard",          "lines": 415,  "file": "src/security/guards/path-guard.js" },
+    { "module": "EntityExtractor",    "lines": 337,  "file": "src/lib/memory/entity-extractor.js" },
+    { "module": "GapDetector",        "lines": 322,  "file": "src/lib/memory/gap-detector.js" },
+    { "module": "VectorStore",        "lines": 312,  "file": "src/lib/memory/vector-store.js" },
+    { "module": "TemplateEngine",     "lines": 305,  "file": "src/skill-forge/template-engine.js" },
+    { "module": "ProactiveEvaluator", "lines": 291,  "file": "src/lib/agent/proactive-evaluator.js" },
+    { "module": "CircuitBreaker",     "lines": 289,  "file": "src/lib/llm/circuit-breaker.js" },
+    { "module": "RhythmTracker",      "lines": 288,  "file": "src/lib/memory/rhythm-tracker.js" },
+    { "module": "CostTracker",        "lines": 286,  "file": "src/lib/llm/cost-tracker.js" },
+    { "module": "CoAccessGraph",      "lines": 269,  "file": "src/lib/memory/co-access-graph.js" },
+    { "module": "ToolGuard",          "lines": 267,  "file": "src/security/guards/tool-guard.js" },
+    { "module": "DailyDigest",        "lines": 251,  "file": "src/lib/memory/daily-digest.js" },
+    { "module": "SecretsGuard",       "lines": 247,  "file": "src/security/guards/secrets-guard.js" },
+    { "module": "EgressGuard",        "lines": 558,  "file": "src/security/guards/egress-guard.js" }
+  ],
+
+  "concierge": [
+    { "name": "M**************H", "status": "IN PIPELINE" },
+    { "name": "T*********e",      "status": "IN PIPELINE" }
+  ],
+
+  "architecture_nodes": {
+    "nc_talk":      { "status": "VERIFIED" },
+    "speaches":     { "status": "BUILT" },
+    "nc_files":     { "status": "VERIFIED" },
+    "cockpit":      { "status": "VERIFIED" },
+    "heartbeat":    { "status": "VERIFIED" },
+    "agent_loop":   { "status": "VERIFIED" },
+    "llm_router":   { "status": "VERIFIED" },
+    "clarify":      { "status": "BUILT" },
+    "guardrail":    { "status": "VERIFIED" },
+    "budget":       { "status": "VERIFIED" },
+    "proactive":    { "status": "BUILT" },
+    "skill_forge":  { "status": "BUILT" },
+    "deck_client":  { "status": "VERIFIED" },
+    "caldav":       { "status": "VERIFIED" },
+    "searxng":      { "status": "BUILT" },
+    "workflow":     { "status": "BUILT" },
+    "kg":           { "status": "VERIFIED" },
+    "vector":       { "status": "VERIFIED" },
+    "bm25":         { "status": "VERIFIED" },
+    "moltagent_vm": { "status": "VERIFIED" },
+    "ollama":       { "status": "VERIFIED" },
+    "nc_store":     { "status": "VERIFIED" }
+  }
+}

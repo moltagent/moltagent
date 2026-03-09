@@ -29,6 +29,16 @@ providers:
       inputPer1M: 3.00
       outputPer1M: 15.00
 
+  # Synthesis tier - Claude Haiku (fast synthesis at low cost)
+  claude-haiku:
+    adapter: anthropic
+    credentialName: claude-api-key
+    model: claude-haiku-4-5-20251001
+    costModel:
+      type: per_token
+      inputPer1M: 0.80
+      outputPer1M: 4.00
+
   # DeepSeek - available but not active on Prime
   # To enable: uncomment and set deepseek-api-key in NC Passwords
   # deepseek:
@@ -52,15 +62,18 @@ fallbackChain:
   ollama-local: []
   anthropic-claude: [claude-sonnet, ollama-local]
   claude-sonnet: [ollama-local]
+  claude-haiku: [ollama-local]
 
 # Budget limits in USD
 budgets:
   daily:
     anthropic-claude: 2.00
     claude-sonnet: 3.00
+    claude-haiku: 1.00
   monthly:
     anthropic-claude: 50.00
     claude-sonnet: 30.00
+    claude-haiku: 10.00
 
 # Search provider configuration
 search:

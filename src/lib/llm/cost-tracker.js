@@ -28,6 +28,7 @@ const PRICING = {
   'claude-sonnet-4-5-20250514': { input: 3.00,  output: 15.00 },
   'claude-sonnet-4-5-20250929': { input: 3.00,  output: 15.00 },
   'claude-haiku-3-5-20241022':  { input: 0.80,  output: 4.00  },
+  'claude-haiku-4-5-20251001':  { input: 0.80,  output: 4.00  },
 
   // OpenAI (per million tokens)
   'gpt-4o':                     { input: 2.50,  output: 10.00 },
@@ -47,6 +48,7 @@ const PRICING = {
 
   // Local models — zero cost
   'phi4-mini':                  { input: 0, output: 0 },
+  'qwen2.5:3b':                 { input: 0, output: 0 },
   'qwen3:8b':                   { input: 0, output: 0 },
   'qwen3:14b':                  { input: 0, output: 0 },
   'qwen3:14b-fast':             { input: 0, output: 0 },
