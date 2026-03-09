@@ -1482,6 +1482,24 @@ class MessageProcessor {
     // Step 2: Parallel multi-source probes
     const probeResults = await this._executeKnowledgeProbes(searchTerms, query, enricher, searcher);
 
+    // Step 2b: Web fallback — if knowledge probes returned insufficient results,
+    // supplement with a web search automatically. No keyword lists, no special
+    // cases. One threshold. Universal fallback.
+    const substantiveResults = probeResults.reduce((sum, p) =>
+      sum + (p.results?.filter(r => r.snippet?.length > 20)?.length || 0), 0);
+
+    if (substantiveResults < 2) {
+      const webResults = await this._probeWeb(query);
+      if (webResults.length > 0) {
+        probeResults.push({
+          source: 'web',
+          results: webResults,
+          provenance: 'web_search'
+        });
+        console.log(`[Message] Knowledge insufficient (${substantiveResults} results) — web fallback added ${webResults.length} result(s)`);
+      }
+    }
+
     // Step 3: Aggregate with provenance
     const aggregated = this._aggregateProbeResults(probeResults);
     const sourcesConsulted = probeResults.map(p => p.source);
@@ -1638,6 +1656,33 @@ class MessageProcessor {
   }
 
   /**
+   * Web search fallback — queries SearXNG when knowledge probes are insufficient.
+   * Uses the raw user query. No transformation needed.
+   * @param {string} query - User's original question
+   * @returns {Promise<Array>} Results in probe-compatible format
+   * @private
+   */
+  async _probeWeb(query) {
+    try {
+      const searxng = this.agentLoop?.toolRegistry?.clients?.searxngClient;
+      if (!searxng) return [];
+
+      const searchResult = await searxng.search(query, { limit: 3 });
+      if (!searchResult?.results?.length) return [];
+
+      return searchResult.results.map(r => ({
+        title: r.title || '',
+        snippet: r.content || '',
+        sourceTag: 'web',
+        url: r.url || ''
+      }));
+    } catch (err) {
+      console.log(`[Message] Web fallback failed: ${err.message}`);
+      return [];
+    }
+  }
+
+  /**
    * Deep-read wiki page content for top N search results.
    * Replaces shallow search snippets with actual page content (truncated to 800 chars).
    * @param {Array} items - Probe result items (mutated in place)
@@ -1678,9 +1723,29 @@ class MessageProcessor {
         seenPages.add(pageKey);
 
         const content = await wiki.readPageContent(found.path);
-        if (content) {
+        if (content && content.trim().length >= 50) {
           item.snippet = content.substring(0, 800);
           item.title = found.page?.title || resolvedTitle;
+        } else {
+          // Empty or stub page — check if it's a section parent with children
+          const children = await this._listSectionChildren(wiki, found.page?.title || resolvedTitle);
+          if (children.length > 0) {
+            // Replace stub with children summaries
+            item.title = found.page?.title || resolvedTitle;
+            item.snippet = children.map(c => `**${c.title}**: ${c.snippet}`).join('\n\n');
+            // Inject remaining children as extra items so synthesis sees them
+            for (let ci = 1; ci < children.length && ci < 5; ci++) {
+              items.push({
+                title: children[ci].title,
+                snippet: children[ci].snippet,
+                sourceTag: 'wiki',
+                url: children[ci].url || ''
+              });
+            }
+          } else if (content) {
+            item.snippet = content.substring(0, 800);
+            item.title = found.page?.title || resolvedTitle;
+          }
         }
         if (found.page?.id && wiki.buildPageUrl) {
           item.url = wiki.buildPageUrl(found.page?.title || resolvedTitle, found.page.id);
@@ -1691,6 +1756,55 @@ class MessageProcessor {
     });
 
     await Promise.allSettled(reads);
+  }
+
+  /**
+   * List children of a wiki section parent page.
+   * Uses listPages + filePath filtering to find subpages.
+   * Reads top 5 children by title and returns their content snippets.
+   * @param {Object} wiki - CollectivesClient instance
+   * @param {string} parentTitle - Title of the section parent (e.g. "People")
+   * @returns {Promise<Array<{title: string, snippet: string, url: string}>>}
+   * @private
+   */
+  async _listSectionChildren(wiki, parentTitle) {
+    try {
+      if (!wiki.listPages || !wiki.resolveCollective) return [];
+
+      const collectiveId = await wiki.resolveCollective();
+      const allPages = await wiki.listPages(collectiveId);
+      if (!Array.isArray(allPages)) return [];
+
+      // Find children: pages whose filePath ends with the parent title
+      const parentLower = (parentTitle || '').toLowerCase();
+      const children = allPages.filter(p => {
+        const fp = (p.filePath || '').toLowerCase();
+        return fp.endsWith('/' + parentLower) || fp.endsWith('/' + parentLower + '/');
+      });
+
+      if (children.length === 0) return [];
+
+      // Read top 5 children
+      const results = [];
+      for (const child of children.slice(0, 5)) {
+        try {
+          const path = wiki._buildPagePath ? wiki._buildPagePath(child) : `${child.title}.md`;
+          const content = await wiki.readPageContent(path);
+          results.push({
+            title: child.title || '',
+            snippet: (content || '').substring(0, 500),
+            url: (child.id && wiki.buildPageUrl) ? wiki.buildPageUrl(child.title, child.id) : ''
+          });
+        } catch {
+          // Skip unreadable children
+        }
+      }
+
+      return results;
+    } catch (err) {
+      console.log(`[Message] Section children lookup failed for "${parentTitle}": ${err.message}`);
+      return [];
+    }
   }
 
   /**
@@ -1772,7 +1886,8 @@ class MessageProcessor {
 
       if (uniqueResults.length > 0) {
         for (const result of uniqueResults) {
-          block += `\n${result.title || ''}:\n${result.snippet || ''}\n`;
+          const sourceLabel = probe.provenance === 'web_search' ? ' [Source: web]' : '';
+          block += `\n${result.title || ''}${sourceLabel}:\n${result.snippet || ''}\n`;
         }
       }
     }
@@ -1802,7 +1917,8 @@ RULES:
 - State what you found. Name what's missing. Never fabricate.
 - No hedging ("might", "could", "possibly"). Either you found it or you didn't.
 - Be concise. Lead with the most relevant facts.
-- Use the entity names exactly as they appear in the data.`;
+- Use the entity names exactly as they appear in the data.
+- Items marked [Source: web] are from web search. Treat as external — useful but unverified. Mention the source naturally.`;
 
     const result = await router.route({
       job: 'synthesis',
