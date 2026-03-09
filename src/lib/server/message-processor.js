@@ -1804,12 +1804,19 @@ RULES:
 - Be concise. Lead with the most relevant facts.
 - Use the entity names exactly as they appear in the data.`;
 
-    const result = await router.route({
+    // When synthesis_provider is 'haiku', prefer claude-haiku for synthesis
+    const synthProvider = router.synthesisProvider;
+    const routeOpts = {
       job: 'quick',
       task: 'knowledge_synthesis',
       content: prompt + '\n\nQuestion: ' + query.substring(0, 300),
       requirements: { maxTokens: 1000, temperature: 0.3 }
-    });
+    };
+    if (synthProvider === 'haiku') {
+      routeOpts.preferProvider = 'claude-haiku';
+    }
+
+    const result = await router.route(routeOpts);
 
     return result?.result || result?.content || "I couldn't synthesize an answer from the available information.";
   }

@@ -118,6 +118,10 @@ class LLMRouter {
     this._roster = null;
     this._activePreset = null;
 
+    // Synthesis provider preference (set by Cockpit Models card)
+    // 'local' = use QUICK chain as-is, 'haiku' = prefer claude-haiku for synthesis
+    this.synthesisProvider = 'local';
+
     // Stats
     this.stats = {
       totalCalls: 0,
@@ -193,7 +197,12 @@ class LLMRouter {
     let job = null;
     let chain;
 
-    if (request.job && this._roster) {
+    if (request.preferProvider && this.providers.has(request.preferProvider)) {
+      // Explicit provider preference: try this provider first, then fall back to job chain
+      job = request.job && VALID_JOBS.has(request.job) ? request.job : JOBS.QUICK;
+      const jobChain = this._roster ? this._buildRosterChain(job, { forceLocal }) : this._buildChain(role);
+      chain = [request.preferProvider, ...jobChain.filter(id => id !== request.preferProvider)];
+    } else if (request.job && this._roster) {
       // New-style: route({ job: 'quick', content: '...' })
       job = VALID_JOBS.has(request.job) ? request.job : JOBS.QUICK;
       chain = this._buildRosterChain(job, { forceLocal });

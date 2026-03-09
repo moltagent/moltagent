@@ -622,26 +622,11 @@ class HeartbeatManager {
             }
 
             // Synthesis provider propagation (from Models card)
+            // Stored on router so _synthesizeKnowledge can use preferProvider
             const sp = cockpitConfig.system?.modelsConfig?.synthesisProvider;
             if (sp && this.llmRouter) {
-              const currentRoster = this.llmRouter.getRoster();
-              if (currentRoster && currentRoster.quick) {
-                const quick = currentRoster.quick;
-                const hasHaiku = quick.includes('claude-haiku');
-                if (sp === 'haiku' && !hasHaiku) {
-                  // Insert claude-haiku after ollama-fast
-                  const fastIdx = quick.indexOf('ollama-fast');
-                  const insertAt = fastIdx >= 0 ? fastIdx + 1 : 0;
-                  quick.splice(insertAt, 0, 'claude-haiku');
-                  this.llmRouter.setRoster(currentRoster);
-                  console.log(`[Heartbeat] Synthesis → haiku. QUICK chain: ${quick.join(' → ')}`);
-                } else if (sp === 'local' && hasHaiku) {
-                  // Remove claude-haiku from chain
-                  currentRoster.quick = quick.filter(id => id !== 'claude-haiku');
-                  this.llmRouter.setRoster(currentRoster);
-                  console.log(`[Heartbeat] Synthesis → local. QUICK chain: ${currentRoster.quick.join(' → ')}`);
-                }
-              }
+              this.llmRouter.synthesisProvider = sp;
+              console.log(`[Heartbeat] Synthesis provider: ${sp}`);
             }
           }
 
