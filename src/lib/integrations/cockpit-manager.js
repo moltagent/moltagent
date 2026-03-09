@@ -167,7 +167,7 @@ const DEFAULT_CARDS = {
     }
   ],
   system: [
-    { title: 'Models', description: '\u2699\ufe0f1 all-local / \u2699\ufe0f2 smart mix / \u2699\ufe0f3 cloud-first / \u2699\ufe0f4 custom\nsynthesis_provider: local\n\n---\n\nYour agent does six types of work. Each can use a different\nmodel. Models are tried left to right \u2014 first is preferred,\nrest are fallbacks.\n\nJobs:\n  quick    \u2014 classify, route, label, simple decisions\n  tools    \u2014 Deck, Calendar, Mail, File operations\n  thinking \u2014 analysis, planning, complex reasoning\n  writing  \u2014 emails, documents, creative content\n  research \u2014 web search + synthesis\n  coding   \u2014 write, debug, review code\n\nPresets:\n  \u2699\ufe0f1  All-local. Free, private, slower.\n      Every job \u2192 phi4-mini\n  \u2699\ufe0f2  Smart mix. Three tiers: heavy cloud for depth,\n      workhorse cloud for volume, local as fallback.\n      quick        \u2192 qwen2.5:3b \u2192 qwen3:8b\n      tools        \u2192 phi4-mini \u2192 claude-sonnet\n      thinking     \u2192 claude-opus \u2192 claude-sonnet \u2192 phi4-mini\n      writing      \u2192 claude-opus \u2192 claude-sonnet \u2192 phi4-mini\n      research     \u2192 claude-sonnet \u2192 claude-opus \u2192 phi4-mini\n      coding       \u2192 claude-sonnet \u2192 claude-opus \u2192 phi4-mini\n  \u2699\ufe0f3  Cloud-first. Maximum quality, highest cost.\n      Every job \u2192 cloud providers \u2192 phi4-mini\n  \u2699\ufe0f4  Custom: write your roster above the --- line.\n      Format: job: provider1, provider2\n\nSynthesis provider:\n  synthesis_provider: local \u2014 all on Ollama (sovereign, 10-80s)\n  synthesis_provider: haiku \u2014 Claude Haiku for synthesis (fast, ~$0.001/q)', defaultLabel: '\u2699\ufe0f2' },
+    { title: 'Models', description: 'trust: local-only\n\n---\n\n(Description will be generated on first heartbeat)' },
     { title: 'Daily Digest',    description: '\u2699\ufe0f1 off / \u2699\ufe0f2 morning (08:00) / \u2699\ufe0f3 custom\n\n---\n\nDaily summary message in Talk with overnight activity,\nupcoming calendar, and pending tasks.\n\u2699\ufe0f1  No digest.\n\u2699\ufe0f2  Sent at 08:00 local time.\n\u2699\ufe0f3  Custom: write your preferred time above the line.', defaultLabel: '\u2699\ufe0f2' },
     { title: 'Initiative Level', description: '\u2699\ufe0f1 minimal / \u2699\ufe0f2 moderate / \u2699\ufe0f3 active / \u2699\ufe0f4 autonomous\n\n---\n\nHow proactive your agent is between conversations.\n\u2699\ufe0f1  Only responds when spoken to. No background work.\n\u2699\ufe0f2  Checks inbox, processes queued tasks on heartbeat.\n\u2699\ufe0f3  Suggests improvements, flags issues, prepares briefs.\n\u2699\ufe0f4  Takes action within guardrails without asking first.', defaultLabel: '\u2699\ufe0f2' },
     { title: 'Working Hours',   description: '\u2699\ufe0f1 always / \u2699\ufe0f2 business (09:00-18:00) / \u2699\ufe0f3 extended (07:00-22:00) / \u2699\ufe0f4 custom\n\n---\n\nWhen your agent is allowed to do proactive work. Outside\nthese hours, the agent sleeps \u2014 it still responds if you\nmessage it directly in Talk.\n\u2699\ufe0f1  Always active (24/7).\n\u2699\ufe0f2  Business hours: 09:00-18:00.\n\u2699\ufe0f3  Extended hours: 07:00-22:00.\n\u2699\ufe0f4  Custom: write your hours above the line as HH:MM-HH:MM.', defaultLabel: '\u2699\ufe0f2' },
@@ -728,12 +728,6 @@ class CockpitManager {
         }
       } else if (MODELS_CARD_TITLES.includes(title.toLowerCase())) {
         config.modelsConfig = this._parseModelsCard(card);
-        // Write resolved preset state back to card (non-blocking)
-        // Skip for 'custom' — the user's Players/Roster content must not be overwritten
-        const presetForWriteback = config.modelsConfig?.preset;
-        if (presetForWriteback && presetForWriteback !== 'custom') {
-          this._writeResolvedStateToCard(card, presetForWriteback).catch(() => {});
-        }
       } else if (title === '\ud83d\udd0a Voice' || title.includes('Voice')) {
         const resolved = this._resolveCardValue(card, SYSTEM_VALUE_MAP['\ud83d\udd0a Voice']);
         const validVoiceModes = ['off', 'listen', 'full'];
@@ -1038,70 +1032,96 @@ class CockpitManager {
    * @returns {{ preset?: string, roster?: Object }} Models configuration
    */
   _parseModelsCard(card) {
-    // Fingerprint: labels + description above --- (content that affects parsing)
-    const labelKeys = (card.labels || []).map(l => l.title).sort().join(',');
     const configSection = (card.description || '').split('---')[0];
+
+    // Fingerprint: config section only (labels no longer control Models card)
+    const labelKeys = (card.labels || []).map(l => l.title).sort().join(',');
     const fingerprint = `${labelKeys}|||${configSection}`;
 
     if (fingerprint === this._lastModelsFingerprint && this._lastModelsConfig) {
       return { ...this._lastModelsConfig, changed: false };
     }
 
-    // First parse OR content change → needs propagation (provider registration)
     const isContentChange = this._lastModelsFingerprint !== null;
     if (isContentChange) {
       console.log('[CockpitManager] Models card content changed, re-parsing');
     }
     this._lastModelsFingerprint = fingerprint;
 
-    const { source } = this._resolveCardValue(card, {});
-
     let result;
-    if (source === 'custom') {
-      try {
-        // Try new Players/Roster format first
-        const customConfig = this._parseCustomModelsCard(card.description);
-        if (customConfig) {
-          const pCount = Object.keys(customConfig.players || {}).length;
-          const rCount = Object.keys(customConfig.roster || {}).length;
-          console.log(`[CockpitManager] Parsed custom Models card: ${pCount} players, ${rCount} jobs`);
-          result = customConfig;
-        }
-        if (!result) {
-          // Fall back to legacy job: player1, player2 format
-          const roster = this._parseCustomRoster(card.description);
-          if (Object.keys(roster).length > 0) {
-            result = { roster };
-          }
-        }
-        if (!result) {
-          console.warn('[CockpitManager] Custom roster (\u26994) is empty, falling back to smart-mix');
-          result = { preset: 'smart-mix' };
-        }
-      } catch (err) {
-        console.error(`[CockpitManager] Failed to parse Models card: ${err.message}`);
-        this._lastModelsConfig = null;
-        return null;
+
+    // Check for new trust-based format
+    const trustMatch = configSection.match(/trust\s*:\s*(local-only|cloud-ok)/i);
+
+    if (trustMatch) {
+      // New trust-based format
+      const trust = trustMatch[1].toLowerCase();
+      const preferMatch = configSection.match(/prefer\s*:\s*(speed|quality|cost)/i);
+      const prefer = preferMatch ? preferMatch[1].toLowerCase() : 'speed';
+
+      // Check for optional custom roster override
+      const rosterMatch = configSection.match(/roster:\s*\n([\s\S]*?)(?=\n\S|\s*$)/);
+      let customRoster = null;
+      if (rosterMatch) {
+        customRoster = this._parseCustomRoster('roster:\n' + rosterMatch[1] + '\n---');
+        if (Object.keys(customRoster).length === 0) customRoster = null;
       }
+
+      result = { trust, prefer, customRoster };
     } else {
-      // Map label source to preset
-      const sourceToPreset = {
-        off: 'all-local',       // ⚙1
-        moderate: 'smart-mix',  // ⚙2
-        on: 'cloud-first',      // ⚙3
-        default: 'smart-mix'    // no label
-      };
-      result = { preset: sourceToPreset[source] || 'smart-mix' };
+      // Check for old format and migrate
+      const migrated = this._migrateOldModelsCard(card.description);
+      if (migrated) {
+        // Parse the migrated config text
+        const mTrust = migrated.match(/trust\s*:\s*(local-only|cloud-ok)/i);
+        const mPrefer = migrated.match(/prefer\s*:\s*(speed|quality|cost)/i);
+        result = {
+          trust: mTrust ? mTrust[1].toLowerCase() : 'local-only',
+          prefer: mPrefer ? mPrefer[1].toLowerCase() : 'speed',
+          customRoster: null,
+          _migratedConfig: migrated
+        };
+      } else {
+        // Check for ⚙4 custom Players/Roster format (power users)
+        const { source } = this._resolveCardValue(card, {});
+        if (source === 'custom') {
+          try {
+            const customConfig = this._parseCustomModelsCard(card.description);
+            if (customConfig) {
+              const pCount = Object.keys(customConfig.players || {}).length;
+              const rCount = Object.keys(customConfig.roster || {}).length;
+              console.log(`[CockpitManager] Parsed custom Models card: ${pCount} players, ${rCount} jobs`);
+              result = customConfig;
+            }
+            if (!result) {
+              const roster = this._parseCustomRoster(card.description);
+              if (Object.keys(roster).length > 0) {
+                result = { roster };
+              }
+            }
+            if (!result) {
+              console.warn('[CockpitManager] Custom roster is empty, falling back to local-only');
+              result = { trust: 'local-only', prefer: 'speed', customRoster: null };
+            }
+          } catch (err) {
+            console.error(`[CockpitManager] Failed to parse Models card: ${err.message}`);
+            this._lastModelsConfig = null;
+            return null;
+          }
+        } else {
+          // No trust field, no old format detected, no custom label → default to local-only
+          result = { trust: 'local-only', prefer: 'speed', customRoster: null };
+        }
+      }
     }
 
-    // Extract synthesis_provider from config section (works for all presets)
-    const spMatch = configSection.match(/synthesis_provider\s*:\s*(local|haiku)/i);
-    result.synthesisProvider = (spMatch && spMatch[1].toLowerCase() === 'haiku') ? 'haiku' : 'local';
+    // Store card metadata for heartbeat writeback
+    result._cardId = card.id;
+    result._cardDescription = card.description || '';
+    result._userConfig = configSection;
+    result._cardLabels = (card.labels || []).map(l => l.title);
 
     this._lastModelsConfig = result;
-    // Always return changed: true here — we only reach this point when
-    // fingerprint differs (content change) OR first parse (needs registration).
-    // The shortcut at top returns changed: false when fingerprint matches.
     return { ...result, changed: true };
   }
 
@@ -1125,7 +1145,7 @@ class CockpitManager {
     const lines = configSection.split('\n');
 
     for (const line of lines) {
-      const match = line.match(/^\s*(quick|tools|thinking|writing|research|coding)\s*:\s*(.+)/i);
+      const match = line.match(/^\s*(quick|tools|thinking|writing|research|coding|synthesis)\s*:\s*(.+)/i);
       if (!match) continue;
 
       const job = match[1].toLowerCase();
@@ -1133,7 +1153,8 @@ class CockpitManager {
       // Security invariant: credentials job cannot be overridden
       if (job === 'credentials') continue;
 
-      const players = match[2].split(',').map(p => p.trim()).filter(Boolean);
+      // Accept both comma-separated and arrow-separated formats
+      const players = match[2].split(/\s*(?:\u2192|->|,)\s*/).map(p => p.trim()).filter(Boolean);
       if (players.length > 0) {
         roster[job] = players;
       }
@@ -1296,61 +1317,317 @@ class CockpitManager {
   }
 
   /**
-   * Format a human-readable description of an active preset for write-back to the card.
+   * Detect old Models card format and return equivalent trust-based config text.
+   * Returns null if already in new format or unrecognized.
    *
    * @private
-   * @param {string} preset - Preset name ('all-local', 'smart-mix', 'cloud-first')
-   * @returns {string} Formatted state text
+   * @param {string} description - Full card description
+   * @returns {string|null} Migrated config text (e.g. 'trust: cloud-ok\n') or null
    */
-  _formatResolvedState(preset, existingConfig) {
-    const header = '\u2699\ufe0f1 all-local / \u2699\ufe0f2 smart mix / \u2699\ufe0f3 cloud-first / \u2699\ufe0f4 custom';
-    const presetDescriptions = {
-      'all-local':   'Active preset: All-local\nEvery job \u2192 local models',
-      'smart-mix':   'Active preset: Smart mix\nCloud for depth, local as fallback',
-      'cloud-first': 'Active preset: Cloud-first\nMaximum quality, highest cost'
-    };
+  _migrateOldModelsCard(description) {
+    if (!description) return null;
+    const configSection = description.split('---')[0];
 
-    // Preserve synthesis_provider from the existing config section
-    let spLine = '';
-    if (existingConfig) {
-      const spMatch = existingConfig.match(/synthesis_provider\s*:\s*\S+/i);
-      if (spMatch) spLine = `\n${spMatch[0]}`;
+    // Detect old format: has "Active preset:" or "synthesis_provider"
+    // Note: the old card's doc header contains all ⚙️ tags as a menu line
+    // ("⚙️1 all-local / ⚙️2 smart mix / ..."), so individual ⚙️ tags in
+    // the text are NOT reliable indicators of the active preset. Instead,
+    // check "Active preset:" line and synthesis_provider field.
+    const hasOldFormat = configSection.includes('Active preset:') ||
+      configSection.includes('synthesis_provider');
+
+    if (!hasOldFormat) return null;
+
+    // ⚙4 with Players/Roster: don't migrate, let the custom parser handle it
+    if (configSection.toLowerCase().includes('players:')) {
+      return null;
     }
 
-    return `${header}${spLine}\n\n${presetDescriptions[preset] || ''}`;
+    // Most specific signal: synthesis_provider: haiku → was using cloud for synthesis
+    if (configSection.match(/synthesis_provider\s*:\s*haiku/i)) {
+      // Check if it was cloud-first (quality preference)
+      if (configSection.toLowerCase().includes('active preset: cloud-first')) {
+        return 'trust: cloud-ok\nprefer: quality\n';
+      }
+      return 'trust: cloud-ok\n';
+    }
+
+    // Active preset: All-local → local-only
+    if (configSection.toLowerCase().includes('active preset: all-local')) {
+      return 'trust: local-only\n';
+    }
+
+    // Active preset: Cloud-first without haiku → cloud-ok quality
+    if (configSection.toLowerCase().includes('active preset: cloud-first')) {
+      return 'trust: cloud-ok\nprefer: quality\n';
+    }
+
+    // Active preset: Smart mix without haiku → local-only (was local synthesis)
+    if (configSection.toLowerCase().includes('active preset: smart mix')) {
+      return 'trust: local-only\n';
+    }
+
+    // synthesis_provider: local explicitly → local-only
+    if (configSection.match(/synthesis_provider\s*:\s*local/i)) {
+      return 'trust: local-only\n';
+    }
+
+    // Default: local-only (sovereignty)
+    return 'trust: local-only\n';
   }
 
   /**
-   * Write the resolved preset state back to the Models card description so users
-   * can see what is actively running. Skips the API call if the content is
-   * unchanged (avoids unnecessary Deck writes on every heartbeat).
+   * Build a roster object from a trust boundary and preference.
+   * Pure function — no I/O.
+   *
+   * @param {string} trust - 'local-only' or 'cloud-ok'
+   * @param {string} prefer - 'speed', 'quality', or 'cost'
+   * @param {Object} infra - Infrastructure detection result
+   * @param {Array} infra.localModels - Available local models
+   * @param {boolean} infra.gpuDetected - Whether GPU is available
+   * @param {Array} infra.cloudProviders - Available cloud providers [{name, models}]
+   * @returns {Object} Roster: job → provider-ID chain
+   */
+  _buildRosterFromTrust(trust, prefer, infra) {
+    // Security invariant: credentials job is never included here.
+    // It is always local-only, enforced by the router's _buildRosterChain().
+    const hasHaiku = (infra.cloudProviders || []).some(p =>
+      p.name === 'Anthropic' || p.models?.some(m => m.toLowerCase().includes('haiku'))
+    );
+    const hasSonnet = (infra.cloudProviders || []).some(p =>
+      p.name === 'Anthropic' || p.models?.some(m => m.toLowerCase().includes('sonnet'))
+    );
+
+    const localFast = 'ollama-fast';
+    const localCapable = 'ollama-local';
+
+    if (trust === 'local-only') {
+      return {
+        quick: [localFast, localCapable],
+        synthesis: [localFast, localCapable],
+        tools: [localCapable, localFast],
+        thinking: [localCapable],
+        writing: [localCapable],
+        research: [localCapable],
+        coding: [localCapable]
+      };
+    }
+
+    // trust === 'cloud-ok'
+    if (prefer === 'cost') {
+      return {
+        quick: [localFast, localCapable],
+        synthesis: hasHaiku
+          ? ['claude-haiku', localFast, localCapable]
+          : [localFast, localCapable],
+        tools: [localCapable, localFast],
+        thinking: [localCapable, hasSonnet ? 'claude-sonnet' : null].filter(Boolean),
+        writing: [localCapable, hasSonnet ? 'claude-sonnet' : null].filter(Boolean),
+        research: [localCapable, hasSonnet ? 'claude-sonnet' : null].filter(Boolean),
+        coding: [localCapable, hasSonnet ? 'claude-sonnet' : null].filter(Boolean)
+      };
+    }
+
+    if (prefer === 'quality') {
+      return {
+        quick: [localFast, localCapable],
+        synthesis: [hasSonnet ? 'claude-sonnet' : null, hasHaiku ? 'claude-haiku' : null, localCapable].filter(Boolean),
+        tools: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
+        thinking: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
+        writing: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
+        research: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
+        coding: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean)
+      };
+    }
+
+    // Default: prefer === 'speed'
+    return {
+      quick: [localFast, localCapable],
+      synthesis: hasHaiku
+        ? ['claude-haiku', localFast, localCapable]
+        : [localFast, localCapable],
+      tools: [localCapable, hasHaiku ? 'claude-haiku' : null, localFast].filter(Boolean),
+      thinking: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
+      writing: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
+      research: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
+      coding: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean)
+    };
+  }
+
+  /**
+   * Generate the description section (below ---) for the Models card.
+   * Shows trust status, infrastructure, performance estimates, cost, and tips.
+   * Pure function — no I/O.
+   *
+   * @param {string} trust - 'local-only' or 'cloud-ok'
+   * @param {string} prefer - 'speed', 'quality', or 'cost'
+   * @param {Object} infra - Infrastructure detection result
+   * @returns {string} Full description starting with '---'
+   */
+  _generateModelsCardDescription(trust, prefer, infra) {
+    let desc = '\n\n---\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+
+    // Trust section
+    if (trust === 'local-only') {
+      desc += '\ud83d\udd12 Trust: Local only\n';
+      desc += '   All data stays on your servers. Nothing leaves your infrastructure.\n\n';
+    } else {
+      desc += '\ud83c\udf10 Trust: Cloud allowed\n';
+      desc += '   Simple tasks run locally (free, private).\n';
+      desc += '   Knowledge answers use cloud AI (fast, small cost).\n\n';
+    }
+
+    // Infrastructure section
+    desc += '\ud83d\udcca Your Setup:\n';
+    const modelCount = (infra.localModels || []).length;
+    desc += `   Local AI: ${modelCount} model(s) ready\n`;
+    desc += `   GPU: ${infra.gpuDetected ? 'detected \u26a1' : 'not detected (CPU inference)'}\n`;
+
+    if ((infra.cloudProviders || []).length > 0) {
+      const providers = infra.cloudProviders.map(p => `${p.name} \u2705`).join(', ');
+      desc += `   Cloud AI: ${providers}\n`;
+    } else {
+      desc += '   Cloud AI: no API keys configured\n';
+    }
+    desc += '\n';
+
+    // Performance estimates
+    desc += '\u26a1 Estimated Performance:\n';
+    if (trust === 'local-only') {
+      if (infra.gpuDetected) {
+        desc += '   Simple questions: ~1-2 seconds \u26a1\n';
+        desc += '   Knowledge answers: ~3-5 seconds \u26a1\n';
+        desc += '   Complex tasks: ~8-15 seconds\n';
+      } else {
+        desc += '   Simple questions: ~3 seconds\n';
+        desc += '   Knowledge answers: ~15-20 seconds\n';
+        desc += '   Complex tasks: ~30-60 seconds\n';
+      }
+    } else {
+      desc += '   Simple questions: ~3 seconds\n';
+      desc += '   Knowledge answers: ~3-5 seconds \u26a1\n';
+      desc += '   Complex tasks: ~10-15 seconds \u26a1\n';
+    }
+    desc += '\n';
+
+    // Cost section
+    desc += '\ud83d\udcb0 Estimated Cost:\n';
+    if (trust === 'local-only') {
+      desc += '   \u20ac0/month (everything runs locally)\n';
+    } else {
+      desc += '   Classification: free (always local)\n';
+      desc += '   Knowledge answers: ~\u20ac0.001/query (Haiku)\n';
+      desc += '   Complex tasks: ~\u20ac0.01/task (Sonnet)\n';
+      desc += '   Typical month: \u20ac3-8 depending on usage\n';
+    }
+    desc += '\n';
+
+    // Tips
+    desc += '\ud83d\udca1 Tips:\n';
+    if (trust === 'local-only') {
+      if (!infra.gpuDetected) {
+        desc += '   \u2022 Add a GPU server for 3-5x faster local responses\n';
+      }
+      if ((infra.cloudProviders || []).length === 0) {
+        desc += '   \u2022 Add an Anthropic API key in Nextcloud Passwords for cloud option\n';
+      }
+      desc += '   \u2022 Change "trust: cloud-ok" above the line to enable cloud AI\n';
+    } else {
+      desc += '   \u2022 Change "trust: local-only" above the line for full privacy\n';
+      if (!infra.gpuDetected) {
+        desc += '   \u2022 Add a GPU server to get cloud-like speed without cloud cost\n';
+      }
+    }
+    desc += '\n';
+
+    // How it works section
+    desc += '\u2501\u2501\u2501 How it works \u2501\u2501\u2501\n\n';
+    desc += 'Your agent does different types of work:\n\n';
+    desc += '\ud83d\udce8 Understanding your message\n';
+    desc += '   Always done locally (free, instant, private).\n\n';
+    desc += '\ud83d\udd0d Finding information\n';
+    desc += '   Searches your wiki, task boards, calendar, past conversations.\n';
+    desc += '   Always local, even in cloud mode.\n\n';
+    desc += '\ud83d\udcdd Composing answers\n';
+    if (trust === 'local-only') {
+      desc += '   Your local AI writes the response.\n\n';
+    } else {
+      desc += '   Claude Haiku writes the response (fast, ~\u20ac0.001).\n\n';
+    }
+    desc += '\ud83e\udde0 Complex thinking\n';
+    if (trust === 'local-only') {
+      desc += '   Your most capable local AI handles deep reasoning.\n\n';
+    } else {
+      desc += '   Claude Sonnet handles analysis and planning (~\u20ac0.01).\n\n';
+    }
+    desc += '\ud83d\udd12 Always private (every mode):\n';
+    desc += '   \u2022 Wiki, task boards, calendar stay on your server\n';
+    desc += '   \u2022 Classification is always local\n';
+    desc += '   \u2022 Search is always local\n\n';
+
+    if (trust === 'cloud-ok') {
+      desc += '\ud83c\udf10 Sent to cloud AI (cloud mode only):\n';
+      desc += '   \u2022 Found information + your question \u2192 cloud AI \u2192 answer\n';
+      desc += '   \u2022 No data is stored by the cloud provider\n\n';
+    }
+
+    // Advanced section
+    desc += '\u2501\u2501\u2501 Advanced \u2501\u2501\u2501\n\n';
+    desc += 'Override automatic routing by adding a custom roster above the line:\n\n';
+    desc += 'trust: cloud-ok\n';
+    desc += 'roster:\n';
+    desc += '  quick: qwen2.5:3b \u2192 qwen3:8b\n';
+    desc += '  synthesis: claude-haiku \u2192 qwen2.5:3b\n';
+    desc += '  tools: phi4-mini \u2192 qwen3:8b \u2192 claude-sonnet\n';
+    desc += '  thinking: claude-sonnet \u2192 qwen3:8b\n';
+    desc += '  writing: claude-sonnet \u2192 qwen3:8b\n';
+    desc += '  research: claude-sonnet\n';
+    desc += '  coding: claude-sonnet\n\n';
+
+    desc += 'Available providers:\n';
+    desc += '  Local:\n';
+    for (const model of (infra.localModels || []).slice(0, 5)) {
+      desc += `    ${model.name}\n`;
+    }
+    if ((infra.cloudProviders || []).length > 0) {
+      desc += '  Cloud:\n';
+      for (const provider of infra.cloudProviders) {
+        desc += `    ${provider.name}: ${(provider.models || []).join(', ')}\n`;
+      }
+    }
+    desc += '\nAdd API keys in Nextcloud Passwords:\n';
+    desc += '  anthropic-api-key \u2192 Claude (Haiku, Sonnet)\n';
+    desc += '  openai-api-key \u2192 GPT-4o\n';
+    desc += '  google-ai-api-key \u2192 Gemini Pro\n';
+
+    return desc;
+  }
+
+  /**
+   * Write a new description to the Models card. Skips if unchanged.
    *
    * @private
-   * @param {Object} card - Deck card object (must have .id and .description)
-   * @param {string} preset - Active preset name
+   * @param {Object} card - Deck card object (must have .id)
+   * @param {string} newDescription - Full new description text
    * @returns {Promise<void>}
    */
-  async _writeResolvedStateToCard(card, preset) {
-    const currentConfig = (card.description || '').split('---')[0].trim();
-    const stateText = this._formatResolvedState(preset, currentConfig);
-    if (currentConfig === stateText.trim()) return; // avoid API spam
-
-    const docSection = (card.description || '').split('---').slice(1).join('---');
-    const newDescription = docSection ? `${stateText}\n\n---\n${docSection}` : stateText;
+  async _writeModelsCardDescription(card, newDescription) {
+    if (!card || !card.id) return;
+    if (newDescription === card.description) return; // avoid API spam
 
     try {
       const stackId = this.stacks.system;
       if (stackId) {
         const updatePath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${stackId}/cards/${card.id}`;
         await this.deck._request('PUT', updatePath, {
-          title: card.title,
+          title: card.title || 'Models',
           description: newDescription,
           type: 'plain',
           owner: card.owner || 'moltagent'
         });
       }
     } catch (err) {
-      console.warn(`[CockpitManager] Failed to write resolved state to Models card: ${err.message}`);
+      console.warn(`[CockpitManager] Failed to write Models card description: ${err.message}`);
     }
   }
 

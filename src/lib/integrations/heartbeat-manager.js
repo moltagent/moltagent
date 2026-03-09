@@ -602,7 +602,7 @@ class HeartbeatManager {
               this._cockpitDailyDigest = cockpitConfig.system.dailyDigest;
             }
 
-            // Models/roster propagation (B2)
+            // Models/roster propagation (trust-based)
             if (cockpitConfig.system.modelsConfig && this.llmRouter) {
               const mc = cockpitConfig.system.modelsConfig;
 
@@ -612,27 +612,46 @@ class HeartbeatManager {
               } else if (mc.changed === false) {
                 // Content unchanged — skip redundant propagation
               } else if (mc.players) {
-                // Custom roster with player definitions — register providers
+                // Custom roster with player definitions — register providers (⚙4 power user)
                 await this._handleModelsUpdate(mc);
+              } else if (mc.customRoster) {
+                // Trust-based with custom roster override
+                this.llmRouter.setRoster(mc.customRoster);
+                console.log(`[Heartbeat] Custom roster applied (${Object.keys(mc.customRoster).length} jobs)`);
+              } else if (mc.trust) {
+                // Trust-based automatic routing
+                const infra = await this._detectInfrastructure();
+                const roster = this.cockpitManager._buildRosterFromTrust(mc.trust, mc.prefer || 'speed', infra);
+                this.llmRouter.setRoster(roster);
+                console.log(`[Heartbeat] Trust-based roster: ${mc.trust}, prefer: ${mc.prefer || 'speed'}`);
+
+                // Update card description with detected infrastructure
+                if (mc._cardId && this.cockpitManager) {
+                  const userConfig = mc._migratedConfig || mc._userConfig || `trust: ${mc.trust}\n`;
+                  const newDesc = userConfig + this.cockpitManager._generateModelsCardDescription(mc.trust, mc.prefer || 'speed', infra);
+                  this.cockpitManager._writeModelsCardDescription(
+                    { id: mc._cardId, description: mc._cardDescription, title: 'Models' },
+                    newDesc
+                  ).catch(() => {});
+                }
+
+                // Clean up stale ⚙️ preset labels from the Models card
+                if (mc._cardId && mc._cardLabels && this.cockpitManager?.deckClient) {
+                  const staleLabels = (mc._cardLabels || []).filter(l => /^⚙️\d/.test(l));
+                  for (const label of staleLabels) {
+                    try {
+                      await this.cockpitManager.deckClient.removeLabel(mc._cardId, 'System', label);
+                      console.log(`[Heartbeat] Removed stale label "${label}" from Models card`);
+                    } catch (e) {
+                      // Label may already be gone — ignore
+                    }
+                  }
+                }
               } else if (mc.roster) {
                 this.llmRouter.setRoster(mc.roster);
               } else if (mc.preset) {
                 this.llmRouter.setPreset(mc.preset);
               }
-            }
-
-            // Synthesis provider propagation (from Models card)
-            // Sets 'synthesis' job roster so _synthesizeKnowledge routes correctly
-            const sp = cockpitConfig.system?.modelsConfig?.synthesisProvider;
-            if (sp && this.llmRouter) {
-              const currentRoster = this.llmRouter.getRoster() || {};
-              if (sp === 'haiku') {
-                currentRoster.synthesis = ['claude-haiku', 'ollama-fast', 'ollama-local'];
-              } else {
-                currentRoster.synthesis = ['ollama-fast', 'ollama-local'];
-              }
-              this.llmRouter.setRoster(currentRoster);
-              console.log(`[Heartbeat] Synthesis provider: ${sp} → chain: ${currentRoster.synthesis.join(' → ')}`);
             }
           }
 
@@ -1344,6 +1363,83 @@ class HeartbeatManager {
       const entries = Array.from(this._notifiedMeetings);
       this._notifiedMeetings = new Set(entries.slice(-50));
     }
+  }
+
+  /**
+   * Detect available infrastructure for trust-based model routing.
+   * Queries Ollama for models/GPU and checks credential broker for API keys.
+   *
+   * @private
+   * @returns {Promise<{localModels: Array, gpuDetected: boolean, cloudProviders: Array}>}
+   */
+  async _detectInfrastructure() {
+    const infra = {
+      localModels: [],
+      gpuDetected: false,
+      cloudProviders: []
+    };
+
+    const ollamaUrl = this.config?.heartbeat?.ollamaUrl || 'http://localhost:11434';
+
+    // Check Ollama models
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const response = await fetch(`${ollamaUrl}/api/tags`, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (response.ok) {
+        const data = await response.json();
+        infra.localModels = (data.models || []).map(m => ({
+          name: m.name,
+          size: m.size,
+          family: m.details?.family || 'unknown'
+        }));
+      }
+    } catch { /* Ollama offline */ }
+
+    // Check GPU (Ollama reports gpu_layers in model details)
+    if (infra.localModels.length > 0) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        const response = await fetch(`${ollamaUrl}/api/show`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: infra.localModels[0].name }),
+          signal: controller.signal
+        });
+        clearTimeout(timeout);
+        if (response.ok) {
+          const data = await response.json();
+          infra.gpuDetected = (data.details?.gpu_layers || 0) > 0;
+        }
+      } catch { /* Can't detect GPU */ }
+    }
+
+    // Check API keys via credential broker
+    if (this.credentialBroker) {
+      const keyChecks = [
+        { labels: ['anthropic-api-key', 'claude-api-key'], name: 'Anthropic', models: ['Haiku', 'Sonnet'] },
+        { labels: ['openai-api-key'], name: 'OpenAI', models: ['GPT-4o'] },
+        { labels: ['google-ai-api-key'], name: 'Google', models: ['Gemini Pro'] }
+      ];
+
+      for (const check of keyChecks) {
+        let found = false;
+        for (const label of check.labels) {
+          if (found) break;
+          try {
+            const key = await this.credentialBroker.get(label);
+            if (key) {
+              infra.cloudProviders.push({ name: check.name, models: check.models });
+              found = true;
+            }
+          } catch { /* Key not found */ }
+        }
+      }
+    }
+
+    return infra;
   }
 
   /**

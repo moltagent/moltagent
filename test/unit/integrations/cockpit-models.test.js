@@ -82,26 +82,27 @@ test('TC-MOD-CONST-001: MODELS_CARD_TITLES is exported', () => {
 
 console.log('\n--- Card Parsing (_parseModelsCard) ---\n');
 
-test('TC-MOD-PARSE-001: \u2699\ufe0f1 label -> all-local preset', () => {
+test('TC-MOD-PARSE-001: trust: local-only -> local-only trust', () => {
   const cm = makeCM();
-  const card = makeCard('Models', '', [g1Label]);
+  const card = makeCard('Models', 'trust: local-only\n\n---\nDocs', []);
   const result = cm._parseModelsCard(card);
-  assert.strictEqual(result.preset, 'all-local');
-  assert.strictEqual(result.roster, undefined);
+  assert.strictEqual(result.trust, 'local-only');
+  assert.strictEqual(result.customRoster, null);
 });
 
-test('TC-MOD-PARSE-002: \u2699\ufe0f2 label -> smart-mix preset', () => {
+test('TC-MOD-PARSE-002: trust: cloud-ok -> cloud-ok trust', () => {
   const cm = makeCM();
-  const card = makeCard('Models', '', [g2Label]);
+  const card = makeCard('Models', 'trust: cloud-ok\n\n---\nDocs', []);
   const result = cm._parseModelsCard(card);
-  assert.strictEqual(result.preset, 'smart-mix');
+  assert.strictEqual(result.trust, 'cloud-ok');
 });
 
-test('TC-MOD-PARSE-003: \u2699\ufe0f3 label -> cloud-first preset', () => {
+test('TC-MOD-PARSE-003: trust: cloud-ok, prefer: quality parsed', () => {
   const cm = makeCM();
-  const card = makeCard('Models', '', [g3Label]);
+  const card = makeCard('Models', 'trust: cloud-ok\nprefer: quality\n\n---\nDocs', []);
   const result = cm._parseModelsCard(card);
-  assert.strictEqual(result.preset, 'cloud-first');
+  assert.strictEqual(result.trust, 'cloud-ok');
+  assert.strictEqual(result.prefer, 'quality');
 });
 
 test('TC-MOD-PARSE-004: \u2699\ufe0f4 label with valid roster -> custom roster', () => {
@@ -110,24 +111,23 @@ test('TC-MOD-PARSE-004: \u2699\ufe0f4 label with valid roster -> custom roster',
   const card = makeCard('Models', desc, [g4Label]);
   const result = cm._parseModelsCard(card);
   assert.ok(result.roster);
-  assert.strictEqual(result.preset, undefined);
   assert.deepStrictEqual(result.roster.quick, ['qwen3:8b']);
   assert.deepStrictEqual(result.roster.thinking, ['claude-opus', 'qwen3:8b']);
 });
 
-test('TC-MOD-PARSE-005: no label -> smart-mix default', () => {
+test('TC-MOD-PARSE-005: no label, no trust -> local-only default', () => {
   const cm = makeCM();
   const card = makeCard('Models', '', []);
   const result = cm._parseModelsCard(card);
-  assert.strictEqual(result.preset, 'smart-mix');
+  assert.strictEqual(result.trust, 'local-only');
 });
 
-test('TC-MOD-PARSE-006: old "Option 2" label -> smart-mix', () => {
+test('TC-MOD-PARSE-006: old format with ⚙️2 smart-mix migrates to local-only (was local synthesis)', () => {
   const cm = makeCM();
-  const opt2 = { id: 3, title: '\ud83d\udfe1 Option 2', color: 'f0c400' };
-  const card = makeCard('Models', '', [opt2]);
+  const desc = '\u2699\ufe0f1 all-local / \u2699\ufe0f2 smart mix\nActive preset: Smart mix\n---\nDocs';
+  const card = makeCard('Models', desc, [g2Label]);
   const result = cm._parseModelsCard(card);
-  assert.strictEqual(result.preset, 'smart-mix');
+  assert.strictEqual(result.trust, 'local-only');
 });
 
 test('TC-MOD-PARSE-007: card titled "LLM Tier" is no longer in MODELS_CARD_TITLES', () => {
@@ -223,13 +223,13 @@ test('TC-MOD-ROSTER-007: --- separator respected (lines below ignored)', () => {
 
 console.log('\n--- Integration ---\n');
 
-asyncTest('TC-MOD-INT-001: getSystemSettings returns modelsConfig with preset', async () => {
+asyncTest('TC-MOD-INT-001: getSystemSettings returns modelsConfig with trust', async () => {
   const cm = makeCM();
-  const cards = [makeCard('Models', '\u2699\ufe0f2 smart mix', [g2Label])];
+  const cards = [makeCard('Models', 'trust: cloud-ok\n\n---\nDocs', [])];
 
   const config = await cm.getSystemSettings(cards);
   assert.ok(config.modelsConfig);
-  assert.strictEqual(config.modelsConfig.preset, 'smart-mix');
+  assert.strictEqual(config.modelsConfig.trust, 'cloud-ok');
   assert.strictEqual(config.llmTier, undefined, 'llmTier removed');
 });
 
@@ -246,29 +246,29 @@ asyncTest('TC-MOD-INT-002: getSystemSettings returns modelsConfig with roster fo
   assert.strictEqual(config.llmTier, undefined, 'llmTier removed');
 });
 
-asyncTest('TC-MOD-INT-003: llmTier no longer derived from preset', async () => {
+asyncTest('TC-MOD-INT-003: trust: local-only is sovereignty default', async () => {
   const cm = makeCM();
-  const cards = [makeCard('Models', '', [g1Label])];
+  const cards = [makeCard('Models', '', [])];
 
   const config = await cm.getSystemSettings(cards);
-  assert.strictEqual(config.modelsConfig.preset, 'all-local');
+  assert.strictEqual(config.modelsConfig.trust, 'local-only');
   assert.strictEqual(config.llmTier, undefined, 'llmTier backward compat removed');
 });
 
 asyncTest('TC-MOD-INT-004: legacy "LLM Tier" card title no longer matches', async () => {
   const cm = makeCM();
-  const cards = [makeCard('LLM Tier', '', [g3Label])];
+  const cards = [makeCard('LLM Tier', '', [])];
 
   const config = await cm.getSystemSettings(cards);
   assert.strictEqual(config.modelsConfig, undefined, 'LLM Tier should no longer match as models card');
 });
 
-test('TC-MOD-INT-005: empty custom roster falls back to smart-mix', () => {
+test('TC-MOD-INT-005: empty custom roster with ⚙4 falls back to local-only', () => {
   const cm = makeCM();
   const card = makeCard('Models', '\n\n---\n\nOnly docs, no roster', [g4Label]);
   const result = cm._parseModelsCard(card);
-  assert.strictEqual(result.preset, 'smart-mix');
-  assert.strictEqual(result.roster, undefined);
+  assert.strictEqual(result.trust, 'local-only');
+  assert.strictEqual(result.customRoster, null);
 });
 
 // ============================================================
@@ -280,10 +280,9 @@ console.log('\n--- DEFAULT_CARDS updates ---\n');
 test('TC-MOD-DC-001: Models card exists in DEFAULT_CARDS.system', () => {
   const modelsCard = DEFAULT_CARDS.system.find(c => c.title === 'Models');
   assert.ok(modelsCard, 'Should have a Models card in system stack');
-  assert.ok(modelsCard.description.includes('all-local'), 'Should mention all-local preset');
+  assert.ok(modelsCard.description.includes('trust:'), 'Should have trust field');
   assert.ok(modelsCard.description.includes('---'), 'Should have --- separator');
-  assert.ok(modelsCard.description.includes('Jobs:'), 'Should document jobs');
-  assert.strictEqual(modelsCard.defaultLabel, '\u2699\ufe0f2');
+  assert.strictEqual(modelsCard.defaultLabel, undefined, 'No default label — trust-based');
 });
 
 test('TC-MOD-DC-002: LLM Tier card no longer exists in DEFAULT_CARDS', () => {
@@ -554,44 +553,42 @@ console.log('\n--- Change detection (fingerprint-based) ---\n');
 
 test('TC-MOD-CHG-001: first parse returns changed=true (needs initial registration)', () => {
   const cm = makeCM();
-  const card = makeCard('Models', '', [g2Label]);
+  const card = makeCard('Models', 'trust: cloud-ok\n---\nDocs', []);
   const result = cm._parseModelsCard(card);
   assert.strictEqual(result.changed, true);
-  assert.strictEqual(result.preset, 'smart-mix');
+  assert.strictEqual(result.trust, 'cloud-ok');
 });
 
 test('TC-MOD-CHG-002: same card twice returns changed=false on second call', () => {
   const cm = makeCM();
-  const card = makeCard('Models', '', [g2Label]);
+  const card = makeCard('Models', 'trust: cloud-ok\n---\nDocs', []);
   cm._parseModelsCard(card);
   const result = cm._parseModelsCard(card);
   assert.strictEqual(result.changed, false);
-  assert.strictEqual(result.preset, 'smart-mix');
+  assert.strictEqual(result.trust, 'cloud-ok');
 });
 
-test('TC-MOD-CHG-003: label change triggers changed=true', () => {
+test('TC-MOD-CHG-003: trust change triggers changed=true', () => {
   const cm = makeCM();
-  cm._parseModelsCard(makeCard('Models', '', [g2Label]));
-  const result = cm._parseModelsCard(makeCard('Models', '', [g1Label]));
+  cm._parseModelsCard(makeCard('Models', 'trust: cloud-ok\n---\nDocs', []));
+  const result = cm._parseModelsCard(makeCard('Models', 'trust: local-only\n---\nDocs', []));
   assert.strictEqual(result.changed, true);
-  assert.strictEqual(result.preset, 'all-local');
+  assert.strictEqual(result.trust, 'local-only');
 });
 
-test('TC-MOD-CHG-004: description change within ⚙4 triggers changed=true', () => {
+test('TC-MOD-CHG-004: prefer change triggers changed=true', () => {
   const cm = makeCM();
-  const desc1 = 'quick: qwen3:8b\n---\ndocs';
-  const desc2 = 'quick: claude-opus\n---\ndocs';
-  cm._parseModelsCard(makeCard('Models', desc1, [g4Label]));
-  const result = cm._parseModelsCard(makeCard('Models', desc2, [g4Label]));
+  cm._parseModelsCard(makeCard('Models', 'trust: cloud-ok\nprefer: speed\n---\ndocs', []));
+  const result = cm._parseModelsCard(makeCard('Models', 'trust: cloud-ok\nprefer: quality\n---\ndocs', []));
   assert.strictEqual(result.changed, true);
 });
 
 test('TC-MOD-CHG-005: doc section change below --- does NOT trigger changed', () => {
   const cm = makeCM();
-  const desc1 = 'quick: qwen3:8b\n---\nold docs';
-  const desc2 = 'quick: qwen3:8b\n---\nnew docs';
-  cm._parseModelsCard(makeCard('Models', desc1, [g4Label]));
-  const result = cm._parseModelsCard(makeCard('Models', desc2, [g4Label]));
+  const desc1 = 'trust: local-only\n---\nold docs';
+  const desc2 = 'trust: local-only\n---\nnew docs';
+  cm._parseModelsCard(makeCard('Models', desc1, []));
+  const result = cm._parseModelsCard(makeCard('Models', desc2, []));
   assert.strictEqual(result.changed, false);
 });
 
