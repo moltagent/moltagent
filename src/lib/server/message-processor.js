@@ -1481,7 +1481,10 @@ class MessageProcessor {
     console.log(`[Message] Knowledge probes: ${sourcesConsulted.length} sources consulted, ${sourcesWithResults.length} returned results (${sourcesWithResults.join(', ')})`);
 
     // Step 4: Synthesis — one LLM call
-    const response = await this._synthesizeKnowledge(query, aggregated, session, router);
+    const rawResponse = await this._synthesizeKnowledge(query, aggregated, session, router);
+
+    // Step 5: Post-process — link entities, strip leaked tags
+    const response = this._postProcessResponse(rawResponse, probeResults);
 
     return {
       response,
@@ -1761,13 +1764,8 @@ class MessageProcessor {
       }
 
       if (uniqueResults.length > 0) {
-        block += `\n[Source: ${probe.source} | Provenance: ${probe.provenance}]\n`;
         for (const result of uniqueResults) {
-          if (result.url) {
-            block += `Title: ${result.title || ''} | Link: ${result.url}\n${result.snippet || ''}\n`;
-          } else {
-            block += `Title: ${result.title || ''}\n${result.snippet || ''}\n`;
-          }
+          block += `\n${result.title || ''}:\n${result.snippet || ''}\n`;
         }
       }
     }
@@ -1792,14 +1790,12 @@ ${aggregatedKnowledge}
 ${warmMemory ? `\nRecent context:\n${warmMemory}\n` : ''}
 
 RULES:
-- Answer ONLY from the data above. Each fact has a [Source] tag — trust it.
+- Answer ONLY from the data above.
 - If multiple sources mention the same entity, combine their information.
 - State what you found. Name what's missing. Never fabricate.
 - No hedging ("might", "could", "possibly"). Either you found it or you didn't.
 - Be concise. Lead with the most relevant facts.
-- When a result includes a Link field, format the reference as a markdown link: [Title](Link)
-  Example: [Concise Executive](/apps/deck/card/137)
-  Never output raw URLs or [url: ...] tags.`;
+- Use the entity names exactly as they appear in the data.`;
 
     const result = await router.route({
       job: 'quick',
@@ -1808,10 +1804,39 @@ RULES:
       requirements: { maxTokens: 1000, temperature: 0.3 }
     });
 
-    let answer = result?.result || result?.content || "I couldn't synthesize an answer from the available information.";
-    // Safety net: clean up any remaining [url: ...] tags the LLM didn't convert
-    answer = answer.replace(/\[url:\s*(\/[^\]]+)\]/g, (match, url) => `(${url})`);
-    return answer;
+    return result?.result || result?.content || "I couldn't synthesize an answer from the available information.";
+  }
+
+  /**
+   * Post-process synthesis response: strip leaked tags and link entity names.
+   * Works regardless of model capability — all formatting done in code.
+   * @private
+   */
+  _postProcessResponse(response, probeResults) {
+    let processed = response;
+
+    // Strip any leaked [Source: ...] or [url: ...] tags
+    processed = processed.replace(/\[Source:\s*[^\]]+\]/g, '').trim();
+    processed = processed.replace(/\[url:\s*[^\]]+\]/g, '').trim();
+
+    // Link entity names that match probe results
+    for (const probe of probeResults) {
+      for (const result of probe.results || []) {
+        if (result.url && result.title) {
+          const fullUrl = result.url.startsWith('http')
+            ? result.url
+            : CONFIG.nextcloud.url + result.url;
+
+          // Replace first occurrence of the title with a markdown link
+          // Only if it's not already inside a markdown link
+          const escaped = result.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const titleRegex = new RegExp(`(?<!\\[)${escaped}(?!\\]|\\()`, 'i');
+          processed = processed.replace(titleRegex, `[${result.title}](${fullUrl})`);
+        }
+      }
+    }
+
+    return processed;
   }
 
   /**
