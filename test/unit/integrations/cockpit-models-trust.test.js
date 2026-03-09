@@ -63,7 +63,7 @@ const localOnlyInfra = { localModels: [], gpuDetected: false, cloudProviders: []
 const anthropicInfra = {
   localModels: [],
   gpuDetected: false,
-  cloudProviders: [{ name: 'Anthropic', models: ['Haiku', 'Sonnet'] }]
+  cloudProviders: [{ name: 'Anthropic', models: ['Haiku', 'Sonnet', 'Opus'] }]
 };
 
 // Local provider IDs the roster must stay within for local-only trust
@@ -152,6 +152,43 @@ test('TC-TRUST-004: cloud-ok / cost → synthesis haiku first; thinking/writing/
 });
 
 // ---------------------------------------------------------------------------
+// TC-TRUST-004b
+// ---------------------------------------------------------------------------
+
+test('TC-TRUST-004b: cloud-ok / speed → thinking and writing start with anthropic-claude (Opus)', () => {
+  const cm = makeCM();
+  const roster = cm._buildRosterFromTrust('cloud-ok', 'speed', anthropicInfra);
+
+  assert.strictEqual(
+    roster.thinking[0],
+    'anthropic-claude',
+    `speed/thinking[0] should be anthropic-claude (Opus), got "${roster.thinking[0]}"`
+  );
+  assert.strictEqual(
+    roster.writing[0],
+    'anthropic-claude',
+    `speed/writing[0] should be anthropic-claude (Opus), got "${roster.writing[0]}"`
+  );
+});
+
+// ---------------------------------------------------------------------------
+// TC-TRUST-004c
+// ---------------------------------------------------------------------------
+
+test('TC-TRUST-004c: cloud-ok / quality → thinking and writing start with anthropic-claude (Opus)', () => {
+  const cm = makeCM();
+  const roster = cm._buildRosterFromTrust('cloud-ok', 'quality', anthropicInfra);
+
+  for (const job of ['thinking', 'writing', 'coding']) {
+    assert.strictEqual(
+      roster[job][0],
+      'anthropic-claude',
+      `quality/${job}[0] should be anthropic-claude (Opus), got "${roster[job][0]}"`
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
 // TC-TRUST-005
 // ---------------------------------------------------------------------------
 
@@ -205,7 +242,7 @@ test('TC-TRUST-007: cloud-ok description contains cloud trust badge and Anthropi
   const infra = {
     localModels: [{ name: 'qwen2.5:3b' }],
     gpuDetected: false,
-    cloudProviders: [{ name: 'Anthropic', models: ['Haiku', 'Sonnet'] }]
+    cloudProviders: [{ name: 'Anthropic', models: ['Haiku', 'Sonnet', 'Opus'] }]
   };
   const desc = cm._generateModelsCardDescription('cloud-ok', 'speed', infra);
 

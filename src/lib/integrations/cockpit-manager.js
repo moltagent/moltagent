@@ -1397,6 +1397,14 @@ class CockpitManager {
     const hasSonnet = (infra.cloudProviders || []).some(p =>
       p.name === 'Anthropic' || p.models?.some(m => m.toLowerCase().includes('sonnet'))
     );
+    const hasOpus = (infra.cloudProviders || []).some(p =>
+      p.name === 'Anthropic' || p.models?.some(m => m.toLowerCase().includes('opus'))
+    );
+
+    // Provider IDs matching moltagent-providers.yaml
+    const opus = 'anthropic-claude';   // claude-opus-4-6
+    const sonnet = 'claude-sonnet';    // claude-sonnet-4-5
+    const haiku = 'claude-haiku';      // claude-haiku-4-5
 
     const localFast = 'ollama-fast';
     const localCapable = 'ollama-local';
@@ -1415,42 +1423,45 @@ class CockpitManager {
 
     // trust === 'cloud-ok'
     if (prefer === 'cost') {
+      // Minimize cloud spend: local first, cloud as fallback only
       return {
         quick: [localFast, localCapable],
         synthesis: hasHaiku
-          ? ['claude-haiku', localFast, localCapable]
+          ? [haiku, localFast, localCapable]
           : [localFast, localCapable],
         tools: [localCapable, localFast],
-        thinking: [localCapable, hasSonnet ? 'claude-sonnet' : null].filter(Boolean),
-        writing: [localCapable, hasSonnet ? 'claude-sonnet' : null].filter(Boolean),
-        research: [localCapable, hasSonnet ? 'claude-sonnet' : null].filter(Boolean),
-        coding: [localCapable, hasSonnet ? 'claude-sonnet' : null].filter(Boolean)
+        thinking: [localCapable, hasSonnet ? sonnet : null].filter(Boolean),
+        writing: [localCapable, hasSonnet ? sonnet : null].filter(Boolean),
+        research: [localCapable, hasSonnet ? sonnet : null].filter(Boolean),
+        coding: [localCapable, hasSonnet ? sonnet : null].filter(Boolean)
       };
     }
 
     if (prefer === 'quality') {
+      // Maximum quality: Opus for deep work, Sonnet for tools/research
       return {
         quick: [localFast, localCapable],
-        synthesis: [hasSonnet ? 'claude-sonnet' : null, hasHaiku ? 'claude-haiku' : null, localCapable].filter(Boolean),
-        tools: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
-        thinking: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
-        writing: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
-        research: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
-        coding: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean)
+        synthesis: [hasSonnet ? sonnet : null, hasHaiku ? haiku : null, localCapable].filter(Boolean),
+        tools: [hasSonnet ? sonnet : null, localCapable].filter(Boolean),
+        thinking: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
+        writing: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
+        research: [hasSonnet ? sonnet : null, hasOpus ? opus : null, localCapable].filter(Boolean),
+        coding: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean)
       };
     }
 
     // Default: prefer === 'speed'
+    // Opus for thinking/writing (best output), Sonnet for research/coding (fast enough)
     return {
       quick: [localFast, localCapable],
       synthesis: hasHaiku
-        ? ['claude-haiku', localFast, localCapable]
+        ? [haiku, localFast, localCapable]
         : [localFast, localCapable],
-      tools: [localCapable, hasHaiku ? 'claude-haiku' : null, localFast].filter(Boolean),
-      thinking: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
-      writing: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
-      research: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean),
-      coding: [hasSonnet ? 'claude-sonnet' : null, localCapable].filter(Boolean)
+      tools: [localCapable, hasHaiku ? haiku : null, localFast].filter(Boolean),
+      thinking: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
+      writing: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
+      research: [hasSonnet ? sonnet : null, localCapable].filter(Boolean),
+      coding: [hasSonnet ? sonnet : null, localCapable].filter(Boolean)
     };
   }
 
@@ -1558,7 +1569,8 @@ class CockpitManager {
     if (trust === 'local-only') {
       desc += '   Your most capable local AI handles deep reasoning.\n\n';
     } else {
-      desc += '   Claude Sonnet handles analysis and planning (~\u20ac0.01).\n\n';
+      desc += '   Claude Opus handles deep reasoning and creative writing (~\u20ac0.05).\n';
+      desc += '   Claude Sonnet for research and coding (~\u20ac0.01).\n\n';
     }
     desc += '\ud83d\udd12 Always private (every mode):\n';
     desc += '   \u2022 Wiki, task boards, calendar stay on your server\n';
@@ -1579,10 +1591,10 @@ class CockpitManager {
     desc += '  quick: qwen2.5:3b \u2192 qwen3:8b\n';
     desc += '  synthesis: claude-haiku \u2192 qwen2.5:3b\n';
     desc += '  tools: phi4-mini \u2192 qwen3:8b \u2192 claude-sonnet\n';
-    desc += '  thinking: claude-sonnet \u2192 qwen3:8b\n';
-    desc += '  writing: claude-sonnet \u2192 qwen3:8b\n';
-    desc += '  research: claude-sonnet\n';
-    desc += '  coding: claude-sonnet\n\n';
+    desc += '  thinking: anthropic-claude \u2192 claude-sonnet \u2192 qwen3:8b\n';
+    desc += '  writing: anthropic-claude \u2192 claude-sonnet \u2192 qwen3:8b\n';
+    desc += '  research: claude-sonnet \u2192 anthropic-claude\n';
+    desc += '  coding: anthropic-claude \u2192 claude-sonnet\n\n';
 
     desc += 'Available providers:\n';
     desc += '  Local:\n';
@@ -1596,7 +1608,7 @@ class CockpitManager {
       }
     }
     desc += '\nAdd API keys in Nextcloud Passwords:\n';
-    desc += '  anthropic-api-key \u2192 Claude (Haiku, Sonnet)\n';
+    desc += '  anthropic-api-key \u2192 Claude (Opus, Sonnet, Haiku)\n';
     desc += '  openai-api-key \u2192 GPT-4o\n';
     desc += '  google-ai-api-key \u2192 Gemini Pro\n';
 

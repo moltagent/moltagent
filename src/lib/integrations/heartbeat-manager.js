@@ -1415,7 +1415,7 @@ class HeartbeatManager {
     // Check API keys via credential broker
     if (this.credentialBroker) {
       const keyChecks = [
-        { labels: ['anthropic-api-key', 'claude-api-key'], name: 'Anthropic', models: ['Haiku', 'Sonnet'] },
+        { labels: ['anthropic-api-key', 'claude-api-key'], name: 'Anthropic', models: ['Haiku', 'Sonnet', 'Opus'] },
         { labels: ['openai-api-key'], name: 'OpenAI', models: ['GPT-4o'] },
         { labels: ['google-ai-api-key'], name: 'Google', models: ['Gemini Pro'] }
       ];
