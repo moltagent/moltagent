@@ -40,6 +40,14 @@ try {
   CockpitManager = null;
 }
 
+let PersonalBoardManager;
+try {
+  PersonalBoardManager = require('./lib/integrations/personal-board-manager');
+} catch {
+  console.warn('[WARN] PersonalBoardManager not available');
+  PersonalBoardManager = null;
+}
+
 let BotEnroller;
 try {
   BotEnroller = require('./lib/integrations/bot-enroller');
@@ -619,6 +627,22 @@ async function main() {
     }
   }
 
+  // Initialize Personal Board Manager (Deck Working Memory)
+  let personalBoardManager = null;
+  if (PersonalBoardManager && ncRequestManager) {
+    try {
+      personalBoardManager = new PersonalBoardManager({
+        ncRequestManager,
+        llmRouter,
+        notifyUser,
+        config: { ownerUser: CONFIG.nextcloud?.username || appConfig.admin?.user }
+      });
+      console.log('[INIT] PersonalBoardManager ready');
+    } catch (err) {
+      console.warn(`[INIT] PersonalBoardManager failed: ${err.message}`);
+    }
+  }
+
   // Initialize Session Manager and Persister (Session 29b)
   let sessionMgr = null;
   let persister = null;
@@ -638,6 +662,7 @@ async function main() {
           llmRouter: llmRouter,
           rhythmTracker,
           resilientWriter,
+          personalBoardManager,
           config: appConfig
         });
         sessionMgr.on('sessionExpired', async (session) => {
@@ -1020,6 +1045,7 @@ async function main() {
     commandHandler: capabilitiesCommandHandler,
     capabilityRegistry,
     cockpitManager,
+    personalBoardManager,
     meetingPreparer,
     botEnroller: botEnrollerInstance,
     deferralQueue,

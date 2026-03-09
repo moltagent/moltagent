@@ -18,6 +18,7 @@
 const { JOBS } = require('../llm/router');
 const TrustGate = require('../security/trust-gate');
 const MythDetector = require('../security/myth-detector');
+const { detectCommitments } = require('./commitment-detector');
 
 /**
  * SessionPersister - Session Transcript Persistence
@@ -63,11 +64,12 @@ class SessionPersister {
    * @param {Object} [options.rhythmTracker] - RhythmTracker for behavioral pattern recording
    * @param {Object} [options.config] - Configuration
    */
-  constructor({ wikiClient, llmRouter, rhythmTracker, deckClient, trustLevel, resilientWriter, config = {} }) {
+  constructor({ wikiClient, llmRouter, rhythmTracker, deckClient, trustLevel, resilientWriter, personalBoardManager, config = {} }) {
     this.wiki = wikiClient;
     this.resilientWriter = resilientWriter || null;
     this.router = llmRouter;
     this.rhythmTracker = rhythmTracker || null;
+    this.personalBoardManager = personalBoardManager || null;
     this.config = config;
     this.minContextForPersistence = 6;
     this.minExchanges = 4; // At least 4 user/assistant messages (2 exchanges)
@@ -177,6 +179,30 @@ class SessionPersister {
           await this.rhythmTracker.recordSession(sessionMeta);
         } catch (err) {
           console.warn('[SessionPersister] Rhythm tracking failed:', err.message);
+        }
+      }
+
+      // Commitment detection: create Personal board cards for promises made
+      if (this.personalBoardManager) {
+        try {
+          const commitments = detectCommitments(session.context);
+          const labelMap = { 'follow-up': 'follow-up', 'research': 'research', 'offer': 'research' };
+          for (const commitment of commitments) {
+            const contextSnippet = commitment.context
+              ? commitment.context.substring(0, 200)
+              : '';
+            await this.personalBoardManager.createPersonalCard({
+              title: commitment.text.substring(0, 100),
+              description: `Commitment from session ${leafTitle}\n\nContext: ${contextSnippet}`,
+              label: labelMap[commitment.type] || 'promise'
+            });
+            console.log(`[SessionPersister] Created commitment card: "${commitment.text.substring(0, 60)}"`);
+          }
+          if (commitments.length > 0) {
+            console.log(`[SessionPersister] ${commitments.length} commitment(s) captured to Personal board`);
+          }
+        } catch (err) {
+          console.warn('[SessionPersister] Commitment detection failed:', err.message);
         }
       }
 

@@ -129,6 +129,9 @@ class HeartbeatManager {
     // Cockpit (optional, Deck as control plane)
     this.cockpitManager = config.cockpitManager || null;
 
+    // Personal Board Manager (optional, Deck as working memory)
+    this.personalBoardManager = config.personalBoardManager || null;
+
     // Bot Enroller (optional, auto-enables Talk bot in rooms)
     this.botEnroller = config.botEnroller || null;
     this.pulseCount = 0;
@@ -492,6 +495,16 @@ class HeartbeatManager {
         } catch (err) {
           console.error('[Heartbeat] Assignment check error:', err.message);
           results.errors.push({ component: 'assignments', error: err.message });
+        }
+      }
+
+      // Level >= 2: Personal board (working memory)
+      if (level >= 2 && this.personalBoardManager && !this._isModeGated('deck')) {
+        try {
+          results.personalBoard = await this.personalBoardManager.processPersonalBoard();
+        } catch (err) {
+          console.error('[Heartbeat] Personal board error:', err.message);
+          results.errors.push({ component: 'personalBoard', error: err.message });
         }
       }
 
