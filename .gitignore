@@ -54,6 +54,15 @@ Thumbs.db
 coverage/
 .nyc_output/
 
+# --- Dashboard (dev tooling for dash.moltagent.cloud) ---
+scripts/dashboard.html
+scripts/dashboard-public.html
+scripts/dashboard-data-server.js
+scripts/arch-data-generator.js
+scripts/commits.json
+status-manifest.json
+.dashboard-cache/
+
 # --- Build artifacts ---
 dist/
 build/
