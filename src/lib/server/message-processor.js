@@ -44,6 +44,7 @@ const ProvenanceAnnotator = require('../security/provenance-annotator');
 const { getFeedbackMessage } = require('../talk/feedback-messages');
 const IntentDecomposer = require('../agent/intent-decomposer');
 const ollamaGate = require('../shared/ollama-gate');
+const CONFIG = require('../config');
 
 /** Domain intents that can be handled locally with focused tool subsets. */
 const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search', 'knowledge']);
@@ -1585,7 +1586,7 @@ class MessageProcessor {
               title: r.title || '',
               snippet: r.stack ? `[${r.stack}] ${r.title}` : r.title,
               sourceTag: 'deck',
-              url: r.cardId ? `/apps/deck/card/${r.cardId}` : ''
+              url: r.cardId ? `${CONFIG.nextcloud.url}/apps/deck/card/${r.cardId}` : ''
             })),
             provenance: 'task_state'
           }))
@@ -1762,8 +1763,11 @@ class MessageProcessor {
       if (uniqueResults.length > 0) {
         block += `\n[Source: ${probe.source} | Provenance: ${probe.provenance}]\n`;
         for (const result of uniqueResults) {
-          const urlTag = result.url ? ` [url: ${result.url}]` : '';
-          block += `${result.title || ''}${urlTag}: ${result.snippet || ''}\n`;
+          if (result.url) {
+            block += `Title: ${result.title || ''} | Link: ${result.url}\n${result.snippet || ''}\n`;
+          } else {
+            block += `Title: ${result.title || ''}\n${result.snippet || ''}\n`;
+          }
         }
       }
     }
@@ -1793,7 +1797,9 @@ RULES:
 - State what you found. Name what's missing. Never fabricate.
 - No hedging ("might", "could", "possibly"). Either you found it or you didn't.
 - Be concise. Lead with the most relevant facts.
-- When referencing entities that have a [url: ...] tag, format as markdown links: [Title](url). This makes references clickable in chat.`;
+- When a result includes a Link field, format the reference as a markdown link: [Title](Link)
+  Example: [Concise Executive](/apps/deck/card/137)
+  Never output raw URLs or [url: ...] tags.`;
 
     const result = await router.route({
       job: 'quick',
@@ -1802,7 +1808,10 @@ RULES:
       requirements: { maxTokens: 1000, temperature: 0.3 }
     });
 
-    return result?.result || result?.content || "I couldn't synthesize an answer from the available information.";
+    let answer = result?.result || result?.content || "I couldn't synthesize an answer from the available information.";
+    // Safety net: clean up any remaining [url: ...] tags the LLM didn't convert
+    answer = answer.replace(/\[url:\s*(\/[^\]]+)\]/g, (match, url) => `(${url})`);
+    return answer;
   }
 
   /**

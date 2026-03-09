@@ -312,8 +312,11 @@ class IntentDecomposer {
         context += `Error: ${result.error}\n`;
       } else if (result.results && result.results.length > 0) {
         for (const r of result.results) {
-          const urlTag = r.url ? ` [url: ${r.url}]` : '';
-          context += `[${result.provenance}] ${r.title || ''}${urlTag}: ${r.snippet || r.content || ''}\n`;
+          if (r.url) {
+            context += `[${result.provenance}] Title: ${r.title || ''} | Link: ${r.url}\n${r.snippet || r.content || ''}\n`;
+          } else {
+            context += `[${result.provenance}] Title: ${r.title || ''}\n${r.snippet || r.content || ''}\n`;
+          }
         }
       } else {
         context += `No results found.\n`;
@@ -333,7 +336,7 @@ Compose a clear, concise response that:
 2. Reports what actions were taken (and which were skipped and why)
 3. Uses natural language, not step numbers
 4. States facts. Names gaps. No fabrication.
-5. When referencing entities that have a [url: ...] tag, format as markdown links: [Title](url).`;
+5. When a result includes a Link field, format the reference as a markdown link: [Title](Link). Never output raw URLs or [url: ...] tags.`;
 
     try {
       const result = await this.llmRouter.route({

@@ -100,6 +100,17 @@ CRITICAL DISTINCTION — action vs question:
 - "What's the status of onboarding?" → knowledge (QUESTION: asking for info)
 - When in doubt → knowledge (safer to search than call the wrong API)
 
+STRUCTURED DATA QUERIES route to tool domains, not knowledge:
+- "What tasks are in review?" → deck_query (list cards filtered by stack)
+- "What cards are in the Done column?" → deck_query (list cards by stack)
+- "Show me all tasks" → deck_query (list cards)
+- "What boards do I have?" → deck_query (list boards)
+- "What's on my calendar tomorrow?" → calendar_query (list events by date)
+- "What events do I have this week?" → calendar_query (list events)
+- "Show me my inbox" → email_read (list messages)
+These ask for LISTINGS from one specific system. They don't need cross-domain synthesis.
+Knowledge is for cross-domain questions: "What's the status of onboarding?" (could be wiki + deck + calendar).
+
 THESE ARE NOT EMAIL REQUESTS — they are knowledge queries:
 - "What's Carlos's email?" → knowledge (asking for information)
 - "Who has the email for the Berlin office?" → knowledge
@@ -430,6 +441,21 @@ class IntentRouter {
       const asksAboutEmailAddress = /\b(what('?s| is).*email|email\s*(address|for)|who.*email|have.*email)\b/.test(lower);
       if (asksAboutEmailAddress) {
         return { ...result, domain: 'knowledge' };
+      }
+    }
+
+    // Guard: knowledge intent for structured data queries → reclassify to tool domain
+    if (result.domain === 'knowledge') {
+      // Deck structured queries: tasks/cards in a specific stack or listing
+      if (/\b(tasks?|cards?)\s+(in|on|under|from)\s+(the\s+)?(review|done|todo|doing|in\s*progress|backlog)/i.test(lower) ||
+          /\b(what|show|list)\b.*\b(boards?|stacks?|columns?)\b/i.test(lower) ||
+          /\b(show|list|get)\s+(me\s+)?(all\s+)?(tasks?|cards?)\b/i.test(lower)) {
+        return { ...result, domain: 'deck', rawIntent: 'deck_query' };
+      }
+      // Calendar structured queries: events on a specific date
+      if (/\b(what('?s| is))\s+on\s+my\s+calendar\b/i.test(lower) ||
+          /\b(what|show|list)\b.*\b(events?|appointments?|meetings?)\b.*\b(today|tomorrow|this\s+week|next\s+week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(lower)) {
+        return { ...result, domain: 'calendar', rawIntent: 'calendar_query' };
       }
     }
 
