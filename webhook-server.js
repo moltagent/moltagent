@@ -1848,6 +1848,7 @@ async function initialize() {
     botUsername: CONFIG.nc.username,
     allowedBackends: CONFIG.security.allowedBackends,
     selfHealClient,
+    sessionPersister,
     budgetEnforcer: llmRouter?.router?.budget || null,
     adminUser: appConfig.cockpit?.adminUser || '',
     proactiveEvaluator: _buildProactiveEvaluator(agentLoop, llmRouter, talkQueue, appConfig),

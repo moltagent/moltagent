@@ -104,7 +104,8 @@ function createServerComponents(deps) {
     selfHealClient,
     budgetEnforcer,
     adminUser,
-    proactiveEvaluator
+    proactiveEvaluator,
+    sessionPersister
   } = deps;
 
   // Create command handler first (used by message processor)
@@ -115,6 +116,8 @@ function createServerComponents(deps) {
     auditLog,
     allowedBackends,
     selfHealClient,
+    sessionManager,
+    sessionPersister,
     adminUser: adminUser || ''
   });
 

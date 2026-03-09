@@ -43,6 +43,8 @@
  * @property {Function} auditLog - Audit logging function
  * @property {string[]} allowedBackends - List of allowed webhook backends
  * @property {Object} [selfHealClient] - SelfHealClient instance
+ * @property {Object} [sessionManager] - SessionManager instance
+ * @property {Object} [sessionPersister] - SessionPersister instance
  * @property {string} [adminUser] - Admin username for privileged commands
  */
 
@@ -94,6 +96,12 @@ class CommandHandler {
     /** @type {Object|null} */
     this.selfHealClient = deps.selfHealClient || null;
 
+    /** @type {Object|null} */
+    this.sessionManager = deps.sessionManager || null;
+
+    /** @type {Object|null} */
+    this.sessionPersister = deps.sessionPersister || null;
+
     /** @type {string} */
     this.adminUser = deps.adminUser || '';
   }
@@ -131,6 +139,10 @@ class CommandHandler {
         response = await this._handleRestart(args, context);
         break;
 
+      case '/persist':
+        response = await this._handlePersist(context);
+        break;
+
       default:
         response = `Unknown command: ${command}\nType /help for available commands.`;
         await this.auditLog('command', { command, user: context.user, args: args.substring(0, 50) });
@@ -156,6 +168,7 @@ class CommandHandler {
     return `**MoltAgent Commands:**
 - /status - Show server status
 - /stats - Show verification statistics
+- /persist - Force-persist current session (wiki + commitment cards)
 - /restart <service> - Restart a remote service (admin only: voice, ai)
 - /help - Show this help
 
@@ -240,6 +253,43 @@ Just send a message to chat with the AI!`;
       return `Restarted ${systemdName}. ${result.message || ''}`.trim();
     } catch (err) {
       return `Failed to restart ${systemdName}: ${err.message}`;
+    }
+  }
+
+  /**
+   * Handle /persist command — force-persist the current session to wiki
+   * and run commitment detection immediately.
+   *
+   * @param {CommandContext} context
+   * @returns {Promise<string>}
+   * @private
+   */
+  async _handlePersist(context) {
+    if (!this.sessionManager) {
+      return 'SessionManager not available.';
+    }
+    if (!this.sessionPersister) {
+      return 'SessionPersister not available.';
+    }
+
+    const session = this.sessionManager.getSession(context.token, context.user);
+    if (!session) {
+      return 'No active session found for this room.';
+    }
+
+    if (!session.context || session.context.length < 4) {
+      return `Session too short to persist (${session.context?.length || 0} messages, need ≥4).`;
+    }
+
+    try {
+      const page = await this.sessionPersister.persistSession(session);
+      if (page) {
+        return `Session persisted: **${page}**\nCommitments detected and captured (if any).`;
+      }
+      return 'Session was below persistence threshold (too few exchanges or empty summary).';
+    } catch (err) {
+      console.error('[CommandHandler] /persist failed:', err.message);
+      return `Persist failed: ${err.message}`;
     }
   }
 
