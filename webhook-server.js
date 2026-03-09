@@ -146,6 +146,14 @@ try {
   CockpitManager = null;
 }
 
+let PersonalBoardManager;
+try {
+  PersonalBoardManager = require('./src/lib/integrations/personal-board-manager');
+} catch {
+  console.warn('[WARN] PersonalBoardManager not available');
+  PersonalBoardManager = null;
+}
+
 let RSVPTracker;
 try {
   RSVPTracker = require('./src/lib/integrations/rsvp-tracker');
@@ -1042,6 +1050,26 @@ async function initialize() {
     }
   }
 
+  // 7b7b. Initialize PersonalBoardManager (Deck Working Memory)
+  let personalBoardManager = null;
+  if (PersonalBoardManager && ncRequestManager) {
+    try {
+      personalBoardManager = new PersonalBoardManager({
+        ncRequestManager,
+        llmRouter,
+        notifyUser: async (notification) => {
+          if (defaultTalkToken && talkQueue) {
+            await talkQueue.enqueue(defaultTalkToken, notification.message || notification);
+          }
+        },
+        config: { ownerUser: appConfig.knowledge?.adminUser || appConfig.cockpit?.adminUser || '' }
+      });
+      console.log('[INIT] PersonalBoardManager ready');
+    } catch (err) {
+      console.warn(`[INIT] PersonalBoardManager failed: ${err.message}`);
+    }
+  }
+
   // 7b8. Initialize SessionManager, SessionPersister, MemorySearcher (Session 29b)
   if (SessionManager) {
     sessionManager = new SessionManager({
@@ -1056,6 +1084,7 @@ async function initialize() {
           wikiClient: collectivesClient,
           llmRouter: llmRouter,
           resilientWriter: resilientWriter,
+          personalBoardManager,
           config: appConfig
         });
         sessionManager.on('sessionExpired', async (session) => {
@@ -1962,6 +1991,7 @@ async function initialize() {
         contextLoader,
         freshnessChecker,
         cockpitManager,
+        personalBoardManager,
         botEnroller,
         statusIndicator: ncStatusIndicator,
         workflowEngine,
