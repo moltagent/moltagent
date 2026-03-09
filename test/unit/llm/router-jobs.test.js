@@ -60,9 +60,9 @@ console.log('\n=== LLMRouter Job-Based Routing Tests ===\n');
 // --- Constants Validation ---
 console.log('\n--- Constants Validation ---\n');
 
-test('TC-JOB-CONST-001: JOBS has 7 keys', () => {
+test('TC-JOB-CONST-001: JOBS has 8 keys', () => {
   const keys = Object.keys(LLMRouter.JOBS);
-  assert.strictEqual(keys.length, 7);
+  assert.strictEqual(keys.length, 8);
   assert.ok(keys.includes('QUICK'));
   assert.ok(keys.includes('TOOLS'));
   assert.ok(keys.includes('THINKING'));
@@ -70,6 +70,7 @@ test('TC-JOB-CONST-001: JOBS has 7 keys', () => {
   assert.ok(keys.includes('RESEARCH'));
   assert.ok(keys.includes('CODING'));
   assert.ok(keys.includes('CREDENTIALS'));
+  assert.ok(keys.includes('SYNTHESIS'));
 });
 
 test('TC-JOB-CONST-002: JOBS values are lowercase strings', () => {
@@ -86,11 +87,12 @@ test('TC-JOB-CONST-003: PRESET_NAMES has 3 entries', () => {
   assert.ok(LLMRouter.PRESET_NAMES.includes('cloud-first'));
 });
 
-test('TC-JOB-CONST-004: VALID_JOBS is a Set with 7 entries', () => {
+test('TC-JOB-CONST-004: VALID_JOBS is a Set with 8 entries', () => {
   assert.ok(LLMRouter.VALID_JOBS instanceof Set);
-  assert.strictEqual(LLMRouter.VALID_JOBS.size, 7);
+  assert.strictEqual(LLMRouter.VALID_JOBS.size, 8);
   assert.ok(LLMRouter.VALID_JOBS.has('quick'));
   assert.ok(LLMRouter.VALID_JOBS.has('credentials'));
+  assert.ok(LLMRouter.VALID_JOBS.has('synthesis'));
 });
 
 // --- Constructor Defaults ---

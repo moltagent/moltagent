@@ -622,11 +622,17 @@ class HeartbeatManager {
             }
 
             // Synthesis provider propagation (from Models card)
-            // Stored on router so _synthesizeKnowledge can use preferProvider
+            // Sets 'synthesis' job roster so _synthesizeKnowledge routes correctly
             const sp = cockpitConfig.system?.modelsConfig?.synthesisProvider;
             if (sp && this.llmRouter) {
-              this.llmRouter.synthesisProvider = sp;
-              console.log(`[Heartbeat] Synthesis provider: ${sp}`);
+              const currentRoster = this.llmRouter.getRoster() || {};
+              if (sp === 'haiku') {
+                currentRoster.synthesis = ['claude-haiku', 'ollama-fast', 'ollama-local'];
+              } else {
+                currentRoster.synthesis = ['ollama-fast', 'ollama-local'];
+              }
+              this.llmRouter.setRoster(currentRoster);
+              console.log(`[Heartbeat] Synthesis provider: ${sp} → chain: ${currentRoster.synthesis.join(' → ')}`);
             }
           }
 

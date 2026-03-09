@@ -941,22 +941,19 @@ async function main() {
               roster.quick = ['ollama-fast', ...roster.quick.filter(id => id !== 'ollama-fast')];
               llmRouter.router.setRoster(roster);
 
-              // Synthesis provider overlay: move claude-haiku to position 2 if configured
+              // Boot-time synthesis job roster (heartbeat will override from Cockpit card)
               const synthesisProvider = CONFIG.ollama.synthesisProvider || 'local';
-              if (synthesisProvider === 'haiku') {
-                const currentRoster = llmRouter.router.getRoster();
-                if (currentRoster && currentRoster.quick) {
-                  const quick = currentRoster.quick.filter(id => id !== 'claude-haiku');
-                  const fastIdx = quick.indexOf('ollama-fast');
-                  const insertAt = fastIdx >= 0 ? fastIdx + 1 : 0;
-                  quick.splice(insertAt, 0, 'claude-haiku');
-                  currentRoster.quick = quick;
-                  llmRouter.router.setRoster(currentRoster);
-                  console.log(`[INIT] QUICK chain (haiku synthesis): ${currentRoster.quick.join(' → ')}`);
+              const currentRoster = llmRouter.router.getRoster();
+              if (currentRoster) {
+                if (synthesisProvider === 'haiku') {
+                  currentRoster.synthesis = ['claude-haiku', 'ollama-fast', 'ollama-local'];
+                } else {
+                  currentRoster.synthesis = ['ollama-fast', 'ollama-local'];
                 }
-              } else {
-                console.log(`[INIT] QUICK chain (local synthesis): ${roster.quick.join(' → ')}`);
+                llmRouter.router.setRoster(currentRoster);
+                console.log(`[INIT] Synthesis chain: ${currentRoster.synthesis.join(' → ')}`);
               }
+              console.log(`[INIT] QUICK chain: ${roster.quick.join(' → ')}`);
             }
           }
         }
