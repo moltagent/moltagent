@@ -1632,6 +1632,31 @@ class CockpitManager {
   }
 
   /**
+   * Remove a label from a cockpit card by label title.
+   * Uses the cockpit board's own label registry, not the task board's.
+   * @param {number} cardId - Card ID
+   * @param {string} labelTitle - Label title (e.g. '⚙️2')
+   */
+  async _removeCardLabel(cardId, labelTitle) {
+    const stackId = this.stacks.system;
+    if (!stackId || !this.boardId) return;
+
+    const labelObj = this.labels?.[labelTitle] || this.labels?.[labelTitle.toLowerCase()];
+    const labelId = labelObj?.id;
+    if (!labelId) return;
+
+    try {
+      await this.deck._request(
+        'PUT',
+        `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${stackId}/cards/${cardId}/removeLabel`,
+        { labelId }
+      );
+    } catch (err) {
+      // Label may already be gone — ignore
+    }
+  }
+
+  /**
    * Find a card with the "Active" label in a list of cards.
    * @private
    * @param {Array<Object>} cards - Cards to search

@@ -636,15 +636,11 @@ class HeartbeatManager {
                 }
 
                 // Clean up stale ⚙️ preset labels from the Models card
-                if (mc._cardId && mc._cardLabels && this.cockpitManager?.deckClient) {
-                  const staleLabels = (mc._cardLabels || []).filter(l => /^⚙️\d/.test(l));
+                if (mc._cardId && mc._cardLabels && this.cockpitManager) {
+                  const staleLabels = (mc._cardLabels || []).filter(l => /^⚙/.test(l));
                   for (const label of staleLabels) {
-                    try {
-                      await this.cockpitManager.deckClient.removeLabel(mc._cardId, 'System', label);
-                      console.log(`[Heartbeat] Removed stale label "${label}" from Models card`);
-                    } catch (e) {
-                      // Label may already be gone — ignore
-                    }
+                    await this.cockpitManager._removeCardLabel(mc._cardId, label);
+                    console.log(`[Heartbeat] Removed stale label "${label}" from Models card`);
                   }
                 }
               } else if (mc.roster) {
