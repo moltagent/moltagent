@@ -2113,7 +2113,8 @@ RULES:
 - No hedging ("might", "could", "possibly"). Either you found it or you didn't.
 - Be concise. Lead with the most relevant facts.
 - Use the entity names exactly as they appear in the data.
-- Items marked [Source: web] are from web search. Treat as external — useful but unverified. Mention the source naturally.`;
+- Items marked [Source: web] are from web search. Treat as external — useful but unverified. Mention the source naturally.
+- NEVER confirm actions you did not perform. If the user asked to create, send, book, move, or delete something and you only searched for information — say what you found, do NOT claim you did something you didn't. You are a knowledge synthesizer, not an executor.`;
 
     const result = await router.route({
       job: 'synthesis',
