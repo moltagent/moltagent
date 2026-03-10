@@ -16,6 +16,7 @@ const { ToolRegistry } = require('../../../src/lib/agent/tool-registry');
 
 function createMockDeckClient(cards = {}) {
   return {
+    baseUrl: 'https://nc.example.com',
     username: 'moltagent',
     stackNames: {
       inbox: 'Inbox',
@@ -371,7 +372,7 @@ asyncTest('deck_create_card creates card in default stack', async () => {
   assert.ok(result.success);
   assert.strictEqual(createdStack, 'inbox');
   assert.strictEqual(createdCard.title, 'New task');
-  assert.ok(result.result.includes('#99'));
+  assert.ok(result.result.includes('/card/99'), `Expected card URL in: ${result.result}`);
 });
 
 asyncTest('calendar_list_events returns formatted events', async () => {
@@ -1669,7 +1670,7 @@ asyncTest('deck_create_card with board param resolves target board and stack', a
 
   assert.ok(result.success);
   assert.ok(result.result.includes('Test EP'));
-  assert.ok(result.result.includes('#88'));
+  assert.ok(result.result.includes('/card/88'), `Expected card URL in: ${result.result}`);
   assert.ok(result.result.includes('Marketing'));
   assert.ok(result.result.includes('Inbox'));
   assert.strictEqual(requestMethod, 'POST');
@@ -1692,7 +1693,7 @@ asyncTest('deck_create_card without board uses default (regression)', async () =
   assert.ok(result.success);
   assert.strictEqual(createdStack, 'inbox');
   assert.strictEqual(createdCard.title, 'Default board task');
-  assert.ok(result.result.includes('#99'));
+  assert.ok(result.result.includes('/card/99'), `Expected card URL in: ${result.result}`);
   assert.ok(!result.result.includes('on board'), 'Should not mention board for default');
 });
 

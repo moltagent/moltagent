@@ -415,6 +415,9 @@ class ToolRegistry {
   _registerDeckTools() {
     const deck = this.clients.deckClient;
     if (!deck) return;
+    const deckCardUrl = (id) => deck.baseUrl ? `${deck.baseUrl}/apps/deck/card/${id}` : '';
+    const deckBoardUrl = (id) => deck.baseUrl ? `${deck.baseUrl}/apps/deck/board/${id}` : '';
+    const deckLink = (label, url) => url ? `[${label}](${url})` : `"${label}"`;
 
     // -- Original 3 tools (deck_list_cards, deck_move_card, deck_create_card) --
 
@@ -457,7 +460,7 @@ class ToolRegistry {
               lines.push(`**${s.title}** (${cards.length}):`);
               for (const c of cards) {
                 const labels = (c.labels || []).map(l => l.title).join(', ');
-                lines.push(`- [#${c.id}] "${c.title}"${labels ? ` [${labels}]` : ''}${c.duedate ? ` (due: ${c.duedate})` : ''}`);
+                lines.push(`- ${deckLink(`#${c.id} ${c.title}`, deckCardUrl(c.id))}${labels ? ` [${labels}]` : ''}${c.duedate ? ` (due: ${c.duedate})` : ''}`);
               }
             }
 
@@ -480,7 +483,7 @@ class ToolRegistry {
             }
 
             return cards.map(c =>
-              `- [#${c.id}] "${c.title}" in ${args.stack}${c.duedate ? ` (due: ${c.duedate})` : ''}`
+              `- ${deckLink(`#${c.id} ${c.title}`, deckCardUrl(c.id))} in ${args.stack}${c.duedate ? ` (due: ${c.duedate})` : ''}`
             ).join('\n');
           }
 
@@ -495,7 +498,8 @@ class ToolRegistry {
             const displayName = this._stackDisplayName(key, deck);
             lines.push(`**${displayName}** (${cards.length}):`);
             for (const c of cards) {
-              lines.push(`- [#${c.id}] "${c.title}"${c.duedate ? ` (due: ${c.duedate})` : ''}`);
+              const cUrl = `${deck.baseUrl}/apps/deck/card/${c.id}`;
+              lines.push(`- [#${c.id} ${c.title}](${cUrl})${c.duedate ? ` (due: ${c.duedate})` : ''}`);
             }
           }
 
@@ -599,7 +603,7 @@ class ToolRegistry {
             );
 
             if (!card || !card.id) return `Failed to create "${args.title}" — the server returned an empty response. Try again.`;
-            return `Created "${args.title}" (card #${card.id}) in "${stack.title}" on board "${board.title}".`;
+            return `Created ${deckLink(args.title, deckCardUrl(card.id))} in "${stack.title}" on board "${board.title}".`;
           }
 
           // Default board creation
@@ -610,7 +614,7 @@ class ToolRegistry {
           });
 
           if (!card || !card.id) return `Failed to create "${args.title}" — no card ID returned. Try again.`;
-          return `Created "${args.title}" (card #${card.id}) in ${args.stack || 'Inbox'}.`;
+          return `Created ${deckLink(args.title, deckCardUrl(card.id))} in ${args.stack || 'Inbox'}.`;
         } catch (err) {
           this.logger.error(`[deck_create_card] ${err.message}`);
           return `Failed to create card: ${err.message}`;

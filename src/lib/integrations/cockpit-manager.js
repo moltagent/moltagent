@@ -1442,7 +1442,7 @@ class CockpitManager {
       return {
         quick: [localFast, localCapable],
         synthesis: [hasSonnet ? sonnet : null, hasHaiku ? haiku : null, localCapable].filter(Boolean),
-        tools: [hasSonnet ? sonnet : null, localCapable].filter(Boolean),
+        tools: [localCapable, hasHaiku ? haiku : null, localFast].filter(Boolean),
         thinking: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
         writing: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
         research: [hasSonnet ? sonnet : null, hasOpus ? opus : null, localCapable].filter(Boolean),

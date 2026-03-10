@@ -369,4 +369,103 @@ test('LC-17: Entity extraction finds named entities', () => {
   assert.ok(names.includes('Paradiesgarten'), 'Should extract Paradiesgarten');
 });
 
+// ============================================================
+// FIX 1A: CARD LINK SHORT-CIRCUIT (2 tests)
+// ============================================================
+
+test('LC-18: Card link short-circuit detects card_created + link request', () => {
+  const session = mockSession([
+    { role: 'assistant', content: 'Created "Review WP plugins" (card #1408) in Inbox.' }
+  ]);
+  const ctx = buildLiveContext(session, 'Can you give me the link to the card you just created?');
+
+  assert.strictEqual(ctx.lastAssistantAction?.type, 'card_created');
+  assert.strictEqual(ctx.lastAssistantAction?.cardId, '1408');
+  // Message matches link-request pattern
+  assert.ok(/\b(link|url|card|created|made|just)\b/i.test('Can you give me the link to the card you just created?'));
+});
+
+test('LC-19: Card link short-circuit does NOT fire for unrelated messages', () => {
+  const session = mockSession([
+    { role: 'assistant', content: 'Created "Review WP plugins" (card #1408) in Inbox.' }
+  ]);
+  const ctx = buildLiveContext(session, 'What is the weather in Lisbon?');
+
+  assert.strictEqual(ctx.lastAssistantAction?.type, 'card_created');
+  // Message does NOT match link-request pattern
+  assert.ok(!/\b(link|url|created|made|just)\b/i.test('What is the weather in Lisbon?'));
+});
+
+// ============================================================
+// FIX 2: CONFIRMATION BYPASS (3 tests)
+// ============================================================
+
+test('LC-20: Positive confirmation after offer routes to local-tools', () => {
+  const session = mockSession([
+    { role: 'assistant', content: 'I can create a task for that. Do you want me to?' }
+  ]);
+  const ctx = buildLiveContext(session, 'yes, do it');
+
+  // The classifier should detect offer + short confirm
+  assert.ok(ctx.lastAssistantAction?.offer, 'Should detect offer');
+  assert.ok(/\b(yes|yeah|sure|ok|do it|go ahead)\b/i.test('yes, do it'), 'Should match confirm pattern');
+  assert.ok(!/\b(no|nah|nope|cancel|stop|don\'t|never)\b/i.test('yes, do it'), 'Should NOT match negative');
+});
+
+test('LC-21: Negative confirmation after offer routes to declined', () => {
+  const message = 'no thanks';
+  assert.ok(/\b(yes|yeah|sure|ok|please|do it|go ahead|pull it|yep|nope|no|nah)\b/i.test(message), 'Should match confirm words');
+  assert.ok(/\b(no|nah|nope|cancel|stop|don\'t|never)\b/i.test(message), 'Should match negative');
+});
+
+test('LC-22: Empty offer text should produce fallback response', () => {
+  const session = mockSession([
+    { role: 'assistant', content: 'Some message without an offer pattern.' }
+  ]);
+  const ctx = buildLiveContext(session, 'sure');
+
+  // No offer detected → confirmation handling should NOT fire
+  assert.strictEqual(ctx.lastAssistantAction?.offer, undefined, 'No offer pattern means no offer field');
+});
+
+// ============================================================
+// FIX 3: ACTION VERB PRIORITY (3 tests)
+// ============================================================
+
+test('LC-23: "Create a task" overrides domain noun classification', () => {
+  const message = 'Create a task to review the Paradiesgarten WordPress plugins';
+  const taskCreate = /\b(create|make|add|set up)\s+(a\s+)?(task|card|board|list|reminder)\b/i;
+  assert.ok(taskCreate.test(message), '"Create a task" should trigger deck override');
+});
+
+test('LC-24: "What tasks do I have?" should NOT trigger action verb guard', () => {
+  const message = 'What tasks do I have?';
+  const taskCreate = /\b(create|make|add|set up)\s+(a\s+)?(task|card|board|list|reminder)\b/i;
+  assert.ok(!taskCreate.test(message), 'Knowledge question should NOT match action pattern');
+});
+
+test('LC-25: Compound detection: "what do we know AND create a task"', () => {
+  const message = 'What do we know about Paradiesgarten and create a task to check their WordPress version';
+  const taskCreate = /\b(create|make|add|set up)\s+(a\s+)?(task|card|board|list|reminder)\b/i;
+  const compoundCheck = /\b(what|who|where|when|how|tell me|do we know|do you know)\b.*\band\b.*\b(create|make|add|send|book|schedule)\b/i;
+
+  assert.ok(taskCreate.test(message), 'Action verb guard fires');
+  assert.ok(compoundCheck.test(message), 'Compound check also fires → marks compound=true');
+});
+
+// ============================================================
+// FIX 1B: DECK LINK HELPERS (2 tests)
+// ============================================================
+
+test('LC-26: deckLink produces markdown link when URL present', () => {
+  const deckLink = (label, url) => url ? `[${label}](${url})` : `"${label}"`;
+  assert.strictEqual(deckLink('My Task', 'https://nc.example.com/apps/deck/card/99'), '[My Task](https://nc.example.com/apps/deck/card/99)');
+});
+
+test('LC-27: deckLink falls back to quoted text when URL empty', () => {
+  const deckLink = (label, url) => url ? `[${label}](${url})` : `"${label}"`;
+  assert.strictEqual(deckLink('My Task', ''), '"My Task"');
+  assert.strictEqual(deckLink('My Task', undefined), '"My Task"');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 100);

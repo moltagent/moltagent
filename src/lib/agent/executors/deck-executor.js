@@ -70,6 +70,15 @@ class DeckExecutor extends BaseExecutor {
     this.adminUser = config.adminUser || process.env.KNOWLEDGE_ADMIN_USER || null;
   }
 
+  _deckUrl(type, id) {
+    const base = this.deckClient?.baseUrl;
+    return base ? `${base}/apps/deck/${type}/${id}` : '';
+  }
+
+  _deckLink(label, url) {
+    return url ? `[${label}](${url})` : `"${label}"`;
+  }
+
   /**
    * Execute a deck operation from a natural language message.
    *
@@ -259,7 +268,7 @@ Message: "${message.substring(0, 400)}"`;
     );
 
     return {
-      response: `Created board "${board.title}". It's empty — would you like me to add some stacks (columns) to organize it?`,
+      response: `Created board ${this._deckLink(board.title, this._deckUrl('board', board.id))}. It's empty — would you like me to add some stacks (columns) to organize it?`,
       actionRecord: { type: 'deck_create_board', refs: { boardId: board.id, title: board.title } }
     };
   }
@@ -434,7 +443,7 @@ Message: "${message.substring(0, 400)}"`;
     );
 
     return {
-      response: `Added stack "${stack.title}" to board "${board.title}".`,
+      response: `Added stack "${stack.title}" to board ${this._deckLink(board.title, this._deckUrl('board', board.id))}.`,
       actionRecord: { type: 'deck_create_stack', refs: { boardId: board.id, stackId: stack.id, title: stack.title } }
     };
   }
@@ -661,13 +670,15 @@ Respond ONLY with JSON, no markdown, no explanation:
     const stackSummary = result.stacks.map(s => s.title).join(' → ');
     const cardCount = result.cards.length;
 
-    let response = `Set up board **"${result.board.title}"** with ${result.stacks.length} stages:\n\n`;
+    const boardLink = this._deckLink(`**${result.board.title}**`, this._deckUrl('board', result.board.id));
+    let response = `Set up board ${boardLink} with ${result.stacks.length} stages:\n\n`;
     response += `${stackSummary}\n\n`;
 
     if (cardCount > 0) {
       response += `Added ${cardCount} starter cards:\n`;
       for (const card of result.cards) {
-        response += `- "${card.title}" in ${card.stackTitle}\n`;
+        const cardLink = card.id ? this._deckLink(card.title, this._deckUrl('card', card.id)) : `"${card.title}"`;
+        response += `- ${cardLink} in ${card.stackTitle}\n`;
       }
       response += '\n';
     }

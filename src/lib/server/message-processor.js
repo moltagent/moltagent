@@ -47,7 +47,7 @@ const ollamaGate = require('../shared/ollama-gate');
 const CONFIG = require('../config');
 
 /** Domain intents that can be handled locally with focused tool subsets. */
-const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search', 'knowledge']);
+const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search', 'knowledge', 'confirmation', 'confirmation_declined']);
 
 // -----------------------------------------------------------------------------
 // Types
@@ -558,8 +558,23 @@ class MessageProcessor {
         }
       }
 
+      // Card-link short-circuit: when the agent just created a card and user asks for the link,
+      // construct and return it immediately. No classification, no probes needed.
+      const earlyLiveContext = session ? buildLiveContext(session, pipelineMessage) : null;
+      if (earlyLiveContext?.lastAssistantAction?.type === 'card_created' &&
+          earlyLiveContext.lastAssistantAction.cardId &&
+          /\b(link|url|card|created|made|just)\b/i.test(pipelineMessage)) {
+        const cardId = earlyLiveContext.lastAssistantAction.cardId;
+        const ncUrl = (this.ncRequestManager?.ncUrl || process.env.NC_URL || '').replace(/\/$/, '');
+        if (ncUrl) {
+          const cardUrl = `${ncUrl}/apps/deck/card/${cardId}`;
+          response = `Here's the card: [#${cardId}](${cardUrl})`;
+          result = { intent: 'card_link_shortcircuit', provider: 'context' };
+        }
+      }
+
       // Natural-language admin commands (before classification)
-      if (/^persist\s+session$/i.test(extracted.content.trim())) {
+      else if (/^persist\s+session$/i.test(extracted.content.trim())) {
         if (this.commandHandler) {
           result = await this.commandHandler.handle('/persist', {
             user: extracted.user,
@@ -603,7 +618,7 @@ class MessageProcessor {
       } else if (this.microPipeline && this.agentLoop && this._isSmartMixMode()) {
         // Smart-mix: three-path routing (local text / local tools / cloud)
         // Build live context ONCE — passed to classifier, probes, synthesis, guard
-        const liveContext = session ? buildLiveContext(session, pipelineMessage) : null;
+        const liveContext = earlyLiveContext || (session ? buildLiveContext(session, pipelineMessage) : null);
         const { useLocal, useDomainTools, intent, compound } = await this._smartMixClassify(pipelineMessage, session, extracted.token, liveContext);
         console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}${compound ? ' [COMPOUND]' : ''}`);
 
@@ -647,7 +662,7 @@ class MessageProcessor {
             // Compound decomposition failed — fall back to knowledge mode
             console.warn(`[Message] Compound decomposition failed, falling back to knowledge: ${compoundErr.message}`);
             try {
-              const knowledgeResult = await this._handleKnowledgeQuery(pipelineMessage, session, liveContext);
+              const knowledgeResult = await this._handleKnowledgeQuery(pipelineMessage, session, liveContext, extracted.token);
               if (typeof knowledgeResult === 'object' && knowledgeResult !== null) {
                 this._captureActionRecord(session, knowledgeResult.actionRecord);
                 if (knowledgeResult.enrichmentBlock) _enrichmentBlock = knowledgeResult.enrichmentBlock;
@@ -668,13 +683,52 @@ class MessageProcessor {
               response = response || 'Sorry, I encountered an error processing your message.';
             }
           }
+        } else if (useLocal && useDomainTools && intent === 'confirmation') {
+          // Direct execution from Living Context — bypass AgentLoop entirely
+          const offerText = liveContext?.lastAssistantAction?.offer || '';
+          console.log(`[Message] Confirmation: executing from context — "${offerText.substring(0, 80)}"`);
+          if (!offerText) {
+            response = "I'm not sure what to execute — could you tell me what you'd like me to do?";
+            result = { intent: 'smart_mix_confirmation_empty', provider: 'context' };
+          } else try {
+            const actionMessage = offerText;
+            response = await this.microPipeline.process(actionMessage, {
+              userName: extracted.user,
+              roomToken: extracted.token,
+              warmMemory: '',
+              getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
+              getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
+              getRecentContext: session ? () => session.context.slice(-4) : undefined,
+            });
+            if (typeof response === 'object' && response !== null) {
+              if (response.pendingClarification && session && this.sessionManager) {
+                this.sessionManager.setPendingClarification(session, response.pendingClarification);
+              }
+              this._captureActionRecord(session, response.actionRecord);
+              if (response.enrichmentBlock) _enrichmentBlock = response.enrichmentBlock;
+              response = response.response || 'Done.';
+            }
+            result = { intent: 'smart_mix_confirmation', provider: 'local-tools' };
+          } catch (confirmErr) {
+            console.warn(`[Message] Confirmation execution failed, escalating: ${confirmErr.message}`);
+            if (this.agentLoop?.llmProvider?.skipLocalForConversation) {
+              this.agentLoop.llmProvider.skipLocalForConversation();
+            }
+            response = await this.agentLoop.process(pipelineMessage, extracted.token, {
+              messageId: extracted.messageId,
+              inputType: extracted._isVoice ? 'voice' : 'text',
+              user: extracted.user
+            });
+            result = { intent: 'smart_mix_escalated:confirmation', provider: 'agent' };
+            response = response || 'Sorry, I encountered an error processing your message.';
+          }
         } else if (useLocal && useDomainTools && intent === 'knowledge') {
           // Path 2a: Knowledge query — synthesize from enricher + multi-source probes
           if (this.agentLoop?.llmProvider?.clearLocalSkip) {
             this.agentLoop.llmProvider.clearLocalSkip();
           }
           try {
-            const knowledgeResult = await this._handleKnowledgeQuery(pipelineMessage, session, liveContext);
+            const knowledgeResult = await this._handleKnowledgeQuery(pipelineMessage, session, liveContext, extracted.token);
             if (typeof knowledgeResult === 'object' && knowledgeResult !== null) {
               this._captureActionRecord(session, knowledgeResult.actionRecord);
               if (knowledgeResult.enrichmentBlock) _enrichmentBlock = knowledgeResult.enrichmentBlock;
@@ -1542,6 +1596,27 @@ class MessageProcessor {
 
       let { intent, domain, compound } = classification;
 
+      // Action-verb priority: explicit action verbs override domain-noun associations
+      if (/\b(create|make|add|set up)\s+(a\s+)?(task|card|board|list|reminder)\b/i.test(message)) {
+        intent = 'deck';
+        domain = 'deck';
+        compound = false;
+      } else if (/\b(send|draft|compose|reply|forward)\s+(an?\s+)?(email|mail|message to)\b/i.test(message)) {
+        intent = 'email';
+        domain = 'email';
+        compound = false;
+      } else if (/\b(book|schedule|create)\s+(a\s+)?(meeting|event|appointment|call)\b/i.test(message)) {
+        intent = 'calendar';
+        domain = 'calendar';
+        compound = false;
+      }
+
+      // If message also has a knowledge question joined by "and", mark compound
+      if ((intent === 'deck' || intent === 'email' || intent === 'calendar') &&
+          /\b(what|who|where|when|how|tell me|do we know|do you know)\b.*\band\b.*\b(create|make|add|send|book|schedule)\b/i.test(message)) {
+        compound = true;
+      }
+
       // Action-ledger override: when the last action was file_* and the message
       // is an ambiguous reference (no explicit domain keywords), force file domain.
       // This prevents "read the most recent one" from routing to wiki after a file listing.
@@ -1558,11 +1633,15 @@ class MessageProcessor {
         }
       }
 
-      // Context-aware confirmation: short message after agent's offer → escalate to cloud
+      // Context-aware confirmation: short message after agent's offer → execute directly
       if (liveContext?.lastAssistantAction?.offer && message.split(/\s+/).length < 6) {
         const confirmWords = /\b(yes|yeah|sure|ok|please|do it|go ahead|pull it|yep|nope|no|nah)\b/i;
         if (confirmWords.test(message)) {
-          return { useLocal: false, useDomainTools: false, intent: 'confirmation', compound: false };
+          const negativeWords = /\b(no|nah|nope|cancel|stop|don't|never)\b/i;
+          if (negativeWords.test(message)) {
+            return { useLocal: true, useDomainTools: false, intent: 'confirmation_declined', compound: false };
+          }
+          return { useLocal: true, useDomainTools: true, intent: 'confirmation', compound: false };
         }
       }
 
@@ -1607,7 +1686,7 @@ class MessageProcessor {
    * @returns {Promise<{response: string, actionRecord: Object, enrichmentBlock?: string}>}
    * @private
    */
-  async _handleKnowledgeQuery(message, session, liveContext) {
+  async _handleKnowledgeQuery(message, session, liveContext, roomToken) {
     const enricher = this.microPipeline?.memoryContextEnricher;
     const searcher = this.microPipeline?.memorySearcher;
     const router = this.microPipeline?.router;
@@ -1659,6 +1738,9 @@ class MessageProcessor {
     // Also fire web when context shows agent previously admitted ignorance
     const contextSuggestsWeb = liveContext?.lastAssistantAction?.admittedIgnorance === true;
     if (substantiveResults < 2 || (contextSuggestsWeb && substantiveResults < 4)) {
+      if (roomToken) {
+        this.sendTalkReply(roomToken, '\u{1F310} Also checking the web...').catch(() => {});
+      }
       const webResults = await this._probeWeb(query);
       if (webResults.length > 0) {
         probeResults.push({

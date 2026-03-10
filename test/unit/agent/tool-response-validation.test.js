@@ -29,6 +29,7 @@ function createNCRequestManager() {
 
 function createDeckClient(overrides = {}) {
   return {
+    baseUrl: 'https://nc.example.com',
     username: 'moltagent',
     stackNames: {
       inbox: 'Inbox', queued: 'Queued', working: 'Working',
