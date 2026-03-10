@@ -76,13 +76,15 @@ asyncTest('classify() routes bare "Hey" to LLM, not regex', async () => {
   assert.strictEqual(result.intent, 'greeting');
 });
 
-// -- Boundary: "Good morning, can you check my calendar?" → LLM decides --
+// -- Boundary: "Good morning, can you check my calendar?" → LLM decides, trust its output --
 asyncTest('classify() routes "Good morning, can you check my calendar?" to LLM', async () => {
-  // Three-gate: "check my calendar" has no action verb → post-classify guard reclassifies to knowledge
+  // Language-agnostic: no English-only regex guards. LLM output is trusted directly.
+  // If the LLM returns "calendar" (action gate), we honour it.
   const router = createRouter('{"intent":"calendar"}');
   const result = await router.classify('Good morning, can you check my calendar?');
-  assert.strictEqual(result.gate, 'knowledge');
-  assert.strictEqual(result.domain, null);
+  // LLM said calendar → action gate (no post-classify override)
+  assert.strictEqual(result.gate, 'action');
+  assert.strictEqual(result.domain, 'calendar');
 });
 
 // -- Test 3: LLM returns {"intent":"deck"} → gate:action, domain:deck --
@@ -110,11 +112,11 @@ asyncTest('classify() returns gate:action domain:email when LLM classifies as em
   assert.strictEqual(result.domain, 'email');
 });
 
-// -- Test 6: LLM returns {"intent":"search"} → post-guard reclassifies to knowledge (no action verb) --
-asyncTest('classify() reclassifies search to knowledge when no action verb present', async () => {
-  const router = createRouter('{"intent":"search"}');
+// -- Test 6: LLM returns {"intent":"search"} → search maps to knowledge gate (no action domain) --
+asyncTest('classify() maps search intent to knowledge gate (search is a knowledge intent)', async () => {
+  const router = createRouter('{"gate":"knowledge"}');
   const result = await router.classify('what do you know about Portugal');
-  // Three-gate: "what do you know about" has no action verb → post-classify guard → knowledge
+  // LLM returns knowledge gate directly — no English-only post-classify guard
   assert.strictEqual(result.gate, 'knowledge');
   assert.strictEqual(result.domain, null);
 });
@@ -452,28 +454,48 @@ asyncTest('system prompt contains context-aware rules', async () => {
 
   await router.classify('hello');
   assert.ok(capturedSystem.includes('Read the <conversation> block FIRST'), 'System prompt should instruct reading context first');
-  assert.ok(capturedSystem.includes('Delete the dentist'), 'System prompt should include concrete example');
+  assert.ok(capturedSystem.includes('move it to done'), 'System prompt should include concrete continuation example');
   assert.ok(capturedSystem.includes('prefer the domain'), 'System prompt should include domain continuation bias');
 });
 
-// === Context-aware file classification ===
+// === buildClassificationPrompt static API ===
 
-test('needsSmartClassifier routes "the most recent one" to smart model', () => {
-  assert.strictEqual(IntentRouter.needsSmartClassifier('read the most recent one'), true,
-    '"the most recent one" should trigger smart model');
-  assert.strictEqual(IntentRouter.needsSmartClassifier('open the latest'), true,
-    '"the latest" should trigger smart model');
-  assert.strictEqual(IntentRouter.needsSmartClassifier('show me the newest'), true,
-    '"the newest" should trigger smart model');
+test('buildClassificationPrompt is exported as static method', () => {
+  assert.strictEqual(typeof IntentRouter.buildClassificationPrompt, 'function',
+    'buildClassificationPrompt should be a static function on IntentRouter');
 });
 
-test('system prompt includes file context rule', () => {
-  const prompt = IntentRouter.CLASSIFICATION_SYSTEM_PROMPT;
+test('buildClassificationPrompt defaults to EN when no language given', () => {
+  const prompt = IntentRouter.buildClassificationPrompt();
+  assert.ok(prompt.includes('just listed files'), 'EN prompt should include file context rule');
+  assert.ok(prompt.includes('Upload the report'), 'EN prompt should include file action example');
+});
+
+test('buildClassificationPrompt returns DE examples for DE language', () => {
+  const prompt = IntentRouter.buildClassificationPrompt('DE');
+  assert.ok(prompt.includes('Lade den Bericht hoch'), 'DE prompt should include German file upload example');
+  assert.ok(prompt.includes('Erstelle ein Board'), 'DE prompt should include German deck example');
+});
+
+test('buildClassificationPrompt returns PT examples for PT language', () => {
+  const prompt = IntentRouter.buildClassificationPrompt('PT');
+  assert.ok(prompt.includes('Carrega o relatório'), 'PT prompt should include Portuguese file upload example');
+});
+
+test('buildClassificationPrompt falls back to EN for unknown language', () => {
+  const prompt = IntentRouter.buildClassificationPrompt('ZZ');
+  const enPrompt = IntentRouter.buildClassificationPrompt('EN');
+  assert.strictEqual(prompt, enPrompt, 'Unknown language should fall back to EN');
+});
+
+test('system prompt includes file context rule (via buildClassificationPrompt)', () => {
+  const prompt = IntentRouter.buildClassificationPrompt('EN');
   assert.ok(prompt.includes('just listed files'), 'Prompt should include file context rule');
-  assert.ok(prompt.includes('action, domain: file'), 'Prompt should include file action example');
+  assert.ok(prompt.includes('Upload the report'), 'Prompt should include file action example');
 });
 
-asyncTest('classify() routes "read the most recent one" to smart model', async () => {
+asyncTest('classify() uses fast model (no needsSmartClassifier routing)', async () => {
+  // Language-agnostic: no English-only regex pre-router. All messages go to fast model first.
   const models = [];
   const router = new IntentRouter({
     provider: {
@@ -490,7 +512,8 @@ asyncTest('classify() routes "read the most recent one" to smart model', async (
     { role: 'assistant', content: 'report.pdf — 2KB — 2026-03-02\nnotes.txt — 512B — 2026-03-03' }
   ]);
 
-  assert.strictEqual(models[0], 'qwen3:8b', 'Should use smart model for contextual references');
+  // Without needsSmartClassifier, the fast model is always tried first
+  assert.strictEqual(models[0], 'qwen2.5:3b', 'Fast model should be used first — LLM handles context natively');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 100);

@@ -1424,6 +1424,8 @@ async function initialize() {
       const intentProvider = ollamaFastProvider || ollamaProvider;
       intentRouter = intentProvider ? new IntentRouter({
         provider: intentProvider,
+        llmRouter: llmRouter,
+        getLanguage: () => cockpitManager?.cachedConfig?.persona?.language || 'EN',
         config: {
           classifyTimeout: appConfig.ollama.classifyTimeout,
           fastModel: appConfig.ollama.classifyModel || 'qwen2.5:3b',

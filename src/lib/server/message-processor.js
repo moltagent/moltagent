@@ -260,6 +260,9 @@ class MessageProcessor {
     /** @type {Object|null} - IntentRouter instance */
     this.intentRouter = deps.intentRouter || null;
 
+    /** @type {Function} - Returns cockpit language code (EN, DE, PT, etc.) */
+    this._getLanguage = deps.intentRouter?.getLanguage || (() => 'EN');
+
     // M1: WarmMemory for post-response consolidation
     /** @type {Object|null} - WarmMemory instance */
     this.warmMemory = deps.warmMemory || null;
@@ -574,7 +577,7 @@ class MessageProcessor {
       }
 
       // Natural-language admin commands (before classification)
-      else if (/^persist\s+session$/i.test(extracted.content.trim())) {
+      else if (/^(persist\s+session|Sitzung\s+speichern|persistir\s+sess[aã]o)$/i.test(extracted.content.trim())) {
         if (this.commandHandler) {
           result = await this.commandHandler.handle('/persist', {
             user: extracted.user,
@@ -623,7 +626,8 @@ class MessageProcessor {
         console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}${compound ? ' [COMPOUND]' : ''}`);
 
         // Intent-specific feedback: acknowledge the user immediately (fire-and-forget)
-        const feedbackMsg = compound ? getFeedbackMessage('compound', 'decomposing') : getFeedbackMessage(intent);
+        const lang = this._getLanguage();
+        const feedbackMsg = compound ? getFeedbackMessage('compound', 'decomposing', lang) : getFeedbackMessage(intent, null, lang);
         if (feedbackMsg && extracted.token) {
           this.sendTalkReply(extracted.token, feedbackMsg).catch(() => {});
         }
@@ -862,7 +866,7 @@ class MessageProcessor {
 
           // Bug 3 fix: Short confirmations shouldn't loop to max iterations
           const trimmed = extracted.content.trim().toLowerCase();
-          if (trimmed.length <= 10 && /^(yes|no|ok|sure|yeah|nah|do it|go ahead|cancel|stop|yep|nope|y|n)$/.test(trimmed)) {
+          if (trimmed.length <= 12 && trimmed.split(/\s+/).length <= 3) {
             agentOpts.maxIterations = 2;
           }
 
@@ -877,7 +881,7 @@ class MessageProcessor {
         // Session 14: AgentLoop handles all natural language via tool-calling LLM
         // Generic feedback — no classification available in this path
         if (extracted.token) {
-          const agentFeedback = getFeedbackMessage('complex');
+          const agentFeedback = getFeedbackMessage('complex', null, this._getLanguage());
           if (agentFeedback) this.sendTalkReply(extracted.token, agentFeedback).catch(() => {});
         }
         const voiceReplyEnabled = extracted._isVoice && this.voiceManager && this.voiceManager.mode === 'full';
@@ -1525,26 +1529,6 @@ class MessageProcessor {
   }
 
   /**
-   * Quick pre-check for trivial greetings that don't need LLM classification.
-   * Short message (<5 words) matching common greeting patterns. Skips probes
-   * for sub-second response on trivial messages.
-   *
-   * @param {string} message - User message text
-   * @returns {boolean} true if message is a trivial greeting
-   * @private
-   */
-  _isGreeting(message) {
-    if (!message) return false;
-    const trimmed = message.trim();
-    // Must be short
-    if (trimmed.split(/\s+/).length > 5) return false;
-    // Must not contain a question mark (rules out "Hey, what time is it?")
-    if (trimmed.includes('?')) return false;
-    // Must match a greeting pattern
-    return /^(hi|hello|hey|good\s+(morning|afternoon|evening)|thanks|thank you|bye|goodbye|cheers|guten\s+(morgen|tag|abend))[\s!.,]*$/i.test(trimmed);
-  }
-
-  /**
    * Classify message intent for smart-mix routing.
    *
    * Uses IntentRouter (LLM with conversation context) when available,
@@ -1562,11 +1546,6 @@ class MessageProcessor {
    */
   async _smartMixClassify(message, session, roomToken, liveContext) {
     try {
-      // Greeting pre-check: skip LLM classification for trivial greetings
-      if (this._isGreeting(message)) {
-        return { useLocal: true, useDomainTools: false, intent: 'greeting', compound: false };
-      }
-
       const recentContext = this._extractRecentContext(session);
 
       // Use IntentRouter if available, fall back to MicroPipeline regex
@@ -1596,76 +1575,17 @@ class MessageProcessor {
 
       let { intent, domain, compound } = classification;
 
-      // Action-verb priority: explicit action verbs override domain-noun associations
-      if (/\b(create|make|add|set up)\s+(a\s+)?(task|card|board|list|reminder)\b/i.test(message)) {
-        intent = 'deck';
-        domain = 'deck';
-        compound = false;
-      } else if (/\b(set|change|update|assign|move|give|edit|rename)\s+(?:(?:it|this|that)\s+(?:the\s+)?|(?:the|a)\s+)?(due|date|deadline|label|title|description|to|priority)\b/i.test(message)) {
-        // Card/task mutation: "give it the due date", "set the deadline", "move it to Done"
-        intent = 'deck';
-        domain = 'deck';
-        compound = false;
-      } else if (/\b(give|move|assign|set)\s+(it|the card|the task|that)\b/i.test(message) &&
-                 liveContext?.lastAssistantAction?.type === 'card_created') {
-        // Context-aware card reference: "give it [something]" after card creation
-        intent = 'deck';
-        domain = 'deck';
-        compound = false;
-      } else if (/\b(send|draft|compose|reply|forward)\s+(an?\s+)?(email|mail|message to)\b/i.test(message)) {
-        intent = 'email';
-        domain = 'email';
-        compound = false;
-      } else if (/\b(book|schedule|create)\s+(a\s+)?(meeting|event|appointment|call)\b/i.test(message)) {
-        intent = 'calendar';
-        domain = 'calendar';
-        compound = false;
-      }
-
-      // If message also has a knowledge question joined by "and", mark compound
-      if ((intent === 'deck' || intent === 'email' || intent === 'calendar') &&
-          /\b(what|who|where|when|how|tell me|do we know|do you know)\b.*\band\b.*\b(create|make|add|send|book|schedule|set|update|move)\b/i.test(message)) {
-        compound = true;
-      }
-
-      // Action-ledger override: when the last action was file_* and the message
-      // is an ambiguous reference (no explicit domain keywords), force file domain.
-      // This prevents "read the most recent one" from routing to wiki after a file listing.
-      if (session && this.sessionManager && domain !== 'file') {
-        const lastAction = this.sessionManager.getLastAction(session, 'file_');
-        if (lastAction && lastAction.type === 'file_list') {
-          const lower = message.toLowerCase();
-          const hasAmbiguousRef = /\b(the most recent|the latest|the newest|that one|the last one|read it|open it|all of them|the first)\b/.test(lower);
-          const hasExplicitOtherDomain = /\b(wiki|calendar|event|meeting|deck|card|task|email|mail|schedule)\b/.test(lower);
-          if (hasAmbiguousRef && !hasExplicitOtherDomain) {
-            intent = 'file';
-            domain = 'file';
-          }
-        }
-      }
-
-      // Context-aware confirmation: short message after agent's offer → execute directly
-      if (liveContext?.lastAssistantAction?.offer && message.split(/\s+/).length < 6) {
-        const confirmWords = /\b(yes|yeah|sure|ok|please|do it|go ahead|pull it|yep|nope|no|nah)\b/i;
-        if (confirmWords.test(message)) {
-          const negativeWords = /\b(no|nah|nope|cancel|stop|don't|never)\b/i;
-          if (negativeWords.test(message)) {
-            return { useLocal: true, useDomainTools: false, intent: 'confirmation_declined', compound: false };
-          }
-          return { useLocal: true, useDomainTools: true, intent: 'confirmation', compound: false };
-        }
-      }
-
       // Greeting/chitchat → always local regardless of word count.
-      // If the LLM classified it as greeting/chitchat, trust that classification.
-      // Substantive messages disguised as greetings are a classification accuracy
-      // issue — the word-count gate was leaking most natural chitchat to cloud.
+      // The LLM classifier handles all languages natively — trust its classification.
       if (intent === 'greeting' || intent === 'chitchat') {
         return { useLocal: true, useDomainTools: false, intent, compound: false };
       }
       // Confirmation/selection → cloud (needs full history)
       if (intent === 'confirmation' || intent === 'selection') {
         return { useLocal: false, useDomainTools: false, intent, compound: false };
+      }
+      if (intent === 'confirmation_declined') {
+        return { useLocal: true, useDomainTools: false, intent: 'confirmation_declined', compound: false };
       }
       // Domain → local with focused tools
       if (DOMAIN_INTENTS.has(intent)) {

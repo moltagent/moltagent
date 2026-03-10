@@ -1412,6 +1412,7 @@ class CockpitManager {
     if (trust === 'local-only') {
       return {
         quick: [localFast, localCapable],
+        classification: [localFast, localCapable],
         synthesis: [localFast, localCapable],
         decomposition: [localCapable, localFast],
         tools: [localCapable, localFast],
@@ -1427,6 +1428,7 @@ class CockpitManager {
       // Minimize cloud spend: local first, cloud as fallback only
       return {
         quick: [localFast, localCapable],
+        classification: hasHaiku ? [haiku, localFast, localCapable] : [localFast, localCapable],
         synthesis: hasHaiku
           ? [haiku, localFast, localCapable]
           : [localFast, localCapable],
@@ -1443,6 +1445,7 @@ class CockpitManager {
       // Maximum quality: Opus for deep work, Sonnet for tools/research
       return {
         quick: [localFast, localCapable],
+        classification: hasHaiku ? [haiku, localFast, localCapable] : [localFast, localCapable],
         synthesis: [hasSonnet ? sonnet : null, hasHaiku ? haiku : null, localCapable].filter(Boolean),
         decomposition: [hasHaiku ? haiku : null, localCapable, localFast].filter(Boolean),
         tools: [localCapable, hasHaiku ? haiku : null, localFast].filter(Boolean),
@@ -1457,6 +1460,7 @@ class CockpitManager {
     // Opus for thinking/writing (best output), Sonnet for research/coding (fast enough)
     return {
       quick: [localFast, localCapable],
+      classification: hasHaiku ? [haiku, localFast, localCapable] : [localFast, localCapable],
       synthesis: hasHaiku
         ? [haiku, localFast, localCapable]
         : [localFast, localCapable],

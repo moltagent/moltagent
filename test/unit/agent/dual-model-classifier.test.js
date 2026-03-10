@@ -64,14 +64,14 @@ asyncTest('explicit message uses qwen2.5:3b', async () => {
   assert.strictEqual(result.domain, 'calendar');
 });
 
-// -- Test 2: Ambiguous message → qwen3:8b called (not qwen2.5:3b) --
-asyncTest('ambiguous message uses qwen3:8b', async () => {
+// -- Test 2: All messages start with fast model (no needsSmartClassifier pre-routing) --
+asyncTest('ambiguous message uses fast model first (language-agnostic routing)', async () => {
   const { router, calls } = createRouter({
-    'qwen3:8b': { intent: 'wiki_write' }
+    'qwen2.5:3b': { intent: 'wiki_write' }
   });
   const result = await router.classify('Remember that Sarah prefers video calls');
-  assert.strictEqual(calls.length, 1, 'Should make exactly 1 call');
-  assert.strictEqual(calls[0].model, 'qwen3:8b');
+  assert.strictEqual(calls.length, 1, 'Should make exactly 1 call — fast model handles all messages');
+  assert.strictEqual(calls[0].model, 'qwen2.5:3b', 'Fast model should be used — LLM handles context natively');
   assert.strictEqual(result.gate, 'action');
   assert.strictEqual(result.domain, 'wiki');
 });
@@ -103,16 +103,16 @@ asyncTest('fast model timeout falls back to qwen3:8b', async () => {
   assert.strictEqual(result.domain, 'calendar');
 });
 
-// -- Test 5: qwen3:8b timeout → falls back to qwen2.5:3b --
-asyncTest('qwen3:8b timeout falls back to qwen2.5:3b', async () => {
+// -- Test 5: fast model fails → escalates to qwen3:8b --
+asyncTest('fast model failure escalates to qwen3:8b', async () => {
   const { router, calls } = createRouter({
-    'qwen2.5:3b': { intent: 'wiki_write' },
-    'qwen3:8b': new Error('Ollama request timed out after 40000ms')
+    'qwen2.5:3b': new Error('Ollama request timed out after 10000ms'),
+    'qwen3:8b': { intent: 'wiki_write' }
   });
   const result = await router.classify('Remember that the budget is 50k');
   assert.strictEqual(calls.length, 2, 'Should make 2 calls');
-  assert.strictEqual(calls[0].model, 'qwen3:8b', 'First call should be smart model (ambiguous message)');
-  assert.strictEqual(calls[1].model, 'qwen2.5:3b', 'Fallback to fast model');
+  assert.strictEqual(calls[0].model, 'qwen2.5:3b', 'First call should be fast model');
+  assert.strictEqual(calls[1].model, 'qwen3:8b', 'Fallback to smart model on failure');
   assert.strictEqual(result.domain, 'wiki');
 });
 
@@ -130,16 +130,18 @@ asyncTest('both models fail → regex fallback', async () => {
   assert.strictEqual(result.confidence, 0.5, 'Regex fallback confidence');
 });
 
-// -- Test 7: Thinking indicator sent for qwen3 path --
-asyncTest('thinking indicator sent for smart model path', async () => {
+// -- Test 7: No thinking indicator sent (needsSmartClassifier removed) --
+asyncTest('thinking indicator not sent for any path (language-agnostic routing)', async () => {
+  // v4.0.0: needsSmartClassifier removed — no thinking indicator is proactively sent.
+  // The replyFn is no longer called for thinking indicators in the classify path.
   let indicatorSent = false;
   const { router } = createRouter({
-    'qwen3:8b': { intent: 'wiki_write' }
+    'qwen2.5:3b': { intent: 'wiki_write' }
   });
   await router.classify('Remember the deadline is Friday', [], {
-    replyFn: async (text) => { indicatorSent = true; assert.ok(text.includes('think'), `Expected thinking text, got: ${text}`); }
+    replyFn: async () => { indicatorSent = true; }
   });
-  assert.ok(indicatorSent, 'Thinking indicator should be sent for smart model path');
+  assert.ok(!indicatorSent, 'Thinking indicator should NOT be sent — no pre-routing to smart model');
 });
 
 // -- Test 8: Thinking indicator NOT sent for fast model path --
@@ -201,12 +203,15 @@ asyncTest('fine-grained intents map to correct domains', async () => {
   }
 });
 
-// -- Test 12: Smart model gets 4x timeout --
-asyncTest('smart model gets extended timeout', async () => {
+// -- Test 12: Fast model uses base timeout; smart model (fallback) gets 4x timeout --
+asyncTest('smart model gets extended timeout when used as fallback', async () => {
   const timeouts = [];
+  let callCount = 0;
   const provider = {
     chat: async ({ model, timeout }) => {
       timeouts.push({ model, timeout });
+      callCount++;
+      if (callCount === 1) throw new Error('timeout'); // force fast model to fail
       return { content: '{"intent":"wiki_write"}' };
     }
   };
@@ -214,10 +219,12 @@ asyncTest('smart model gets extended timeout', async () => {
     provider,
     config: { classifyTimeout: 5000, fastModel: 'qwen2.5:3b', smartModel: 'qwen3:8b' }
   });
-  // Ambiguous message → smart model
+  // Fast model fails → falls back to smart model (with 4x timeout)
   await router.classify('Remember that Sarah prefers video calls');
-  assert.strictEqual(timeouts[0].model, 'qwen3:8b');
-  assert.strictEqual(timeouts[0].timeout, 20000, 'Smart model should get 4x timeout');
+  assert.strictEqual(timeouts[0].model, 'qwen2.5:3b', 'First call is always fast model');
+  assert.strictEqual(timeouts[0].timeout, 5000, 'Fast model uses base timeout');
+  assert.strictEqual(timeouts[1].model, 'qwen3:8b', 'Fallback is smart model');
+  assert.strictEqual(timeouts[1].timeout, 20000, 'Smart model fallback should get 4x timeout');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);

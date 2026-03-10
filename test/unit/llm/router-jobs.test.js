@@ -60,10 +60,11 @@ console.log('\n=== LLMRouter Job-Based Routing Tests ===\n');
 // --- Constants Validation ---
 console.log('\n--- Constants Validation ---\n');
 
-test('TC-JOB-CONST-001: JOBS has 9 keys', () => {
+test('TC-JOB-CONST-001: JOBS has 10 keys', () => {
   const keys = Object.keys(LLMRouter.JOBS);
-  assert.strictEqual(keys.length, 9);
+  assert.strictEqual(keys.length, 10);
   assert.ok(keys.includes('QUICK'));
+  assert.ok(keys.includes('CLASSIFICATION'));
   assert.ok(keys.includes('TOOLS'));
   assert.ok(keys.includes('THINKING'));
   assert.ok(keys.includes('WRITING'));
@@ -87,10 +88,11 @@ test('TC-JOB-CONST-003: PRESET_NAMES has 3 entries', () => {
   assert.ok(LLMRouter.PRESET_NAMES.includes('cloud-first'));
 });
 
-test('TC-JOB-CONST-004: VALID_JOBS is a Set with 9 entries', () => {
+test('TC-JOB-CONST-004: VALID_JOBS is a Set with 10 entries', () => {
   assert.ok(LLMRouter.VALID_JOBS instanceof Set);
-  assert.strictEqual(LLMRouter.VALID_JOBS.size, 9);
+  assert.strictEqual(LLMRouter.VALID_JOBS.size, 10);
   assert.ok(LLMRouter.VALID_JOBS.has('quick'));
+  assert.ok(LLMRouter.VALID_JOBS.has('classification'));
   assert.ok(LLMRouter.VALID_JOBS.has('credentials'));
   assert.ok(LLMRouter.VALID_JOBS.has('synthesis'));
 });

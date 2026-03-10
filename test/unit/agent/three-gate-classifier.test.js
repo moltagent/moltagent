@@ -168,13 +168,12 @@ asyncTest('TG-13: "What\'s the status and create a follow-up task" → compound'
 // POST-CLASSIFY GUARD (1 test)
 // ============================================================
 
-test('TG-14: Action without action verb → reclassified to knowledge', () => {
-  const router = createRouter('');
-  const input = { gate: 'action', domain: 'email', intent: 'email', confidence: 0.8, compound: false };
-  const guarded = router._postClassifyGuard(input, "What's Carlos's email?");
-  assert.strictEqual(guarded.gate, 'knowledge', 'Should reclassify to knowledge');
-  assert.strictEqual(guarded.domain, null);
-  assert.strictEqual(guarded.intent, 'knowledge');
+test('TG-14: LLM classifier handles "no action verb" case natively (no post-guard)', () => {
+  // _postClassifyGuard was removed in v4.0.0 — the LLM handles this in all languages.
+  // Verify the LLM classifier receives a language-aware prompt that teaches this distinction.
+  const prompt = IntentRouter.buildClassificationPrompt('EN');
+  assert.ok(prompt.includes('When in doubt'), 'Prompt should teach the LLM to default to knowledge');
+  assert.ok(prompt.includes('knowledge'), 'Prompt should emphasise knowledge as the safe default');
 });
 
 // ============================================================

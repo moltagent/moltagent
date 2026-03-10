@@ -26,6 +26,7 @@ const appConfig = require('../config');
 
 const JOBS = Object.freeze({
   QUICK: 'quick',
+  CLASSIFICATION: 'classification',
   TOOLS: 'tools',
   THINKING: 'thinking',
   WRITING: 'writing',
