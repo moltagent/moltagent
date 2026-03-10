@@ -95,6 +95,106 @@ const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'se
  */
 
 // -----------------------------------------------------------------------------
+// Live Context Builder
+// -----------------------------------------------------------------------------
+
+/**
+ * Build the live conversational context from the current session.
+ * Called once per message, passed to every pipeline component.
+ * This is SHORT-TERM memory — what happened in the last few exchanges.
+ *
+ * @param {Object} session - SessionManager session
+ * @param {string} currentMessage - Current user message text
+ * @returns {Object} Live context with exchanges, actions, entities, summary
+ */
+function buildLiveContext(session, currentMessage) {
+  if (!session?.context || session.context.length === 0) {
+    return {
+      exchanges: [],
+      lastAssistantAction: null,
+      lastUserIntent: null,
+      recentEntityRefs: [],
+      turnCount: 0,
+      summary: ''
+    };
+  }
+
+  // Last 3 exchanges (6 entries: user/assistant pairs)
+  const recent = session.context
+    .filter(c => c.role === 'user' || c.role === 'assistant')
+    .slice(-6);
+
+  // Extract the last thing the agent did/said
+  const lastAssistant = [...session.context]
+    .reverse()
+    .find(c => c.role === 'assistant');
+
+  // Extract the last thing the user asked (NOT the current message)
+  const allUserEntries = session.context.filter(c => c.role === 'user');
+  const lastUser = allUserEntries.length > 1
+    ? allUserEntries[allUserEntries.length - 2]
+    : null;
+
+  // Detect what the agent last offered/did
+  let lastAssistantAction = null;
+  if (lastAssistant?.content) {
+    const content = lastAssistant.content;
+    if (/card\s*#\d+|Created\s+"/i.test(content)) {
+      const cardMatch = content.match(/#(\d+)/);
+      lastAssistantAction = {
+        type: 'card_created',
+        cardId: cardMatch?.[1] || null,
+        description: content.substring(0, 200)
+      };
+    }
+    if (/Do you want me to|Should I|Would you like me to|I can |Want me to/i.test(content)) {
+      lastAssistantAction = lastAssistantAction || { type: 'offered_action' };
+      lastAssistantAction.offer = content.substring(0, 200);
+    }
+    if (/don't have that|no information|not in my|can't access|don't have .{0,20} information/i.test(content)) {
+      lastAssistantAction = lastAssistantAction || {};
+      lastAssistantAction.admittedIgnorance = true;
+    }
+  }
+
+  // Extract entity references from recent exchanges
+  const recentText = recent.map(c => c.content || '').join(' ');
+  const entityRefs = [];
+  const cardRefs = recentText.match(/#\d+/g) || [];
+  cardRefs.forEach(ref => entityRefs.push({ type: 'card', ref }));
+
+  // Named entities (capitalized words not at sentence start)
+  const nameMatches = recentText.match(/(?<=\s)[A-Z][a-z]+(?:\s[A-Z][a-z]+)*/g) || [];
+  const commonWords = new Set(['The', 'This', 'That', 'What', 'Where', 'When', 'How',
+    'Yes', 'No', 'Please', 'Here', 'There', 'Created', 'Found', 'Your', 'Missing',
+    'Source', 'Status', 'Active', 'Done', 'Inbox', 'Working', 'None', 'Sorry',
+    'Sure', 'Would', 'Could', 'Should', 'Based', 'However']);
+  nameMatches
+    .filter(n => !commonWords.has(n))
+    .forEach(n => {
+      if (!entityRefs.some(e => e.ref === n)) {
+        entityRefs.push({ type: 'name', ref: n });
+      }
+    });
+
+  // Build a compact summary for injection
+  const exchangeLines = recent.map(c => {
+    const role = c.role === 'user' ? 'User' : 'Agent';
+    const text = (c.content || '').substring(0, 250);
+    return `${role}: ${text}`;
+  });
+
+  return {
+    exchanges: recent,
+    lastAssistantAction,
+    lastUserIntent: lastUser?.content?.substring(0, 200) || null,
+    recentEntityRefs: entityRefs,
+    turnCount: Math.floor(session.context.length / 2),
+    summary: exchangeLines.join('\n')
+  };
+}
+
+// -----------------------------------------------------------------------------
 // Message Processor Class
 // -----------------------------------------------------------------------------
 
@@ -458,8 +558,21 @@ class MessageProcessor {
         }
       }
 
-      // Handle slash commands
-      if (extracted.content.startsWith('/')) {
+      // Natural-language admin commands (before classification)
+      if (/^persist\s+session$/i.test(extracted.content.trim())) {
+        if (this.commandHandler) {
+          result = await this.commandHandler.handle('/persist', {
+            user: extracted.user,
+            token: extracted.token,
+            messageId: extracted.messageId
+          });
+          response = result.response;
+        } else {
+          response = 'Session persistence not available.';
+          result = { intent: 'admin_command' };
+        }
+      } else if (extracted.content.startsWith('/')) {
+        // Handle slash commands
         result = await this.commandHandler.handle(extracted.content, {
           user: extracted.user,
           token: extracted.token,
@@ -489,7 +602,9 @@ class MessageProcessor {
         result = { intent: 'micro_pipeline', provider: 'local' };
       } else if (this.microPipeline && this.agentLoop && this._isSmartMixMode()) {
         // Smart-mix: three-path routing (local text / local tools / cloud)
-        const { useLocal, useDomainTools, intent, compound } = await this._smartMixClassify(pipelineMessage, session, extracted.token);
+        // Build live context ONCE — passed to classifier, probes, synthesis, guard
+        const liveContext = session ? buildLiveContext(session, pipelineMessage) : null;
+        const { useLocal, useDomainTools, intent, compound } = await this._smartMixClassify(pipelineMessage, session, extracted.token, liveContext);
         console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}${compound ? ' [COMPOUND]' : ''}`);
 
         // Intent-specific feedback: acknowledge the user immediately (fire-and-forget)
@@ -532,7 +647,7 @@ class MessageProcessor {
             // Compound decomposition failed — fall back to knowledge mode
             console.warn(`[Message] Compound decomposition failed, falling back to knowledge: ${compoundErr.message}`);
             try {
-              const knowledgeResult = await this._handleKnowledgeQuery(pipelineMessage, session);
+              const knowledgeResult = await this._handleKnowledgeQuery(pipelineMessage, session, liveContext);
               if (typeof knowledgeResult === 'object' && knowledgeResult !== null) {
                 this._captureActionRecord(session, knowledgeResult.actionRecord);
                 if (knowledgeResult.enrichmentBlock) _enrichmentBlock = knowledgeResult.enrichmentBlock;
@@ -559,7 +674,7 @@ class MessageProcessor {
             this.agentLoop.llmProvider.clearLocalSkip();
           }
           try {
-            const knowledgeResult = await this._handleKnowledgeQuery(pipelineMessage, session);
+            const knowledgeResult = await this._handleKnowledgeQuery(pipelineMessage, session, liveContext);
             if (typeof knowledgeResult === 'object' && knowledgeResult !== null) {
               this._captureActionRecord(session, knowledgeResult.actionRecord);
               if (knowledgeResult.enrichmentBlock) _enrichmentBlock = knowledgeResult.enrichmentBlock;
@@ -1391,7 +1506,7 @@ class MessageProcessor {
    * @returns {Promise<{useLocal: boolean, useDomainTools: boolean, intent: string}>}
    * @private
    */
-  async _smartMixClassify(message, session, roomToken) {
+  async _smartMixClassify(message, session, roomToken, liveContext) {
     try {
       // Greeting pre-check: skip LLM classification for trivial greetings
       if (this._isGreeting(message)) {
@@ -1404,7 +1519,8 @@ class MessageProcessor {
       let classification;
       if (this.intentRouter) {
         classification = await this.intentRouter.classify(message, recentContext, {
-          replyFn: roomToken ? (text) => this.sendTalkReply(roomToken, text) : null
+          replyFn: roomToken ? (text) => this.sendTalkReply(roomToken, text) : null,
+          liveContext
         });
       } else {
         // Build context for _classifyFallback so it has conversation history
@@ -1439,6 +1555,14 @@ class MessageProcessor {
             intent = 'file';
             domain = 'file';
           }
+        }
+      }
+
+      // Context-aware confirmation: short message after agent's offer → escalate to cloud
+      if (liveContext?.lastAssistantAction?.offer && message.split(/\s+/).length < 6) {
+        const confirmWords = /\b(yes|yeah|sure|ok|please|do it|go ahead|pull it|yep|nope|no|nah)\b/i;
+        if (confirmWords.test(message)) {
+          return { useLocal: false, useDomainTools: false, intent: 'confirmation', compound: false };
         }
       }
 
@@ -1483,7 +1607,7 @@ class MessageProcessor {
    * @returns {Promise<{response: string, actionRecord: Object, enrichmentBlock?: string}>}
    * @private
    */
-  async _handleKnowledgeQuery(message, session) {
+  async _handleKnowledgeQuery(message, session, liveContext) {
     const enricher = this.microPipeline?.memoryContextEnricher;
     const searcher = this.microPipeline?.memorySearcher;
     const router = this.microPipeline?.router;
@@ -1500,6 +1624,18 @@ class MessageProcessor {
     if (searchTerms.length === 0) {
       searchTerms = [message.substring(0, 100).replace(/[^\w\s]/g, ' ').trim()];
     }
+
+    // Expand search terms for short/referential messages using conversation context
+    if (liveContext?.lastUserIntent && (
+      message.split(/\s+/).length < 6 ||
+      /\b(that|it|this|those|the one|more|about it)\b/i.test(message)
+    )) {
+      const contextTerms = enricher?._extractSearchTerms
+        ? enricher._extractSearchTerms(liveContext.lastUserIntent)
+        : this._extractBasicSearchTerms(liveContext.lastUserIntent);
+      searchTerms = [...new Set([...searchTerms, ...contextTerms])];
+    }
+
     const query = message;
 
     console.log(`[Message] Knowledge query: "${message.substring(0, 80)}" → terms: [${searchTerms.join(', ')}]`);
@@ -1510,10 +1646,19 @@ class MessageProcessor {
     // Step 2b: Web fallback — if knowledge probes returned insufficient results,
     // supplement with a web search automatically. No keyword lists, no special
     // cases. One threshold. Universal fallback.
-    const substantiveResults = probeResults.reduce((sum, p) =>
-      sum + (p.results?.filter(r => r.snippet?.length > 20)?.length || 0), 0);
+    // Count RELEVANT results (title/snippet overlaps with search terms), not just any long snippets
+    const lowerTerms = searchTerms.map(t => t.toLowerCase());
+    const substantiveResults = probeResults.reduce((sum, p) => {
+      const relevant = (p.results || []).filter(r => {
+        const text = ((r.title || '') + ' ' + (r.snippet || '')).toLowerCase();
+        return lowerTerms.some(t => text.includes(t));
+      });
+      return sum + relevant.length;
+    }, 0);
 
-    if (substantiveResults < 2) {
+    // Also fire web when context shows agent previously admitted ignorance
+    const contextSuggestsWeb = liveContext?.lastAssistantAction?.admittedIgnorance === true;
+    if (substantiveResults < 2 || (contextSuggestsWeb && substantiveResults < 4)) {
       const webResults = await this._probeWeb(query);
       if (webResults.length > 0) {
         probeResults.push({
@@ -1533,7 +1678,7 @@ class MessageProcessor {
     console.log(`[Message] Knowledge probes: ${sourcesConsulted.length} sources consulted, ${sourcesWithResults.length} returned results (${sourcesWithResults.join(', ')})`);
 
     // Step 4: Synthesis — one LLM call
-    const response = await this._synthesizeKnowledge(query, aggregated, session, router);
+    const response = await this._synthesizeKnowledge(query, aggregated, session, router, liveContext);
 
     return {
       response,
@@ -1924,15 +2069,22 @@ class MessageProcessor {
    * One LLM call — the model's job is ONLY synthesis.
    * @private
    */
-  async _synthesizeKnowledge(query, aggregatedKnowledge, session, router) {
+  async _synthesizeKnowledge(query, aggregatedKnowledge, session, router, liveContext) {
     if (!aggregatedKnowledge) {
       return "I don't have any information about that in my knowledge base.";
     }
 
     const warmMemory = session?.warmMemory || '';
 
-    const prompt = `You are answering a knowledge question. Here is what was found across your data sources:
+    let conversationBlock = '';
+    if (liveContext?.summary) {
+      conversationBlock = `\nRECENT CONVERSATION:\n${liveContext.summary}\n\n` +
+        `The user's current message may reference things from this conversation. ` +
+        `Resolve "that", "it", "the one", etc. from context.\n`;
+    }
 
+    const prompt = `You are answering a knowledge question. Here is what was found across your data sources:
+${conversationBlock}
 ${aggregatedKnowledge}
 ${warmMemory ? `\nRecent context:\n${warmMemory}\n` : ''}
 

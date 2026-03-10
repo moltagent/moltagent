@@ -441,6 +441,18 @@ class IntentRouter {
       }
     }
 
+    // Guard: action with question + connector → compound
+    if (result.gate === 'action') {
+      const hasQuestion = /\b(what|who|how|where|when|tell me|show me|check|find|know)\b/i.test(message);
+      const hasConnector = /\b(and|then|also|plus|before|after)\b/i.test(message);
+      if (hasQuestion && hasConnector) {
+        result.gate = 'compound';
+        result.compound = true;
+        // Keep domain from the action classification
+        result.intent = result.domain || 'complex';
+      }
+    }
+
     return result;
   }
 
