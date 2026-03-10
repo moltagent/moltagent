@@ -1853,12 +1853,41 @@ class MessageProcessor {
       const searchResult = await searxng.search(query, { limit: 3 });
       if (!searchResult?.results?.length) return [];
 
-      return searchResult.results.map(r => ({
+      const results = searchResult.results.map(r => ({
         title: r.title || '',
         snippet: r.content || '',
         sourceTag: 'web',
         url: r.url || ''
       }));
+
+      // Enrich top results with actual page content via WebReader
+      const webReader = this.agentLoop?.toolRegistry?.clients?.webReader;
+      if (webReader) {
+        const urls = results
+          .map(r => r.url)
+          .filter(u => u && u.startsWith('http'));
+
+        const pageReads = await Promise.allSettled(
+          urls.slice(0, 3).map(u => webReader.read(u))
+        );
+
+        let enriched = 0;
+        for (const pr of pageReads) {
+          if (pr.status !== 'fulfilled' || !pr.value) continue;
+          const page = pr.value;
+          const match = results.find(r => r.url === page.url);
+          if (match && page.content && page.content.length > (match.snippet || '').length) {
+            match.content = page.content.substring(0, 5000);
+            match.hasFullContent = true;
+            enriched++;
+          }
+        }
+        if (enriched > 0) {
+          console.log(`[Message] WebReader enriched ${enriched}/${urls.length} search results with page content`);
+        }
+      }
+
+      return results;
     } catch (err) {
       console.log(`[Message] Web fallback failed: ${err.message}`);
       return [];
@@ -2070,7 +2099,8 @@ class MessageProcessor {
       if (uniqueResults.length > 0) {
         for (const result of uniqueResults) {
           const sourceLabel = probe.provenance === 'web_search' ? ' [Source: web]' : '';
-          block += `\n${result.title || ''}${sourceLabel}:\n${result.snippet || ''}\n`;
+          const text = result.content || result.snippet || '';
+          block += `\n${result.title || ''}${sourceLabel}:\n${text}\n`;
         }
       }
     }
