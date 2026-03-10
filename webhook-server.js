@@ -303,6 +303,14 @@ try {
   WebhookReceiver = null;
 }
 
+let DocumentIngestor;
+try {
+  DocumentIngestor = require('./src/lib/integrations/document-ingestor');
+} catch {
+  console.warn('[WARN] DocumentIngestor not available');
+  DocumentIngestor = null;
+}
+
 let SkillForgeHandler, TemplateLoader, TemplateEngine, SecurityScanner, SkillActivator;
 try {
   ({ SkillForgeHandler } = require('./src/lib/handlers/skill-forge-handler'));
@@ -487,6 +495,7 @@ let activityLogger = null; // Two-Layer Memory: Layer 1 raw activity log
 let deferralQueue = null; // Local Intelligence: DeferralQueue for deferred complex tasks
 let intentRouter = null; // IntentRouter: LLM-powered intent classification
 let coAccessGraph = null; // Semantic Awareness: co-access pattern graph
+let documentIngestor = null; // Document Ingestion: file → text → entities → knowledge
 let embeddingClient = null; // Semantic Awareness: Ollama embedding client
 let vectorStore = null; // Semantic Awareness: SQLite vector store
 let embeddingRefresher = null; // Semantic Awareness: periodic embedding refresh
@@ -1266,6 +1275,23 @@ async function initialize() {
       console.log('[INIT] EntityExtractor ready');
     } catch (err) {
       console.warn(`[INIT] EntityExtractor failed: ${err.message}`);
+    }
+  }
+
+  // Document Ingestion pipeline: file events → text → entities → knowledge
+  if (DocumentIngestor && textExtractor && entityExtractor && resilientWriter && ncFilesClient) {
+    try {
+      documentIngestor = new DocumentIngestor({
+        ncFilesClient,
+        textExtractor,
+        entityExtractor,
+        knowledgeGraph,
+        wikiWriter: resilientWriter,
+        logger: console
+      });
+      console.log('[INIT] DocumentIngestor ready');
+    } catch (err) {
+      console.warn(`[INIT] DocumentIngestor failed: ${err.message}`);
     }
   }
 
@@ -2102,6 +2128,15 @@ async function initialize() {
       // Wire NC Flow events into HeartbeatManager
       if (ncFlowActivityPoller) {
         ncFlowActivityPoller.on('event', (event) => heartbeatManager.enqueueExternalEvent(event));
+        // Wire file events into DocumentIngestor
+        if (documentIngestor) {
+          ncFlowActivityPoller.on('event', (event) => {
+            documentIngestor.onFileEvent(event).catch(err => {
+              console.warn(`[DocumentIngestor] Event handler error: ${err.message}`);
+            });
+          });
+          console.log('[INIT] DocumentIngestor wired to ActivityPoller');
+        }
       }
       if (ncFlowWebhookReceiver) {
         ncFlowWebhookReceiver.on('event', (event) => heartbeatManager.enqueueExternalEvent(event));

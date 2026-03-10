@@ -16,19 +16,23 @@
 'use strict';
 
 /**
- * TextExtractor — Extract text from PDF, Word, Excel, and text files
- * with OCR fallback for scanned PDFs.
+ * TextExtractor — Extract text from PDF, Word, Excel, text, and image files
+ * with OCR fallback for scanned PDFs and direct image OCR via tesseract.
  *
  * Architecture Brief:
  * - Problem: Scanned PDFs (invoices, receipts) contain no extractable text;
  *   NC StorageShare has no OCR capability, so the Bot VM must handle it.
+ *   Image files (jpg, png, tiff, etc.) also require OCR to yield text.
  * - Pattern: Normal text extraction first, heuristic scanned-PDF detection
- *   (< N chars/page), then ocrmypdf fallback via temp files.
- * - Key Dependencies: pdf-parse, mammoth, xlsx, ocrmypdf (system binary)
+ *   (< N chars/page), then ocrmypdf fallback via temp files. Image files
+ *   are routed directly to tesseract via _extractImage().
+ * - Key Dependencies: pdf-parse, mammoth, xlsx, ocrmypdf (system binary),
+ *   tesseract (system binary)
  * - Data Flow: buffer → pdf-parse → scanned? → ocrmypdf → pdf-parse → text
+ *              buffer → (image ext) → tesseract → text
  *
  * @module extraction/text-extractor
- * @version 2.0.0
+ * @version 2.1.0
  */
 
 const { execFile } = require('child_process');
@@ -60,13 +64,22 @@ class TextExtractor {
 
     // Lazy-checked on first scanned PDF
     this._ocrAvailable = null;
+
+    // Lazy-checked on first image OCR request
+    this._tesseractAvailable = null;
   }
 
   /** Supported file extensions */
   static SUPPORTED = new Set([
     'pdf', 'docx', 'xlsx', 'xls',
     'txt', 'md', 'csv', 'json', 'yaml', 'yml',
-    'html', 'htm', 'xml', 'log'
+    'html', 'htm', 'xml', 'log',
+    'jpg', 'jpeg', 'png', 'tiff', 'tif', 'bmp', 'webp'
+  ]);
+
+  /** Image extensions that route to _extractImage */
+  static IMAGE_EXTENSIONS = new Set([
+    'jpg', 'jpeg', 'png', 'tiff', 'tif', 'bmp', 'webp'
   ]);
 
   /**
@@ -133,6 +146,22 @@ class TextExtractor {
       case 'xls':
         text = await this._extractXlsx(buffer);
         break;
+
+      case 'jpg':
+      case 'jpeg':
+      case 'png':
+      case 'tiff':
+      case 'tif':
+      case 'bmp':
+      case 'webp': {
+        const imgResult = await this._extractImage(buffer, filePath);
+        text = imgResult.text || '';
+        ocr = imgResult.ocr;
+        if (imgResult.warning) warning = imgResult.warning;
+        // Return early — _extractImage already produces the final shape,
+        // but we still run through the shared truncation logic below.
+        break;
+      }
 
       default:
         // Text-based formats — direct conversion
@@ -253,6 +282,90 @@ class TextExtractor {
       };
     } finally {
       // Clean up temp files
+      try {
+        await fs.rm(tmpDir, { recursive: true, force: true });
+      } catch { /* ignore cleanup errors */ }
+    }
+  }
+
+  /**
+   * Lazy-check whether tesseract is available on this system.
+   * Caches the result after first invocation.
+   * @returns {Promise<boolean>}
+   */
+  async _checkTesseractAvailable() {
+    if (this._tesseractAvailable !== null) return this._tesseractAvailable;
+    try {
+      await execFileAsync('tesseract', ['--version']);
+      this._tesseractAvailable = true;
+      this.logger?.info?.('[TextExtractor] tesseract available — image OCR enabled');
+    } catch {
+      this._tesseractAvailable = false;
+      this.logger?.info?.('[TextExtractor] tesseract not found — image OCR disabled');
+    }
+    return this._tesseractAvailable;
+  }
+
+  /**
+   * Extract text from an image buffer using tesseract.
+   * @param {Buffer} buffer - Image file contents
+   * @param {string} filePath - Original file path (used for extension / logging)
+   * @returns {Promise<{text: string, truncated: boolean, totalLength: number, ocr: boolean, warning?: string}>}
+   * @private
+   */
+  async _extractImage(buffer, filePath) {
+    const tesseractAvailable = await this._checkTesseractAvailable();
+    if (!tesseractAvailable) {
+      this.logger?.warn?.('[TextExtractor] tesseract not available — cannot OCR image');
+      return {
+        text: '',
+        truncated: false,
+        totalLength: 0,
+        ocr: true,
+        warning: 'Image OCR failed: tesseract is not available on this system'
+      };
+    }
+
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'moltagent-imgocr-'));
+    // Preserve extension so tesseract can detect image format
+    const ext = (filePath || 'image.png').split('.').pop().toLowerCase();
+    const inputPath = path.join(tmpDir, `input.${ext}`);
+    // tesseract appends .txt to the output base name automatically
+    const outputBase = path.join(tmpDir, 'output');
+    const outputTxt = `${outputBase}.txt`;
+
+    try {
+      await fs.writeFile(inputPath, buffer);
+
+      await execFileAsync('tesseract', [
+        inputPath,
+        outputBase,
+        '-l', this.ocrLanguages,
+        '--psm', '1'
+      ], {
+        timeout: this.ocrTimeoutMs
+      });
+
+      const rawText = await fs.readFile(outputTxt, 'utf-8');
+      const text = rawText.trim();
+
+      this.logger?.info?.(
+        `[TextExtractor] Image OCR complete: ${text.length} chars extracted from ${filePath || 'image'}`
+      );
+
+      // Note: truncation is handled by the shared logic in extract(), so we
+      // return the full text here. totalLength/truncated are filled in there.
+      return { text, truncated: false, totalLength: text.length, ocr: true };
+    } catch (err) {
+      this.logger?.warn?.(`[TextExtractor] Image OCR failed: ${err.message}`);
+      return {
+        text: '',
+        truncated: false,
+        totalLength: 0,
+        ocr: true,
+        warning: `Image OCR failed: ${err.message}`
+      };
+    } finally {
       try {
         await fs.rm(tmpDir, { recursive: true, force: true });
       } catch { /* ignore cleanup errors */ }

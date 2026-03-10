@@ -25,7 +25,9 @@ test('isSupported returns true for valid extensions', () => {
 });
 
 test('isSupported returns false for unsupported extensions', () => {
-  const invalid = ['image.png', 'photo.jpg', 'app.exe', 'archive.zip', 'video.mp4', 'file.pptx'];
+  // Note: image extensions (jpg, png, tiff, etc.) are now supported via image OCR.
+  // Only truly unsupported formats belong here.
+  const invalid = ['animation.gif', 'icon.svg', 'app.exe', 'archive.zip', 'video.mp4', 'file.pptx'];
   for (const f of invalid) {
     assert.strictEqual(TextExtractor.isSupported(f), false, `${f} should not be supported`);
   }
@@ -100,12 +102,13 @@ asyncTest('truncation notice includes sizes', async () => {
 asyncTest('extract throws for unsupported extension', async () => {
   const ext = new TextExtractor();
   const buf = Buffer.from('fake');
+  // Use .gif — not a supported extension (png/jpg/tiff etc. are now supported via image OCR)
   try {
-    await ext.extract(buf, 'image.png');
+    await ext.extract(buf, 'animation.gif');
     assert.fail('Should have thrown');
   } catch (err) {
     assert.ok(err.message.includes('Unsupported'));
-    assert.ok(err.message.includes('.png'));
+    assert.ok(err.message.includes('.gif'));
   }
 });
 
