@@ -1,30 +1,27 @@
 /**
- * IntentRouter — Dual-model intent classification with regex pre-router.
+ * IntentRouter — Three-gate intent classification with dual-model routing.
  *
+ * Messages are classified into three gates: knowledge (default), action
+ * (user wants to DO something), or compound (both knowledge and action).
  * Regex pre-router (~0ms) sends ~70% of messages to qwen2.5:3b (~420ms)
- * and ~30% ambiguous messages to qwen3:8b (~20-30s). If qwen2.5:3b
- * returns 'unknown', auto-escalates to qwen3:8b before cloud. If
- * either model times out, falls back to the other. If both fail,
+ * and ~30% ambiguous messages to qwen3:8b (~20-30s). If the fast model
+ * returns an unconfident result, auto-escalates to the smart model.
+ * If either model times out, falls back to the other. If both fail,
  * regex fallback keeps most messages local.
  *
  * @module agent/intent-router
- * @version 2.0.0
+ * @version 3.0.0
  */
 
 'use strict';
 
-const VALID_INTENTS = new Set([
-  'greeting', 'chitchat', 'confirmation', 'selection',
-  'deck', 'calendar', 'email', 'wiki', 'file', 'search',
-  'knowledge',
-  'complex',
-  // Fine-grained intents from Path C prompt (mapped to broad domains)
-  'calendar_create', 'calendar_query', 'calendar_update', 'calendar_delete',
-  'deck_create', 'deck_move', 'deck_query',
-  'wiki_write', 'wiki_read',
-  'email_send', 'email_read',
-  'file_upload', 'file_query',
-  'unknown'
+const VALID_GATES = new Set([
+  'knowledge', 'action', 'compound'
+]);
+
+// Passthrough intents — not gates, but valid classifier outputs
+const PASSTHROUGH_INTENTS = new Set([
+  'greeting', 'chitchat', 'confirmation', 'selection', 'complex', 'unknown'
 ]);
 
 // Map fine-grained intents to domain routing
@@ -39,117 +36,103 @@ const INTENT_TO_DOMAIN = {
 
 const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search', 'knowledge']);
 
-const COMPLEX_FALLBACK = Object.freeze({ intent: 'complex', domain: null, needsHistory: true, confidence: 0 });
+const COMPLEX_FALLBACK = Object.freeze({ gate: 'knowledge', intent: 'knowledge', domain: null, needsHistory: false, confidence: 0 });
 
 const INTENT_SCHEMA = Object.freeze({
   type: 'object',
   properties: {
-    intent: { type: 'string' },
-    compound: { type: 'boolean' }
+    gate: { type: 'string' },
+    domain: { type: 'string' },
+    confidence: { type: 'number' }
   },
-  required: ['intent']
+  required: ['gate']
 });
 
 /**
- * Classification prompt — description + context-aware rules.
+ * Classification prompt — three-gate system (knowledge/action/compound).
  * Constrained decoding + schema handle output format.
  * Context-aware rules help the LLM use conversation history for disambiguation.
  */
-const CLASSIFICATION_SYSTEM_PROMPT = `Classify the LAST user message into exactly one intent.
+const CLASSIFICATION_SYSTEM_PROMPT = `Classify the LAST user message into exactly ONE category.
 
-Available intents:
+ACTION — The user wants you to DO something.
+  The message contains a clear action verb:
+  create, make, set up, build, send, draft, compose, reply,
+  book, schedule, move, assign, update, delete, remove, remind, add,
+  upload, download, save, store, forward, write, remember, forget.
 
-TOOL INTENTS (the user wants you to DO something):
-- calendar_create: Create a new calendar event or meeting
-- calendar_query: List or check existing events
-- calendar_update: Modify, reschedule, or add people to an existing event
-- calendar_delete: Cancel or remove an event
-- deck_create: Create a new task card
-- deck_move: Move a task card to a different column or mark complete
-- deck_query: List or check existing tasks
-- wiki_write: Store or remember information for later
-- email_send: Compose or send an email
-- email_read: Check or search emails
-- file_upload: Upload or save a file
-- file_query: Find or list files
-- search: Research a topic on the web
+  Examples:
+  "Create a board for content planning" → action, domain: deck
+  "Send an email to Carlos" → action, domain: email
+  "Book a meeting for Tuesday at 3pm" → action, domain: calendar
+  "Move the onboarding card to Done" → action, domain: deck
+  "Save this to the wiki: Project X uses React" → action, domain: wiki
+  "Remind me to call Sarah next Monday" → action, domain: deck
+  "Remember this: our budget is 50k" → action, domain: wiki
+  "Upload the report" → action, domain: file
 
-KNOWLEDGE INTENT (the user wants to KNOW something):
-- knowledge: Any question about people, projects, status, or information
-  "Who is Carlos?" → knowledge (NOT email)
-  "What's Carlos's email?" → knowledge (NOT email)
-  "What's the status of onboarding?" → knowledge (NOT calendar or deck)
-  "Tell me about the Paradiesgarten client" → knowledge
-  "Summarize what you know about X" → knowledge
-  "What do you know about Y?" → knowledge
+COMPOUND — The user wants BOTH knowledge AND action in one message.
+  Contains a question AND an action request. Often uses "and", "then",
+  "if...then", "before", "after" to connect them.
+
+  Examples:
+  "Check if Carlos is available Tuesday and book a meeting" → compound, domain: calendar
+  "What's the status of onboarding and create a follow-up task" → compound, domain: deck
+  "Find the Q3 report and send it to Maria" → compound, domain: email
+
+KNOWLEDGE — Everything else. THIS IS THE DEFAULT.
+  The user wants to know something. Any question. Any lookup.
+  Any request for information. Anything ambiguous. Anything
+  you're not sure about.
+
+  Examples:
+  "Who is Carlos?" → knowledge
+  "What's Carlos's email?" → knowledge (NOT email — no action verb)
+  "What's the status of onboarding?" → knowledge (NOT deck — no action verb)
+  "What boards do I have?" → knowledge
+  "Tell me about Paradiesgarten" → knowledge
+  "What's the weather in Lisbon?" → knowledge
+  "How does our onboarding process work?" → knowledge
   "What meetings do I have?" → knowledge (asking for information)
+  "What tasks are in review?" → knowledge
 
-OTHER INTENTS:
-- wiki_read: ONLY when user asks to read a specific wiki page by name
-- chitchat: Greetings, small talk, casual conversation
-- unknown: Unclear or doesn't match any intent
+THE CRITICAL TEST:
+  Does the message contain an ACTION VERB (create, send, move, book, delete, remind...)?
+    YES + no question → action
+    YES + also a question → compound
+    NO → knowledge
 
-CRITICAL DISTINCTION — action vs question:
-- "Send an email to Carlos" → email_send (ACTION: send)
-- "What's Carlos's email?" → knowledge (QUESTION: asking for info)
-- "Book a meeting tomorrow" → calendar_create (ACTION: create)
-- "What meetings do I have?" → knowledge (QUESTION: asking for info)
-- "Create a board" → deck_create (ACTION: create)
-- "What boards do I have?" → deck_query (ACTION: list is a tool action)
-- "Move the onboarding card to done" → deck_move (ACTION: move)
-- "What's the status of onboarding?" → knowledge (QUESTION: asking for info)
-- When in doubt → knowledge (safer to search than call the wrong API)
+  "What's Carlos's email?" → No action verb → knowledge
+  "Send Carlos an email" → "Send" is action verb → action
+  "Check Carlos's email and send him a meeting invite" → question + action → compound
 
-STRUCTURED DATA QUERIES route to tool domains, not knowledge:
-- "What tasks are in review?" → deck_query (list cards filtered by stack)
-- "What cards are in the Done column?" → deck_query (list cards by stack)
-- "Show me all tasks" → deck_query (list cards)
-- "What boards do I have?" → deck_query (list boards)
-- "What's on my calendar tomorrow?" → calendar_query (list events by date)
-- "What events do I have this week?" → calendar_query (list events)
-- "Show me my inbox" → email_read (list messages)
-These ask for LISTINGS from one specific system. They don't need cross-domain synthesis.
-Knowledge is for cross-domain questions: "What's the status of onboarding?" (could be wiki + deck + calendar).
+When in doubt → knowledge. Always safe. Never wrong to search and synthesize.
 
-THESE ARE NOT EMAIL REQUESTS — they are knowledge queries:
-- "What's Carlos's email?" → knowledge (asking for information)
-- "Who has the email for the Berlin office?" → knowledge
-- "Do we have Sarah's email address?" → knowledge
-- "Who is Carlos and what's his email?" → knowledge
-- "What contact info do we have for the client?" → knowledge
-The word "email" in a question does NOT make it an email intent.
-
-THESE ARE email requests — they ask you to OPERATE email:
-- "Send an email to Carlos" → email_send
-- "Draft a reply to Sarah's message" → email_send
-- "Check my inbox" → email_read
-- "Forward that email to the team" → email_send
-
-The test: is the user asking you to OPERATE email (send, read, draft, reply, forward, check inbox) or asking for INFORMATION that happens to include the word "email"? Operate → email. Information → knowledge.
-
-COMPOUND DETECTION:
-Also set "compound": true if the message contains MULTIPLE distinct operations:
-- "and" connecting two different operations: "check X and create Y" → compound
-- "if/then" conditional logic: "if not, then do Z" → compound
-- Multiple question types: "what's the status AND when is the meeting" → compound
-- Sequential operations: "find X, then send it to Y" → compound
-Simple: "What's Carlos's email?" → compound: false (one operation)
-Compound: "Check Carlos's email and book a meeting with him" → compound: true (two operations)
-
-Rules:
-- CRITICAL: Read the <conversation> block FIRST. The user's message usually continues the current topic.
+CONTEXT-AWARE RULES:
+- Read the <conversation> block FIRST. The user's message usually continues the current topic.
 - If the assistant just showed calendar results, the user is probably still talking about calendar.
 - If the assistant just listed Deck cards, the user is probably still talking about Deck.
 - If the assistant just showed emails, the user is probably still talking about email.
 - If the assistant just listed files, the user is probably still talking about files.
-- If the message references something from the conversation ("that one", "delete it", "the first", "move it to done"), classify based on what the conversation was about, NOT the literal words.
-- "Delete the dentist" after a calendar listing = calendar_delete (not chitchat)
-- "Move the first one to done" after a Deck listing = deck_move (not unknown)
-- "Send it" after an email draft = email_send (not unknown)
-- "Read the most recent one" after a file listing = file_query (not wiki_read)
-- Only classify as unknown if the task genuinely doesn't match any intent AND is not a continuation of the current topic.
+- If the message references something from the conversation ("that one", "delete it", "the first", "move it to done"), classify based on what the conversation was about.
+- "Delete the dentist" after a calendar listing = action, domain: calendar
+- "Move the first one to done" after a Deck listing = action, domain: deck
+- "Send it" after an email draft = action, domain: email
+- "Read the most recent one" after a file listing = action, domain: file
 - When uncertain, prefer the domain of the most recent assistant action for continuations.
-- When uncertain and NOT continuing a conversation, prefer knowledge over a domain executor.
+- When uncertain and NOT continuing a conversation, prefer knowledge.
+
+Return JSON:
+{
+  "gate": "knowledge" | "action" | "compound",
+  "domain": "deck" | "calendar" | "email" | "wiki" | "file" | null,
+  "confidence": 0.0-1.0
+}
+
+domain is only set when gate is "action" or "compound".
+For "knowledge", domain is always null.
+For greetings/chitchat, return: {"gate": "greeting", "confidence": 0.9} or {"gate": "chitchat", "confidence": 0.9}
+For confirmations (yes/no after a question), return: {"gate": "confirmation", "confidence": 0.8}
 
 Respond with JSON only.`;
 
@@ -220,7 +203,7 @@ class IntentRouter {
       const result = await this._classifyWithModel(model, message, recentContext);
 
       // If fast model returns unknown, retry with smart model
-      if (!useSmartModel && ((result.intent === 'complex' && result.confidence === 0) || result.intent === 'unknown')) {
+      if (!useSmartModel && ((result.gate === 'knowledge' && result.confidence === 0) || result.gate === 'unknown')) {
         try {
           return this._postClassifyGuard(await this._classifyWithModel(this.smartModel, message, recentContext), message);
         } catch (_retryErr) {
@@ -293,65 +276,65 @@ class IntentRouter {
    * Lightweight regex-based fallback when both LLM models are unavailable.
    * Keeps most messages local instead of routing everything to cloud.
    * @param {string} message
-   * @returns {{intent: string, domain: string|null, needsHistory: boolean, confidence: number}}
+   * @returns {{gate: string, intent: string, domain: string|null, needsHistory: boolean, confidence: number, compound: boolean}}
    * @private
    */
   _regexFallback(message) {
     const lower = message.toLowerCase().trim();
 
-    // Compound detection: multiple operations linked by connectors
-    const compound = /\b(and\s+(then\s+)?(check|create|find|send|book|search|move|list|remind|look|tell|show))\b/.test(lower) ||
-      /\b(if\s+(not|no|none|empty|nothing)|then\s+(create|send|book|remind|add|move))\b/.test(lower) ||
-      /,\s*(and\s+)?(check|create|find|send|book|search|move|list|remind|look|tell|show)\b/.test(lower);
+    // Action verb detection
+    // Note: "schedule" as verb ("schedule a meeting") vs noun ("my schedule") is ambiguous.
+    // We include it here and rely on the knowledge patterns below to catch "what's on my schedule".
+    const hasActionVerb = /\b(create|make|set\s+up|build|send|draft|compose|reply|book|schedule\s+(a|an|the|my)|move|assign|update|delete|remove|remind|add|upload|download|save|store|forward|write|remember|forget)\b/.test(lower);
 
-    // Domain keywords
-    if (/\b(schedule\w*|calendar|events?|meetings?|appointments?|agenda)\b/.test(lower)) {
-      return { intent: 'domain', domain: 'calendar', needsHistory: false, confidence: 0.5, compound };
-    }
-    if (/\b(emails?|mail|send.*to|inbox)\b/.test(lower)) {
-      return { intent: 'domain', domain: 'email', needsHistory: false, confidence: 0.5, compound };
-    }
-    if (/\b(tasks?|cards?|boards?|deck|todos?|move\b.+\b(to done|to doing|to inbox|to working|to queued))\b/.test(lower)) {
-      return { intent: 'domain', domain: 'deck', needsHistory: false, confidence: 0.5, compound };
-    }
-    if (/\b(wiki|page|knowledge|note)\b/.test(lower)) {
-      return { intent: 'domain', domain: 'wiki', needsHistory: false, confidence: 0.5, compound };
-    }
-    if (/\b(file|folder|document|upload|download)\b/.test(lower)) {
-      return { intent: 'domain', domain: 'file', needsHistory: false, confidence: 0.5, compound };
-    }
-    if (/\b(search|find|look up|look for)\b/.test(lower)) {
-      // Knowledge questions take priority over generic search
-      if (/\b(who is|what is|what do you know|tell me about|what'?s the status|what about)\b/.test(lower)) {
-        return { intent: 'domain', domain: 'knowledge', needsHistory: false, confidence: 0.5, compound };
-      }
-      return { intent: 'domain', domain: 'search', needsHistory: false, confidence: 0.5, compound };
+    // Compound detection: action verb + connector + another operation
+    const compound = hasActionVerb && (
+      /\b(and\s+(then\s+)?(check|create|find|send|book|search|move|list|remind|look|tell|show))\b/.test(lower) ||
+      /\b(if\s+(not|no|none|empty|nothing)|then\s+(create|send|book|remind|add|move))\b/.test(lower) ||
+      /,\s*(and\s+)?(check|create|find|send|book|search|move|list|remind|look|tell|show)\b/.test(lower)
+    );
+
+    // Domain detection
+    let domain = null;
+    if (/\b(schedule\w*|calendar|events?|meetings?|appointments?|agenda)\b/.test(lower)) domain = 'calendar';
+    else if (/\b(emails?|mail|inbox)\b/.test(lower)) domain = 'email';
+    else if (/\b(tasks?|cards?|boards?|deck|todos?|move\b.+\b(to done|to doing|to inbox|to working|to queued))\b/.test(lower)) domain = 'deck';
+    else if (/\b(wiki|page|knowledge|note)\b/.test(lower)) domain = 'wiki';
+    else if (/\b(file|folder|document|upload|download)\b/.test(lower)) domain = 'file';
+
+    // Route based on action verb presence
+    if (hasActionVerb && domain) {
+      const gate = compound ? 'compound' : 'action';
+      return {
+        gate, intent: domain,
+        domain, needsHistory: false, confidence: 0.5, compound
+      };
     }
 
     // Knowledge queries — questions about people, projects, status
-    if (/\b(who is|what is|what do you know|tell me about|what'?s the status|what about|what'?s .{0,20} email|summarize)\b/.test(lower)) {
-      return { intent: 'domain', domain: 'knowledge', needsHistory: false, confidence: 0.5, compound };
+    if (/\b(who is|what is|what'?s|what do you know|tell me about|what about|do i have|show me|any .{0,20}(today|tomorrow|this week|next week)|summarize|how does|how do)\b/.test(lower)) {
+      return { gate: 'knowledge', intent: 'knowledge', domain: null, needsHistory: false, confidence: 0.5, compound: false };
     }
 
-    // Memory language → wiki write (catches what regex pre-router would send to smart model)
+    // Memory language → action:wiki (remember/forget are action verbs)
     if (/\b(remember|forget|forgot|told you|decision|stored)\b/.test(lower)) {
-      return { intent: 'domain', domain: 'wiki', needsHistory: false, confidence: 0.5, compound };
+      return { gate: 'action', intent: 'wiki', domain: 'wiki', needsHistory: false, confidence: 0.5, compound: false };
     }
 
     // Short messages → greeting/chitchat
     if (lower.split(/\s+/).length <= 8) {
-      return { intent: 'chitchat', domain: null, needsHistory: false, confidence: 0.4, compound };
+      return { gate: 'chitchat', intent: 'chitchat', domain: null, needsHistory: false, confidence: 0.4, compound: false };
     }
 
-    // Long unmatched → complex (cloud) — only case that still goes to cloud
-    return { ...COMPLEX_FALLBACK, confidence: 0.3, compound };
+    // Default: knowledge (NOT complex — knowledge is always the safe default)
+    return { gate: 'knowledge', intent: 'knowledge', domain: null, needsHistory: false, confidence: 0.3, compound: false };
   }
 
   /**
    * Parse LLM classification response into structured result.
-   * Handles both fine-grained (calendar_create) and broad (calendar) intents.
+   * Handles both three-gate format (gate/domain) and legacy intent format.
    * @param {string} content - Raw LLM response
-   * @returns {{intent: string, domain: string|null, needsHistory: boolean, confidence: number}}
+   * @returns {{gate: string, intent: string, domain: string|null, needsHistory: boolean, confidence: number, compound: boolean}}
    * @private
    */
   _parseClassification(content) {
@@ -368,54 +351,76 @@ class IntentRouter {
 
     try {
       const parsed = JSON.parse(match[0]);
-      const intent = (parsed.intent || '').toLowerCase().trim();
-      const compound = parsed.compound === true;
+      let gate = (parsed.gate || '').toLowerCase().trim();
+      let domain = (parsed.domain || '').toLowerCase().trim() || null;
+      const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 0.8;
 
-      if (!intent || !VALID_INTENTS.has(intent)) {
-        return { ...COMPLEX_FALLBACK, compound };
+      // Legacy format: LLM returned {"intent":"..."} instead of {"gate":"..."}
+      if (!gate && parsed.intent) {
+        const intent = parsed.intent.toLowerCase().trim();
+        if (intent === 'knowledge') {
+          gate = 'knowledge';
+        } else if (INTENT_TO_DOMAIN[intent]) {
+          gate = 'action';
+          domain = INTENT_TO_DOMAIN[intent];
+        } else if (DOMAIN_INTENTS.has(intent)) {
+          gate = 'action';
+          domain = intent;
+        } else if (PASSTHROUGH_INTENTS.has(intent)) {
+          gate = intent;
+        } else {
+          return { ...COMPLEX_FALLBACK, compound: parsed.compound === true };
+        }
       }
 
-      // Unknown → complex (cloud escalation)
-      if (intent === 'unknown') {
-        return { ...COMPLEX_FALLBACK, compound };
+      // Validate gate
+      if (!gate || (!VALID_GATES.has(gate) && !PASSTHROUGH_INTENTS.has(gate))) {
+        return { ...COMPLEX_FALLBACK, compound: parsed.compound === true };
       }
 
-      // Fine-grained intents → map to domain (preserve rawIntent for post-classification guard)
-      if (INTENT_TO_DOMAIN[intent]) {
-        return { intent: 'domain', domain: INTENT_TO_DOMAIN[intent], needsHistory: false, confidence: 0.8, compound, rawIntent: intent };
+      const compound = gate === 'compound' || parsed.compound === true;
+
+      // Unknown → knowledge (knowledge is the safe default)
+      if (gate === 'unknown') {
+        gate = 'knowledge';
+        domain = null;
       }
 
-      // Broad domain intents (legacy / fallback)
-      if (DOMAIN_INTENTS.has(intent)) {
-        return { intent: 'domain', domain: intent, needsHistory: false, confidence: 0.8, compound };
+      // Build result based on gate
+      let result;
+      if (gate === 'action') {
+        result = { gate: 'action', domain: domain || null, needsHistory: false, confidence, compound };
+      } else if (gate === 'compound') {
+        result = { gate: 'compound', domain: domain || null, needsHistory: false, confidence, compound: true };
+      } else if (gate === 'knowledge') {
+        result = { gate: 'knowledge', domain: null, needsHistory: false, confidence, compound };
+      } else if (gate === 'confirmation' || gate === 'selection') {
+        result = { gate, domain: null, needsHistory: true, confidence, compound };
+      } else if (gate === 'complex') {
+        result = { gate: 'complex', domain: null, needsHistory: true, confidence: Math.min(confidence, 0.7), compound };
+      } else {
+        // greeting, chitchat
+        result = { gate, domain: null, needsHistory: false, confidence, compound };
       }
 
-      // Confirmation/selection need history
-      if (intent === 'confirmation' || intent === 'selection') {
-        return { intent, domain: null, needsHistory: true, confidence: 0.8, compound };
-      }
+      // Backward-compat shim: code reading result.intent still works
+      // action → domain name, compound → domain name, others → gate name
+      result.intent = (result.gate === 'action' || result.gate === 'compound')
+        ? (result.domain || 'complex')
+        : result.gate;
 
-      // Complex needs history
-      if (intent === 'complex') {
-        return { intent: 'complex', domain: null, needsHistory: true, confidence: 0.7, compound };
-      }
-
-      // Greeting, chitchat
-      return { intent, domain: null, needsHistory: false, confidence: 0.9, compound };
+      return result;
     } catch {
       return { ...COMPLEX_FALLBACK };
     }
   }
 
   /**
-   * Post-classification guard: catches keyword-based misclassifications.
+   * Post-classification guard: catches action-gate false positives.
    *
-   * The fast model (qwen2.5:3b) pattern-matches on keywords like "email" and
-   * routes "What's Carlos's email?" to email_send. This guard reclassifies
-   * to knowledge when the message lacks email action verbs.
-   *
-   * Same pattern as WikiExecutor's introspect→read reclassification:
-   * the prompt teaches, the code catches what the prompt misses.
+   * The fast model may classify a question as "action" because it contains
+   * a domain keyword. This guard overrides to knowledge when there is no
+   * action verb present — the single reliable signal for an action gate.
    *
    * @param {Object} result - Classification result
    * @param {string} message - Original user message
@@ -424,38 +429,15 @@ class IntentRouter {
    */
   _postClassifyGuard(result, message) {
     if (!result || !message) return result;
-    const lower = message.toLowerCase();
 
-    // Guard: email intent without email action verbs → reclassify as knowledge
-    // Skip when LLM returned a fine-grained action intent (email_send, email_read) —
-    // those indicate the LLM understood the action, not just keyword-matched.
-    if (result.domain === 'email' && !result.rawIntent) {
-      const hasEmailAction = /\b(send|draft|compose|reply|forward|check\s+(my\s+)?(inbox|email)|write\s+(an?\s+)?email|read\s+(my\s+)?email)\b/.test(lower);
-      if (!hasEmailAction) {
-        return { ...result, domain: 'knowledge' };
-      }
-    }
-
-    // Guard: email_read with question about someone's email address → knowledge
-    if (result.domain === 'email' && result.rawIntent === 'email_read') {
-      const asksAboutEmailAddress = /\b(what('?s| is).*email|email\s*(address|for)|who.*email|have.*email)\b/.test(lower);
-      if (asksAboutEmailAddress) {
-        return { ...result, domain: 'knowledge' };
-      }
-    }
-
-    // Guard: knowledge intent for structured data queries → reclassify to tool domain
-    if (result.domain === 'knowledge') {
-      // Deck structured queries: tasks/cards in a specific stack or listing
-      if (/\b(tasks?|cards?)\s+(in|on|under|from)\s+(the\s+)?(review|done|todo|doing|in\s*progress|backlog)/i.test(lower) ||
-          /\b(what|show|list)\b.*\b(boards?|stacks?|columns?)\b/i.test(lower) ||
-          /\b(show|list|get)\s+(me\s+)?(all\s+)?(tasks?|cards?)\b/i.test(lower)) {
-        return { ...result, domain: 'deck', rawIntent: 'deck_query' };
-      }
-      // Calendar structured queries: events on a specific date
-      if (/\b(what('?s| is))\s+on\s+my\s+calendar\b/i.test(lower) ||
-          /\b(what|show|list)\b.*\b(events?|appointments?|meetings?)\b.*\b(today|tomorrow|this\s+week|next\s+week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(lower)) {
-        return { ...result, domain: 'calendar', rawIntent: 'calendar_query' };
+    // Guard: if classifier said "action" or "compound" but there's no action verb — override to knowledge
+    if (result.gate === 'action' || result.gate === 'compound') {
+      const actionVerbs = /\b(create|make|set\s+up|build|send|draft|compose|reply|book|schedule|move|assign|update|delete|remove|remind|add|upload|download|save|store|forward|write|remember|forget)\b/i;
+      if (!actionVerbs.test(message)) {
+        result.gate = 'knowledge';
+        result.domain = null;
+        result.intent = 'knowledge';
+        result.compound = false;
       }
     }
 
@@ -467,5 +449,6 @@ class IntentRouter {
 // Export class and pre-router function
 IntentRouter.needsSmartClassifier = needsSmartClassifier;
 IntentRouter.CLASSIFICATION_SYSTEM_PROMPT = CLASSIFICATION_SYSTEM_PROMPT;
+IntentRouter.VALID_GATES = VALID_GATES;
 
 module.exports = IntentRouter;

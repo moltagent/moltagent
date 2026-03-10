@@ -12,7 +12,7 @@
  * Dual-Model Classifier Tests
  *
  * Validates IntentRouter's dual-model routing: regex pre-router picks model,
- * phi4-mini unknown auto-escalates to qwen3:8b, mutual fallback on timeout,
+ * fast model unknown auto-escalates to qwen3:8b, mutual fallback on timeout,
  * thinking indicator for slow path.
  *
  * Run: node test/unit/agent/dual-model-classifier.test.js
@@ -44,7 +44,7 @@ function createRouter(modelResponses, opts = {}) {
     provider,
     config: {
       classifyTimeout: 1000,
-      fastModel: 'phi4-mini',
+      fastModel: 'qwen2.5:3b',
       smartModel: 'qwen3:8b',
       ...opts
     }
@@ -52,19 +52,19 @@ function createRouter(modelResponses, opts = {}) {
   return { router, calls };
 }
 
-// -- Test 1: Explicit message → phi4-mini called (not qwen3) --
-asyncTest('explicit message uses phi4-mini', async () => {
+// -- Test 1: Explicit message → qwen2.5:3b called (not qwen3) --
+asyncTest('explicit message uses qwen2.5:3b', async () => {
   const { router, calls } = createRouter({
-    'phi4-mini': { intent: 'calendar_create' }
+    'qwen2.5:3b': { intent: 'calendar_create' }
   });
   const result = await router.classify('Schedule a meeting tomorrow');
   assert.strictEqual(calls.length, 1, 'Should make exactly 1 call');
-  assert.strictEqual(calls[0].model, 'phi4-mini');
-  assert.strictEqual(result.intent, 'domain');
+  assert.strictEqual(calls[0].model, 'qwen2.5:3b');
+  assert.strictEqual(result.gate, 'action');
   assert.strictEqual(result.domain, 'calendar');
 });
 
-// -- Test 2: Ambiguous message → qwen3:8b called (not phi4-mini) --
+// -- Test 2: Ambiguous message → qwen3:8b called (not qwen2.5:3b) --
 asyncTest('ambiguous message uses qwen3:8b', async () => {
   const { router, calls } = createRouter({
     'qwen3:8b': { intent: 'wiki_write' }
@@ -72,60 +72,60 @@ asyncTest('ambiguous message uses qwen3:8b', async () => {
   const result = await router.classify('Remember that Sarah prefers video calls');
   assert.strictEqual(calls.length, 1, 'Should make exactly 1 call');
   assert.strictEqual(calls[0].model, 'qwen3:8b');
-  assert.strictEqual(result.intent, 'domain');
+  assert.strictEqual(result.gate, 'action');
   assert.strictEqual(result.domain, 'wiki');
 });
 
-// -- Test 3: phi4-mini returns "unknown" → auto-escalates to qwen3:8b --
-asyncTest('phi4-mini unknown auto-escalates to qwen3:8b', async () => {
+// -- Test 3: fast model returns unknown confidence → auto-escalates to qwen3:8b --
+asyncTest('fast model unknown auto-escalates to qwen3:8b', async () => {
   const { router, calls } = createRouter({
-    'phi4-mini': { intent: 'unknown' },
+    'qwen2.5:3b': { gate: 'knowledge', confidence: 0 },
     'qwen3:8b': { intent: 'deck_move' }
   });
-  const result = await router.classify('Mark the onboarding task as complete');
-  assert.strictEqual(calls.length, 2, 'Should make 2 calls (phi → qwen)');
-  assert.strictEqual(calls[0].model, 'phi4-mini');
+  const result = await router.classify('Move the onboarding task to done');
+  assert.strictEqual(calls.length, 2, 'Should make 2 calls (fast → smart)');
+  assert.strictEqual(calls[0].model, 'qwen2.5:3b');
   assert.strictEqual(calls[1].model, 'qwen3:8b');
-  assert.strictEqual(result.intent, 'domain');
+  assert.strictEqual(result.gate, 'action');
   assert.strictEqual(result.domain, 'deck');
 });
 
-// -- Test 4: phi4-mini timeout → falls back to qwen3:8b --
-asyncTest('phi4-mini timeout falls back to qwen3:8b', async () => {
+// -- Test 4: fast model timeout → falls back to qwen3:8b --
+asyncTest('fast model timeout falls back to qwen3:8b', async () => {
   const { router, calls } = createRouter({
-    'phi4-mini': new Error('Ollama request timed out after 1000ms'),
+    'qwen2.5:3b': new Error('Ollama request timed out after 1000ms'),
     'qwen3:8b': { intent: 'calendar_query' }
   });
-  const result = await router.classify("What's on my calendar?");
+  const result = await router.classify('Book a meeting on my calendar for Friday');
   assert.strictEqual(calls.length, 2, 'Should make 2 calls');
-  assert.strictEqual(calls[0].model, 'phi4-mini');
+  assert.strictEqual(calls[0].model, 'qwen2.5:3b');
   assert.strictEqual(calls[1].model, 'qwen3:8b');
   assert.strictEqual(result.domain, 'calendar');
 });
 
-// -- Test 5: qwen3:8b timeout → falls back to phi4-mini --
-asyncTest('qwen3:8b timeout falls back to phi4-mini', async () => {
+// -- Test 5: qwen3:8b timeout → falls back to qwen2.5:3b --
+asyncTest('qwen3:8b timeout falls back to qwen2.5:3b', async () => {
   const { router, calls } = createRouter({
-    'phi4-mini': { intent: 'wiki_write' },
+    'qwen2.5:3b': { intent: 'wiki_write' },
     'qwen3:8b': new Error('Ollama request timed out after 40000ms')
   });
   const result = await router.classify('Remember that the budget is 50k');
   assert.strictEqual(calls.length, 2, 'Should make 2 calls');
   assert.strictEqual(calls[0].model, 'qwen3:8b', 'First call should be smart model (ambiguous message)');
-  assert.strictEqual(calls[1].model, 'phi4-mini', 'Fallback to fast model');
+  assert.strictEqual(calls[1].model, 'qwen2.5:3b', 'Fallback to fast model');
   assert.strictEqual(result.domain, 'wiki');
 });
 
-// -- Test 6: Both models fail → returns complex (regex fallback) --
+// -- Test 6: Both models fail → returns gate-based result (regex fallback) --
 asyncTest('both models fail → regex fallback', async () => {
   const { router, calls } = createRouter({
-    'phi4-mini': new Error('Connection refused'),
+    'qwen2.5:3b': new Error('Connection refused'),
     'qwen3:8b': new Error('Connection refused')
   });
-  const result = await router.classify('check my email');
+  const result = await router.classify('send an email to the team about the project update');
   assert.strictEqual(calls.length, 2, 'Should try both models');
-  // regex fallback catches "email"
-  assert.strictEqual(result.intent, 'domain');
+  // regex fallback catches "send" (action verb) + "email" (domain)
+  assert.strictEqual(result.gate, 'action');
   assert.strictEqual(result.domain, 'email');
   assert.strictEqual(result.confidence, 0.5, 'Regex fallback confidence');
 });
@@ -142,11 +142,11 @@ asyncTest('thinking indicator sent for smart model path', async () => {
   assert.ok(indicatorSent, 'Thinking indicator should be sent for smart model path');
 });
 
-// -- Test 8: Thinking indicator NOT sent for phi4-mini path --
+// -- Test 8: Thinking indicator NOT sent for fast model path --
 asyncTest('thinking indicator NOT sent for fast model path', async () => {
   let indicatorSent = false;
   const { router } = createRouter({
-    'phi4-mini': { intent: 'calendar_create' }
+    'qwen2.5:3b': { intent: 'calendar_create' }
   });
   await router.classify('Schedule a meeting', [], {
     replyFn: async () => { indicatorSent = true; }
@@ -157,30 +157,30 @@ asyncTest('thinking indicator NOT sent for fast model path', async () => {
 // -- Test 9: Model parameter passed correctly to provider --
 asyncTest('model parameter passed correctly to provider', async () => {
   const { router, calls } = createRouter({
-    'phi4-mini': { intent: 'chitchat' }
+    'qwen2.5:3b': { intent: 'chitchat' }
   });
   await router.classify('Good morning!');
-  assert.strictEqual(calls[0].model, 'phi4-mini');
+  assert.strictEqual(calls[0].model, 'qwen2.5:3b');
   assert.ok(calls[0].format, 'Should pass format/schema');
   assert.ok(calls[0].options, 'Should pass options');
   assert.strictEqual(calls[0].options.temperature, 0.1);
   assert.strictEqual(calls[0].options.num_ctx, 2048);
 });
 
-// -- Test 10: Classification prompt has intent descriptions and context-aware rules --
-asyncTest('classification prompt uses Path C (description-only)', async () => {
+// -- Test 10: Classification prompt has three-gate sections and context-aware rules --
+asyncTest('classification prompt uses three-gate format', async () => {
   const { router, calls } = createRouter({
-    'phi4-mini': { intent: 'chitchat' }
+    'qwen2.5:3b': { intent: 'chitchat' }
   });
   await router.classify('Hello there');
   const systemPrompt = calls[0].system;
-  assert.ok(systemPrompt.includes('Available intents:'), 'Should have intent descriptions');
-  assert.ok(systemPrompt.includes('calendar_create'), 'Should have fine-grained intents');
-  assert.ok(systemPrompt.includes('wiki_write'), 'Should have wiki_write');
-  assert.ok(systemPrompt.includes('Rules:'), 'Should have context-aware rules section');
+  assert.ok(systemPrompt.includes('ACTION'), 'Should have ACTION gate section');
+  assert.ok(systemPrompt.includes('COMPOUND'), 'Should have COMPOUND gate section');
+  assert.ok(systemPrompt.includes('KNOWLEDGE'), 'Should have KNOWLEDGE gate section');
+  assert.ok(systemPrompt.includes('CONTEXT-AWARE RULES'), 'Should have context-aware rules section');
 });
 
-// -- Test 11: Fine-grained intents map to correct domains --
+// -- Test 11: Fine-grained legacy intents map to correct gate and domains --
 asyncTest('fine-grained intents map to correct domains', async () => {
   const cases = [
     ['calendar_create', 'calendar'], ['calendar_query', 'calendar'],
@@ -191,8 +191,11 @@ asyncTest('fine-grained intents map to correct domains', async () => {
     ['file_upload', 'file'], ['file_query', 'file']
   ];
   for (const [intentName, expectedDomain] of cases) {
-    const { router } = createRouter({ 'phi4-mini': { intent: intentName } });
-    const result = await router.classify('test message');
+    const { router } = createRouter({ 'qwen2.5:3b': { intent: intentName } });
+    // Use a message with a generic action verb so the post-classify guard does not override
+    const result = await router.classify('create and send it');
+    assert.strictEqual(result.gate, 'action',
+      `${intentName} should produce gate 'action', got ${result.gate}`);
     assert.strictEqual(result.domain, expectedDomain,
       `${intentName} should map to domain ${expectedDomain}, got ${result.domain}`);
   }
@@ -209,7 +212,7 @@ asyncTest('smart model gets extended timeout', async () => {
   };
   const router = new IntentRouter({
     provider,
-    config: { classifyTimeout: 5000, fastModel: 'phi4-mini', smartModel: 'qwen3:8b' }
+    config: { classifyTimeout: 5000, fastModel: 'qwen2.5:3b', smartModel: 'qwen3:8b' }
   });
   // Ambiguous message → smart model
   await router.classify('Remember that Sarah prefers video calls');

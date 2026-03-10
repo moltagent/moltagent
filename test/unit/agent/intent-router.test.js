@@ -78,43 +78,45 @@ asyncTest('classify() routes bare "Hey" to LLM, not regex', async () => {
 
 // -- Boundary: "Good morning, can you check my calendar?" → LLM decides --
 asyncTest('classify() routes "Good morning, can you check my calendar?" to LLM', async () => {
+  // Three-gate: "check my calendar" has no action verb → post-classify guard reclassifies to knowledge
   const router = createRouter('{"intent":"calendar"}');
   const result = await router.classify('Good morning, can you check my calendar?');
-  assert.strictEqual(result.intent, 'domain');
-  assert.strictEqual(result.domain, 'calendar');
+  assert.strictEqual(result.gate, 'knowledge');
+  assert.strictEqual(result.domain, null);
 });
 
-// -- Test 3: LLM returns {"intent":"deck"} → domain:deck --
-asyncTest('classify() returns domain:deck when LLM classifies as deck', async () => {
+// -- Test 3: LLM returns {"intent":"deck"} → gate:action, domain:deck --
+asyncTest('classify() returns gate:action domain:deck when LLM classifies as deck', async () => {
   const router = createRouter('{"intent":"deck"}');
   const result = await router.classify('create a card for the feature');
-  assert.strictEqual(result.intent, 'domain');
+  assert.strictEqual(result.gate, 'action');
   assert.strictEqual(result.domain, 'deck');
   assert.strictEqual(result.needsHistory, false);
 });
 
-// -- Test 4: LLM returns {"intent":"calendar"} → domain:calendar --
-asyncTest('classify() returns domain:calendar when LLM classifies as calendar', async () => {
+// -- Test 4: LLM returns {"intent":"calendar"} → gate:action, domain:calendar --
+asyncTest('classify() returns gate:action domain:calendar when LLM classifies as calendar', async () => {
   const router = createRouter('{"intent":"calendar"}');
   const result = await router.classify('schedule a meeting for tomorrow');
-  assert.strictEqual(result.intent, 'domain');
+  assert.strictEqual(result.gate, 'action');
   assert.strictEqual(result.domain, 'calendar');
 });
 
-// -- Test 5: LLM returns {"intent":"email"} → domain:email --
-asyncTest('classify() returns domain:email when LLM classifies as email', async () => {
+// -- Test 5: LLM returns {"intent":"email"} → gate:action, domain:email --
+asyncTest('classify() returns gate:action domain:email when LLM classifies as email', async () => {
   const router = createRouter('{"intent":"email"}');
   const result = await router.classify('send an email to Bob');
-  assert.strictEqual(result.intent, 'domain');
+  assert.strictEqual(result.gate, 'action');
   assert.strictEqual(result.domain, 'email');
 });
 
-// -- Test 6: LLM returns {"intent":"search"} → domain:search --
-asyncTest('classify() returns domain:search when LLM classifies as search', async () => {
+// -- Test 6: LLM returns {"intent":"search"} → post-guard reclassifies to knowledge (no action verb) --
+asyncTest('classify() reclassifies search to knowledge when no action verb present', async () => {
   const router = createRouter('{"intent":"search"}');
   const result = await router.classify('what do you know about Portugal');
-  assert.strictEqual(result.intent, 'domain');
-  assert.strictEqual(result.domain, 'search');
+  // Three-gate: "what do you know about" has no action verb → post-classify guard → knowledge
+  assert.strictEqual(result.gate, 'knowledge');
+  assert.strictEqual(result.domain, null);
 });
 
 // -- Test 7: LLM returns {"intent":"confirmation"} → confirmation, needsHistory --
@@ -145,11 +147,11 @@ asyncTest('classify() returns complex with needsHistory when LLM classifies as c
   assert.strictEqual(result.needsHistory, true);
 });
 
-// -- Test 10: LLM returns garbage → complex fallback --
-asyncTest('classify() returns complex fallback on garbage LLM response', async () => {
+// -- Test 10: LLM returns garbage → knowledge fallback (COMPLEX_FALLBACK is now gate:knowledge) --
+asyncTest('classify() returns knowledge fallback on garbage LLM response', async () => {
   const router = createRouter('I think this is about tasks maybe?');
   const result = await router.classify('something ambiguous');
-  assert.strictEqual(result.intent, 'complex');
+  assert.strictEqual(result.gate, 'knowledge');
   assert.strictEqual(result.confidence, 0);
 });
 
@@ -162,10 +164,9 @@ asyncTest('classify() retries on timeout then falls back to regex', async () => 
   });
   const result = await router.classify('what is on my schedule today');
   assert.strictEqual(callCount, 2, 'Should have tried twice (initial + retry)');
-  // Regex fallback should pick up "schedule" → calendar
-  assert.strictEqual(result.intent, 'domain');
-  assert.strictEqual(result.domain, 'calendar');
-  assert.strictEqual(result.confidence, 0.5);
+  // "what is on my schedule today" has no action verb → regex falls back to knowledge gate
+  assert.strictEqual(result.gate, 'knowledge');
+  assert.strictEqual(result.domain, null);
 });
 
 // -- Test 11b: LLM timeout → retry succeeds --
@@ -184,7 +185,7 @@ asyncTest('classify() succeeds on retry after first timeout', async () => {
   const result = await router.classify('hey there');
   assert.strictEqual(callCount, 2, 'Should have tried twice');
   assert.strictEqual(result.intent, 'greeting');
-  assert.strictEqual(result.confidence, 0.9);
+  assert.strictEqual(result.confidence, 0.8);
 });
 
 // -- Test 11c: Non-timeout error → tries other model, then regex fallback --
@@ -196,8 +197,9 @@ asyncTest('classify() tries other model on error, then regex fallback', async ()
   });
   const result = await router.classify('check my email');
   assert.strictEqual(callCount, 2, 'Should try both models before regex fallback');
-  assert.strictEqual(result.intent, 'domain');
-  assert.strictEqual(result.domain, 'email');
+  // "check my email" has no action verb → 3 words short message → chitchat
+  assert.strictEqual(result.gate, 'chitchat');
+  assert.strictEqual(result.domain, null);
 });
 
 // -- Test 11d: Fallback model uses different timeout tier --
@@ -225,7 +227,7 @@ asyncTest('classify() fallback model uses appropriate timeout', async () => {
 asyncTest('classify() parses intent from response wrapped in think tags', async () => {
   const router = createRouter('<think>The user wants to manage cards...</think>{"intent":"deck"}');
   const result = await router.classify('move the card to done');
-  assert.strictEqual(result.intent, 'domain');
+  assert.strictEqual(result.gate, 'action');
   assert.strictEqual(result.domain, 'deck');
 });
 
@@ -233,7 +235,7 @@ asyncTest('classify() parses intent from response wrapped in think tags', async 
 test('_parseClassification handles markdown-fenced JSON', () => {
   const router = createRouter('');
   const result = router._parseClassification('```json\n{"intent":"wiki"}\n```');
-  assert.strictEqual(result.intent, 'domain');
+  assert.strictEqual(result.gate, 'action');
   assert.strictEqual(result.domain, 'wiki');
 });
 
@@ -261,71 +263,70 @@ asyncTest('classify() includes recentContext in LLM prompt', async () => {
 
 // -- _regexFallback tests --
 
-test('_regexFallback maps calendar keywords correctly', () => {
+test('_regexFallback routes calendar questions to knowledge (no action verb)', () => {
   const router = createRouter('');
   const cases = [
-    ["What's on my schedule today", 'calendar'],
-    ['Do I have any meetings this week', 'calendar'],
-    ['Check my calendar', 'calendar'],
-    ['Any events tomorrow', 'calendar'],
-    ["What's on my agenda", 'calendar']
+    "What's on my schedule today",
+    'Do I have any meetings this week',
+    'Any events tomorrow',
+    "What's on my agenda"
   ];
-  for (const [msg, expectedDomain] of cases) {
+  for (const msg of cases) {
     const result = router._regexFallback(msg);
-    assert.strictEqual(result.intent, 'domain', `"${msg}" → intent should be domain`);
-    assert.strictEqual(result.domain, expectedDomain, `"${msg}" → domain should be ${expectedDomain}`);
+    assert.strictEqual(result.gate, 'knowledge', `"${msg}" → should be knowledge (no action verb)`);
   }
 });
 
-test('_regexFallback maps email keywords correctly', () => {
+test('_regexFallback routes "check my email" to chitchat (no action verb, short message)', () => {
   const router = createRouter('');
   const result = router._regexFallback('check my email');
-  assert.strictEqual(result.domain, 'email');
+  assert.strictEqual(result.gate, 'chitchat');
 });
 
-test('_regexFallback maps deck keywords correctly', () => {
+test('_regexFallback routes "show my tasks" to chitchat (no action verb, short message)', () => {
   const router = createRouter('');
   const result = router._regexFallback('show my tasks');
-  assert.strictEqual(result.domain, 'deck');
+  assert.strictEqual(result.gate, 'chitchat');
 });
 
-test('_regexFallback maps wiki keywords correctly', () => {
+test('_regexFallback routes "open the wiki page" to chitchat (no action verb, short message)', () => {
   const router = createRouter('');
   const result = router._regexFallback('open the wiki page');
-  assert.strictEqual(result.domain, 'wiki');
+  assert.strictEqual(result.gate, 'chitchat');
 });
 
-test('_regexFallback maps file keywords correctly', () => {
+test('_regexFallback maps file keywords correctly (upload is action verb)', () => {
   const router = createRouter('');
   const result = router._regexFallback('upload this document');
+  assert.strictEqual(result.gate, 'action');
   assert.strictEqual(result.domain, 'file');
 });
 
-test('_regexFallback maps search keywords correctly', () => {
+test('_regexFallback routes "search for project docs" to chitchat (no action verb, short message)', () => {
   const router = createRouter('');
   const result = router._regexFallback('search for project docs');
-  assert.strictEqual(result.domain, 'search');
+  assert.strictEqual(result.gate, 'chitchat');
 });
 
 test('_regexFallback returns chitchat for short ambiguous messages', () => {
   const router = createRouter('');
   const result = router._regexFallback('hey how are you doing');
-  assert.strictEqual(result.intent, 'chitchat');
+  assert.strictEqual(result.gate, 'chitchat');
   assert.strictEqual(result.confidence, 0.4);
 });
 
-test('_regexFallback returns complex for long ambiguous messages', () => {
+test('_regexFallback returns knowledge for long ambiguous messages', () => {
   const router = createRouter('');
   const result = router._regexFallback(
     'I need you to analyze the current market trends and compare them with our previous quarterly results and then generate a comprehensive report'
   );
-  assert.strictEqual(result.intent, 'complex');
+  assert.strictEqual(result.gate, 'knowledge');
   assert.strictEqual(result.confidence, 0.3);
 });
 
 // -- Prompt tests --
 
-asyncTest('System prompt has calendar intents and context-aware rules', async () => {
+asyncTest('System prompt has three-gate sections and context-aware rules', async () => {
   let capturedSystem = '';
   const router = new IntentRouter({
     provider: {
@@ -337,10 +338,10 @@ asyncTest('System prompt has calendar intents and context-aware rules', async ()
     config: { classifyTimeout: 5000 }
   });
   await router.classify("What's on my schedule for today?");
-  assert.ok(capturedSystem.includes('calendar_create'), 'System prompt should have calendar_create');
-  assert.ok(capturedSystem.includes('calendar_query'), 'System prompt should have calendar_query');
-  assert.ok(capturedSystem.includes('calendar_update'), 'System prompt should have calendar_update');
-  assert.ok(capturedSystem.includes('Rules:'), 'System prompt should have context-aware Rules section');
+  assert.ok(capturedSystem.includes('ACTION'), 'System prompt should have ACTION section');
+  assert.ok(capturedSystem.includes('KNOWLEDGE'), 'System prompt should have KNOWLEDGE section');
+  assert.ok(capturedSystem.includes('COMPOUND'), 'System prompt should have COMPOUND section');
+  assert.ok(capturedSystem.includes('CONTEXT-AWARE RULES'), 'System prompt should have context-aware rules');
 });
 
 // === Layer 2: Context-Aware Classification ===
@@ -469,7 +470,7 @@ test('needsSmartClassifier routes "the most recent one" to smart model', () => {
 test('system prompt includes file context rule', () => {
   const prompt = IntentRouter.CLASSIFICATION_SYSTEM_PROMPT;
   assert.ok(prompt.includes('just listed files'), 'Prompt should include file context rule');
-  assert.ok(prompt.includes('file_query'), 'Prompt should include file_query as example');
+  assert.ok(prompt.includes('action, domain: file'), 'Prompt should include file action example');
 });
 
 asyncTest('classify() routes "read the most recent one" to smart model', async () => {

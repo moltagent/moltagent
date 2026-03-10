@@ -52,25 +52,25 @@ function createRouter(providerResponse) {
 asyncTest('TC-KM-001: "Who is Carlos?" → classified as knowledge, not email', async () => {
   const router = createRouter('{"intent":"knowledge"}');
   const result = await router.classify('Who is Carlos?');
-  assert.strictEqual(result.domain, 'knowledge');
+  assert.strictEqual(result.gate, 'knowledge');
 });
 
 asyncTest('TC-KM-002: "What\'s Carlos\'s email?" → classified as knowledge, not email', async () => {
   const router = createRouter('{"intent":"knowledge"}');
   const result = await router.classify("What's Carlos's email?");
-  assert.strictEqual(result.domain, 'knowledge');
+  assert.strictEqual(result.gate, 'knowledge');
 });
 
 asyncTest('TC-KM-003: "What\'s the status of onboarding?" → classified as knowledge, not calendar', async () => {
   const router = createRouter('{"intent":"knowledge"}');
   const result = await router.classify("What's the status of onboarding?");
-  assert.strictEqual(result.domain, 'knowledge');
+  assert.strictEqual(result.gate, 'knowledge');
 });
 
 asyncTest('TC-KM-004: "Tell me about Paradiesgarten" → classified as knowledge', async () => {
   const router = createRouter('{"intent":"knowledge"}');
   const result = await router.classify('Tell me about Paradiesgarten');
-  assert.strictEqual(result.domain, 'knowledge');
+  assert.strictEqual(result.gate, 'knowledge');
 });
 
 asyncTest('TC-KM-005: "Send an email to Carlos" → classified as email (tool action, unchanged)', async () => {
@@ -85,12 +85,13 @@ asyncTest('TC-KM-006: "Create a board" → classified as deck (tool action, unch
   assert.strictEqual(result.domain, 'deck');
 });
 
-asyncTest('TC-KM-007: knowledge intent is valid and maps to domain routing', async () => {
+asyncTest('TC-KM-007: knowledge gate is valid and produces correct routing fields', async () => {
   const router = createRouter('{"intent":"knowledge"}');
   const result = await router.classify('What do you know about Project Phoenix?');
-  assert.strictEqual(result.intent, 'domain');
-  assert.strictEqual(result.domain, 'knowledge');
+  assert.strictEqual(result.gate, 'knowledge');
+  assert.strictEqual(result.intent, 'knowledge');
   assert.strictEqual(result.needsHistory, false);
+  assert.ok(IntentRouter.VALID_GATES.has('knowledge'), 'knowledge should be in VALID_GATES');
 });
 
 // ============================================================
@@ -104,7 +105,7 @@ asyncTest('TC-KM-008: Regex fallback routes "who is" to knowledge', async () => 
     config: { classifyTimeout: 100, fastModel: 'fake', smartModel: 'fake' }
   });
   const result = await router.classify('who is Carlos and what does he do?');
-  assert.strictEqual(result.domain, 'knowledge');
+  assert.strictEqual(result.gate, 'knowledge');
 });
 
 asyncTest('TC-KM-009: Regex fallback routes "tell me about" to knowledge', async () => {
@@ -113,7 +114,7 @@ asyncTest('TC-KM-009: Regex fallback routes "tell me about" to knowledge', async
     config: { classifyTimeout: 100, fastModel: 'fake', smartModel: 'fake' }
   });
   const result = await router.classify('tell me about the Paradiesgarten client');
-  assert.strictEqual(result.domain, 'knowledge');
+  assert.strictEqual(result.gate, 'knowledge');
 });
 
 asyncTest('TC-KM-010: Regex fallback still routes "send email" to email domain', async () => {
@@ -162,11 +163,11 @@ asyncTest('TC-KM-013: Knowledge intent is in INTENTS constant', async () => {
 // Classifier Prompt Tests
 // ============================================================
 
-asyncTest('TC-KM-014: Classification prompt includes knowledge intent', async () => {
+asyncTest('TC-KM-014: Classification prompt includes knowledge gate', async () => {
   const prompt = IntentRouter.CLASSIFICATION_SYSTEM_PROMPT;
-  assert.ok(prompt.includes('knowledge'), 'Prompt should include knowledge intent');
-  assert.ok(prompt.includes('KNOWLEDGE INTENT'), 'Prompt should have KNOWLEDGE INTENT section');
-  assert.ok(prompt.includes('action vs question'), 'Prompt should distinguish action from question');
+  assert.ok(prompt.includes('knowledge'), 'Prompt should include knowledge');
+  assert.ok(prompt.includes('KNOWLEDGE'), 'Prompt should have KNOWLEDGE section');
+  assert.ok(prompt.includes('ACTION'), 'Prompt should have ACTION section to distinguish from knowledge');
 });
 
 asyncTest('TC-KM-015: Classification prompt includes "when in doubt → knowledge"', async () => {
@@ -183,13 +184,13 @@ asyncTest('TC-KM-016: Guard reclassifies "What\'s Carlos\'s email?" from email t
   // LLM returns email_read (keyword match on "email") — guard should fix it
   const router = createRouter('{"intent":"email_read"}');
   const result = await router.classify("What's Carlos's email?");
-  assert.strictEqual(result.domain, 'knowledge', 'Should be reclassified to knowledge');
+  assert.strictEqual(result.gate, 'knowledge', 'Should be reclassified to knowledge');
 });
 
 asyncTest('TC-KM-017: Guard reclassifies "Who is Carlos and what\'s his email?" to knowledge', async () => {
   const router = createRouter('{"intent":"email_read"}');
   const result = await router.classify("Who is Carlos and what's his email?");
-  assert.strictEqual(result.domain, 'knowledge');
+  assert.strictEqual(result.gate, 'knowledge');
 });
 
 asyncTest('TC-KM-018: Guard keeps "Send an email to Carlos" as email', async () => {
@@ -198,10 +199,11 @@ asyncTest('TC-KM-018: Guard keeps "Send an email to Carlos" as email', async () 
   assert.strictEqual(result.domain, 'email', 'Should stay as email — has action verb "send"');
 });
 
-asyncTest('TC-KM-019: Guard keeps "Check my inbox" as email', async () => {
+asyncTest('TC-KM-019: Guard reclassifies "Check my inbox" to knowledge (no action verb)', async () => {
+  // "check" is not an action verb in the three-gate system — this is a lookup/query, not an action
   const router = createRouter('{"intent":"email_read"}');
   const result = await router.classify('Check my inbox');
-  assert.strictEqual(result.domain, 'email', 'Should stay as email — has "check inbox"');
+  assert.strictEqual(result.gate, 'knowledge', 'Should be reclassified to knowledge — "check" is not an action verb');
 });
 
 asyncTest('TC-KM-020: Guard keeps "Draft a reply to Sarah" as email', async () => {
@@ -213,13 +215,14 @@ asyncTest('TC-KM-020: Guard keeps "Draft a reply to Sarah" as email', async () =
 asyncTest('TC-KM-021: Guard reclassifies "Do we have Sarah\'s email address?" to knowledge', async () => {
   const router = createRouter('{"intent":"email_read"}');
   const result = await router.classify("Do we have Sarah's email address?");
-  assert.strictEqual(result.domain, 'knowledge');
+  assert.strictEqual(result.gate, 'knowledge');
 });
 
-test('TC-KM-022: Prompt includes negative email examples', () => {
+test('TC-KM-022: Prompt includes negative email examples using three-gate format', () => {
   const prompt = IntentRouter.CLASSIFICATION_SYSTEM_PROMPT;
-  assert.ok(prompt.includes('THESE ARE NOT EMAIL REQUESTS'), 'Should have negative email examples');
-  assert.ok(prompt.includes('OPERATE email'), 'Should explain the operate vs info test');
+  // The three-gate prompt explains the distinction via the ACTION VERB test
+  assert.ok(prompt.includes("Carlos's email"), 'Should show email question as knowledge example');
+  assert.ok(prompt.includes('no action verb'), 'Should explain the action verb test');
 });
 
 setTimeout(() => {

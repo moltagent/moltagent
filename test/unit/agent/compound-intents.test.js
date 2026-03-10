@@ -102,9 +102,9 @@ asyncTest('TC-CI-005: Simple greeting → compound: false in regex fallback', as
 // Classification Prompt Tests
 // ============================================================
 
-test('TC-CI-006: Classification prompt includes COMPOUND DETECTION section', () => {
+test('TC-CI-006: Classification prompt includes COMPOUND gate section', () => {
   const prompt = IntentRouter.CLASSIFICATION_SYSTEM_PROMPT;
-  assert.ok(prompt.includes('COMPOUND DETECTION'), 'Prompt should have COMPOUND DETECTION section');
+  assert.ok(prompt.includes('COMPOUND'), 'Prompt should have COMPOUND section');
   assert.ok(prompt.includes('compound'), 'Prompt should mention compound');
 });
 

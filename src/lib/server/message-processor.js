@@ -1356,6 +1356,26 @@ class MessageProcessor {
   }
 
   /**
+   * Quick pre-check for trivial greetings that don't need LLM classification.
+   * Short message (<5 words) matching common greeting patterns. Skips probes
+   * for sub-second response on trivial messages.
+   *
+   * @param {string} message - User message text
+   * @returns {boolean} true if message is a trivial greeting
+   * @private
+   */
+  _isGreeting(message) {
+    if (!message) return false;
+    const trimmed = message.trim();
+    // Must be short
+    if (trimmed.split(/\s+/).length > 5) return false;
+    // Must not contain a question mark (rules out "Hey, what time is it?")
+    if (trimmed.includes('?')) return false;
+    // Must match a greeting pattern
+    return /^(hi|hello|hey|good\s+(morning|afternoon|evening)|thanks|thank you|bye|goodbye|cheers|guten\s+(morgen|tag|abend))[\s!.,]*$/i.test(trimmed);
+  }
+
+  /**
    * Classify message intent for smart-mix routing.
    *
    * Uses IntentRouter (LLM with conversation context) when available,
@@ -1373,6 +1393,11 @@ class MessageProcessor {
    */
   async _smartMixClassify(message, session, roomToken) {
     try {
+      // Greeting pre-check: skip LLM classification for trivial greetings
+      if (this._isGreeting(message)) {
+        return { useLocal: true, useDomainTools: false, intent: 'greeting', compound: false };
+      }
+
       const recentContext = this._extractRecentContext(session);
 
       // Use IntentRouter if available, fall back to MicroPipeline regex
@@ -1411,7 +1436,7 @@ class MessageProcessor {
           const hasAmbiguousRef = /\b(the most recent|the latest|the newest|that one|the last one|read it|open it|all of them|the first)\b/.test(lower);
           const hasExplicitOtherDomain = /\b(wiki|calendar|event|meeting|deck|card|task|email|mail|schedule)\b/.test(lower);
           if (hasAmbiguousRef && !hasExplicitOtherDomain) {
-            intent = 'domain';
+            intent = 'file';
             domain = 'file';
           }
         }
@@ -1429,11 +1454,11 @@ class MessageProcessor {
         return { useLocal: false, useDomainTools: false, intent, compound: false };
       }
       // Domain → local with focused tools
-      if (intent === 'domain' && domain && DOMAIN_INTENTS.has(domain)) {
-        return { useLocal: true, useDomainTools: true, intent: domain, compound: !!compound };
+      if (DOMAIN_INTENTS.has(intent)) {
+        return { useLocal: true, useDomainTools: true, intent, compound: !!compound };
       }
       // Complex / fallback → cloud
-      return { useLocal: false, useDomainTools: false, intent: intent === 'domain' ? (domain || 'complex') : intent, compound: !!compound };
+      return { useLocal: false, useDomainTools: false, intent: intent || 'complex', compound: !!compound };
     } catch (err) {
       console.warn(`[Message] Smart-mix classification failed: ${err.message}`);
       return { useLocal: false, useDomainTools: false, intent: 'error', compound: false };

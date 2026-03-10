@@ -751,7 +751,7 @@ asyncTest('TC-SMIX-010: Domain intent routed to local with tools via IntentRoute
 
   const processor = createProcessor({
     intentRouter: {
-      classify: async () => ({ intent: 'domain', domain: 'deck', needsHistory: false, confidence: 0.8 })
+      classify: async () => ({ gate: 'action', intent: 'deck', domain: 'deck', needsHistory: false, compound: false, confidence: 0.8 })
     },
     microPipeline: {
       _classifyFallback: async () => ({ intent: 'deck' }),
