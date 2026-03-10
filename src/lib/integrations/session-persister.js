@@ -405,7 +405,7 @@ class SessionPersister {
 
     try {
       const result = await this.router.route({
-        job: JOBS.QUICK,
+        job: JOBS.SYNTHESIS,
         task: 'session_summary',
         content: `Summarize this conversation with these exact sections:\n\n` +
           `## Summary\n` +
@@ -415,7 +415,6 @@ class SessionPersister {
           `## Open Items\n` +
           `Bullet list of unresolved questions or pending tasks. Write "None" if all resolved.\n\n` +
           `Be concise. No preamble. No <think> tags. Start directly with ## Summary.\n\n${transcript}`,
-        requirements: { role: 'sovereign' },
         context: { trigger: 'session_summary' },
       });
 

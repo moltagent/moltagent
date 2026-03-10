@@ -90,6 +90,19 @@ const COMMITMENT_PATTERNS = [
 const HYPOTHETICAL_RE = /\bif I were to\b|\bI would suggest\b/i;
 
 /**
+ * Current-action narration: the agent is describing what it's doing NOW,
+ * not committing to a future action. Exclude these.
+ * @type {RegExp}
+ */
+const NARRATION_RE = /\blet me check\b|\bI('m| am) (checking|looking|searching|reading)\b|\bI (need|require)\b.*\bfrom you\b|\bTo proceed,? I need\b|\bI found\b|\bI see\b/i;
+
+/**
+ * Conditional offers: "I can X if you Y" or "Confirm and I'll" — not yet committed.
+ * @type {RegExp}
+ */
+const CONDITIONAL_RE = /\bI can\b.*\bif you\b|\bonce you\b.*\bI['']ll\b|\bconfirm\b.*\bI['']ll\b|\bI can now\b/i;
+
+/**
  * Explicit negations that should be excluded despite matching commitment
  * patterns.  The individual patterns already exclude "I will not" and
  * "I'll not" via negative lookahead, but belt-and-suspenders for edge cases.
@@ -146,7 +159,8 @@ function normalise(sentence) {
  * @returns {boolean}
  */
 function isExcluded(sentence) {
-  return HYPOTHETICAL_RE.test(sentence) || NEGATION_RE.test(sentence);
+  return HYPOTHETICAL_RE.test(sentence) || NEGATION_RE.test(sentence) ||
+    NARRATION_RE.test(sentence) || CONDITIONAL_RE.test(sentence);
 }
 
 /**

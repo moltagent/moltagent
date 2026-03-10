@@ -137,7 +137,7 @@ async function runTests() {
     assert.ok(routeCalledWith !== null, 'LLM router should have been called');
     assert.strictEqual(routeCalledWith.task, 'session_summary');
     assert.ok(routeCalledWith.content.includes('Summarize this conversation'), 'Prompt should ask for summary');
-    assert.ok(routeCalledWith.requirements.role === 'sovereign', 'Should use sovereign role in requirements');
+    assert.strictEqual(routeCalledWith.requirements, undefined, 'Should not force sovereign role (synthesis job uses roster chain)');
   });
 
   await asyncTest('TC-SP-005: Writes to wiki with correct frontmatter', async () => {

@@ -70,7 +70,7 @@ function buildLiveContext(session, currentMessage) {
         description: content.substring(0, 200)
       };
     }
-    if (/Do you want me to|Should I|Would you like me to|I can |Want me to/i.test(content)) {
+    if (/Do you want me to|Should I|Would you like me to|I can |Want me to|I[''']ll .{1,30} if you|I[''']m ready to|Once you .{1,40} I[''']ll|Confirm and I/i.test(content)) {
       lastAssistantAction = lastAssistantAction || { type: 'offered_action' };
       lastAssistantAction.offer = content.substring(0, 200);
     }
@@ -466,6 +466,84 @@ test('LC-27: deckLink falls back to quoted text when URL empty', () => {
   const deckLink = (label, url) => url ? `[${label}](${url})` : `"${label}"`;
   assert.strictEqual(deckLink('My Task', ''), '"My Task"');
   assert.strictEqual(deckLink('My Task', undefined), '"My Task"');
+});
+
+// ============================================================
+// FIX 1 (39b): CARD MUTATION VERB GUARDS (4 tests)
+// ============================================================
+
+test('LC-28: "Give it the due date" triggers deck mutation guard', () => {
+  const message = 'Give it the due date tomorrow at 15:00';
+  const mutate = /\b(set|change|update|assign|move|give|edit|rename)\s+(?:(?:it|this|that)\s+(?:the\s+)?|(?:the|a)\s+)?(due|date|deadline|label|title|description|to|priority)\b/i;
+  assert.ok(mutate.test(message), '"Give it the due date" should match mutation guard');
+});
+
+test('LC-29: "Set the deadline to Friday" triggers deck mutation guard', () => {
+  const message = 'Set the deadline to Friday';
+  const mutate = /\b(set|change|update|assign|move|give|edit|rename)\s+(?:(?:it|this|that)\s+(?:the\s+)?|(?:the|a)\s+)?(due|date|deadline|label|title|description|to|priority)\b/i;
+  assert.ok(mutate.test(message), '"Set the deadline" should match mutation guard');
+});
+
+test('LC-30: "Move it to Done" triggers deck mutation guard', () => {
+  const message = 'Move it to Done';
+  const mutate = /\b(set|change|update|assign|move|give|edit|rename)\s+(?:(?:it|this|that)\s+(?:the\s+)?|(?:the|a)\s+)?(due|date|deadline|label|title|description|to|priority)\b/i;
+  assert.ok(mutate.test(message), '"Move it to" should match mutation guard');
+});
+
+test('LC-31: "What is the due date?" should NOT trigger mutation guard', () => {
+  const message = 'What is the due date?';
+  const mutate = /\b(set|change|update|assign|move|give|edit|rename)\s+(?:(?:it|this|that)\s+(?:the\s+)?|(?:the|a)\s+)?(due|date|deadline|label|title|description|to|priority)\b/i;
+  assert.ok(!mutate.test(message), 'Knowledge question should NOT match mutation guard');
+});
+
+// ============================================================
+// FIX 5 (39b): BROADER OFFER DETECTION (3 tests)
+// ============================================================
+
+test('LC-32: "I can now set due dates" detected as offer', () => {
+  const session = mockSession([
+    { role: 'assistant', content: 'I can now set due dates relative to today.' }
+  ]);
+  const ctx = buildLiveContext(session, 'tomorrow, 15:00');
+  assert.ok(ctx.lastAssistantAction?.offer, '"I can now" should be detected as offer');
+});
+
+test('LC-33: "I\'ll update the card if you confirm" detected as offer', () => {
+  const session = mockSession([
+    { role: 'assistant', content: "I'll update the card if you confirm the date." }
+  ]);
+  const ctx = buildLiveContext(session, 'yes');
+  assert.ok(ctx.lastAssistantAction?.offer, '"I\'ll X if you Y" should be detected as offer');
+});
+
+test('LC-34: "Once you provide the date, I\'ll set it" detected as offer', () => {
+  const session = mockSession([
+    { role: 'assistant', content: "Once you provide the date, I'll set it on the card." }
+  ]);
+  const ctx = buildLiveContext(session, 'tomorrow');
+  assert.ok(ctx.lastAssistantAction?.offer, '"Once you X, I\'ll Y" should be detected as offer');
+});
+
+// ============================================================
+// FIX 4 (39b): COMMITMENT DETECTOR EXCLUSIONS (3 tests)
+// ============================================================
+
+test('LC-35: "To proceed, I need..." is NOT a commitment', () => {
+  const NARRATION_RE = /\blet me check\b|\bI('m| am) (checking|looking|searching|reading)\b|\bI (need|require)\b.*\bfrom you\b|\bTo proceed,? I need\b|\bI found\b|\bI see\b/i;
+  assert.ok(NARRATION_RE.test('To proceed, I need the card ID from you'), 'Narration should be excluded');
+});
+
+test('LC-36: "Confirm and I\'ll update" is NOT a commitment', () => {
+  const CONDITIONAL_RE = /\bI can\b.*\bif you\b|\bonce you\b.*\bI['']ll\b|\bconfirm\b.*\bI['']ll\b|\bI can now\b/i;
+  assert.ok(CONDITIONAL_RE.test("Confirm and I'll update the card immediately"), 'Conditional offer should be excluded');
+});
+
+test('LC-37: "I\'ll follow up on that" IS still a commitment', () => {
+  const NARRATION_RE = /\blet me check\b|\bI('m| am) (checking|looking|searching|reading)\b|\bI (need|require)\b.*\bfrom you\b|\bTo proceed,? I need\b|\bI found\b|\bI see\b/i;
+  const CONDITIONAL_RE = /\bI can\b.*\bif you\b|\bonce you\b.*\bI['']ll\b|\bconfirm\b.*\bI['']ll\b|\bI can now\b/i;
+  const sentence = "I'll follow up on that next week.";
+  assert.ok(!NARRATION_RE.test(sentence), 'Real commitment should not be excluded by narration');
+  assert.ok(!CONDITIONAL_RE.test(sentence), 'Real commitment should not be excluded by conditional');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 100);

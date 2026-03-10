@@ -33,6 +33,7 @@ const JOBS = Object.freeze({
   CODING: 'coding',
   CREDENTIALS: 'credentials',
   SYNTHESIS: 'synthesis',
+  DECOMPOSITION: 'decomposition',
 });
 const VALID_JOBS = new Set(Object.values(JOBS));
 const PRESET_NAMES = Object.freeze(['all-local', 'smart-mix', 'cloud-first']);

@@ -121,7 +121,7 @@ asyncTest('TC-CLASS-INT-003: deck-task-processor research passes job: JOBS.RESEA
 
 console.log('\n--- Integration: session-persister ---\n');
 
-asyncTest('TC-CLASS-INT-004: session-persister passes job: JOBS.QUICK and role in requirements', async () => {
+asyncTest('TC-CLASS-INT-004: session-persister passes job: JOBS.SYNTHESIS without sovereign role', async () => {
   const spy = createSpyRouter();
   const SessionPersister = require('../../../src/lib/integrations/session-persister');
   const sp = new SessionPersister({
@@ -143,10 +143,9 @@ asyncTest('TC-CLASS-INT-004: session-persister passes job: JOBS.QUICK and role i
 
   assert.ok(spy._calls.length >= 1, 'route() should be called');
   const call = spy._calls[0];
-  assert.strictEqual(call.job, JOBS.QUICK, `Expected job QUICK, got ${call.job}`);
+  assert.strictEqual(call.job, JOBS.SYNTHESIS, `Expected job SYNTHESIS, got ${call.job}`);
   assert.strictEqual(call.task, 'session_summary');
-  assert.strictEqual(call.requirements?.role, 'sovereign', 'role should be in requirements');
-  assert.notStrictEqual(call.context?.role, 'sovereign', 'role should NOT be in context');
+  assert.strictEqual(call.requirements, undefined, 'Should not force sovereign role');
 });
 
 console.log('\n--- Integration: heartbeat-intelligence ---\n');
@@ -245,19 +244,19 @@ test('TC-CLASS-VERIFY-003: router uses job field when roster is active', () => {
   );
 });
 
-test('TC-CLASS-VERIFY-004: session-persister role is in requirements, not context', () => {
+test('TC-CLASS-VERIFY-004: session-persister uses synthesis job without sovereign role', () => {
   const content = fs.readFileSync(
     path.join(__dirname, '../../../src/lib/integrations/session-persister.js'),
     'utf8'
   );
-  // Find the route call and verify role placement
+  // Session summaries use synthesis job (routes to Haiku when cloud-ok)
   assert.ok(
-    content.includes("requirements: { role: 'sovereign' }"),
-    'session-persister should have role in requirements'
+    content.includes("job: JOBS.SYNTHESIS"),
+    'session-persister should use JOBS.SYNTHESIS'
   );
   assert.ok(
-    !content.includes("context: { trigger: 'session_summary', role: 'sovereign' }"),
-    'session-persister should NOT have role in context'
+    !content.includes("role: 'sovereign'"),
+    'session-persister should not force sovereign role'
   );
 });
 

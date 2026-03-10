@@ -147,7 +147,7 @@ function buildLiveContext(session, currentMessage) {
         description: content.substring(0, 200)
       };
     }
-    if (/Do you want me to|Should I|Would you like me to|I can |Want me to/i.test(content)) {
+    if (/Do you want me to|Should I|Would you like me to|I can |Want me to|I[''']ll .{1,30} if you|I[''']m ready to|Once you .{1,40} I[''']ll|Confirm and I/i.test(content)) {
       lastAssistantAction = lastAssistantAction || { type: 'offered_action' };
       lastAssistantAction.offer = content.substring(0, 200);
     }
@@ -1601,6 +1601,17 @@ class MessageProcessor {
         intent = 'deck';
         domain = 'deck';
         compound = false;
+      } else if (/\b(set|change|update|assign|move|give|edit|rename)\s+(?:(?:it|this|that)\s+(?:the\s+)?|(?:the|a)\s+)?(due|date|deadline|label|title|description|to|priority)\b/i.test(message)) {
+        // Card/task mutation: "give it the due date", "set the deadline", "move it to Done"
+        intent = 'deck';
+        domain = 'deck';
+        compound = false;
+      } else if (/\b(give|move|assign|set)\s+(it|the card|the task|that)\b/i.test(message) &&
+                 liveContext?.lastAssistantAction?.type === 'card_created') {
+        // Context-aware card reference: "give it [something]" after card creation
+        intent = 'deck';
+        domain = 'deck';
+        compound = false;
       } else if (/\b(send|draft|compose|reply|forward)\s+(an?\s+)?(email|mail|message to)\b/i.test(message)) {
         intent = 'email';
         domain = 'email';
@@ -1613,7 +1624,7 @@ class MessageProcessor {
 
       // If message also has a knowledge question joined by "and", mark compound
       if ((intent === 'deck' || intent === 'email' || intent === 'calendar') &&
-          /\b(what|who|where|when|how|tell me|do we know|do you know)\b.*\band\b.*\b(create|make|add|send|book|schedule)\b/i.test(message)) {
+          /\b(what|who|where|when|how|tell me|do we know|do you know)\b.*\band\b.*\b(create|make|add|send|book|schedule|set|update|move)\b/i.test(message)) {
         compound = true;
       }
 
@@ -2165,7 +2176,12 @@ class MessageProcessor {
         `Resolve "that", "it", "the one", etc. from context.\n`;
     }
 
+    const now = new Date();
+    const timeStr = `${now.toLocaleDateString('en-US', { weekday: 'long' })}, ${now.toISOString().split('T')[0]} ${now.toTimeString().split(' ')[0]} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
+
     const prompt = `You are answering a knowledge question. Here is what was found across your data sources:
+
+Current date/time: ${timeStr}
 ${conversationBlock}
 ${aggregatedKnowledge}
 ${warmMemory ? `\nRecent context:\n${warmMemory}\n` : ''}

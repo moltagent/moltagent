@@ -20,7 +20,7 @@
  *   a plan of steps: parallel probes → conditional logic → actions → synthesis.
  *   The plan executor runs probes in parallel, evaluates conditions, executes actions,
  *   and synthesizes a coherent response.
- * - Key Dependencies: LLM router (job: 'quick'), knowledge probes (from message-processor),
+ * - Key Dependencies: LLM router (job: 'decomposition'), knowledge probes (from message-processor),
  *   domain executors (deck, calendar, email via MicroPipeline)
  * - Data Flow: compound message → decompose() → plan JSON → executePlan() → synthesis
  *
@@ -75,7 +75,7 @@ class IntentDecomposer {
 
     try {
       const result = await this.llmRouter.route({
-        job: 'quick',
+        job: 'decomposition',
         task: 'intent_decompose',
         messages: [
           { role: 'system', content: DECOMPOSE_PROMPT },

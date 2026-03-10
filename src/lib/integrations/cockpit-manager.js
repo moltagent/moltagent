@@ -1413,6 +1413,7 @@ class CockpitManager {
       return {
         quick: [localFast, localCapable],
         synthesis: [localFast, localCapable],
+        decomposition: [localCapable, localFast],
         tools: [localCapable, localFast],
         thinking: [localCapable],
         writing: [localCapable],
@@ -1429,6 +1430,7 @@ class CockpitManager {
         synthesis: hasHaiku
           ? [haiku, localFast, localCapable]
           : [localFast, localCapable],
+        decomposition: hasHaiku ? [haiku, localCapable, localFast] : [localCapable, localFast],
         tools: [localCapable, localFast],
         thinking: [localCapable, hasSonnet ? sonnet : null].filter(Boolean),
         writing: [localCapable, hasSonnet ? sonnet : null].filter(Boolean),
@@ -1442,6 +1444,7 @@ class CockpitManager {
       return {
         quick: [localFast, localCapable],
         synthesis: [hasSonnet ? sonnet : null, hasHaiku ? haiku : null, localCapable].filter(Boolean),
+        decomposition: [hasHaiku ? haiku : null, localCapable, localFast].filter(Boolean),
         tools: [localCapable, hasHaiku ? haiku : null, localFast].filter(Boolean),
         thinking: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
         writing: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
@@ -1457,6 +1460,7 @@ class CockpitManager {
       synthesis: hasHaiku
         ? [haiku, localFast, localCapable]
         : [localFast, localCapable],
+      decomposition: hasHaiku ? [haiku, localCapable, localFast] : [localCapable, localFast],
       tools: [localCapable, hasHaiku ? haiku : null, localFast].filter(Boolean),
       thinking: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
       writing: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
