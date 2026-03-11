@@ -121,6 +121,9 @@ class DocumentIngestor {
 
     /** @type {Set<string>} Tracks successfully processed file paths. */
     this._processed = new Set();
+
+    /** @type {Promise} Serial queue — prevents concurrent wiki section creation races. */
+    this._queue = Promise.resolve();
   }
 
   // ===========================================================================
@@ -295,7 +298,9 @@ class DocumentIngestor {
 
     // ── Share events: someone shared a file or folder with Moltagent ──
     if (event.type === 'share_created' || event.type === 'file_shared') {
-      return this._handleShareEvent(event);
+      // Share scans are large — enqueue but don't block the caller
+      this._enqueue(() => this._handleShareEvent(event));
+      return;
     }
 
     // ── Direct file events: file created or changed ──
@@ -310,7 +315,21 @@ class DocumentIngestor {
       this._processed.delete(filePath);
     }
 
-    return this.processFile(filePath);
+    // Serialize file processing to prevent wiki section creation races
+    return this._enqueue(() => this.processFile(filePath));
+  }
+
+  /**
+   * Enqueue an async operation onto the serial queue.
+   * Prevents concurrent wiki section creation from producing duplicates.
+   *
+   * @param {Function} fn - Async function to run
+   * @returns {Promise}
+   * @private
+   */
+  _enqueue(fn) {
+    this._queue = this._queue.then(fn, fn);
+    return this._queue;
   }
 
   /**

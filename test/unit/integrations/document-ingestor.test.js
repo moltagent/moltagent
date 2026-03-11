@@ -342,11 +342,14 @@ asyncTest('onFileEvent handles share_created by scanning shared folder', async (
     return { filePath, skipped: false, textLength: 200 };
   };
 
-  await ingestor.onFileEvent({
+  ingestor.onFileEvent({
     type: 'share_created',
     objectType: 'share',
     objectName: 'SharedFolder',
   });
+
+  // Wait for the serial queue to drain
+  await ingestor._queue;
 
   assert.strictEqual(dirScanned, 'SharedFolder', 'Should scan the shared folder path');
 });
@@ -364,11 +367,15 @@ asyncTest('onFileEvent handles share_created for single shared file', async () =
     return { filePath, skipped: false, textLength: 200 };
   };
 
-  await ingestor.onFileEvent({
+  // onFileEvent enqueues share events — call and then await the queue
+  ingestor.onFileEvent({
     type: 'share_created',
     objectType: 'share',
     objectName: 'SharedFolder/report.pdf',
   });
+
+  // Wait for the serial queue to drain
+  await ingestor._queue;
 
   assert.strictEqual(processedPath, 'SharedFolder/report.pdf', 'Should process the shared file');
 });
