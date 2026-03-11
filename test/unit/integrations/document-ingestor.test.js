@@ -51,9 +51,16 @@ function makeEntityExtractor(overrides = {}) {
 }
 
 function makeKnowledgeGraph(overrides = {}) {
-  return {
-    addEntity: overrides.addEntity || (() => 'entity-id-1'),
+  // Simulate a real KnowledgeGraph with _entities Map
+  const graph = {
+    _entities: new Map(),
+    addEntity: overrides.addEntity || ((name, type) => {
+      const id = `${type}:${name.toLowerCase()}`;
+      graph._entities.set(id, { id, name, type, created: new Date().toISOString() });
+      return id;
+    }),
   };
+  return graph;
 }
 
 function makeWikiWriter(overrides = {}) {
@@ -83,41 +90,68 @@ function makeIngestor(ncOverrides = {}, textOverrides = {}, entityOverrides = {}
 
 console.log('\n=== DocumentIngestor Tests ===\n');
 
-// 1. processFile: extracts text and runs entity extraction
+// 1. processFile: extracts entities, creates entity pages + reference stub
 asyncTest('processFile extracts text and runs entity extraction', async () => {
   let entityCalled = false;
   let entityTitle;
-  let wikiCalled = false;
+  const wikiPages = [];
 
-  const ingestor = makeIngestor(
-    {},
-    {
+  // Custom graph that simulates entity extraction adding new entities
+  const graph = makeKnowledgeGraph();
+
+  const ingestor = new DocumentIngestor({
+    ncFilesClient: makeNcFilesClient(),
+    textExtractor: makeTextExtractor({
       extract: async () => ({
-        text: 'Extracted content with enough characters to pass the minimum threshold check for processing. Extra padding here.',
+        text: 'Sarah Chen leads Project Phoenix at TheCatalyne. More text to pass the minimum threshold check here.',
         truncated: false,
-        totalLength: 110,
+        totalLength: 100,
       }),
-    },
-    {
+    }),
+    entityExtractor: makeEntityExtractor({
       extractFromPage: async (title, content) => {
         entityCalled = true;
         entityTitle = title;
+        // Simulate what EntityExtractor does: add entities to the graph
+        graph.addEntity('Sarah Chen', 'person');
+        graph.addEntity('Project Phoenix', 'project');
+        graph.addEntity('TheCatalyne', 'organization');
       },
-    },
-    {
+    }),
+    knowledgeGraph: graph,
+    wikiWriter: makeWikiWriter({
       createPage: async (section, name, content) => {
-        wikiCalled = true;
+        wikiPages.push({ section, name, content });
         return { success: true, method: 'ocs' };
       },
-    }
-  );
+    }),
+    logger: makeSilentLogger(),
+  });
 
   const result = await ingestor.processFile('Documents/report.pdf');
 
   assert.strictEqual(result.skipped, false, 'Should not be skipped');
   assert.strictEqual(entityCalled, true, 'entityExtractor.extractFromPage should be called');
   assert.strictEqual(entityTitle, 'report', 'Title should be filename without extension');
-  assert.strictEqual(wikiCalled, true, 'wikiWriter.createPage should be called');
+  assert.strictEqual(result.entitiesFound, 3, 'Should find 3 entities');
+  assert.strictEqual(result.entityPagesCreated, 3, 'Should create 3 entity pages');
+
+  // Check entity pages were created with correct sections
+  const peoplePage = wikiPages.find(p => p.name === 'Sarah Chen');
+  assert.ok(peoplePage, 'Sarah Chen entity page should be created');
+  assert.strictEqual(peoplePage.section, 'People', 'Person entity goes to People section');
+  assert.ok(peoplePage.content.includes('type: person'), 'Entity page should have typed frontmatter');
+
+  const projectPage = wikiPages.find(p => p.name === 'Project Phoenix');
+  assert.ok(projectPage, 'Project Phoenix entity page should be created');
+  assert.strictEqual(projectPage.section, 'Projects', 'Project entity goes to Projects section');
+
+  // Check reference stub (last wiki page created)
+  const stub = wikiPages.find(p => p.name === 'report');
+  assert.ok(stub, 'Reference stub should be created');
+  assert.ok(stub.content.includes('type: document-ref'), 'Stub should be type document-ref, not document');
+  assert.ok(stub.content.includes('Sarah Chen'), 'Stub should list extracted entities');
+  assert.ok(!stub.content.includes('leads Project Phoenix at'), 'Stub should NOT contain the full extracted text');
 });
 
 // 2. processFile: skips already-processed files

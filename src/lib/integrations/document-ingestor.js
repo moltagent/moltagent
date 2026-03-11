@@ -184,37 +184,72 @@ class DocumentIngestor {
     const filename = path.basename(filePath);
     const filenameNoExt = filename.replace(/\.[^.]+$/, '');
 
+    // Snapshot graph entities before extraction to detect new ones
+    const entitiesBefore = this.knowledgeGraph
+      ? new Set(this.knowledgeGraph._entities.keys())
+      : new Set();
+
     // Run entity extraction — directly populates the knowledge graph
     try {
       await this.entityExtractor.extractFromPage(filenameNoExt, truncatedText);
     } catch (err) {
-      // Entity extraction is best-effort; do not abort wiki page creation
       this.logger.warn(`[DocumentIngestor] Entity extraction error for ${filePath}: ${err.message}`);
     }
 
-    // Build wiki page content
+    // Detect entities added/updated by this extraction
+    const newEntities = [];
+    if (this.knowledgeGraph) {
+      for (const [id, entity] of this.knowledgeGraph._entities) {
+        if (!entitiesBefore.has(id)) {
+          newEntities.push(entity);
+        }
+      }
+    }
+
+    // Create structured wiki pages for significant new entities
+    let entityPagesCreated = 0;
+    for (const entity of newEntities) {
+      if (this._isSignificantEntity(entity)) {
+        try {
+          const section = this._sectionForEntityType(entity.type);
+          const pageContent = this._buildEntityPage(entity, filePath);
+          await this.wikiWriter.createPage(section, entity.name, pageContent);
+          entityPagesCreated++;
+          this.logger.info(`[DocumentIngestor] Entity page: ${section}/${entity.name}`);
+        } catch (err) {
+          this.logger.warn(`[DocumentIngestor] Entity page failed for ${entity.name}: ${err.message}`);
+        }
+      }
+    }
+
+    // Build thin reference stub for the document itself (NOT a content dump)
     const sectionPath = this._sectionForFile(filePath);
     const pageName    = filenameNoExt;
-    const pageContent = this._buildDocumentPage(filePath, extraction);
+    const entityNames = newEntities.map(e => e.name);
+    const stubContent = this._buildReferenceStub(filePath, extraction, entityNames);
 
-    // Create wiki summary page
     let wikiResult;
     try {
-      wikiResult = await this.wikiWriter.createPage(sectionPath, pageName, pageContent);
+      wikiResult = await this.wikiWriter.createPage(sectionPath, pageName, stubContent);
     } catch (err) {
-      this.logger.warn(`[DocumentIngestor] Wiki page creation failed for ${filePath}: ${err.message}`);
+      this.logger.warn(`[DocumentIngestor] Reference stub failed for ${filePath}: ${err.message}`);
       wikiResult = { success: false, error: err.message };
     }
 
     // Mark as processed only after successful pipeline run
     this._processed.add(filePath);
 
-    this.logger.info(`[DocumentIngestor] Processed ${filePath} → ${sectionPath}/${pageName} (${rawText.length} chars)`);
+    this.logger.info(
+      `[DocumentIngestor] Processed ${filePath} → ${newEntities.length} entities, ` +
+      `${entityPagesCreated} pages, reference stub in ${sectionPath}/${pageName}`
+    );
 
     return {
       filePath,
       skipped: false,
       textLength: rawText.length,
+      entitiesFound: newEntities.length,
+      entityPagesCreated,
       wikiResult,
     };
   }
@@ -450,23 +485,18 @@ class DocumentIngestor {
   }
 
   /**
-   * Build wiki page content for a document summary.
-   * Includes YAML frontmatter and extracted text.
+   * Build a thin reference stub for the document — NOT a content dump.
+   * The full content lives in Nextcloud Files. The wiki holds extracted knowledge.
    *
    * @param {string} filePath - Original file path
    * @param {Object} extraction - Result from TextExtractor.extract()
-   * @param {string} extraction.text - Extracted text
-   * @param {boolean} [extraction.truncated] - Whether text was truncated
-   * @param {number} [extraction.totalLength] - Total character count before truncation
-   * @param {number} [extraction.pages] - Page count (PDFs)
-   * @param {boolean} [extraction.ocr] - Whether OCR was used
-   * @param {string} [extraction.warning] - Any extraction warning
+   * @param {string[]} entityNames - Names of entities extracted from this document
    * @returns {string} Markdown page content
    */
-  _buildDocumentPage(filePath, extraction) {
+  _buildReferenceStub(filePath, extraction, entityNames = []) {
     const filename = path.basename(filePath);
     const ext      = filename.split('.').pop().toLowerCase();
-    const now      = new Date().toISOString();
+    const now      = new Date().toISOString().split('T')[0];
 
     const safeFilename = filename.replace(/"/g, '\\"');
     const safeFilePath = filePath.replace(/"/g, '\\"');
@@ -475,23 +505,14 @@ class DocumentIngestor {
       '---',
       `title: "${safeFilename}"`,
       `source: "${safeFilePath}"`,
-      `type: document`,
+      `type: document-ref`,
       `fileType: "${ext}"`,
       `ingestedAt: "${now}"`,
+      `totalChars: ${extraction.totalLength || (extraction.text || '').length}`,
     ];
 
-    if (extraction.pages !== undefined) {
-      lines.push(`pages: ${extraction.pages}`);
-    }
-    if (extraction.ocr) {
-      lines.push(`ocr: true`);
-    }
-    if (extraction.totalLength !== undefined) {
-      lines.push(`totalChars: ${extraction.totalLength}`);
-    }
-    if (extraction.truncated) {
-      lines.push(`truncated: true`);
-    }
+    if (extraction.pages !== undefined) lines.push(`pages: ${extraction.pages}`);
+    if (extraction.ocr) lines.push(`ocr: true`);
 
     lines.push('---', '');
     lines.push(`# ${filename}`, '');
@@ -500,10 +521,81 @@ class DocumentIngestor {
       lines.push(`> **Warning:** ${extraction.warning}`, '');
     }
 
-    lines.push('## Extracted Content', '');
-    lines.push(extraction.text || '');
+    // Metadata
+    lines.push(`**Source:** \`${filePath}\``);
+    lines.push(`**Size:** ${extraction.totalLength || (extraction.text || '').length} chars`);
+    if (extraction.pages) lines.push(`**Pages:** ${extraction.pages}`);
+    if (extraction.ocr) lines.push(`**Method:** OCR`);
+    lines.push(`**Ingested:** ${now}`, '');
+
+    // Entity references
+    if (entityNames.length > 0) {
+      lines.push('## Entities Found', '');
+      for (const name of entityNames) {
+        lines.push(`- ${name}`);
+      }
+      lines.push('');
+    }
 
     return lines.join('\n');
+  }
+
+  /**
+   * Build a structured entity wiki page with typed frontmatter.
+   *
+   * @param {Object} entity - Entity from the knowledge graph { id, name, type }
+   * @param {string} sourcePath - File path this entity was extracted from
+   * @returns {string} Markdown page content
+   */
+  _buildEntityPage(entity, sourcePath) {
+    const now = new Date().toISOString().split('T')[0];
+    const lines = [
+      '---',
+      `title: "${entity.name.replace(/"/g, '\\"')}"`,
+      `type: ${entity.type}`,
+      `source: "${sourcePath.replace(/"/g, '\\"')}"`,
+      `created: ${now}`,
+      `decay_days: 180`,
+      '---',
+      '',
+      `# ${entity.name}`,
+      '',
+      `*Extracted from: ${sourcePath}*`,
+    ];
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Determine if an entity is significant enough to warrant its own wiki page.
+   * Filters out generic 'page', 'concept', 'note' types and very short names.
+   *
+   * @param {Object} entity - { name, type }
+   * @returns {boolean}
+   */
+  _isSignificantEntity(entity) {
+    if (!entity || !entity.name || entity.name.length <= 2) return false;
+    const dominated = new Set(['page', 'concept', 'note']);
+    return !dominated.has(entity.type);
+  }
+
+  /**
+   * Map entity type to wiki section name.
+   *
+   * @param {string} type - Entity type (person, project, organization, etc.)
+   * @returns {string}
+   */
+  _sectionForEntityType(type) {
+    const map = {
+      person: 'People',
+      organization: 'People',
+      project: 'Projects',
+      decision: 'Projects',
+      tool: 'Research',
+      research: 'Research',
+      procedure: 'Procedures',
+    };
+    return map[type] || 'Research';
   }
 }
 
