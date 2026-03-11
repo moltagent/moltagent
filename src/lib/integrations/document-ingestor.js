@@ -31,8 +31,7 @@
  * Key Dependencies:
  * - NCFilesClient   — readFileBuffer() for binary downloads
  * - TextExtractor   — extract(buffer, filePath), isSupported(filePath) (static)
- * - EntityExtractor — extractEntitiesFromDocument(title, content) → void (deep-only, no regex noise)
- *                     falls back to extractFromPage() when method is absent (test compatibility)
+ * - EntityExtractor — extractEntitiesFromDocument(title, content) → void (LLM-only, no regex)
  * - ResilientWikiWriter — createPage(sectionPath, pageName, content)
  *
  * Data Flow:
@@ -190,15 +189,9 @@ class DocumentIngestor {
       ? new Set(this.knowledgeGraph._entities.keys())
       : new Set();
 
-    // Run entity extraction — directly populates the knowledge graph.
-    // Prefer extractEntitiesFromDocument (deep-only, no regex noise) when
-    // available; fall back to extractFromPage for backward compatibility.
+    // Run entity extraction — LLM-only, no regex. Populates the knowledge graph.
     try {
-      if (typeof this.entityExtractor.extractEntitiesFromDocument === 'function') {
-        await this.entityExtractor.extractEntitiesFromDocument(filenameNoExt, truncatedText);
-      } else {
-        await this.entityExtractor.extractFromPage(filenameNoExt, truncatedText);
-      }
+      await this.entityExtractor.extractEntitiesFromDocument(filenameNoExt, truncatedText);
     } catch (err) {
       this.logger.warn(`[DocumentIngestor] Entity extraction error for ${filePath}: ${err.message}`);
     }

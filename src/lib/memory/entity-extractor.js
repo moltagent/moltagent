@@ -17,11 +17,11 @@ const ollamaGate = require('../shared/ollama-gate');
  *
  * Architecture Brief:
  * - Problem: Knowledge graph needs entities and relationships extracted from text
- * - Pattern: Lightweight regex extraction always runs for wiki pages; document ingestor
- *   uses deep-only path to avoid garbage "person" entities from capitalized word pairs
- *   in structured documents (headings, section titles, frontmatter).
+ * - Pattern: Lightweight structural extraction (title parsing, wikilinks) always runs;
+ *   deep LLM extraction discovers entities from natural language content.
+ *   Code handles plumbing (titles, links); AI handles comprehension.
  * - Key Dependencies: KnowledgeGraph (sink), LLMRouter (deep extraction)
- * - Data Flow: page content → lightweight regex → (optional) deep LLM → knowledge graph
+ * - Data Flow: page content → structural parse (title, wikilinks) → deep LLM → knowledge graph
  *             document content → deep LLM only → knowledge graph
  * - Dependency Map: heartbeat-extractor.js → entity-extractor.js → knowledge-graph.js
  *
@@ -53,9 +53,9 @@ class EntityExtractor {
 
   /**
    * Extract entities and relationships from a wiki page, then load them into
-   * the knowledge graph.  Lightweight regex extraction always runs; deep LLM
-   * extraction only runs when content is >= DEEP_THRESHOLD chars and an LLM
-   * router is available.
+   * the knowledge graph.  Structural extraction (title parsing, wikilinks)
+   * always runs; deep LLM extraction only runs when content is >=
+   * DEEP_THRESHOLD chars and an LLM router is available.
    *
    * @param {string} title   - Wiki page title / path (e.g. "People/Sarah Chen")
    * @param {string} content - Raw page content (markdown or plain text)
@@ -104,12 +104,14 @@ class EntityExtractor {
   // ===========================================================================
 
   /**
-   * Regex-based entity extraction.  Runs synchronously; never throws.
+   * Structural extraction from wiki page metadata. Runs synchronously; never throws.
    *
    * Steps:
    *  1. Parse the title to derive a typed source entity (e.g. People/Sarah Chen → person)
-   *  2. Scan for capitalised name pairs (e.g. "Sarah Chen") and register as persons
-   *  3. Scan for wikilinks ([[Target Page]]) and create "references" triples
+   *  2. Scan for wikilinks ([[Target Page]]) and create "references" triples
+   *
+   * Entity discovery from natural language is handled exclusively by _deepExtract()
+   * via the LLM. Code handles plumbing (titles, links); AI handles comprehension.
    *
    * @param {string} title
    * @param {string} content
@@ -144,17 +146,7 @@ class EntityExtractor {
     }
 
     // -------------------------------------------------------------------------
-    // Step 2: Capitalised name pairs (e.g. "Sarah Chen", "Project Phoenix")
-    // -------------------------------------------------------------------------
-    const namePattern = /\b[A-Z][a-z]+ [A-Z][a-z]+\b/g;
-    let nameMatch;
-    while ((nameMatch = namePattern.exec(content)) !== null) {
-      this.graph.addEntity(nameMatch[0], 'person');
-      this._stats.entities++;
-    }
-
-    // -------------------------------------------------------------------------
-    // Step 3: Wikilinks [[Target Page]] → "references" triple from source
+    // Step 2: Wikilinks [[Target Page]] → "references" triple from source
     // -------------------------------------------------------------------------
     const wikilinkPattern = /\[\[([^\]]+)\]\]/g;
     let wikiMatch;
