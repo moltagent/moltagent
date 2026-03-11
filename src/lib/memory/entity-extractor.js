@@ -29,8 +29,8 @@ const ollamaGate = require('../shared/ollama-gate');
  * @version 1.0.0
  */
 
-const DEEP_THRESHOLD = 500;       // chars required for deep LLM extraction
-const MAX_CONTENT_FOR_LLM = 2000; // truncate content sent to LLM
+const DEEP_THRESHOLD = 500;        // chars required for deep LLM extraction
+const MAX_CONTENT_FOR_LLM = 10000; // truncate content sent to LLM
 
 class EntityExtractor {
   /**
@@ -76,27 +76,106 @@ class EntityExtractor {
   }
 
   /**
-   * Extract entities from a document (uploaded file) using only LLM-based deep
-   * extraction.  Skips the lightweight regex entirely to avoid creating garbage
-   * "person" entities from capitalised word pairs in headings, section titles,
-   * and other document structure artefacts.
+   * Extract a summary and typed entities from a document (uploaded file) using
+   * a single LLM call optimised for document ingestion.  Skips the lightweight
+   * regex entirely to avoid creating garbage "person" entities from capitalised
+   * word pairs in headings, section titles, and other document structure artefacts.
    *
-   * Only runs deep extraction when content is >= 100 chars and an LLM router
-   * is available; otherwise returns immediately without touching the graph.
+   * Populates the knowledge graph as a side-effect (same as before), but also
+   * returns the extracted data so the caller (DocumentIngestor) can use the
+   * summary and entity list to build richer wiki pages without a second round-trip.
    *
    * @param {string} title   - Document title / filename without extension
    * @param {string} content - Extracted document text (pre-truncated by caller)
-   * @returns {Promise<void>}
+   * @returns {Promise<{ summary: string, entities: Array<{name,type,significance,description}> }>}
    */
   async extractEntitiesFromDocument(title, content) {
-    if (!title || typeof title !== 'string') return;
+    if (!title || typeof title !== 'string') return { summary: '', entities: [] };
 
     const safeContent = content || '';
 
     // Gate: skip stub-length content and unavailable router
-    if (safeContent.length < 100 || !this.router) return;
+    if (safeContent.length < 100 || !this.router) return { summary: '', entities: [] };
 
-    await this._deepExtract(title, safeContent);
+    // Yield to user messages — don't block Ollama when user is waiting
+    if (ollamaGate.isUserActive()) return { summary: '', entities: [] };
+
+    const truncated = safeContent.slice(0, MAX_CONTENT_FOR_LLM);
+
+    const prompt = `Extract a summary and named entities from this document.
+Document title: ${title}
+
+Content:
+${truncated}
+
+Respond ONLY with JSON:
+{
+  "summary": "2-3 sentence summary of what this document is about",
+  "entities": [
+    {
+      "name": "exact name as written",
+      "type": "person|project|organization|tool|concept",
+      "significance": "high|medium|low",
+      "description": "one sentence about this entity's role or relevance"
+    }
+  ],
+  "relationships": [{"from": "...", "predicate": "...", "to": "..."}]
+}
+
+ENTITY TYPE rules:
+- person: actual human beings (e.g. "Carlos", "Sarah Chen"). NOT software, NOT companies.
+- organization: companies, teams, institutions (e.g. "TheCatalyne", "Hetzner")
+- project: named projects with scope and goals (e.g. "Project Phoenix")
+- tool: software, models, frameworks (e.g. "Claude Sonnet", "DeepSeek-R1:8B", "Nextcloud")
+- concept: abstract ideas, methodologies (e.g. "Zero Trust", "AGPL-3.0")
+
+SIGNIFICANCE rules:
+- high: person with role/company/contact, organization with relationship to workspace, project with description/team/status
+- medium: named tool, specific product, named location
+- low: generic software mention, abstract concept, common technical term
+
+RELATIONSHIP predicates: leads, led_by, managed_by, works_on, works_at, reports_to, belongs_to, employed_by, affiliated_with, client_of, depends_on, related_to, has_goal, has_status, uses, built_with, mentioned_in
+
+If nothing worth extracting, respond: {"summary":"","entities":[],"relationships":[]}`;
+
+    try {
+      const rawResponse = await this.router.route({
+        job: 'quick',
+        content: prompt,
+        requirements: { maxTokens: 1000, role: 'sovereign' },
+      });
+
+      const parsed = this._parseJson(rawResponse.result || rawResponse);
+      if (!parsed) return { summary: '', entities: [] };
+
+      // Register ALL entities in the graph
+      if (Array.isArray(parsed.entities)) {
+        for (const entity of parsed.entities) {
+          if (!entity || !entity.name) continue;
+          this.graph.addEntity(entity.name, entity.type || 'concept');
+          this._stats.entities++;
+        }
+      }
+
+      // Register ALL relationships as triples
+      if (Array.isArray(parsed.relationships)) {
+        for (const rel of parsed.relationships) {
+          if (!rel || !rel.from || !rel.to || !rel.predicate) continue;
+          const fromId = this.graph.addEntity(rel.from, 'concept');
+          const toId   = this.graph.addEntity(rel.to, 'concept');
+          this.graph.addTriple(fromId, rel.predicate, toId);
+          this._stats.triples++;
+        }
+      }
+
+      return {
+        summary:  parsed.summary  || '',
+        entities: parsed.entities || [],
+      };
+    } catch (err) {
+      this.logger.warn(`[EntityExtractor] Document extraction failed: ${err.message}`);
+      return { summary: '', entities: [] };
+    }
   }
 
   // ===========================================================================

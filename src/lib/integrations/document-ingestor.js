@@ -184,49 +184,22 @@ class DocumentIngestor {
     const filename = path.basename(filePath);
     const filenameNoExt = filename.replace(/\.[^.]+$/, '');
 
-    // Snapshot graph entities before extraction to detect new ones
-    const entitiesBefore = this.knowledgeGraph
-      ? new Set(this.knowledgeGraph._entities.keys())
-      : new Set();
-
-    // Run entity extraction — LLM-only, no regex. Populates the knowledge graph.
+    // Run LLM extraction — returns summary + typed entities, populates graph
+    let extractionResult = { summary: '', entities: [] };
     try {
-      await this.entityExtractor.extractEntitiesFromDocument(filenameNoExt, truncatedText);
+      extractionResult = await this.entityExtractor.extractEntitiesFromDocument(filenameNoExt, truncatedText) || { summary: '', entities: [] };
     } catch (err) {
       this.logger.warn(`[DocumentIngestor] Entity extraction error for ${filePath}: ${err.message}`);
     }
 
-    // Detect entities added/updated by this extraction
-    const newEntities = [];
-    if (this.knowledgeGraph) {
-      for (const [id, entity] of this.knowledgeGraph._entities) {
-        if (!entitiesBefore.has(id)) {
-          newEntities.push(entity);
-        }
-      }
-    }
+    const { summary, entities } = extractionResult;
 
-    // Create structured wiki pages for significant new entities
-    let entityPagesCreated = 0;
-    for (const entity of newEntities) {
-      if (this._isSignificantEntity(entity)) {
-        try {
-          const section = this._sectionForEntityType(entity.type);
-          const pageContent = this._buildEntityPage(entity, filePath);
-          await this.wikiWriter.createPage(section, entity.name, pageContent);
-          entityPagesCreated++;
-          this.logger.info(`[DocumentIngestor] Entity page: ${section}/${entity.name}`);
-        } catch (err) {
-          this.logger.warn(`[DocumentIngestor] Entity page failed for ${entity.name}: ${err.message}`);
-        }
-      }
-    }
+    // 1. ALL entities are already in the knowledge graph (done by extractEntitiesFromDocument)
 
-    // Build thin reference stub for the document itself (NOT a content dump)
+    // 2. Create reference stub with summary (always)
     const sectionPath = this._sectionForFile(filePath);
     const pageName    = filenameNoExt;
-    const entityNames = newEntities.map(e => e.name);
-    const stubContent = this._buildReferenceStub(filePath, extraction, entityNames);
+    const stubContent = this._buildReferenceStub(filePath, extraction, summary, entities);
 
     let wikiResult;
     try {
@@ -236,11 +209,34 @@ class DocumentIngestor {
       wikiResult = { success: false, error: err.message };
     }
 
+    // 3. Create wiki pages for high-significance entities only
+    let entityPagesCreated = 0;
+    for (const entity of entities) {
+      if (!this._shouldCreateWikiPage(entity)) continue;
+
+      try {
+        // Dedup: check if page already exists
+        const section = this._sectionForEntityType(entity.type);
+        const exists  = await this._pageExists(section, entity.name);
+        if (exists) {
+          this.logger.info(`[DocumentIngestor] Entity page exists: ${section}/${entity.name} — skipping`);
+          continue;
+        }
+
+        const pageContent = this._buildEntityPage(entity, filePath);
+        await this.wikiWriter.createPage(section, entity.name, pageContent);
+        entityPagesCreated++;
+        this.logger.info(`[DocumentIngestor] Entity page: ${section}/${entity.name}`);
+      } catch (err) {
+        this.logger.warn(`[DocumentIngestor] Entity page failed for ${entity.name}: ${err.message}`);
+      }
+    }
+
     // Mark as processed only after successful pipeline run
     this._processed.add(filePath);
 
     this.logger.info(
-      `[DocumentIngestor] Processed ${filePath} → ${newEntities.length} entities, ` +
+      `[DocumentIngestor] Processed ${filePath} → ${entities.length} entities, ` +
       `${entityPagesCreated} pages, reference stub in ${sectionPath}/${pageName}`
     );
 
@@ -248,7 +244,8 @@ class DocumentIngestor {
       filePath,
       skipped: false,
       textLength: rawText.length,
-      entitiesFound: newEntities.length,
+      summary: summary || '',
+      entitiesFound: entities.length,
       entityPagesCreated,
       wikiResult,
     };
@@ -488,12 +485,13 @@ class DocumentIngestor {
    * Build a thin reference stub for the document — NOT a content dump.
    * The full content lives in Nextcloud Files. The wiki holds extracted knowledge.
    *
-   * @param {string} filePath - Original file path
+   * @param {string} filePath  - Original file path
    * @param {Object} extraction - Result from TextExtractor.extract()
-   * @param {string[]} entityNames - Names of entities extracted from this document
+   * @param {string} summary   - LLM-generated summary (2-3 sentences), may be empty
+   * @param {Array}  entities  - Entity objects [{name, type, significance, description}]
    * @returns {string} Markdown page content
    */
-  _buildReferenceStub(filePath, extraction, entityNames = []) {
+  _buildReferenceStub(filePath, extraction, summary = '', entities = []) {
     const filename = path.basename(filePath);
     const ext      = filename.split('.').pop().toLowerCase();
     const now      = new Date().toISOString().split('T')[0];
@@ -528,11 +526,17 @@ class DocumentIngestor {
     if (extraction.ocr) lines.push(`**Method:** OCR`);
     lines.push(`**Ingested:** ${now}`, '');
 
-    // Entity references
-    if (entityNames.length > 0) {
-      lines.push('## Entities Found', '');
-      for (const name of entityNames) {
-        lines.push(`- ${name}`);
+    // LLM summary
+    if (summary) {
+      lines.push('## Summary', '', summary, '');
+    }
+
+    // Entity references using rich entity objects
+    if (entities.length > 0) {
+      lines.push('## Entities Mentioned', '');
+      for (const entity of entities) {
+        const desc = entity.description ? ` — ${entity.description}` : '';
+        lines.push(`- **${entity.name}** (${entity.type})${desc}`);
       }
       lines.push('');
     }
@@ -541,9 +545,9 @@ class DocumentIngestor {
   }
 
   /**
-   * Build a structured entity wiki page with typed frontmatter.
+   * Build a structured entity wiki page with typed frontmatter and description.
    *
-   * @param {Object} entity - Entity from the knowledge graph { id, name, type }
+   * @param {Object} entity     - Entity object { name, type, description }
    * @param {string} sourcePath - File path this entity was extracted from
    * @returns {string} Markdown page content
    */
@@ -560,23 +564,50 @@ class DocumentIngestor {
       '',
       `# ${entity.name}`,
       '',
-      `*Extracted from: ${sourcePath}*`,
     ];
 
+    if (entity.description) {
+      lines.push(entity.description, '');
+    }
+
+    lines.push(`*Extracted from: ${sourcePath}*`);
     return lines.join('\n');
   }
 
   /**
-   * Determine if an entity is significant enough to warrant its own wiki page.
-   * Filters out generic 'page', 'concept', 'note' types and very short names.
+   * Determine if an entity should get its own wiki page.
+   * Only high-significance entities of person, organization, or project type qualify.
    *
-   * @param {Object} entity - { name, type }
+   * @param {Object} entity - { name, type, significance }
    * @returns {boolean}
    */
-  _isSignificantEntity(entity) {
+  _shouldCreateWikiPage(entity) {
     if (!entity || !entity.name || entity.name.length <= 2) return false;
-    const dominated = new Set(['page', 'concept', 'note']);
-    return !dominated.has(entity.type);
+    // Only high-significance entities get wiki pages
+    if (entity.significance !== 'high') return false;
+    // Only person, organization, project types
+    const wikiTypes = new Set(['person', 'organization', 'project']);
+    return wikiTypes.has(entity.type);
+  }
+
+  /**
+   * Check whether a wiki page already exists in a section (for dedup).
+   * Returns false on listing errors so creation proceeds and lets the
+   * wiki writer handle any actual conflict.
+   *
+   * @param {string} section - Wiki section path (e.g. "People")
+   * @param {string} name    - Page title to check
+   * @returns {Promise<boolean>}
+   */
+  async _pageExists(section, name) {
+    try {
+      const result = await this.wikiWriter.listPages(section);
+      const pages  = result?.pages || [];
+      const nameLower = name.toLowerCase();
+      return pages.some(p => (p.title || '').toLowerCase() === nameLower);
+    } catch {
+      return false; // If listing fails, proceed with creation
+    }
   }
 
   /**

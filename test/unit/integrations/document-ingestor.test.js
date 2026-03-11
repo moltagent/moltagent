@@ -47,7 +47,10 @@ function makeTextExtractor(overrides = {}) {
 function makeEntityExtractor(overrides = {}) {
   return {
     extractFromPage: overrides.extractFromPage || (async () => {}),
-    extractEntitiesFromDocument: overrides.extractEntitiesFromDocument || (async () => {}),
+    extractEntitiesFromDocument: overrides.extractEntitiesFromDocument || (async () => ({
+      summary: '',
+      entities: [],
+    })),
   };
 }
 
@@ -97,9 +100,6 @@ asyncTest('processFile extracts text and runs entity extraction', async () => {
   let entityTitle;
   const wikiPages = [];
 
-  // Custom graph that simulates entity extraction adding new entities
-  const graph = makeKnowledgeGraph();
-
   const ingestor = new DocumentIngestor({
     ncFilesClient: makeNcFilesClient(),
     textExtractor: makeTextExtractor({
@@ -113,18 +113,22 @@ asyncTest('processFile extracts text and runs entity extraction', async () => {
       extractEntitiesFromDocument: async (title, content) => {
         entityCalled = true;
         entityTitle = title;
-        // Simulate what EntityExtractor does: add entities to the graph
-        graph.addEntity('Sarah Chen', 'person');
-        graph.addEntity('Project Phoenix', 'project');
-        graph.addEntity('TheCatalyne', 'organization');
+        return {
+          summary: 'This document discusses Project Phoenix led by Sarah Chen at TheCatalyne.',
+          entities: [
+            { name: 'Sarah Chen',      type: 'person',       significance: 'high', description: 'Leads Project Phoenix' },
+            { name: 'Project Phoenix', type: 'project',      significance: 'high', description: 'Main project at TheCatalyne' },
+            { name: 'TheCatalyne',     type: 'organization', significance: 'high', description: 'Parent company' },
+          ],
+        };
       },
     }),
-    knowledgeGraph: graph,
     wikiWriter: makeWikiWriter({
       createPage: async (section, name, content) => {
         wikiPages.push({ section, name, content });
         return { success: true, method: 'ocs' };
       },
+      listPages: async (section) => ({ pages: [], method: 'ocs' }),
     }),
     logger: makeSilentLogger(),
   });
@@ -142,16 +146,18 @@ asyncTest('processFile extracts text and runs entity extraction', async () => {
   assert.ok(peoplePage, 'Sarah Chen entity page should be created');
   assert.strictEqual(peoplePage.section, 'People', 'Person entity goes to People section');
   assert.ok(peoplePage.content.includes('type: person'), 'Entity page should have typed frontmatter');
+  assert.ok(peoplePage.content.includes('Leads Project Phoenix'), 'Entity page should include description');
 
   const projectPage = wikiPages.find(p => p.name === 'Project Phoenix');
   assert.ok(projectPage, 'Project Phoenix entity page should be created');
   assert.strictEqual(projectPage.section, 'Projects', 'Project entity goes to Projects section');
 
-  // Check reference stub (last wiki page created)
+  // Check reference stub
   const stub = wikiPages.find(p => p.name === 'report');
   assert.ok(stub, 'Reference stub should be created');
   assert.ok(stub.content.includes('type: document-ref'), 'Stub should be type document-ref, not document');
   assert.ok(stub.content.includes('Sarah Chen'), 'Stub should list extracted entities');
+  assert.ok(stub.content.includes('This document discusses Project Phoenix'), 'Stub should include LLM summary');
   assert.ok(!stub.content.includes('leads Project Phoenix at'), 'Stub should NOT contain the full extracted text');
 });
 
@@ -443,6 +449,99 @@ test('_truncateForExtraction truncates long text correctly', () => {
   assert.ok(result.endsWith('T'), 'Result should end with tail content');
   // Overall must be smaller than original
   assert.ok(result.length < long.length, 'Truncated result should be shorter than original');
+});
+
+// 15. processFile: skips entity wiki page when page already exists (dedup)
+asyncTest('processFile skips entity wiki page when page already exists', async () => {
+  const wikiPages = [];
+
+  const ingestor = new DocumentIngestor({
+    ncFilesClient: makeNcFilesClient(),
+    textExtractor: makeTextExtractor({
+      extract: async () => ({
+        text: 'Carlos leads the team at TheCatalyne. More text to pass the minimum threshold check here and there, yes.',
+        truncated: false,
+        totalLength: 100,
+      }),
+    }),
+    entityExtractor: makeEntityExtractor({
+      extractEntitiesFromDocument: async () => ({
+        summary: 'About Carlos at TheCatalyne.',
+        entities: [
+          { name: 'Carlos', type: 'person', significance: 'high', description: 'Team lead' },
+        ],
+      }),
+    }),
+    wikiWriter: makeWikiWriter({
+      createPage: async (section, name, content) => {
+        wikiPages.push({ section, name, content });
+        return { success: true, method: 'ocs' };
+      },
+      listPages: async (section) => {
+        if (section === 'People') {
+          return { pages: [{ title: 'Carlos' }], method: 'ocs' };
+        }
+        return { pages: [], method: 'ocs' };
+      },
+    }),
+    logger: makeSilentLogger(),
+  });
+
+  const result = await ingestor.processFile('Documents/team.txt');
+
+  assert.strictEqual(result.entityPagesCreated, 0, 'Should not create page for existing entity');
+  // Reference stub should still be created
+  const stub = wikiPages.find(p => p.name === 'team');
+  assert.ok(stub, 'Reference stub should still be created');
+});
+
+// 16. processFile: only creates wiki pages for high-significance entities
+asyncTest('processFile only creates wiki pages for high-significance entities', async () => {
+  const wikiPages = [];
+
+  const ingestor = new DocumentIngestor({
+    ncFilesClient: makeNcFilesClient(),
+    textExtractor: makeTextExtractor({
+      extract: async () => ({
+        text: 'DeepSeek and Claude are used in the pipeline. Carlos manages it. Enough text to pass the threshold here.',
+        truncated: false,
+        totalLength: 100,
+      }),
+    }),
+    entityExtractor: makeEntityExtractor({
+      extractEntitiesFromDocument: async () => ({
+        summary: 'Pipeline uses DeepSeek and Claude, managed by Carlos.',
+        entities: [
+          { name: 'Carlos',     type: 'person',  significance: 'high',   description: 'Pipeline manager' },
+          { name: 'DeepSeek',   type: 'tool',    significance: 'medium', description: 'LLM model' },
+          { name: 'Claude',     type: 'tool',    significance: 'medium', description: 'LLM model' },
+          { name: 'Zero Trust', type: 'concept', significance: 'low',    description: 'Security concept' },
+        ],
+      }),
+    }),
+    wikiWriter: makeWikiWriter({
+      createPage: async (section, name, content) => {
+        wikiPages.push({ section, name, content });
+        return { success: true, method: 'ocs' };
+      },
+      listPages: async () => ({ pages: [], method: 'ocs' }),
+    }),
+    logger: makeSilentLogger(),
+  });
+
+  const result = await ingestor.processFile('Documents/pipeline.txt');
+
+  assert.strictEqual(result.entityPagesCreated, 1, 'Only Carlos (high significance person) should get a page');
+  assert.strictEqual(result.entitiesFound, 4, 'All 4 entities should be counted');
+
+  const entityPage = wikiPages.find(p => p.section === 'People');
+  assert.ok(entityPage, 'People page should exist');
+  assert.strictEqual(entityPage.name, 'Carlos');
+
+  // No tool or concept pages
+  assert.ok(!wikiPages.find(p => p.name === 'DeepSeek'),   'No page for medium-significance tool');
+  assert.ok(!wikiPages.find(p => p.name === 'Claude'),     'No page for medium-significance tool');
+  assert.ok(!wikiPages.find(p => p.name === 'Zero Trust'), 'No page for low-significance concept');
 });
 
 // ── Teardown ────────────────────────────────────────────────────────────────
