@@ -25,11 +25,12 @@ const DocumentIngestor = require('../../../src/lib/integrations/document-ingesto
 function makeNcFilesClient(overrides = {}) {
   return {
     readFileBuffer: overrides.readFileBuffer || (async () => Buffer.from('sample document content for testing purposes - enough characters')),
-    getDirectoryContents: overrides.getDirectoryContents || (async () => [
+    listDirectory: overrides.listDirectory || (async () => [
       { name: 'report.pdf', type: 'file' },
       { name: 'notes.txt', type: 'file' },
       { name: 'image.jpg', type: 'file' },
     ]),
+    getFileInfo: overrides.getFileInfo || (async () => ({ name: 'test', size: 1024 })),
   };
 }
 
@@ -259,18 +260,28 @@ asyncTest('onFileEvent re-ingests on file_changed (clears processed set)', async
   assert.ok(ingestor._processed.has('Documents/updated.txt'), 'File should be back in processed set after re-ingest');
 });
 
-// 10. ingestDirectory: processes a batch of files
+// 10. ingestDirectory: processes a batch of files (recursive)
 asyncTest('ingestDirectory processes batch of files', async () => {
   const processedPaths = [];
 
   const ingestor = makeIngestor({
-    getDirectoryContents: async () => [
-      { name: 'doc1.pdf', type: 'file' },
-      { name: 'doc2.txt', type: 'file' },
-      { name: 'image.png', type: 'file' },
-      { name: 'archive.zip', type: 'file' },  // unsupported — should be filtered
-      { name: 'subdir', type: 'directory' },   // directory — should be filtered
-    ],
+    listDirectory: async (dir) => {
+      if (dir === 'Documents') {
+        return [
+          { name: 'doc1.pdf', type: 'file' },
+          { name: 'doc2.txt', type: 'file' },
+          { name: 'image.png', type: 'file' },
+          { name: 'archive.zip', type: 'file' },  // unsupported — should be filtered
+          { name: 'subdir', type: 'directory' },   // directory — recursed into
+        ];
+      }
+      if (dir === 'Documents/subdir') {
+        return [
+          { name: 'nested.md', type: 'file' },
+        ];
+      }
+      return [];
+    },
   });
 
   // Override processFile to capture calls
@@ -279,13 +290,14 @@ asyncTest('ingestDirectory processes batch of files', async () => {
     return { filePath, skipped: false, textLength: 200 };
   };
 
-  const summary = await ingestor.ingestDirectory('Documents');
+  const result = await ingestor.ingestDirectory('Documents');
 
-  // Only supported non-directory files should pass the filter
-  assert.strictEqual(summary.total, 3, `Expected 3 supported files, got ${summary.total}`);
+  // 3 supported files in root + 1 in subdir = 4 total
+  assert.strictEqual(result.total, 4, `Expected 4 supported files, got ${result.total}`);
   assert.ok(processedPaths.some(p => p.includes('doc1.pdf')), 'doc1.pdf should be processed');
   assert.ok(processedPaths.some(p => p.includes('doc2.txt')), 'doc2.txt should be processed');
   assert.ok(processedPaths.some(p => p.includes('image.png')), 'image.png should be processed');
+  assert.ok(processedPaths.some(p => p.includes('subdir/nested.md')), 'nested.md in subdir should be processed');
 });
 
 // 11. ingestDirectory: calls progress callback
@@ -293,7 +305,7 @@ asyncTest('ingestDirectory calls progress callback', async () => {
   const progressUpdates = [];
 
   const ingestor = makeIngestor({
-    getDirectoryContents: async () => [
+    listDirectory: async () => [
       { name: 'a.pdf', type: 'file' },
       { name: 'b.txt', type: 'file' },
     ],
@@ -313,6 +325,52 @@ asyncTest('ingestDirectory calls progress callback', async () => {
   assert.ok(progressUpdates.length >= 1, 'onProgress should be called at least once');
   const last = progressUpdates[progressUpdates.length - 1];
   assert.strictEqual(last.total, 2, 'Total should be 2');
+});
+
+// 13. onFileEvent: handles share_created by scanning shared folder
+asyncTest('onFileEvent handles share_created by scanning shared folder', async () => {
+  let dirScanned = null;
+
+  const ingestor = makeIngestor({
+    listDirectory: async (dir) => {
+      dirScanned = dir;
+      return [{ name: 'shared-doc.pdf', type: 'file' }];
+    },
+  });
+
+  ingestor.processFile = async (filePath) => {
+    return { filePath, skipped: false, textLength: 200 };
+  };
+
+  await ingestor.onFileEvent({
+    type: 'share_created',
+    objectType: 'share',
+    objectName: 'SharedFolder',
+  });
+
+  assert.strictEqual(dirScanned, 'SharedFolder', 'Should scan the shared folder path');
+});
+
+// 14. onFileEvent: handles share_created for single file
+asyncTest('onFileEvent handles share_created for single shared file', async () => {
+  let processedPath = null;
+
+  const ingestor = makeIngestor({
+    listDirectory: async () => { throw new Error('Not a directory'); },
+  });
+
+  ingestor.processFile = async (filePath) => {
+    processedPath = filePath;
+    return { filePath, skipped: false, textLength: 200 };
+  };
+
+  await ingestor.onFileEvent({
+    type: 'share_created',
+    objectType: 'share',
+    objectName: 'SharedFolder/report.pdf',
+  });
+
+  assert.strictEqual(processedPath, 'SharedFolder/report.pdf', 'Should process the shared file');
 });
 
 // 12. _truncateForExtraction truncates long text correctly

@@ -21,7 +21,8 @@
  * is blind to content in the file system.
  *
  * Pattern: Event-driven ingestor. ActivityPoller 'file_created'/'file_changed'
- * events trigger processFile(). TextExtractor converts binary/office/image
+ * events trigger processFile(); 'share_created' events trigger a recursive
+ * directory scan of the shared path. TextExtractor converts binary/office/image
  * buffers to text; EntityExtractor populates the knowledge graph in-place;
  * ResilientWikiWriter persists a document summary page per file. A Set tracks
  * already-processed paths so repeat polls are cheap. ingestDirectory() provides
@@ -216,7 +217,7 @@ class DocumentIngestor {
   }
 
   /**
-   * Batch-process all supported files in a directory.
+   * Batch-process all supported files in a directory (recursive).
    *
    * @param {string} directoryPath - Nextcloud-relative directory path
    * @param {Object} [options]
@@ -228,33 +229,27 @@ class DocumentIngestor {
     const batchSize = options.batchSize || 10;
     const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
 
-    let entries;
-    try {
-      entries = await this.ncFilesClient.getDirectoryContents(directoryPath);
-    } catch (err) {
-      this.logger.warn(`[DocumentIngestor] Cannot list directory ${directoryPath}: ${err.message}`);
-      return { total: 0, processed: 0, errors: 1, details: [{ error: err.message }] };
+    // Recursively discover all supported files
+    const allFiles = await this._listFilesRecursive(directoryPath);
+
+    if (allFiles.length === 0) {
+      this.logger.info(`[DocumentIngestor] No supported files in ${directoryPath}`);
+      return { total: 0, processed: 0, errors: 0, details: [] };
     }
 
-    // Filter to supported files only
-    const files = (entries || []).filter(
-      entry => entry.type !== 'directory' && TextExtractor.isSupported(entry.name || '')
-    );
+    this.logger.info(`[DocumentIngestor] Found ${allFiles.length} supported files in ${directoryPath}`);
 
-    const total   = files.length;
+    const total   = allFiles.length;
     let processed = 0;
     let errors    = 0;
     const details = [];
 
     // Process in batches
     for (let i = 0; i < total; i += batchSize) {
-      const batch = files.slice(i, i + batchSize);
+      const batch = allFiles.slice(i, i + batchSize);
 
       const batchResults = await Promise.all(
-        batch.map(async entry => {
-          const filePath = directoryPath
-            ? `${directoryPath.replace(/\/+$/, '')}/${entry.name}`
-            : entry.name;
+        batch.map(async filePath => {
           try {
             return await this.processFile(filePath);
           } catch (err) {
@@ -278,26 +273,33 @@ class DocumentIngestor {
       }
     }
 
+    this.logger.info(`[DocumentIngestor] Directory scan complete: ${processed}/${total} files processed, ${errors} errors`);
     return { total, processed, errors, details };
   }
 
   /**
    * Handler for ActivityPoller 'event' emissions.
-   * Filters to file create/change events and delegates to processFile().
+   *
+   * Handles three event families:
+   * - file_created / file_changed (objectType: file) → processFile()
+   * - share_created (objectType: share) → determine if file or folder, ingest accordingly
    *
    * @param {Object} event - NCFlowEvent from ActivityPoller
-   * @param {string} event.type - Event type string
-   * @param {string} event.objectType - Normalized object type ('file' or original)
-   * @param {string} event.objectName - File path
+   * @param {string} event.type - Normalized event type
+   * @param {string} event.objectType - Normalized object type
+   * @param {string} event.objectName - File/folder path
    * @returns {Promise<Object|undefined>}
    */
   async onFileEvent(event) {
     if (!event) return;
 
-    // ActivityPoller normalizes 'files' object_type to 'file' via OBJECT_TYPE_MAP
-    // but the spec says objectType will be 'files' — handle both to be safe
-    if (event.objectType !== 'files' && event.objectType !== 'file') return;
+    // ── Share events: someone shared a file or folder with Moltagent ──
+    if (event.type === 'share_created' || event.type === 'file_shared') {
+      return this._handleShareEvent(event);
+    }
 
+    // ── Direct file events: file created or changed ──
+    if (event.objectType !== 'files' && event.objectType !== 'file') return;
     if (event.type !== 'file_created' && event.type !== 'file_changed') return;
 
     const filePath = event.objectName;
@@ -309,6 +311,44 @@ class DocumentIngestor {
     }
 
     return this.processFile(filePath);
+  }
+
+  /**
+   * Handle a share event: probe whether the objectName is a file or directory,
+   * then ingest accordingly. Shared folders get a recursive scan.
+   *
+   * Strategy: Try listDirectory() first. If it returns entries, it's a folder
+   * and we scan it. If it throws (404 or non-directory), treat it as a file.
+   *
+   * @param {Object} event - NCFlowEvent with type share_created
+   * @returns {Promise<Object|undefined>}
+   * @private
+   */
+  async _handleShareEvent(event) {
+    const sharePath = event.objectName;
+    if (!sharePath) return;
+
+    this.logger.info(`[DocumentIngestor] Share event: ${event.type} → ${sharePath}`);
+
+    // Try as directory first (shared folders are the common case)
+    try {
+      const entries = await this.ncFilesClient.listDirectory(sharePath);
+      if (entries && entries.length >= 0) {
+        // It's a directory — scan recursively
+        this.logger.info(`[DocumentIngestor] Shared folder detected: ${sharePath} — scanning`);
+        return this.ingestDirectory(sharePath);
+      }
+    } catch {
+      // Not a directory (or not accessible). Try as single file.
+    }
+
+    // Try as single file
+    if (TextExtractor.isSupported(sharePath)) {
+      this.logger.info(`[DocumentIngestor] Shared file detected: ${sharePath}`);
+      return this.processFile(sharePath);
+    }
+
+    this.logger.info(`[DocumentIngestor] Share path not actionable: ${sharePath}`);
   }
 
   // ===========================================================================
@@ -327,6 +367,45 @@ class DocumentIngestor {
     const head = text.slice(0, EXTRACT_HEAD);
     const tail = text.slice(-EXTRACT_TAIL);
     return `${head}\n\n[... middle truncated ...]\n\n${tail}`;
+  }
+
+  /**
+   * Recursively list all supported files under a directory.
+   * Uses NCFilesClient.listDirectory() (PROPFIND Depth:1) and recurses
+   * into subdirectories. Returns an array of full file paths.
+   *
+   * @param {string} dirPath - Nextcloud-relative directory path
+   * @param {number} [depth=0] - Current recursion depth (max 10)
+   * @returns {Promise<string[]>} Array of file paths
+   * @private
+   */
+  async _listFilesRecursive(dirPath, depth = 0) {
+    if (depth > 10) return []; // Safety: prevent infinite recursion
+
+    let entries;
+    try {
+      entries = await this.ncFilesClient.listDirectory(dirPath);
+    } catch (err) {
+      this.logger.warn(`[DocumentIngestor] Cannot list ${dirPath}: ${err.message}`);
+      return [];
+    }
+
+    const normalizedDir = dirPath.replace(/\/+$/, '');
+    const files = [];
+
+    for (const entry of (entries || [])) {
+      const entryPath = normalizedDir ? `${normalizedDir}/${entry.name}` : entry.name;
+
+      if (entry.type === 'directory') {
+        // Recurse into subdirectory
+        const subFiles = await this._listFilesRecursive(entryPath, depth + 1);
+        files.push(...subFiles);
+      } else if (TextExtractor.isSupported(entry.name)) {
+        files.push(entryPath);
+      }
+    }
+
+    return files;
   }
 
   /**
