@@ -1550,7 +1550,7 @@ asyncTest('file_extract returns error for unsupported type', async () => {
     textExtractor: createMockTextExtractor(),
     logger: silentLogger
   });
-  const result = await registry.execute('file_extract', { path: 'image.png' });
+  const result = await registry.execute('file_extract', { path: 'archive.zip' });
   assert.ok(result.success);
   assert.ok(result.result.includes("Can't extract"));
 });

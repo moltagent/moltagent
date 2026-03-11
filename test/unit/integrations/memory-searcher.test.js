@@ -88,8 +88,8 @@ async function runTests() {
     const searcher = new MemorySearcher({ ncSearchClient: mock });
 
     await searcher.search('test query', { scope: 'all' });
+    assert.ok(calledProviders.includes('collectives-pages'), 'Should search collectives-pages');
     assert.ok(calledProviders.includes('collectives-page-content'), 'Should search collectives-page-content');
-    assert.ok(calledProviders.includes('talk-message'), 'Should search talk-message');
     assert.ok(calledProviders.includes('files'), 'Should search files');
     assert.strictEqual(calledProviders.length, 3, 'Should search 3 providers for scope all');
   });
@@ -104,8 +104,8 @@ async function runTests() {
         if (pid === 'collectives-page-content') {
           return [{ title: 'Wiki Page', subline: 'excerpt from wiki', resourceUrl: '/wiki/page' }];
         }
-        if (pid === 'talk-message') {
-          return [{ title: 'Chat Message', subline: 'hello world', resourceUrl: '/talk/1' }];
+        if (pid === 'files') {
+          return [{ title: 'Report.pdf', subline: 'annual report', resourceUrl: '/files/report.pdf' }];
         }
         return [];
       }
@@ -114,11 +114,11 @@ async function runTests() {
 
     const results = await searcher.search('test');
     assert.strictEqual(results.length, 2, 'Should have 2 results');
-    // Wiki should come before Talk (priority 1 vs 3)
+    // Wiki should come before File (priority 1 vs 4)
     assert.strictEqual(results[0].source, 'Wiki', 'First result should be Wiki');
     assert.strictEqual(results[0].title, 'Wiki Page');
     assert.strictEqual(results[0].excerpt, 'excerpt from wiki');
-    assert.strictEqual(results[1].source, 'Conversation', 'Second result should be Conversation');
+    assert.strictEqual(results[1].source, 'File', 'Second result should be File');
   });
 
   // -----------------------------------------------------------------------
