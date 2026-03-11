@@ -68,6 +68,7 @@ const FILE_TYPE_MAP = {
 const SHARE_TYPE_MAP = {
   'shared_with_by': 'share_created',
   'shared_user_self': 'share_created',
+  'shared': 'share_created',           // NC 31 actual type for file/folder shares
   'remote_share': 'share_created',
   'public_links': 'file_shared',
   'shared_link_mail': 'file_shared',
@@ -344,6 +345,7 @@ class ActivityPoller extends EventEmitter {
 
     // App-based fallback
     if (app === 'files') return 'file_changed';
+    if (app === 'files_sharing') return 'share_created';
     if (app === 'deck') return 'deck_card_updated';
     if (app === 'dav') return 'calendar_event_changed';
 

@@ -31,7 +31,8 @@
  * Key Dependencies:
  * - NCFilesClient   — readFileBuffer() for binary downloads
  * - TextExtractor   — extract(buffer, filePath), isSupported(filePath) (static)
- * - EntityExtractor — extractFromPage(title, content) → void (loads graph directly)
+ * - EntityExtractor — extractEntitiesFromDocument(title, content) → void (deep-only, no regex noise)
+ *                     falls back to extractFromPage() when method is absent (test compatibility)
  * - ResilientWikiWriter — createPage(sectionPath, pageName, content)
  *
  * Data Flow:
@@ -39,7 +40,7 @@
  *   → processFile(filePath)
  *     → ncFilesClient.readFileBuffer()
  *     → TextExtractor.extract()
- *     → entityExtractor.extractFromPage()
+ *     → entityExtractor.extractEntitiesFromDocument()
  *     → wikiWriter.createPage()
  *
  * Dependency Map:
@@ -189,9 +190,15 @@ class DocumentIngestor {
       ? new Set(this.knowledgeGraph._entities.keys())
       : new Set();
 
-    // Run entity extraction — directly populates the knowledge graph
+    // Run entity extraction — directly populates the knowledge graph.
+    // Prefer extractEntitiesFromDocument (deep-only, no regex noise) when
+    // available; fall back to extractFromPage for backward compatibility.
     try {
-      await this.entityExtractor.extractFromPage(filenameNoExt, truncatedText);
+      if (typeof this.entityExtractor.extractEntitiesFromDocument === 'function') {
+        await this.entityExtractor.extractEntitiesFromDocument(filenameNoExt, truncatedText);
+      } else {
+        await this.entityExtractor.extractFromPage(filenameNoExt, truncatedText);
+      }
     } catch (err) {
       this.logger.warn(`[DocumentIngestor] Entity extraction error for ${filePath}: ${err.message}`);
     }
@@ -498,8 +505,8 @@ class DocumentIngestor {
     const ext      = filename.split('.').pop().toLowerCase();
     const now      = new Date().toISOString().split('T')[0];
 
-    const safeFilename = filename.replace(/"/g, '\\"');
-    const safeFilePath = filePath.replace(/"/g, '\\"');
+    const safeFilename = filename.replace(/[\n\r"]/g, ' ').trim();
+    const safeFilePath = filePath.replace(/[\n\r"]/g, ' ').trim();
 
     const lines = [
       '---',
@@ -551,9 +558,9 @@ class DocumentIngestor {
     const now = new Date().toISOString().split('T')[0];
     const lines = [
       '---',
-      `title: "${entity.name.replace(/"/g, '\\"')}"`,
+      `title: "${entity.name.replace(/[\n\r"]/g, ' ').trim()}"`,
       `type: ${entity.type}`,
-      `source: "${sourcePath.replace(/"/g, '\\"')}"`,
+      `source: "${sourcePath.replace(/[\n\r"]/g, ' ').trim()}"`,
       `created: ${now}`,
       `decay_days: 180`,
       '---',

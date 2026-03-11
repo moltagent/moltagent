@@ -17,9 +17,12 @@ const ollamaGate = require('../shared/ollama-gate');
  *
  * Architecture Brief:
  * - Problem: Knowledge graph needs entities and relationships extracted from text
- * - Pattern: Lightweight regex extraction always runs; deep LLM extraction for substantial content
+ * - Pattern: Lightweight regex extraction always runs for wiki pages; document ingestor
+ *   uses deep-only path to avoid garbage "person" entities from capitalized word pairs
+ *   in structured documents (headings, section titles, frontmatter).
  * - Key Dependencies: KnowledgeGraph (sink), LLMRouter (deep extraction)
  * - Data Flow: page content → lightweight regex → (optional) deep LLM → knowledge graph
+ *             document content → deep LLM only → knowledge graph
  * - Dependency Map: heartbeat-extractor.js → entity-extractor.js → knowledge-graph.js
  *
  * @module memory/entity-extractor
@@ -70,6 +73,30 @@ class EntityExtractor {
     if (safeContent.length >= DEEP_THRESHOLD && this.router) {
       await this._deepExtract(title, safeContent);
     }
+  }
+
+  /**
+   * Extract entities from a document (uploaded file) using only LLM-based deep
+   * extraction.  Skips the lightweight regex entirely to avoid creating garbage
+   * "person" entities from capitalised word pairs in headings, section titles,
+   * and other document structure artefacts.
+   *
+   * Only runs deep extraction when content is >= 100 chars and an LLM router
+   * is available; otherwise returns immediately without touching the graph.
+   *
+   * @param {string} title   - Document title / filename without extension
+   * @param {string} content - Extracted document text (pre-truncated by caller)
+   * @returns {Promise<void>}
+   */
+  async extractEntitiesFromDocument(title, content) {
+    if (!title || typeof title !== 'string') return;
+
+    const safeContent = content || '';
+
+    // Gate: skip stub-length content and unavailable router
+    if (safeContent.length < 100 || !this.router) return;
+
+    await this._deepExtract(title, safeContent);
   }
 
   // ===========================================================================

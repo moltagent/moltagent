@@ -47,6 +47,7 @@ function makeTextExtractor(overrides = {}) {
 function makeEntityExtractor(overrides = {}) {
   return {
     extractFromPage: overrides.extractFromPage || (async () => {}),
+    extractEntitiesFromDocument: overrides.extractEntitiesFromDocument || (async () => {}),
   };
 }
 
@@ -109,7 +110,7 @@ asyncTest('processFile extracts text and runs entity extraction', async () => {
       }),
     }),
     entityExtractor: makeEntityExtractor({
-      extractFromPage: async (title, content) => {
+      extractEntitiesFromDocument: async (title, content) => {
         entityCalled = true;
         entityTitle = title;
         // Simulate what EntityExtractor does: add entities to the graph
@@ -131,7 +132,7 @@ asyncTest('processFile extracts text and runs entity extraction', async () => {
   const result = await ingestor.processFile('Documents/report.pdf');
 
   assert.strictEqual(result.skipped, false, 'Should not be skipped');
-  assert.strictEqual(entityCalled, true, 'entityExtractor.extractFromPage should be called');
+  assert.strictEqual(entityCalled, true, 'entityExtractor.extractEntitiesFromDocument should be called');
   assert.strictEqual(entityTitle, 'report', 'Title should be filename without extension');
   assert.strictEqual(result.entitiesFound, 3, 'Should find 3 entities');
   assert.strictEqual(result.entityPagesCreated, 3, 'Should create 3 entity pages');
