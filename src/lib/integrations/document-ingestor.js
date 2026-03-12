@@ -122,6 +122,9 @@ class DocumentIngestor {
     /** @type {Set<string>} Tracks successfully processed file paths. */
     this._processed = new Set();
 
+    /** @type {Set<string>} Tracks entity pages already created (section/name lowercase). */
+    this._createdEntityPages = new Set();
+
     /** @type {Promise} Serial queue — prevents concurrent wiki section creation races. */
     this._queue = Promise.resolve();
   }
@@ -215,16 +218,22 @@ class DocumentIngestor {
       if (!this._shouldCreateWikiPage(entity)) continue;
 
       try {
-        // Dedup: check if page already exists
         const section = this._sectionForEntityType(entity.type);
-        const exists  = await this._pageExists(section, entity.name);
+        const dedupKey = `${section}/${entity.name}`.toLowerCase();
+
+        // Fast in-memory dedup (survives batch parallelism)
+        if (this._createdEntityPages.has(dedupKey)) continue;
+
+        // Remote dedup: check if page already exists on wiki
+        const exists = await this._pageExists(section, entity.name);
         if (exists) {
-          this.logger.info(`[DocumentIngestor] Entity page exists: ${section}/${entity.name} — skipping`);
+          this._createdEntityPages.add(dedupKey);
           continue;
         }
 
         const pageContent = this._buildEntityPage(entity, filePath);
         await this.wikiWriter.createPage(section, entity.name, pageContent);
+        this._createdEntityPages.add(dedupKey);
         entityPagesCreated++;
         this.logger.info(`[DocumentIngestor] Entity page: ${section}/${entity.name}`);
       } catch (err) {
@@ -261,7 +270,6 @@ class DocumentIngestor {
    * @returns {Promise<{total: number, processed: number, errors: number, details: Array}>}
    */
   async ingestDirectory(directoryPath, options = {}) {
-    const batchSize = options.batchSize || 10;
     const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
 
     // Recursively discover all supported files
@@ -279,28 +287,23 @@ class DocumentIngestor {
     let errors    = 0;
     const details = [];
 
-    // Process in batches
-    for (let i = 0; i < total; i += batchSize) {
-      const batch = allFiles.slice(i, i + batchSize);
-
-      const batchResults = await Promise.all(
-        batch.map(async filePath => {
-          try {
-            return await this.processFile(filePath);
-          } catch (err) {
-            this.logger.warn(`[DocumentIngestor] Unexpected error for ${filePath}: ${err.message}`);
-            return { filePath, skipped: true, reason: err.message, error: true };
-          }
-        })
-      );
-
-      for (const result of batchResults) {
+    // Process files sequentially to prevent entity page creation races
+    // (parallel batches cause duplicate wiki pages when multiple files
+    // reference the same entity — all check _pageExists simultaneously,
+    // all get false, all create → Nextcloud appends (2), (3), etc.)
+    for (const file of allFiles) {
+      try {
+        const result = await this.processFile(file);
         details.push(result);
         if (result.error) {
           errors++;
         } else if (!result.skipped) {
           processed++;
         }
+      } catch (err) {
+        this.logger.warn(`[DocumentIngestor] Unexpected error for ${file}: ${err.message}`);
+        details.push({ filePath: file, skipped: true, reason: err.message, error: true });
+        errors++;
       }
 
       if (onProgress) {
@@ -321,6 +324,21 @@ class DocumentIngestor {
    */
   async scanOnStartup(directories) {
     if (!Array.isArray(directories) || directories.length === 0) return;
+
+    // Pre-populate entity page cache from existing wiki sections
+    // so we never re-create pages that already exist
+    for (const section of ['People', 'Organizations', 'Projects', 'Procedures', 'Research']) {
+      try {
+        const result = await this.wikiWriter.listPages(section);
+        for (const page of (result?.pages || [])) {
+          const title = (page.title || '').toLowerCase();
+          if (title && title !== 'readme') {
+            this._createdEntityPages.add(`${section}/${title}`);
+          }
+        }
+      } catch { /* section may not exist yet */ }
+    }
+    this.logger.info(`[DocumentIngestor] Pre-cached ${this._createdEntityPages.size} existing entity pages`);
 
     for (const dir of directories) {
       this.logger.info(`[DocumentIngestor] Startup scan: ${dir}`);
