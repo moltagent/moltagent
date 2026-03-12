@@ -104,8 +104,8 @@ asyncTest('tick() calls flush() before reading entries', async () => {
   assert.strictEqual(flushed, true, 'Should flush activity log before reading');
 });
 
-// -- Test 4: tick() sends extraction prompt to local model (sovereign role) --
-asyncTest('tick() uses sovereign role for local-only extraction', async () => {
+// -- Test 4: tick() sends extraction prompt via synthesis job (trust boundary) --
+asyncTest('tick() uses synthesis job for trust-boundary-aware extraction', async () => {
   let capturedReq = null;
   const extractor = new HeartbeatExtractor({
     activityLogger: createMockActivityLogger(makeEntries(5)),
@@ -123,8 +123,8 @@ asyncTest('tick() uses sovereign role for local-only extraction', async () => {
   await extractor.tick();
 
   assert.ok(capturedReq, 'Should have called router');
-  assert.strictEqual(capturedReq.requirements.role, 'sovereign', 'Should use sovereign role');
-  assert.strictEqual(capturedReq.job, 'quick', 'Should use quick job');
+  assert.strictEqual(capturedReq.requirements.role, undefined, 'Should not hardcode sovereign role');
+  assert.strictEqual(capturedReq.job, 'synthesis', 'Should use synthesis job');
 });
 
 // -- Test 5: tick() writes people facts to People/ wiki pages --

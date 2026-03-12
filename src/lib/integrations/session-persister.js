@@ -28,14 +28,14 @@ const { detectCommitments } = require('./commitment-detector');
  *   memory requires summarising and persisting it to a searchable wiki store.
  *
  * Pattern:
- *   On 'sessionExpired' from SessionManager, generate a sovereign (local LLM)
+ *   On 'sessionExpired' from SessionManager, generate a trust-boundary-aware
  *   summary and write it as a Collectives subpage under "Sessions/".
  *   The page is created via the Collectives OCS API (not raw WebDAV PUT) so
  *   that the parent directory is guaranteed to exist before the write.
  *
  * Key Dependencies:
  *   - CollectivesClient  (OCS createPage + WebDAV writePageContent)
- *   - LLM Router         (JOBS.QUICK / sovereign role for zero cloud cost)
+ *   - LLM Router         (JOBS.SYNTHESIS — respects trust boundary)
  *   - RhythmTracker      (optional, for behavioral pattern recording)
  *
  * Data Flow:
@@ -119,7 +119,7 @@ class SessionPersister {
     const { kept, filtered: filteredSegments } = this.trustGate.filter(session.context);
     const keptMessages = kept.filter(c => c.role === 'user' || c.role === 'assistant');
 
-    // Generate summary from trust-gated context (sovereign role — zero cloud cost)
+    // Generate summary from trust-gated context (synthesis job — respects trust boundary)
     console.log(`[SessionPersister] Generating summary from ${keptMessages.length} trust-gated messages (${filteredSegments.length} filtered)`);
     const summary = await this._generateSummary(session, keptMessages);
 
@@ -391,7 +391,7 @@ class SessionPersister {
 
   /**
    * Generate a concise summary of the conversation.
-   * Uses sovereign/local role — zero cloud cost.
+   * Uses JOBS.SYNTHESIS — trust boundary decides local vs cloud.
    * @private
    * @param {Object} session - Session object
    * @param {Array} messages - Filtered user/assistant messages

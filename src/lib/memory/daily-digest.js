@@ -186,9 +186,9 @@ Rules:
         return 'Activity recorded.';
       }
       const rawResponse = await this.router.route({
-        job: 'quick',
+        job: 'synthesis',
         content: prompt,
-        requirements: { maxTokens: 300, role: 'sovereign' }
+        requirements: { maxTokens: 300 }
       });
       return (rawResponse.result || rawResponse || '').toString().trim() || 'Activity recorded.';
     } catch (err) {

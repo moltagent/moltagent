@@ -576,18 +576,20 @@ class DocumentIngestor {
 
   /**
    * Determine if an entity should get its own wiki page.
-   * Only high-significance entities of person, organization, or project type qualify.
+   * Organizations always qualify (partner companies, vendors, clients).
+   * Person and project require high significance.
    *
    * @param {Object} entity - { name, type, significance }
    * @returns {boolean}
    */
   _shouldCreateWikiPage(entity) {
     if (!entity || !entity.name || entity.name.length <= 2) return false;
-    // Only high-significance entities get wiki pages
+    const type = entity.type;
+    // Organizations always get wiki pages — workspace knowledge
+    if (type === 'organization' || type === 'company') return true;
+    // Person and project require high significance
     if (entity.significance !== 'high') return false;
-    // Only person, organization, project types
-    const wikiTypes = new Set(['person', 'organization', 'project']);
-    return wikiTypes.has(entity.type);
+    return type === 'person' || type === 'project';
   }
 
   /**
@@ -619,11 +621,10 @@ class DocumentIngestor {
   _sectionForEntityType(type) {
     const map = {
       person: 'People',
-      organization: 'People',
+      organization: 'Organizations',
+      company: 'Organizations',
       project: 'Projects',
       decision: 'Projects',
-      tool: 'Research',
-      research: 'Research',
       procedure: 'Procedures',
     };
     return map[type] || 'Research';

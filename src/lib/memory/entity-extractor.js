@@ -124,13 +124,13 @@ Respond ONLY with JSON:
 
 ENTITY TYPE rules:
 - person: actual human beings (e.g. "Carlos", "Sarah Chen"). NOT software, NOT companies.
-- organization: companies, teams, institutions (e.g. "TheCatalyne", "Hetzner")
+- organization: companies, teams, institutions, cloud providers, vendors, clients (e.g. "TheCatalyne", "Hetzner", "Anthropic"). Also use for any entity that is clearly a company.
 - project: named projects with scope and goals (e.g. "Project Phoenix")
 - tool: software, models, frameworks (e.g. "Claude Sonnet", "DeepSeek-R1:8B", "Nextcloud")
 - concept: abstract ideas, methodologies (e.g. "Zero Trust", "AGPL-3.0")
 
 SIGNIFICANCE rules:
-- high: person with role/company/contact, organization with relationship to workspace, project with description/team/status
+- high: person with role/company/contact, ANY organization (companies/vendors/clients are always high), project with description/team/status
 - medium: named tool, specific product, named location
 - low: generic software mention, abstract concept, common technical term
 
@@ -140,9 +140,9 @@ If nothing worth extracting, respond: {"summary":"","entities":[],"relationships
 
     try {
       const rawResponse = await this.router.route({
-        job: 'quick',
+        job: 'synthesis',
         content: prompt,
-        requirements: { maxTokens: 1000, role: 'sovereign' },
+        requirements: { maxTokens: 2000 },
       });
 
       const parsed = this._parseJson(rawResponse.result || rawResponse);
@@ -267,6 +267,7 @@ Respond ONLY with JSON:
 ENTITY rules:
 - Each entity should appear ONLY ONCE with its most accurate type
 - "Project Phoenix" is a project, not a person. Only use "person" for actual people (e.g. "Fu", "Sarah", "Carlos")
+- Companies, vendors, cloud providers, institutions are "organization" (e.g. "Hetzner", "TheCatalyne", "Anthropic")
 - When in doubt, prefer the more specific type (project, organization, tool) over "person"
 - Type must be one of: person, project, organization, tool, concept
 
@@ -284,9 +285,9 @@ If nothing worth extracting, respond: {"entities":[],"relationships":[]}`;
       if (ollamaGate.isUserActive()) return;
 
       const rawResponse = await this.router.route({
-        job: 'quick',
+        job: 'synthesis',
         content: prompt,
-        requirements: { maxTokens: 500, role: 'sovereign' },
+        requirements: { maxTokens: 500 },
       });
 
       const parsed = this._parseJson(rawResponse.result || rawResponse);

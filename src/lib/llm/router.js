@@ -589,12 +589,22 @@ class LLMRouter {
       for (const job of VALID_JOBS) {
         roster[job] = job === JOBS.QUICK ? [...fastFirstLocal] : [...localIds];
       }
-    } else if (presetName === 'smart-mix') {
-      // 3-tier routing: heavy (most expensive cloud) for depth,
-      // workhorse (cheaper cloud) for volume, local as fallback.
-      // With 1 cloud provider, heavy === workhorse (backward-compatible).
-      // Additional cloud providers (3+) become late-chain fallbacks before local.
+    } else if (presetName === 'smart-mix' || presetName === 'cloud-first') {
+      // Job→model tier mapping (same for both modes):
+      //   synthesis/decomposition/classification → cheapest (Haiku)
+      //   tools                                 → cheapest (Haiku) → local
+      //   research/coding                       → mid-tier (Sonnet) → cheapest
+      //   thinking/writing                      → top-tier (Opus) → mid → cheapest
+      //
+      // smart-mix: local fallbacks after cloud
+      // cloud-first: cloud only, no local fallbacks
       const { heavy, workhorse, rest } = this._classifyCloudProviders(cloudIds);
+      // Cost tiers: heavy=most expensive, workhorse=second, rest=remaining (desc)
+      // With 1 provider: heavy === workhorse, rest empty → all tiers collapse
+      // With 2 providers: heavy=expensive, workhorse=cheap → midTier=heavy, cheapest=workhorse
+      // With 3+: heavy=top, workhorse=mid, rest has cheapest at end
+      const cheapest = [...rest].reverse()[0] || workhorse || heavy;
+      const midTier = rest.length > 0 ? workhorse : heavy || workhorse;
 
       // Sort local providers: ollama-fast first for QUICK chain speed
       const fastFirst = [...localIds].sort((a, b) => {
@@ -603,25 +613,27 @@ class LLMRouter {
         return 0;
       });
 
-      for (const job of VALID_JOBS) {
-        if (job === JOBS.QUICK) {
-          // Classification/synthesis: fast local first (qwen2.5:3b ~420ms), then other local, then cloud
-          roster[job] = [...new Set([...fastFirst, workhorse, ...rest].filter(Boolean))];
-        } else if (job === JOBS.TOOLS) {
-          // Extraction/tools: workhorse cloud first (Sonnet handles structured output well), local fallback
-          roster[job] = [...new Set([workhorse, ...rest, ...localIds].filter(Boolean))];
-        } else if (job === JOBS.THINKING || job === JOBS.WRITING || job === JOBS.CODING) {
-          // Deep/complex work: heavy cloud first, workhorse fallback, rest, local last
-          roster[job] = [...new Set([heavy, workhorse, ...rest, ...localIds].filter(Boolean))];
-        } else if (job === JOBS.RESEARCH) {
-          // Research: workhorse cloud first, rest, local last (no heavy — cost-efficient)
-          roster[job] = [...new Set([workhorse, ...rest, ...localIds].filter(Boolean))];
-        }
-      }
-    } else if (presetName === 'cloud-first') {
-      for (const job of VALID_JOBS) {
-        roster[job] = [...cloudIds, ...localIds];
-      }
+      const local = presetName === 'cloud-first' ? [] : localIds;
+      const localFast = presetName === 'cloud-first' ? [] : fastFirst;
+
+      // Classification: fast local first (sub-second), cloud fallback
+      roster[JOBS.QUICK] = [...new Set([...localFast, cheapest].filter(Boolean))];
+      roster[JOBS.CLASSIFICATION] = [...new Set([...localFast, cheapest].filter(Boolean))];
+
+      // Comprehension: cheapest cloud (Haiku — $0.002, 2s, any language), local fallback
+      roster[JOBS.SYNTHESIS] = [...new Set([cheapest, ...local].filter(Boolean))];
+      roster[JOBS.DECOMPOSITION] = [...new Set([cheapest, ...local].filter(Boolean))];
+
+      // Tools: local first (structured output), cheapest cloud fallback
+      roster[JOBS.TOOLS] = [...new Set([...local, cheapest].filter(Boolean))];
+
+      // Research/coding: mid-tier cloud (Sonnet), cheapest fallback
+      roster[JOBS.RESEARCH] = [...new Set([midTier, cheapest, ...local].filter(Boolean))];
+      roster[JOBS.CODING] = [...new Set([midTier, cheapest, ...local].filter(Boolean))];
+
+      // Deep/complex: top-tier cloud (Opus), mid fallback, local last
+      roster[JOBS.THINKING] = [...new Set([heavy, midTier, cheapest, ...local].filter(Boolean))];
+      roster[JOBS.WRITING] = [...new Set([heavy, midTier, cheapest, ...local].filter(Boolean))];
     }
 
     // credentials: prefer credential-specific local provider, then all other local

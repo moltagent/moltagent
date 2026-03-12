@@ -137,9 +137,9 @@ Rules:
     }
 
     const rawResponse = await this.router.route({
-      job: 'quick',
+      job: 'synthesis',
       content: prompt,
-      requirements: { maxTokens: 500, role: 'sovereign', format: MEMORY_SCHEMA }
+      requirements: { maxTokens: 500, format: MEMORY_SCHEMA }
     });
 
     const extracted = this._parseJson(rawResponse.result || rawResponse);
