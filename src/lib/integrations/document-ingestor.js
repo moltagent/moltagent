@@ -327,7 +327,7 @@ class DocumentIngestor {
 
     // Pre-populate entity page cache from existing wiki sections
     // so we never re-create pages that already exist
-    for (const section of ['People', 'Organizations', 'Projects', 'Procedures', 'Research']) {
+    for (const section of ['People', 'Agents', 'Organizations', 'Projects', 'Procedures', 'Research']) {
       try {
         const result = await this.wikiWriter.listPages(section);
         for (const page of (result?.pages || [])) {
@@ -632,8 +632,8 @@ class DocumentIngestor {
   _shouldCreateWikiPage(entity) {
     if (!entity || !entity.name || entity.name.length <= 2) return false;
     const type = entity.type;
-    // Organizations always get wiki pages — workspace knowledge
-    if (type === 'organization' || type === 'company') return true;
+    // Organizations and agents always get wiki pages — workspace knowledge
+    if (type === 'organization' || type === 'company' || type === 'agent') return true;
     // Person and project require high significance
     if (entity.significance !== 'high') return false;
     return type === 'person' || type === 'project';
@@ -668,6 +668,7 @@ class DocumentIngestor {
   _sectionForEntityType(type) {
     const map = {
       person: 'People',
+      agent: 'Agents',
       organization: 'Organizations',
       company: 'Organizations',
       project: 'Projects',

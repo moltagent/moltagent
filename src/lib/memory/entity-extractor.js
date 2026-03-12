@@ -114,7 +114,7 @@ Respond ONLY with JSON:
   "entities": [
     {
       "name": "exact name as written",
-      "type": "person|project|organization|tool|concept",
+      "type": "person|agent|project|organization|tool|concept",
       "significance": "high|medium|low",
       "description": "one sentence about this entity's role or relevance"
     }
@@ -123,14 +123,15 @@ Respond ONLY with JSON:
 }
 
 ENTITY TYPE rules:
-- person: actual human beings (e.g. "Carlos", "Sarah Chen"). NOT software, NOT companies.
+- person: actual human beings (e.g. "Carlos", "Sarah Chen"). NOT software, NOT companies, NOT AI models.
+- agent: AI assistants, language models, bots, or artificial persons that interact with the workspace (e.g. "Claude Opus", "Claude Code", "MoltAgent", "OpenClaw"). Use this for any named AI system or model that acts as a participant.
 - organization: companies, teams, institutions, cloud providers, vendors, clients (e.g. "TheCatalyne", "Hetzner", "Anthropic"). Also use for any entity that is clearly a company.
 - project: named projects with scope and goals (e.g. "Project Phoenix")
-- tool: software, models, frameworks (e.g. "Claude Sonnet", "DeepSeek-R1:8B", "Nextcloud")
+- tool: generic software, libraries, frameworks that are used as building blocks (e.g. "Node.js", "Nextcloud", "WebDAV"). NOT AI models that act as agents.
 - concept: abstract ideas, methodologies (e.g. "Zero Trust", "AGPL-3.0")
 
 SIGNIFICANCE rules:
-- high: person with role/company/contact, ANY organization (companies/vendors/clients are always high), project with description/team/status
+- high: person with role/company/contact, ANY organization (always high), ANY agent (always high), project with description/team/status
 - medium: named tool, specific product, named location
 - low: generic software mention, abstract concept, common technical term
 
@@ -260,16 +261,17 @@ ${truncated}
 
 Respond ONLY with JSON:
 {
-  "entities": [{"name": "...", "type": "person|project|organization|tool|concept"}],
+  "entities": [{"name": "...", "type": "person|agent|project|organization|tool|concept"}],
   "relationships": [{"from": "...", "predicate": "...", "to": "..."}]
 }
 
 ENTITY rules:
 - Each entity should appear ONLY ONCE with its most accurate type
 - "Project Phoenix" is a project, not a person. Only use "person" for actual people (e.g. "Fu", "Sarah", "Carlos")
+- AI models, bots, and assistants are "agent" (e.g. "Claude Opus", "Claude Code", "MoltAgent", "GPT-4")
 - Companies, vendors, cloud providers, institutions are "organization" (e.g. "Hetzner", "TheCatalyne", "Anthropic")
-- When in doubt, prefer the more specific type (project, organization, tool) over "person"
-- Type must be one of: person, project, organization, tool, concept
+- When in doubt, prefer the more specific type (project, organization, agent, tool) over "person"
+- Type must be one of: person, agent, project, organization, tool, concept
 
 RELATIONSHIP rules:
 - Extract relationships that are explicitly stated in the text
