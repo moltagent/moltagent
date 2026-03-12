@@ -313,6 +313,28 @@ class DocumentIngestor {
   }
 
   /**
+   * Scan a list of directories on startup, ingesting any files not yet processed.
+   * Runs in the background — returns immediately after queueing work.
+   *
+   * @param {string[]} directories - Array of Nextcloud-relative directory paths
+   * @returns {Promise<void>}
+   */
+  async scanOnStartup(directories) {
+    if (!Array.isArray(directories) || directories.length === 0) return;
+
+    for (const dir of directories) {
+      this.logger.info(`[DocumentIngestor] Startup scan: ${dir}`);
+      this._enqueue(async () => {
+        try {
+          await this.ingestDirectory(dir);
+        } catch (err) {
+          this.logger.warn(`[DocumentIngestor] Startup scan failed for ${dir}: ${err.message}`);
+        }
+      });
+    }
+  }
+
+  /**
    * Handler for ActivityPoller 'event' emissions.
    *
    * Handles three event families:
@@ -336,11 +358,18 @@ class DocumentIngestor {
     }
 
     // ── Direct file events: file created or changed ──
-    if (event.objectType !== 'files' && event.objectType !== 'file') return;
+    if (event.objectType !== 'files' && event.objectType !== 'file') {
+      this.logger.debug?.(`[DocumentIngestor] Skipped event: objectType=${event.objectType} (not file)`);
+      return;
+    }
     if (event.type !== 'file_created' && event.type !== 'file_changed') return;
 
     const filePath = event.objectName;
-    if (!filePath || !TextExtractor.isSupported(filePath)) return;
+    if (!filePath) return;
+    if (!TextExtractor.isSupported(filePath)) {
+      this.logger.debug?.(`[DocumentIngestor] Skipped unsupported: ${filePath}`);
+      return;
+    }
 
     // Re-ingest on change by clearing the processed flag
     if (event.type === 'file_changed') {

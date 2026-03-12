@@ -2136,6 +2136,17 @@ async function initialize() {
             });
           });
           console.log('[INIT] DocumentIngestor wired to ActivityPoller');
+
+          // Startup scan: ingest any files in watched directories that were
+          // added while the service was down. Runs in background via the
+          // ingestor's serial queue — won't block initialization.
+          if (appConfig.ingestion?.startupScan !== false) {
+            const watchDirs = appConfig.ingestion?.watchDirectories || [];
+            if (watchDirs.length > 0) {
+              documentIngestor.scanOnStartup(watchDirs);
+              console.log(`[INIT] DocumentIngestor startup scan queued: ${watchDirs.join(', ')}`);
+            }
+          }
         }
       }
       if (ncFlowWebhookReceiver) {
