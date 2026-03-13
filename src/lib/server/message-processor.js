@@ -856,12 +856,24 @@ class MessageProcessor {
             }
           }
 
+          // FIX 2: Thinking + self-reference → inject SOUL.md so Opus can reflect
+          // on identity, capabilities, and role — not produce generic "I am an AI" responses.
+          if (intent === 'thinking' && this.agentLoop?.soul) {
+            const lower = pipelineMessage.toLowerCase();
+            const selfRef = /\b(you|your|yourself|du |dein|dir |sich |moltagent|molti|the agent|o agente)\b/i.test(lower);
+            if (selfRef) {
+              const soulContext = '\n\n<identity-context>\n' + this.agentLoop.soul + '\n</identity-context>';
+              cloudSuffix = cloudSuffix ? cloudSuffix + soulContext : soulContext;
+            }
+          }
+
           const voiceReplyEnabled = extracted._isVoice && this.voiceManager && this.voiceManager.mode === 'full';
           const agentOpts = {
             messageId: extracted.messageId,
             inputType: extracted._isVoice ? 'voice' : 'text',
             voiceReplyEnabled,
-            user: extracted.user
+            user: extracted.user,
+            job: intent === 'thinking' ? 'thinking' : undefined
           };
 
           // Bug 3 fix: Short confirmations shouldn't loop to max iterations

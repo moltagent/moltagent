@@ -80,6 +80,9 @@ class AgentLoop {
       this.toolRegistry.setRequestContext({ user: options.user });
     }
 
+    // Job hint from classifier (e.g. 'thinking') — routes to Opus via roster
+    this._jobHint = options.job || null;
+
     // 1. Load context
     let history = [];
     if (this.conversationContext) {
@@ -882,6 +885,9 @@ class AgentLoop {
    * @private
    */
   _classifyJob(messages, tools) {
+    // External job hint from the classifier (e.g. intent === 'thinking')
+    if (this._jobHint) return this._jobHint;
+
     // If tools are available, this is likely a tool-calling turn
     if (tools && tools.length > 0) {
       // Check if recent messages contain tool results we need to synthesize

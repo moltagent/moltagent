@@ -1,8 +1,9 @@
 /**
- * IntentRouter — Language-agnostic three-gate intent classification.
+ * IntentRouter — Language-agnostic four-gate intent classification.
  *
  * Messages are classified into gates: knowledge (default), action
- * (user wants to DO something), compound (both), greeting, confirmation,
+ * (user wants to DO something), compound (both), thinking (deep reflection,
+ * opinion, hypotheticals), greeting, confirmation,
  * or confirmation_declined. Classification uses the LLM Router job system
  * which routes to Haiku (cloud-ok) or local models (local-only).
  * Language-specific examples are injected based on cockpit persona language.
@@ -17,7 +18,7 @@
 'use strict';
 
 const VALID_GATES = new Set([
-  'knowledge', 'action', 'compound'
+  'knowledge', 'action', 'compound', 'thinking'
 ]);
 
 // Passthrough intents — not gates, but valid classifier outputs
@@ -71,6 +72,15 @@ const CLASSIFICATION_EXAMPLES = {
   "What's the status of onboarding?" → knowledge
   "What boards do I have?" → knowledge
   "What's the weather in Lisbon?" → knowledge`,
+    thinking: `
+  Examples:
+  "What do you think about our architecture?" → thinking
+  "If you could redesign X, how would you?" → thinking
+  "Think deeply about what this means" → thinking
+  "What's your honest assessment of..." → thinking
+  "Reflect on your role in the team" → thinking
+  "What does sovereignty mean for you?" → thinking
+  "If you could change one thing about yourself..." → thinking`,
     greeting: `
   Examples:
   "Hi" / "Hello" / "Good morning" / "Hey there" → greeting`
@@ -96,6 +106,14 @@ const CLASSIFICATION_EXAMPLES = {
   "Wie ist der Stand beim Onboarding?" → knowledge
   "Welche Boards habe ich?" → knowledge
   "Wie ist das Wetter in Berlin?" → knowledge`,
+    thinking: `
+  Beispiele:
+  "Was denkst du über unsere Architektur?" → thinking
+  "Wenn du X neu entwerfen könntest, wie würdest du?" → thinking
+  "Denk mal gründlich darüber nach" → thinking
+  "Was ist deine ehrliche Einschätzung von..." → thinking
+  "Reflektiere über deine Rolle im Team" → thinking
+  "Was bedeutet Souveränität für dich?" → thinking`,
     greeting: `
   Beispiele:
   "Hallo" / "Guten Morgen" / "Moin" / "Servus" → greeting`
@@ -120,6 +138,14 @@ const CLASSIFICATION_EXAMPLES = {
   "Qual é o estado do onboarding?" → knowledge
   "Que boards é que tenho?" → knowledge
   "Como está o tempo em Lisboa?" → knowledge`,
+    thinking: `
+  Exemplos:
+  "O que achas da nossa arquitetura?" → thinking
+  "Se pudesses redesenhar X, como farias?" → thinking
+  "Pensa profundamente sobre o que isto significa" → thinking
+  "Qual é a tua avaliação honesta de..." → thinking
+  "Reflete sobre o teu papel na equipa" → thinking
+  "O que significa soberania para ti?" → thinking`,
     greeting: `
   Exemplos:
   "Olá" / "Bom dia" / "Boa tarde" / "E aí" → greeting`
@@ -140,6 +166,12 @@ const CLASSIFICATION_EXAMPLES = {
   "Qui est Carlos ?" → knowledge
   "Quel est le statut de l'onboarding ?" → knowledge
   "Quel temps fait-il à Paris ?" → knowledge`,
+    thinking: `
+  Exemples:
+  "Que penses-tu de notre architecture ?" → thinking
+  "Si tu pouvais redesigner X, comment ferais-tu ?" → thinking
+  "Réfléchis profondément à ce que cela signifie" → thinking
+  "Quelle est ton évaluation honnête de..." → thinking`,
     greeting: `
   Exemples:
   "Bonjour" / "Salut" / "Bonsoir" → greeting`
@@ -160,6 +192,12 @@ const CLASSIFICATION_EXAMPLES = {
   "¿Quién es Carlos?" → knowledge
   "¿Cuál es el estado del onboarding?" → knowledge
   "¿Qué tiempo hace en Madrid?" → knowledge`,
+    thinking: `
+  Ejemplos:
+  "¿Qué piensas de nuestra arquitectura?" → thinking
+  "Si pudieras rediseñar X, ¿cómo lo harías?" → thinking
+  "Piensa profundamente sobre lo que esto significa" → thinking
+  "¿Cuál es tu evaluación honesta de...?" → thinking`,
     greeting: `
   Ejemplos:
   "Hola" / "Buenos días" / "Buenas tardes" → greeting`
@@ -191,7 +229,14 @@ COMPOUND — The user wants BOTH knowledge AND action in one message.
   Contains a question AND an action request connected by "and", "then", etc.
 ${examples.compound}
 
-KNOWLEDGE — Everything else. THIS IS THE DEFAULT.
+THINKING — The user wants deep reflection, analysis, opinion, or hypothetical reasoning.
+  NOT a factual lookup. NOT a status check. The user wants you to THINK, not retrieve.
+  Signals: "think about", "reflect on", "what do you think", "your opinion", "your assessment",
+  "what does X mean for you", "if you could...", hypothetical questions, philosophical questions,
+  questions about the agent's own nature, identity, or capabilities.
+${examples.thinking}
+
+KNOWLEDGE — Factual questions, lookups, status checks. THIS IS THE DEFAULT.
   The user wants to know something. Any question. Any lookup. Anything ambiguous.
 ${examples.knowledge}
 
@@ -210,7 +255,8 @@ THE CRITICAL TEST:
   Does the message contain an ACTION VERB (create, send, move, book, delete, remind...)?
     YES + no question → action
     YES + also a question → compound
-    NO → knowledge
+    NO → is the user asking you to THINK, reflect, or give an opinion? → thinking
+    NO → knowledge (factual, lookup, status)
   When in doubt → knowledge. Always safe.
 
 CONTEXT-AWARE RULES:
@@ -224,7 +270,7 @@ CONTEXT-AWARE RULES:
 
 Return JSON:
 {
-  "gate": "knowledge" | "action" | "compound" | "greeting" | "chitchat" | "confirmation" | "confirmation_declined",
+  "gate": "knowledge" | "action" | "compound" | "thinking" | "greeting" | "chitchat" | "confirmation" | "confirmation_declined",
   "domain": "deck" | "calendar" | "email" | "wiki" | "file" | null,
   "confidence": 0.0-1.0
 }

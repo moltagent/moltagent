@@ -272,4 +272,41 @@ test('TG-23: Regex fallback: long unmatched → knowledge (NOT complex)', () => 
   assert.strictEqual(result.domain, null);
 });
 
+// ============================================================
+// THINKING GATE (4 tests)
+// ============================================================
+
+asyncTest('TG-24: "What do you think about our architecture?" → thinking', async () => {
+  const router = createRouter('{"gate":"thinking","confidence":0.9}');
+  const result = await router.classify("What do you think about our architecture?");
+  assert.strictEqual(result.gate, 'thinking');
+  assert.strictEqual(result.domain, null);
+  assert.strictEqual(result.intent, 'thinking');
+});
+
+asyncTest('TG-25: "If you could redesign the security layer, how would you?" → thinking', async () => {
+  const router = createRouter('{"gate":"thinking","confidence":0.85}');
+  const result = await router.classify("If you could redesign the security layer, how would you?");
+  assert.strictEqual(result.gate, 'thinking');
+  assert.strictEqual(result.domain, null);
+});
+
+asyncTest('TG-26: "Reflect on your role in the team" → thinking', async () => {
+  const router = createRouter('{"gate":"thinking","confidence":0.9}');
+  const result = await router.classify("Reflect on your role in the team");
+  assert.strictEqual(result.gate, 'thinking');
+  assert.strictEqual(result.domain, null);
+});
+
+test('TG-27: Thinking gate present in classification prompt', () => {
+  const prompt = IntentRouter.buildClassificationPrompt('EN');
+  assert.ok(prompt.includes('THINKING'), 'Prompt should include THINKING gate');
+  assert.ok(prompt.includes('"thinking"'), 'JSON schema should include thinking option');
+  assert.ok(prompt.includes('reflect'), 'Prompt should mention reflection as a signal');
+
+  const dePompt = IntentRouter.buildClassificationPrompt('DE');
+  assert.ok(dePompt.includes('thinking'), 'German prompt should include thinking examples');
+  assert.ok(dePompt.includes('Reflektiere'), 'German prompt should have DE thinking examples');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 100);
