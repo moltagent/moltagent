@@ -680,7 +680,7 @@ Antworte NUR mit gültigem JSON (kein Markdown):
       ...tier1.map(p => p.calendarId).filter(Boolean),
     ];
 
-    let candidates = await this._findFreeSlots(tier1CalIds, meeting.timeframe, meeting.duration);
+    let candidates = await this._findFreeSlots(tier1CalIds, meeting.timeframe, meeting.duration, meeting.language);
 
     if (candidates.length === 0) {
       return {
@@ -785,7 +785,7 @@ Antworte NUR mit gültigem JSON (kein Markdown):
    * @returns {Promise<CandidateSlot[]>}
    * @private
    */
-  async _findFreeSlots(calendarIds, timeframe, durationMinutes) {
+  async _findFreeSlots(calendarIds, timeframe, durationMinutes, language) {
     if (!calendarIds || calendarIds.length === 0) return [];
     if (!timeframe || !timeframe.start || !timeframe.end) return [];
 
@@ -865,7 +865,7 @@ Antworte NUR mit gültigem JSON (kein Markdown):
         candidates.push({
           start: new Date(cursor),
           end: new Date(slotEnd),
-          day: _localDayName(cursor),
+          day: _localDayName(cursor, language),
           time: _formatTime(cursor),
           durationMinutes: duration,
         });
@@ -1308,14 +1308,18 @@ function _formatTime(date) {
   return `${h}:${m}`;
 }
 
+/** Language code → Intl locale mapping */
+const LANG_LOCALE = { de: 'de-DE', en: 'en-GB', pt: 'pt-PT', fr: 'fr-FR', es: 'es-ES' };
+
 /**
- * Return a German day name for a UTC Date.
+ * Return a locale-aware day name for a Date.
  * @param {Date} date
+ * @param {string} [language] - ISO language code (de, en, pt, …)
  * @returns {string}
  */
-function _localDayName(date) {
-  const DAYS_DE = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
-  return DAYS_DE[date.getUTCDay()];
+function _localDayName(date, language) {
+  const locale = LANG_LOCALE[language] || language || 'de-DE';
+  return new Intl.DateTimeFormat(locale, { weekday: 'long' }).format(date);
 }
 
 // -----------------------------------------------------------------------------
