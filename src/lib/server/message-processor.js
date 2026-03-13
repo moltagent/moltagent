@@ -833,8 +833,34 @@ class MessageProcessor {
             result = { intent: `smart_mix_escalated:${intent}`, provider: 'agent' };
             response = response || 'Sorry, I encountered an error processing your message.';
           }
+        } else if (intent === 'thinking') {
+          // Path 4: Thinking — direct LLM call with rich context, no AgentLoop
+          // One call: SOUL.md + enrichment + living context + question → Opus
+          if (this.agentLoop?.llmProvider?.skipLocalForConversation) {
+            this.agentLoop.llmProvider.skipLocalForConversation();
+          }
+          try {
+            const thinkingResult = await this._handleThinkingQuery(pipelineMessage, session, liveContext);
+            if (typeof thinkingResult === 'object' && thinkingResult !== null) {
+              this._captureActionRecord(session, thinkingResult.actionRecord);
+              if (thinkingResult.enrichmentBlock) _enrichmentBlock = thinkingResult.enrichmentBlock;
+              response = thinkingResult.response;
+            } else {
+              response = thinkingResult || "I need a moment to think about that — could you ask again?";
+            }
+            result = { intent: 'smart_mix_thinking', provider: 'cloud' };
+          } catch (thinkErr) {
+            console.warn(`[Message] Thinking query failed, escalating to agentLoop: ${thinkErr.message}`);
+            response = await this.agentLoop.process(pipelineMessage, extracted.token, {
+              messageId: extracted.messageId,
+              inputType: extracted._isVoice ? 'voice' : 'text',
+              user: extracted.user
+            });
+            result = { intent: 'smart_mix_escalated:thinking', provider: 'agent' };
+            response = response || 'Sorry, I encountered an error processing your message.';
+          }
         } else {
-          // Path 3: Question/task/complex — skip local, go straight to cloud via AgentLoop
+          // Path 5: Question/task/complex — skip local, go straight to cloud via AgentLoop
           if (this.agentLoop.llmProvider?.skipLocalForConversation) {
             this.agentLoop.llmProvider.skipLocalForConversation();
           }
@@ -856,24 +882,12 @@ class MessageProcessor {
             }
           }
 
-          // FIX 2: Thinking + self-reference → inject SOUL.md so Opus can reflect
-          // on identity, capabilities, and role — not produce generic "I am an AI" responses.
-          if (intent === 'thinking' && this.agentLoop?.soul) {
-            const lower = pipelineMessage.toLowerCase();
-            const selfRef = /\b(you|your|yourself|du |dein|dir |sich |moltagent|molti|the agent|o agente)\b/i.test(lower);
-            if (selfRef) {
-              const soulContext = '\n\n<identity-context>\n' + this.agentLoop.soul + '\n</identity-context>';
-              cloudSuffix = cloudSuffix ? cloudSuffix + soulContext : soulContext;
-            }
-          }
-
           const voiceReplyEnabled = extracted._isVoice && this.voiceManager && this.voiceManager.mode === 'full';
           const agentOpts = {
             messageId: extracted.messageId,
             inputType: extracted._isVoice ? 'voice' : 'text',
             voiceReplyEnabled,
-            user: extracted.user,
-            job: intent === 'thinking' ? 'thinking' : undefined
+            user: extracted.user
           };
 
           // Bug 3 fix: Short confirmations shouldn't loop to max iterations
@@ -1712,6 +1726,86 @@ class MessageProcessor {
       actionRecord: {
         type: 'knowledge_query',
         refs: { query: message.substring(0, 200), sourcesConsulted, sourcesWithResults }
+      }
+    };
+  }
+
+  /**
+   * Handle a thinking/reflection intent via a direct LLM call with rich context.
+   * Does NOT go through AgentLoop — one call with SOUL.md + enrichment + living context.
+   * Same pattern as _handleKnowledgeQuery but for opinion/reflection rather than fact retrieval.
+   * @private
+   */
+  async _handleThinkingQuery(message, session, liveContext) {
+    const router = this.microPipeline?.router;
+    if (!router) {
+      throw new Error('No LLM router available for thinking synthesis');
+    }
+
+    // Gather rich context — same enrichment as cloud path
+    const enricher = this.microPipeline?.memoryContextEnricher;
+    let enrichment = '';
+    if (enricher) {
+      try {
+        enrichment = await enricher.enrich(message, 'thinking') || '';
+      } catch (err) {
+        console.warn(`[Message] Thinking enrichment failed: ${err.message}`);
+      }
+    }
+
+    // SOUL.md for identity-aware reflection
+    let soulContext = '';
+    if (this.agentLoop?.soul) {
+      soulContext = this.agentLoop.soul;
+    }
+
+    // Living context for conversational continuity
+    let conversationBlock = '';
+    if (liveContext?.summary) {
+      conversationBlock = `\nRECENT CONVERSATION:\n${liveContext.summary}\n\n` +
+        `The user's current message may reference things from this conversation. ` +
+        `Resolve "that", "it", "the one", etc. from context.\n`;
+    }
+
+    // Warm memory
+    let warmMemoryBlock = '';
+    if (session?.warmMemory) {
+      warmMemoryBlock = `\nRecent context:\n${session.warmMemory}\n`;
+    }
+
+    const now = new Date();
+    const tz = this.agentLoop?.timezone || 'UTC';
+    const dateStr = new Intl.DateTimeFormat('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: tz
+    }).format(now);
+    const timeStr = new Intl.DateTimeFormat('en-US', {
+      hour: '2-digit', minute: '2-digit', hour12: false, timeZone: tz
+    }).format(now);
+
+    const prompt = `${soulContext}
+
+Current date/time: ${dateStr}, ${timeStr} (${tz})
+${conversationBlock}
+${enrichment ? `\nWORKSPACE KNOWLEDGE:\n${enrichment}\n` : ''}
+${warmMemoryBlock}
+
+You are being asked to THINK — reflect, analyse, give your opinion, or reason deeply.
+This is not a factual lookup. This is not an action request.
+The user wants your genuine perspective, shaped by your identity and knowledge.
+Be thoughtful. Be honest. Be yourself.`;
+
+    const result = await router.route({
+      job: 'thinking',
+      task: 'thinking',
+      content: prompt + '\n\nQuestion: ' + message.substring(0, 500),
+      requirements: { maxTokens: 2000, temperature: 0.7 }
+    });
+
+    return {
+      response: result?.result || result?.content || "I need a moment to think about that — could you ask again?",
+      actionRecord: {
+        type: 'thinking_query',
+        refs: { query: message.substring(0, 200) }
       }
     };
   }
