@@ -161,6 +161,9 @@ class DocumentIngestor {
     /** @type {Set<string>} Tracks entity pages already created (section/name lowercase). */
     this._createdEntityPages = new Set();
 
+    /** @type {Map<string, string[]>} Cross-file entity name cache per section (original casing). */
+    this._sectionEntityNames = new Map();
+
     /** @type {Promise} Serial queue — prevents concurrent wiki section creation races. */
     this._queue = Promise.resolve();
   }
@@ -300,16 +303,17 @@ class DocumentIngestor {
     // Pre-load section page titles for fuzzy dedup — one listPages call per
     // section rather than one per entity. Only load sections we will actually
     // need for this document's entities.
-    const sectionTitlesCache = new Map(); // section -> string[]
+    // Use the persistent cross-file entity name cache. On first access per section,
+    // seed it from the wiki. After that, newly created pages are appended in real time.
     const _getSectionTitles = async (section) => {
-      if (sectionTitlesCache.has(section)) return sectionTitlesCache.get(section);
+      if (this._sectionEntityNames.has(section)) return this._sectionEntityNames.get(section);
       try {
         const result = await this.wikiWriter.listPages(section);
         const titles = (result?.pages || []).map(p => p.title).filter(Boolean);
-        sectionTitlesCache.set(section, titles);
+        this._sectionEntityNames.set(section, titles);
         return titles;
       } catch {
-        sectionTitlesCache.set(section, []);
+        this._sectionEntityNames.set(section, []);
         return [];
       }
     };
@@ -346,9 +350,11 @@ class DocumentIngestor {
         const pageContent = this._buildEntityPage(entity, filePath);
         await this.wikiWriter.createPage(section, entity.name, pageContent);
         this._createdEntityPages.add(dedupKey);
-        // Update local section cache so subsequent entities in this file can
-        // match against the page we just created without another listPages call.
-        sectionTitlesCache.set(section, [...(sectionTitlesCache.get(section) || []), entity.name]);
+        // Update persistent section cache so subsequent entities (this file AND
+        // future files) can match against the page we just created.
+        const cached = this._sectionEntityNames.get(section) || [];
+        cached.push(entity.name);
+        this._sectionEntityNames.set(section, cached);
         entityPagesCreated++;
         this.logger.info(`[DocumentIngestor] Entity page: ${section}/${entity.name}`);
       } catch (err) {

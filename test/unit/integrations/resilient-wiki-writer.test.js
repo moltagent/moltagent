@@ -102,19 +102,21 @@ function makeWriter(ocsOverrides = {}, webdavOverrides = {}, opts = {}) {
   });
 
   // 5. After OCS failure → cooldown skips OCS, goes straight to WebDAV
+  // Note: the ensureSection chokepoint in createPage() calls resolveCollective once
+  // before the OCS/WebDAV decision, so each createPage() adds 1 chokepoint call.
   await asyncTest('createPage: cooldown skips OCS after failure', async () => {
     let ocsCallCount = 0;
     const writer = makeWriter({
       resolveCollective: async () => { ocsCallCount++; throw new Error('OCS down'); }
     });
 
-    // First call: tries OCS (fails), falls back to WebDAV
+    // First call: chokepoint(1) + _createViaOCS(2) both call resolveCollective, both fail
     await writer.createPage('Sessions', 'Page1', '# One');
-    assert.strictEqual(ocsCallCount, 1);
+    assert.strictEqual(ocsCallCount, 2); // chokepoint + OCS path
 
-    // Second call: should skip OCS due to cooldown
+    // Second call: chokepoint(3) calls resolveCollective, OCS skipped due to cooldown
     const result = await writer.createPage('Sessions', 'Page2', '# Two');
-    assert.strictEqual(ocsCallCount, 1); // No additional OCS attempt
+    assert.strictEqual(ocsCallCount, 3); // only chokepoint call added
     assert.strictEqual(result.method, 'webdav');
   });
 
@@ -124,21 +126,21 @@ function makeWriter(ocsOverrides = {}, webdavOverrides = {}, opts = {}) {
     const writer = makeWriter({
       resolveCollective: async () => {
         ocsCallCount++;
-        if (ocsCallCount === 1) throw new Error('OCS down');
+        if (ocsCallCount <= 2) throw new Error('OCS down'); // first call (chokepoint+OCS) fails
         return 42;
       }
     });
 
-    // First call: OCS fails
+    // First call: chokepoint(1) + OCS path(2) both fail
     await writer.createPage('Sessions', 'Page1', '# One');
-    assert.strictEqual(ocsCallCount, 1);
+    assert.strictEqual(ocsCallCount, 2);
 
     // Simulate cooldown expiry by backdating the failure
     writer._ocsLastFailure = Date.now() - (6 * 60 * 1000);
 
-    // Should retry OCS now
+    // Should retry OCS now: chokepoint(3) succeeds + OCS path(4) succeeds
     const result = await writer.createPage('Sessions', 'Page2', '# Two');
-    assert.strictEqual(ocsCallCount, 2);
+    assert.strictEqual(ocsCallCount, 4);
     assert.strictEqual(result.method, 'ocs');
   });
 

@@ -80,6 +80,17 @@ class ResilientWikiWriter {
    * @returns {Promise<{success: boolean, method: string|null, error?: string}>}
    */
   async createPage(sectionPath, pageName, content) {
+    // CHOKEPOINT: ensure the section exists via OCS before ANY create path runs.
+    // This is the single gate that prevents duplicate section pages regardless of
+    // whether the page itself is created via OCS or WebDAV.
+    try {
+      const collectiveId = await this.collectivesClient.resolveCollective();
+      await this.collectivesClient.ensureSection(collectiveId, sectionPath);
+    } catch (err) {
+      this.logger.warn?.(`[ResilientWikiWriter] ensureSection("${sectionPath}") failed: ${err.message}`);
+      // Continue — the section may already exist from bootstrap, or WebDAV mkdir will create it
+    }
+
     if (this._shouldTryOCS()) {
       try {
         const result = await this._createViaOCS(sectionPath, pageName, content);
@@ -198,19 +209,21 @@ class ResilientWikiWriter {
       this.ocsTimeoutMs
     );
 
-    // Idempotent section lookup/creation — serialises concurrent callers via
-    // CollectivesClient's per-name mutex so only one HTTP POST is ever issued.
-    const sectionPage = await this._withTimeout(
-      this.collectivesClient.ensureSection(collectiveId, sectionPath),
-      this.ocsTimeoutMs
-    );
-    const sectionId = sectionPage.id;
-
-    // Fetch page list after section is guaranteed to exist so the list is fresh.
+    // Section already ensured by createPage() chokepoint. Find it in the page list.
     const allPages = await this._withTimeout(
       this.collectivesClient.listPages(collectiveId),
       this.ocsTimeoutMs
     );
+
+    const target = sectionPath.toLowerCase().trim();
+    const sectionPage = (allPages || []).find(p => {
+      const title = (p.title || '').toLowerCase().trim();
+      return title === target || title.replace(/\s*\(\d+\)\s*$/, '') === target;
+    });
+    if (!sectionPage) {
+      throw new Error(`Section "${sectionPath}" not found after ensureSection`);
+    }
+    const sectionId = sectionPage.id;
 
     // Check if the entity page already exists under the section.
     const existing = (allPages || []).find(p =>
