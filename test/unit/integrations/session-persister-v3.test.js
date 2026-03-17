@@ -97,6 +97,17 @@ function createOcsWikiClient(opts = {}) {
       return [...pages, ...createdPages];
     },
 
+    async ensureSection(collectiveId, sectionName) {
+      const existing = [...pages, ...createdPages].find(p => (p.title || '').toLowerCase() === sectionName.toLowerCase());
+      if (existing) {
+        this._calls.push({ method: 'ensureSection', collectiveId, sectionName, result: existing });
+        return existing;
+      }
+      const page = await this.createPage(collectiveId, 0, sectionName);
+      this._calls.push({ method: 'ensureSection', collectiveId, sectionName, result: page });
+      return page;
+    },
+
     async createPage(collectiveId, parentId, title) {
       const id = nextPageId.value++;
       const page = { id, collectiveId, parentId, title, fileName: `${title}.md`, filePath: '' };

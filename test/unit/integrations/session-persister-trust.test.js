@@ -34,6 +34,13 @@ function mockWiki() {
   return {
     resolveCollective: async () => 2,
     listPages: async () => Object.values(pages).map((p, i) => ({ id: i + 1, title: p.title, parentId: 0, filePath: '', fileName: p.title + '.md' })),
+    ensureSection: async (collectiveId, sectionName) => {
+      const existing = Object.values(pages).find(p => p.title === sectionName);
+      if (existing) return { id: 50, title: sectionName, filePath: '', fileName: sectionName + '.md' };
+      const id = Object.keys(pages).length + 100;
+      pages[sectionName] = { title: sectionName, content: '' };
+      return { id, title: sectionName, filePath: '', fileName: sectionName + '.md' };
+    },
     createPage: async (collectiveId, parentId, title) => {
       const id = Object.keys(pages).length + 100;
       pages[title] = { title, content: '' };

@@ -253,8 +253,10 @@ class CollectivesClient {
    * @param {string} sectionName  - Section title (e.g. "Organizations")
    * @returns {Promise<Object>} Page object with at least { id, title, parentId }
    */
-  async ensureSection(collectiveId, sectionName) {
-    const lockKey = (sectionName || '').toLowerCase().trim();
+  async ensureSection(collectiveId, sectionName, parentPageId = null) {
+    const lockKey = parentPageId
+      ? `${parentPageId}:${(sectionName || '').toLowerCase().trim()}`
+      : (sectionName || '').toLowerCase().trim();
 
     // Fast path: already created this session, skip API entirely
     if (this._sectionCache.has(lockKey)) {
@@ -265,7 +267,7 @@ class CollectivesClient {
     // return from cache — the creator will have populated it.
     if (this._sectionLocks.has(lockKey)) {
       await this._sectionLocks.get(lockKey);
-      return this._sectionCache.get(lockKey) || await this._findSectionPage(collectiveId, sectionName);
+      return this._sectionCache.get(lockKey) || await this._findSectionPage(collectiveId, sectionName, parentPageId);
     }
 
     // Claim the lock before doing any I/O so later callers queue behind us.
@@ -275,19 +277,22 @@ class CollectivesClient {
 
     try {
       // Re-check after acquiring lock in case a previous run just created it.
-      const existing = await this._findSectionPage(collectiveId, sectionName);
+      const existing = await this._findSectionPage(collectiveId, sectionName, parentPageId);
       if (existing) {
         this._sectionCache.set(lockKey, existing);
         return existing;
       }
 
-      // Find the landing page (parentId 0) to use as parent for new sections.
-      const pages = await this.listPages(collectiveId);
-      const pageList = Array.isArray(pages) ? pages : [];
-      const landing = pageList.find(p => p.parentId === 0);
-      const parentId = landing ? landing.id : 0;
+      // Determine parent: explicit parentPageId, or find the landing page.
+      let actualParentId = parentPageId;
+      if (actualParentId === null) {
+        const pages = await this.listPages(collectiveId);
+        const pageList = Array.isArray(pages) ? pages : [];
+        const landing = pageList.find(p => p.parentId === 0);
+        actualParentId = landing ? landing.id : 0;
+      }
 
-      const created = await this.createPage(collectiveId, parentId, sectionName);
+      const created = await this.createPage(collectiveId, actualParentId, sectionName);
       this._sectionCache.set(lockKey, created);
       return created;
     } finally {
@@ -309,23 +314,28 @@ class CollectivesClient {
    * @returns {Promise<Object|null>} Page object or null if not found
    * @private
    */
-  async _findSectionPage(collectiveId, sectionName) {
+  async _findSectionPage(collectiveId, sectionName, parentPageId = null) {
     const pages = await this.listPages(collectiveId);
     const pageList = Array.isArray(pages) ? pages : [];
     const target = (sectionName || '').toLowerCase().trim();
 
-    // Identify the landing page so we can restrict to root-level children.
-    const landing = pageList.find(p => p.parentId === 0);
-    const rootPages = landing
-      ? pageList.filter(p => p.parentId === landing.id)
-      : pageList.filter(p => p.parentId === 0);
+    // Determine which pages to search: children of explicit parent, or root-level.
+    let candidates;
+    if (parentPageId !== null) {
+      candidates = pageList.filter(p => p.parentId === parentPageId);
+    } else {
+      const landing = pageList.find(p => p.parentId === 0);
+      candidates = landing
+        ? pageList.filter(p => p.parentId === landing.id)
+        : pageList.filter(p => p.parentId === 0);
+    }
 
     // Exact case-insensitive match first.
-    const exact = rootPages.find(p => (p.title || '').toLowerCase().trim() === target);
+    const exact = candidates.find(p => (p.title || '').toLowerCase().trim() === target);
     if (exact) return exact;
 
     // Dedup-suffix match: "Organizations (2)" → "organizations" matches "organizations".
-    const suffixed = rootPages.find(p => {
+    const suffixed = candidates.find(p => {
       const cleaned = (p.title || '').replace(/\s*\(\d+\)\s*$/, '').toLowerCase().trim();
       return cleaned === target;
     });
@@ -686,10 +696,6 @@ class CollectivesClient {
       pageList.map(p => (p.title || '').toLowerCase())
     );
 
-    // The landing page (parentId 0) is the root — section pages go under it
-    const landingPage = pageList.find(p => p.parentId === 0);
-    const rootParentId = landingPage ? landingPage.id : 0;
-
     const sections = appConfig.knowledge?.sections || [
       'People', 'Projects', 'Procedures', 'Research', 'Meta',
       'Components', 'Infrastructure', 'Organizations', 'Agents', 'Documents', 'Sessions',
@@ -698,25 +704,23 @@ class CollectivesClient {
     // Track created pages locally (API may not reflect them immediately)
     let metaPageRef = pageList.find(p => (p.title || '').toLowerCase() === 'meta') || null;
 
-    // Create top-level section pages
+    // Create top-level section pages — ALL through ensureSection chokepoint
     for (const section of sections) {
       if (existingTitles.has(section.toLowerCase())) {
         skipped.push(section);
         continue;
       }
       try {
-        const page = await this.createPage(collectiveId, rootParentId, section);
+        const page = await this.ensureSection(collectiveId, section);
         const content = serializeFrontmatter(
           { type: 'section' },
           `# ${section}\n`
         );
-        // New pages are flat .md files; use fileName from API response
         const writePath = page.filePath
           ? `${page.filePath}/${page.fileName}`
           : page.fileName || `${section}.md`;
         await this.writePageContent(writePath, content);
         created.push(section);
-        // Track Meta page locally for subpage creation below
         if (section.toLowerCase() === 'meta') {
           metaPageRef = page;
         }
@@ -725,7 +729,7 @@ class CollectivesClient {
       }
     }
 
-    // Create meta subpages
+    // Create meta subpages — through ensureSection(parentPageId) chokepoint
     if (metaPageRef) {
       const metaSubpages = [
         { title: 'Learning Log', purpose: 'Agent learning journal' },
@@ -733,7 +737,6 @@ class CollectivesClient {
         { title: 'Knowledge Stats', purpose: 'Wiki health and usage statistics' }
       ];
 
-      // Build set of existing children under Meta from initial page list
       const existingMetaChildren = new Set(
         pageList
           .filter(p => p.parentId === metaPageRef.id)
@@ -747,12 +750,11 @@ class CollectivesClient {
           continue;
         }
         try {
-          const page = await this.createPage(collectiveId, metaPageRef.id, sub.title);
+          const page = await this.ensureSection(collectiveId, sub.title, metaPageRef.id);
           const content = serializeFrontmatter(
             { type: 'meta', purpose: sub.purpose },
             `# ${sub.title}\n`
           );
-          // Subpages may be flat .md or folder/Readme.md; use API response
           const writePath = page.filePath
             ? `${page.filePath}/${page.fileName}`
             : page.fileName || `${sub.title}.md`;

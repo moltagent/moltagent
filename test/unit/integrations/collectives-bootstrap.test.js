@@ -42,19 +42,17 @@ function createBootstrapMock(existingPages = [], opts = {}) {
     })
   };
 
-  // createPage under root (parentId 0)
-  for (const section of ['People', 'Projects', 'Procedures', 'Research', 'Meta']) {
-    responses[`POST:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/pages/0`] = (path, options) => {
-      const body = JSON.parse(options.body);
-      if (opts.failOn && opts.failOn.includes(body.title)) {
-        return { status: 500, body: { message: 'Server error' }, headers: {} };
-      }
-      const newPage = { id: pageIdCounter++, title: body.title, parentId: 0 };
-      calls.createPage.push(body.title);
-      currentPages.push(newPage);
-      return { status: 200, body: { ocs: { data: newPage } }, headers: {} };
-    };
-  }
+  // createPage under landing page (parentId 1) — ensureSection routes here
+  responses[`POST:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/pages/${LANDING_PAGE.id}`] = (path, options) => {
+    const body = JSON.parse(options.body);
+    if (opts.failOn && opts.failOn.includes(body.title)) {
+      return { status: 500, body: { message: 'Server error' }, headers: {} };
+    }
+    const newPage = { id: pageIdCounter++, title: body.title, parentId: LANDING_PAGE.id, fileName: `${body.title}.md`, filePath: '' };
+    calls.createPage.push(body.title);
+    currentPages.push(newPage);
+    return { status: 200, body: { ocs: { data: newPage } }, headers: {} };
+  };
 
   // createPage under Meta (dynamic parentId)
   // We need a catch-all for any parentId — use the mock's request method directly
@@ -146,8 +144,8 @@ asyncTest('bootstrap: empty collective creates all 5 sections + 3 meta subpages'
 asyncTest('bootstrap: partially populated skips existing, creates missing', async () => {
   // People and Meta already exist, plus Learning Log under Meta
   const existingPages = [
-    { id: 100, title: 'People', parentId: 0 },
-    { id: 102, title: 'Meta', parentId: 0 },
+    { id: 100, title: 'People', parentId: LANDING_PAGE.id },
+    { id: 102, title: 'Meta', parentId: LANDING_PAGE.id },
     { id: 300, title: 'Learning Log', parentId: 102 }
   ];
   const mockNC = createBootstrapMock(existingPages);
@@ -197,11 +195,11 @@ asyncTest('bootstrap: partial failure — one page throws, others still created'
 asyncTest('bootstrap: fully populated — all skipped, createPage never called', async () => {
   const metaId = 104;
   const allPages = [
-    { id: 100, title: 'People', parentId: 0 },
-    { id: 101, title: 'Projects', parentId: 0 },
-    { id: 102, title: 'Procedures', parentId: 0 },
-    { id: 103, title: 'Research', parentId: 0 },
-    { id: metaId, title: 'Meta', parentId: 0 },
+    { id: 100, title: 'People', parentId: LANDING_PAGE.id },
+    { id: 101, title: 'Projects', parentId: LANDING_PAGE.id },
+    { id: 102, title: 'Procedures', parentId: LANDING_PAGE.id },
+    { id: 103, title: 'Research', parentId: LANDING_PAGE.id },
+    { id: metaId, title: 'Meta', parentId: LANDING_PAGE.id },
     { id: 200, title: 'Learning Log', parentId: metaId },
     { id: 201, title: 'Pending Questions', parentId: metaId },
     { id: 202, title: 'Knowledge Stats', parentId: metaId }

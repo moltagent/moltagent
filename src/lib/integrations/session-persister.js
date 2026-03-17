@@ -306,43 +306,13 @@ class SessionPersister {
       return this._sessionsParentId;
     }
 
+    // Single chokepoint: delegate to CollectivesClient.ensureSection()
     const collectiveId = await this.wiki.resolveCollective();
-    const allPages = await this.wiki.listPages(collectiveId);
-    const pageList = Array.isArray(allPages) ? allPages : [];
+    const sessionsPage = await this.wiki.ensureSection(collectiveId, 'Sessions');
 
-    // Find root-level Sessions page (parentId 0 or the landing page's id)
-    const landingPage = pageList.find(p => p.parentId === 0);
-    const rootParentId = landingPage ? landingPage.id : 0;
-
-    const sessionsPage = pageList.find(p =>
-      (p.title || '').toLowerCase() === 'sessions' &&
-      (p.parentId === rootParentId || p.parentId === 0)
-    );
-
-    let sessionsParentId;
-    if (sessionsPage) {
-      sessionsParentId = sessionsPage.id;
-    } else {
-      // Create the Sessions top-level section page
-      const created = await this.wiki.createPage(collectiveId, rootParentId, 'Sessions');
-      sessionsParentId = created.id;
-
-      // Write a stub header so the page isn't empty in the UI
-      const stubPath = created.filePath
-        ? `${created.filePath}/${created.fileName}`
-        : created.fileName || 'Sessions.md';
-      try {
-        await this.wiki.writePageContent(stubPath, '# Sessions\n\nSession summaries are written here automatically when conversations end.\n');
-      } catch (err) {
-        // Non-fatal — page exists, stub content is cosmetic only
-        console.warn('[SessionPersister] Could not write Sessions stub:', err.message);
-      }
-    }
-
-    // Cache for one hour
-    this._sessionsParentId = sessionsParentId;
+    this._sessionsParentId = sessionsPage.id;
     this._sessionsParentIdExpiry = now + this._sessionsParentIdTTL;
-    return sessionsParentId;
+    return this._sessionsParentId;
   }
 
   /**
