@@ -198,49 +198,57 @@ class ResilientWikiWriter {
       this.ocsTimeoutMs
     );
 
+    // Idempotent section lookup/creation — serialises concurrent callers via
+    // CollectivesClient's per-name mutex so only one HTTP POST is ever issued.
+    const sectionPage = await this._withTimeout(
+      this.collectivesClient.ensureSection(collectiveId, sectionPath),
+      this.ocsTimeoutMs
+    );
+    const sectionId = sectionPage.id;
+
+    // Fetch page list after section is guaranteed to exist so the list is fresh.
     const allPages = await this._withTimeout(
       this.collectivesClient.listPages(collectiveId),
       this.ocsTimeoutMs
     );
 
-    // Find or create section parent
-    const sectionPage = (allPages || []).find(p => {
-      const title = p.title || '';
-      return title === sectionPath;
-    });
-
-    let sectionId;
-    if (sectionPage) {
-      sectionId = sectionPage.id;
-    } else {
-      // Find root landing page
-      const rootPage = (allPages || []).find(p => p.parentId === 0);
-      const rootId = rootPage ? rootPage.id : 0;
-      const created = await this._withTimeout(
-        this.collectivesClient.createPage(collectiveId, rootId, sectionPath),
-        this.ocsTimeoutMs
-      );
-      sectionId = created.id;
-    }
-
-    // Check if page already exists under section
+    // Check if the entity page already exists under the section.
     const existing = (allPages || []).find(p =>
       p.parentId === sectionId && (p.title || '') === pageName
     );
 
+    // Track whether we created a new page so we can roll it back on write failure.
+    let createdPage = null;
     if (!existing) {
-      await this._withTimeout(
+      createdPage = await this._withTimeout(
         this.collectivesClient.createPage(collectiveId, sectionId, pageName),
         this.ocsTimeoutMs
       );
     }
 
-    // Write content
+    // Write content — if this fails and we just created an empty page, trash it
+    // to avoid leaving a title-only stub in the wiki.
     const pagePath = `${sectionPath}/${pageName}.md`;
-    await this._withTimeout(
-      this.collectivesClient.writePageContent(pagePath, content),
-      this.ocsTimeoutMs
-    );
+    try {
+      await this._withTimeout(
+        this.collectivesClient.writePageContent(pagePath, content),
+        this.ocsTimeoutMs
+      );
+    } catch (writeErr) {
+      if (createdPage && createdPage.id) {
+        // Best-effort cleanup: delete the empty page we just created.
+        try {
+          await this._withTimeout(
+            this.collectivesClient.trashPage(collectiveId, createdPage.id),
+            this.ocsTimeoutMs
+          );
+          this.logger.warn?.(`[ResilientWikiWriter] Trashed empty page "${pageName}" after content write failed: ${writeErr.message}`);
+        } catch (trashErr) {
+          this.logger.warn?.(`[ResilientWikiWriter] Could not trash empty page "${pageName}": ${trashErr.message}`);
+        }
+      }
+      throw writeErr;
+    }
 
     return { success: true, method: 'ocs' };
   }

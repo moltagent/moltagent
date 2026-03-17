@@ -22,6 +22,12 @@ function makeCollectivesClient(overrides = {}) {
       { id: 1, parentId: 0, title: 'Moltagent Knowledge' },
       { id: 10, parentId: 1, title: 'Sessions' }
     ]),
+    // ensureSection: idempotent section lookup — returns existing page if found,
+    // otherwise creates via createPage. Tests provide a default that returns a
+    // predictable section page so OCS path succeeds without real API calls.
+    ensureSection: overrides.ensureSection || (async (collectiveId, sectionName) => {
+      return { id: 10, parentId: 1, title: sectionName };
+    }),
     createPage: overrides.createPage || (async (cId, parentId, title) => ({ id: 99, title })),
     writePageContent: overrides.writePageContent || (async () => {}),
   };

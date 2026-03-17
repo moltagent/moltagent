@@ -258,11 +258,17 @@ class DocumentIngestor {
       }
     }
 
+    // Override fidelity if we know the text came from OCR
+    if (extraction.ocr === true && classification.fidelity !== 'ocr') {
+      classification.fidelity = 'ocr';
+    }
+
     // Run LLM extraction — returns summary + typed entities, populates graph
     let extractionResult = { summary: '', entities: [] };
     try {
-      // Use type-specific prompt if classifier provides one
-      const typePrompt = this.classifier?.getExtractionPrompt(classification.type, truncatedText, filename);
+      // Use type-specific prompt if classifier provides one, passing fidelity
+      // so the LLM can apply appropriate tolerance for OCR/transcribed sources.
+      const typePrompt = this.classifier?.getExtractionPrompt(classification.type, truncatedText, filename, classification.fidelity || 'authored');
       if (typePrompt) {
         extractionResult = await this.entityExtractor.extractWithPrompt(typePrompt) || { summary: '', entities: [] };
       } else {
@@ -290,6 +296,24 @@ class DocumentIngestor {
     }
 
     // 3. Create wiki pages for high-significance entities only
+
+    // Pre-load section page titles for fuzzy dedup — one listPages call per
+    // section rather than one per entity. Only load sections we will actually
+    // need for this document's entities.
+    const sectionTitlesCache = new Map(); // section -> string[]
+    const _getSectionTitles = async (section) => {
+      if (sectionTitlesCache.has(section)) return sectionTitlesCache.get(section);
+      try {
+        const result = await this.wikiWriter.listPages(section);
+        const titles = (result?.pages || []).map(p => p.title).filter(Boolean);
+        sectionTitlesCache.set(section, titles);
+        return titles;
+      } catch {
+        sectionTitlesCache.set(section, []);
+        return [];
+      }
+    };
+
     let entityPagesCreated = 0;
     for (const entity of entities) {
       if (!this._shouldCreateWikiPage(entity)) continue;
@@ -301,16 +325,30 @@ class DocumentIngestor {
         // Fast in-memory dedup (survives batch parallelism)
         if (this._createdEntityPages.has(dedupKey)) continue;
 
-        // Remote dedup: check if page already exists on wiki
+        // Remote dedup: check if page already exists on wiki (exact-match)
         const exists = await this._pageExists(section, entity.name);
         if (exists) {
           this._createdEntityPages.add(dedupKey);
           continue;
         }
 
+        // Fuzzy dedup: ask the LLM whether this entity matches an existing page
+        // by a different name (handles OCR errors, phonetic variants, abbreviations).
+        // Only runs when a classifier with a router is available.
+        const sectionTitles = await _getSectionTitles(section);
+        const match = await this._findMatchingEntity(entity, sectionTitles, classification?.fidelity);
+        if (match) {
+          this.logger.info(`[DocumentIngestor] Entity dedup: "${entity.name}" matches existing "${match.title}" (${match.reason})`);
+          this._createdEntityPages.add(dedupKey);
+          continue; // Don't create duplicate page
+        }
+
         const pageContent = this._buildEntityPage(entity, filePath);
         await this.wikiWriter.createPage(section, entity.name, pageContent);
         this._createdEntityPages.add(dedupKey);
+        // Update local section cache so subsequent entities in this file can
+        // match against the page we just created without another listPages call.
+        sectionTitlesCache.set(section, [...(sectionTitlesCache.get(section) || []), entity.name]);
         entityPagesCreated++;
         this.logger.info(`[DocumentIngestor] Entity page: ${section}/${entity.name}`);
       } catch (err) {
@@ -737,6 +775,12 @@ class DocumentIngestor {
     // Block null/empty descriptions — graph-only entities
     if (!entity.description || entity.description === 'null') return false;
 
+    // Block thin descriptions that carry no real knowledge (< 20 chars)
+    if (entity.description.length < 20) return false;
+
+    // Academic citations are not people (e.g. "Zhang et al")
+    if (/\bet\s+al\.?\b/i.test(entity.name)) return false;
+
     const type = entity.type;
     // Organizations and agents always get wiki pages — workspace knowledge
     if (type === 'organization' || type === 'company' || type === 'agent') return true;
@@ -806,6 +850,67 @@ class DocumentIngestor {
       deployment: 'Infrastructure',
     };
     return map[type] || 'Research';
+  }
+
+  /**
+   * Ask the LLM whether a new entity matches any existing page title.
+   * Handles name variations, OCR errors, phonetic errors, and abbreviations.
+   * Returns the matching title and a reason, or null if no match found.
+   *
+   * Only invoked when the classifier's router is available (graceful degradation:
+   * if no router, skip fuzzy dedup and let the exact-match guard handle it).
+   *
+   * @param {Object} entity               - New entity { name, type, description }
+   * @param {string[]} existingPageTitles - Current titles in the target section
+   * @param {string} [fidelity]           - Source fidelity of the document
+   * @returns {Promise<{title: string, reason: string}|null>}
+   */
+  async _findMatchingEntity(entity, existingPageTitles, fidelity) {
+    if (!existingPageTitles || existingPageTitles.length === 0) return null;
+    if (!this.classifier?.router) return null; // no LLM available
+
+    const prompt = `Determine if this new entity matches any existing entity in the list.
+
+New entity:
+- Name: "${entity.name}"
+- Type: ${entity.type}
+- Description: "${(entity.description || '').substring(0, 200)}"
+- Source fidelity: ${fidelity || 'authored'}${fidelity === 'ocr' ? ' (character-level errors likely)' : fidelity === 'transcribed' ? ' (phonetic errors likely)' : ''}
+
+Existing entities:
+${existingPageTitles.map((n, i) => `${i + 1}. "${n}"`).join('\n')}
+
+Rules:
+- Match if names clearly refer to the same real-world entity
+- Account for: name variations, middle initials, OCR errors, phonetic errors, abbreviations
+- Do NOT match if names could plausibly be different entities
+- Names with (ocr-uncertain) or (transcription-uncertain) flags should be matched more generously
+
+Respond ONLY with JSON:
+{"match": true, "index": 1, "reason": "same person, middle initial variation"}
+or
+{"match": false}`;
+
+    try {
+      const result = await this.classifier.router.route({
+        job: 'classification',
+        task: 'entity_dedup',
+        content: prompt,
+        requirements: { maxTokens: 100, temperature: 0.0 },
+      });
+
+      const raw = result?.result || result?.content || '';
+      const cleaned = raw.replace(/```json?\s*/gi, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(cleaned.match(/\{[^}]+\}/)?.[0] || '{}');
+
+      if (parsed.match && typeof parsed.index === 'number' &&
+          parsed.index >= 1 && parsed.index <= existingPageTitles.length) {
+        return { title: existingPageTitles[parsed.index - 1], reason: parsed.reason || 'matched' };
+      }
+    } catch (err) {
+      this.logger.warn(`[DocumentIngestor] Entity dedup check failed: ${err.message}`);
+    }
+    return null;
   }
 }
 

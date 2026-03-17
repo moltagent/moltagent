@@ -118,7 +118,7 @@ asyncTest('processFile extracts text and runs entity extraction', async () => {
           entities: [
             { name: 'Sarah Chen',      type: 'person',       significance: 'high', description: 'Leads Project Phoenix' },
             { name: 'Project Phoenix', type: 'project',      significance: 'high', description: 'Main project at TheCatalyne' },
-            { name: 'TheCatalyne',     type: 'organization', significance: 'high', description: 'Parent company' },
+            { name: 'TheCatalyne',     type: 'organization', significance: 'high', description: 'Parent company for all projects' },
           ],
         };
       },
@@ -512,7 +512,7 @@ asyncTest('processFile only creates wiki pages for high-significance entities', 
       extractEntitiesFromDocument: async () => ({
         summary: 'Pipeline uses DeepSeek and Claude, managed by Carlos.',
         entities: [
-          { name: 'Carlos',     type: 'person',  significance: 'high',   description: 'Pipeline manager' },
+          { name: 'Carlos',     type: 'person',  significance: 'high',   description: 'Pipeline manager at the team' },
           { name: 'DeepSeek',   type: 'tool',    significance: 'medium', description: 'LLM model' },
           { name: 'Claude',     type: 'tool',    significance: 'medium', description: 'LLM model' },
           { name: 'Zero Trust', type: 'concept', significance: 'low',    description: 'Security concept' },
@@ -542,6 +542,154 @@ asyncTest('processFile only creates wiki pages for high-significance entities', 
   assert.ok(!wikiPages.find(p => p.name === 'DeepSeek'),   'No page for medium-significance tool');
   assert.ok(!wikiPages.find(p => p.name === 'Claude'),     'No page for medium-significance tool');
   assert.ok(!wikiPages.find(p => p.name === 'Zero Trust'), 'No page for low-significance concept');
+});
+
+// 17. normalizeEntityName: strips (N) suffixes and collapses whitespace
+test('normalizeEntityName handles edge cases', () => {
+  // Access the module-scoped function via a fresh ingestor's _shouldCreateWikiPage
+  const ingestor = makeIngestor();
+
+  // Test via _shouldCreateWikiPage + _pageExists behavior
+  // Protected page "Learning Log" blocks entity creation
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: 'Learning Log', type: 'organization', significance: 'high', description: 'test' }),
+    false, 'Protected page "Learning Log" should be blocked'
+  );
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: 'learning log', type: 'organization', significance: 'high', description: 'test' }),
+    false, 'Protected page "learning log" (lowercase) should be blocked'
+  );
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: '  Learning  Log  ', type: 'organization', significance: 'high', description: 'test' }),
+    false, 'Protected page with extra whitespace should be blocked'
+  );
+});
+
+// 18. _shouldCreateWikiPage blocks entities with null descriptions
+test('_shouldCreateWikiPage blocks null/empty descriptions', () => {
+  const ingestor = makeIngestor();
+
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: 'Acme Corp', type: 'organization', significance: 'high', description: null }),
+    false, 'null description should block page creation'
+  );
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: 'Acme Corp', type: 'organization', significance: 'high', description: '' }),
+    false, 'empty description should block page creation'
+  );
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: 'Acme Corp', type: 'organization', significance: 'high', description: 'null' }),
+    false, '"null" string description should block page creation'
+  );
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: 'Acme Corp', type: 'organization', significance: 'high', description: 'A real established company' }),
+    true, 'Valid description (>= 20 chars) should allow page creation'
+  );
+});
+
+// 22. _shouldCreateWikiPage rejects thin descriptions (< 20 chars)
+test('_shouldCreateWikiPage rejects thin descriptions under 20 chars', () => {
+  const ingestor = makeIngestor();
+
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: 'Acme Corp', type: 'organization', significance: 'high', description: 'Short desc' }),
+    false, 'Description under 20 chars should be rejected'
+  );
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: 'Acme Corp', type: 'organization', significance: 'high', description: 'Exactly 20 chars!!!!', }),
+    true, 'Description of exactly 20 chars should be accepted'
+  );
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: 'Bob Smith', type: 'person', significance: 'high', description: 'A person here.' }),
+    false, 'Person with 14-char description should be rejected'
+  );
+});
+
+// 23. _shouldCreateWikiPage rejects academic citations ("et al")
+test('_shouldCreateWikiPage rejects academic citation names containing "et al"', () => {
+  const ingestor = makeIngestor();
+
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: 'Zhang et al', type: 'person', significance: 'high', description: 'Authors of a referenced academic paper about climate' }),
+    false, '"Zhang et al" should be rejected as an academic citation'
+  );
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: 'Smith et al.', type: 'person', significance: 'high', description: 'Authors of a referenced academic paper about climate' }),
+    false, '"Smith et al." (with period) should be rejected'
+  );
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: 'Müller ET AL', type: 'person', significance: 'high', description: 'Authors of a referenced academic paper about climate' }),
+    false, '"et al" check should be case-insensitive'
+  );
+  // Regular name containing no "et al" should still pass
+  assert.strictEqual(
+    ingestor._shouldCreateWikiPage({ name: 'Ethan Alvarez', type: 'person', significance: 'high', description: 'Lead engineer at the infrastructure team here' }),
+    true, 'Name starting with "Et" but not "et al" should not be rejected'
+  );
+});
+
+// 19. _pageExists checks all sections (cross-section dedup)
+asyncTest('_pageExists checks all sections for cross-section dedup', async () => {
+  const ingestor = new DocumentIngestor({
+    ncFilesClient: makeNcFilesClient(),
+    textExtractor: makeTextExtractor(),
+    entityExtractor: makeEntityExtractor(),
+    knowledgeGraph: makeKnowledgeGraph(),
+    wikiWriter: makeWikiWriter({
+      listPages: async (section) => {
+        // "Sarah Chen" exists in People section
+        if (section === 'People') {
+          return { pages: [{ title: 'Sarah Chen' }], method: 'ocs' };
+        }
+        return { pages: [], method: 'ocs' };
+      },
+    }),
+    logger: makeSilentLogger(),
+  });
+
+  // Even when checking Projects section, should find Sarah Chen from People
+  const exists = await ingestor._pageExists('Projects', 'Sarah Chen');
+  assert.strictEqual(exists, true, 'Should detect entity in a different section');
+
+  // Non-existent entity
+  const missing = await ingestor._pageExists('People', 'Nobody');
+  assert.strictEqual(missing, false, 'Should return false for truly missing entity');
+});
+
+// 20. _pageExists blocks protected page names
+asyncTest('_pageExists blocks protected page names', async () => {
+  const ingestor = makeIngestor();
+
+  const exists = await ingestor._pageExists('Documents', 'Knowledge Stats');
+  assert.strictEqual(exists, true, 'Protected page "Knowledge Stats" should be blocked');
+
+  const exists2 = await ingestor._pageExists('Documents', 'Pending Questions');
+  assert.strictEqual(exists2, true, 'Protected page "Pending Questions" should be blocked');
+});
+
+// 21. _pageExists normalizes (N) suffixes for dedup
+asyncTest('_pageExists normalizes Collectives (N) suffix collisions', async () => {
+  const warnMessages = [];
+
+  const ingestor = new DocumentIngestor({
+    ncFilesClient: makeNcFilesClient(),
+    textExtractor: makeTextExtractor(),
+    entityExtractor: makeEntityExtractor(),
+    knowledgeGraph: makeKnowledgeGraph(),
+    wikiWriter: makeWikiWriter({
+      listPages: async (section) => {
+        if (section === 'Organizations') {
+          return { pages: [{ title: 'Acme Corp (2)' }], method: 'ocs' };
+        }
+        return { pages: [], method: 'ocs' };
+      },
+    }),
+    logger: { info: () => {}, warn: (msg) => warnMessages.push(msg), error: () => {} },
+  });
+
+  const exists = await ingestor._pageExists('Organizations', 'Acme Corp');
+  assert.strictEqual(exists, true, '"Acme Corp (2)" should match "Acme Corp" after normalization');
+  assert.ok(warnMessages.some(m => m.includes('Collision detected')), 'Should log collision warning');
 });
 
 // ── Teardown ────────────────────────────────────────────────────────────────

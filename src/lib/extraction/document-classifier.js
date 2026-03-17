@@ -133,7 +133,9 @@ class DocumentClassifier {
     if (preType) {
       this._stats.preFiltered++;
       this.logger.info?.(`[DocumentClassifier] pre-filter: ${safeName} -> ${preType}`);
-      return { type: preType, confidence: 1.0 };
+      // fidelity: null — pre-filter never sees the text, so fidelity is unknown.
+      // Callers should treat null as 'authored' default.
+      return { type: preType, confidence: 1.0, fidelity: null };
     }
 
     // --- Slow path: LLM classification ---
@@ -141,7 +143,7 @@ class DocumentClassifier {
     if (safeText.length < 20) {
       // Too little text to classify meaningfully
       this._stats.fallbacks++;
-      return { type: TYPES.REFERENCE, confidence: 0.3 };
+      return { type: TYPES.REFERENCE, confidence: 0.3, fidelity: null };
     }
 
     const prompt = `Classify this document into exactly ONE of these types:
@@ -152,7 +154,12 @@ Filename: ${safeName}
 Content (first ${safeText.length} chars):
 ${safeText}
 
-Respond ONLY with JSON: {"type":"<TYPE>","confidence":<0.0-1.0>}`;
+Also assess the SOURCE FIDELITY of the text:
+- "authored": Human-written text. Clean grammar, intentional formatting.
+- "transcribed": Speech-to-text output. Signs: speaker labels, timestamps, conversational patterns, phonetic errors.
+- "ocr": OCR from image/scan. Signs: character-level errors, broken words, layout artifacts.
+
+Respond ONLY with JSON: {"type":"<TYPE>","confidence":<0.0-1.0>,"fidelity":"authored|transcribed|ocr"}`;
 
     try {
       const rawResponse = await this.router.route({
@@ -170,7 +177,7 @@ Respond ONLY with JSON: {"type":"<TYPE>","confidence":<0.0-1.0>}`;
     } catch (err) {
       this.logger.warn?.(`[DocumentClassifier] LLM classification failed for ${safeName}: ${err.message}`);
       this._stats.fallbacks++;
-      return { type: TYPES.REFERENCE, confidence: 0.5 };
+      return { type: TYPES.REFERENCE, confidence: 0.5, fidelity: null };
     }
   }
 
@@ -181,31 +188,42 @@ Respond ONLY with JSON: {"type":"<TYPE>","confidence":<0.0-1.0>}`;
    * @param {string} type     - One of the 14 canonical types
    * @param {string} text     - Document text (caller should pre-truncate)
    * @param {string} filename - Original filename
+   * @param {string} [fidelity] - Source fidelity: 'authored' | 'transcribed' | 'ocr'
    * @returns {string|null}
    */
-  getExtractionPrompt(type, text, filename) {
+  getExtractionPrompt(type, text, filename, fidelity) {
     const safeName = filename || 'unknown';
     const safeText = text || '';
 
+    let prompt;
     switch (type) {
       case TYPES.TECHNICAL:
-        return this._promptTechnical(safeText, safeName);
+        prompt = this._promptTechnical(safeText, safeName);
+        break;
       case TYPES.MEETING_RECORD:
-        return this._promptMeetingRecord(safeText, safeName);
+        prompt = this._promptMeetingRecord(safeText, safeName);
+        break;
       case TYPES.PEOPLE_HR:
-        return this._promptPeopleHR(safeText, safeName);
+        prompt = this._promptPeopleHR(safeText, safeName);
+        break;
       case TYPES.AGREEMENT:
-        return this._promptAgreement(safeText, safeName);
+        prompt = this._promptAgreement(safeText, safeName);
+        break;
       case TYPES.TRANSACTIONAL:
-        return this._promptTransactional(safeText, safeName);
+        prompt = this._promptTransactional(safeText, safeName);
+        break;
       case TYPES.CORRESPONDENCE:
-        return this._promptCorrespondence(safeText, safeName);
+        prompt = this._promptCorrespondence(safeText, safeName);
+        break;
       case TYPES.PLANNING:
-        return this._promptPlanning(safeText, safeName);
+        prompt = this._promptPlanning(safeText, safeName);
+        break;
       case TYPES.CREATIVE:
-        return this._promptCreative(safeText, safeName);
+        prompt = this._promptCreative(safeText, safeName);
+        break;
       case TYPES.DATA:
-        return this._promptData(safeText, safeName);
+        prompt = this._promptData(safeText, safeName);
+        break;
 
       // Types that need no entity extraction
       case TYPES.TEMPLATE:
@@ -218,6 +236,31 @@ Respond ONLY with JSON: {"type":"<TYPE>","confidence":<0.0-1.0>}`;
       default:
         return null;
     }
+
+    // Prepend fidelity preamble for non-authored sources so the LLM knows
+    // to be more generous with name matching and flag uncertain extractions.
+    if (prompt && fidelity && fidelity !== 'authored') {
+      prompt = this._fidelityPreamble(fidelity) + prompt;
+    }
+
+    return prompt;
+  }
+
+  /**
+   * Return a preamble paragraph that primes the LLM for the source fidelity.
+   * Empty string for 'authored' (standard rules apply).
+   *
+   * @param {string} fidelity - 'transcribed' | 'ocr'
+   * @returns {string}
+   */
+  _fidelityPreamble(fidelity) {
+    if (fidelity === 'transcribed') {
+      return `NOTE: This text was produced by speech-to-text. Names may contain phonetic errors (e.g., "Ilco" for "Eelco"). Extract names as written but add (transcription-uncertain) after any name that looks phonetically plausible but possibly misspelled.\n\n`;
+    }
+    if (fidelity === 'ocr') {
+      return `NOTE: This text was produced by OCR. Names may contain character-level errors (e.g., "Dykara" for "Dykstra"). Extract names as written but add (ocr-uncertain) after any name that looks like a possible OCR error. Ignore layout artifacts, page numbers, and header/footer fragments.\n\n`;
+    }
+    return ''; // authored — standard extraction rules apply
   }
 
   /** Return accumulated statistics. */
@@ -257,14 +300,14 @@ Respond ONLY with JSON: {"type":"<TYPE>","confidence":<0.0-1.0>}`;
   // ==========================================================================
 
   /**
-   * Parse the LLM classification response into { type, confidence }.
+   * Parse the LLM classification response into { type, confidence, fidelity }.
    * Tolerates markdown fences and partial JSON. Falls back to REFERENCE / 0.5.
    *
    * @param {string} raw
-   * @returns {{ type: string, confidence: number }}
+   * @returns {{ type: string, confidence: number, fidelity: string }}
    */
   _parseClassification(raw) {
-    const fallback = { type: TYPES.REFERENCE, confidence: 0.5 };
+    const fallback = { type: TYPES.REFERENCE, confidence: 0.5, fidelity: 'authored' };
     if (!raw || typeof raw !== 'string') return fallback;
 
     // Strip markdown fences if present
@@ -274,9 +317,10 @@ Respond ONLY with JSON: {"type":"<TYPE>","confidence":<0.0-1.0>}`;
       const obj = JSON.parse(cleaned);
       const type = (obj.type || '').toUpperCase().trim();
       const confidence = Number.isFinite(obj.confidence) ? Math.max(0, Math.min(1, obj.confidence)) : 0.5;
+      const fidelity = ['authored', 'transcribed', 'ocr'].includes(obj.fidelity) ? obj.fidelity : 'authored';
 
       if (VALID_TYPES.has(type)) {
-        return { type, confidence };
+        return { type, confidence, fidelity };
       }
       this.logger.warn?.(`[DocumentClassifier] unknown type from LLM: "${obj.type}"`);
       return fallback;
@@ -285,7 +329,7 @@ Respond ONLY with JSON: {"type":"<TYPE>","confidence":<0.0-1.0>}`;
       const upper = cleaned.toUpperCase();
       for (const t of VALID_TYPES) {
         if (upper.includes(t)) {
-          return { type: t, confidence: 0.4 };
+          return { type: t, confidence: 0.4, fidelity: 'authored' };
         }
       }
       return fallback;

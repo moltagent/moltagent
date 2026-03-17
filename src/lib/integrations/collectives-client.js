@@ -58,6 +58,9 @@ class CollectivesClient {
     // Cache for wikilink resolution (title → {title, pageId}), populated once per session
     this._wikilinkMap = null;
 
+    // In-memory mutex map for idempotent section creation (lockKey → Promise)
+    this._sectionLocks = new Map();
+
     // OCS API base path
     this.ocsBase = '/ocs/v2.php/apps/collectives/api/v1.0';
   }
@@ -236,6 +239,87 @@ class CollectivesClient {
     // Invalidate wikilink cache so new pages get picked up
     this._wikilinkMap = null;
     return data?.page || data;
+  }
+
+  /**
+   * Ensure a root-level section page exists, creating it at most once even
+   * under concurrent callers. Uses a per-name in-memory mutex so that parallel
+   * entity-page creations that all target the same section (e.g. "Organizations")
+   * don't each create their own copy and trigger Nextcloud's "(2)", "(3)" suffix
+   * disambiguation.
+   *
+   * @param {number} collectiveId - Collective ID (from resolveCollective())
+   * @param {string} sectionName  - Section title (e.g. "Organizations")
+   * @returns {Promise<Object>} Page object with at least { id, title, parentId }
+   */
+  async ensureSection(collectiveId, sectionName) {
+    const lockKey = (sectionName || '').toLowerCase().trim();
+
+    // If another caller is already creating this section, wait for it then
+    // do a fresh lookup — the creator will have populated the page by then.
+    if (this._sectionLocks.has(lockKey)) {
+      await this._sectionLocks.get(lockKey);
+      return this._findSectionPage(collectiveId, sectionName);
+    }
+
+    // Claim the lock before doing any I/O so later callers queue behind us.
+    let resolve;
+    const lock = new Promise(r => { resolve = r; });
+    this._sectionLocks.set(lockKey, lock);
+
+    try {
+      // Re-check after acquiring lock in case a previous run just created it.
+      const existing = await this._findSectionPage(collectiveId, sectionName);
+      if (existing) return existing;
+
+      // Find the landing page (parentId 0) to use as parent for new sections.
+      const pages = await this.listPages(collectiveId);
+      const pageList = Array.isArray(pages) ? pages : [];
+      const landing = pageList.find(p => p.parentId === 0);
+      const parentId = landing ? landing.id : 0;
+
+      const created = await this.createPage(collectiveId, parentId, sectionName);
+      return created;
+    } finally {
+      // Always release the lock, even on error, so waiting callers unblock.
+      this._sectionLocks.delete(lockKey);
+      resolve();
+    }
+  }
+
+  /**
+   * Find a root-level section page by name using resilient matching:
+   * case-insensitive and ignoring Nextcloud's "(N)" collision suffixes.
+   *
+   * Only searches root-level pages (children of the landing page) to avoid
+   * accidentally matching entity pages that share a name with a section.
+   *
+   * @param {number} collectiveId - Collective ID
+   * @param {string} sectionName  - Target section title
+   * @returns {Promise<Object|null>} Page object or null if not found
+   * @private
+   */
+  async _findSectionPage(collectiveId, sectionName) {
+    const pages = await this.listPages(collectiveId);
+    const pageList = Array.isArray(pages) ? pages : [];
+    const target = (sectionName || '').toLowerCase().trim();
+
+    // Identify the landing page so we can restrict to root-level children.
+    const landing = pageList.find(p => p.parentId === 0);
+    const rootPages = landing
+      ? pageList.filter(p => p.parentId === landing.id)
+      : pageList.filter(p => p.parentId === 0);
+
+    // Exact case-insensitive match first.
+    const exact = rootPages.find(p => (p.title || '').toLowerCase().trim() === target);
+    if (exact) return exact;
+
+    // Dedup-suffix match: "Organizations (2)" → "organizations" matches "organizations".
+    const suffixed = rootPages.find(p => {
+      const cleaned = (p.title || '').replace(/\s*\(\d+\)\s*$/, '').toLowerCase().trim();
+      return cleaned === target;
+    });
+    return suffixed || null;
   }
 
   /**
