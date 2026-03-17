@@ -67,20 +67,25 @@ const CLASSIFICATION_EXAMPLES = {
   "Check if Carlos is available Tuesday and book a meeting" → compound, domain: calendar
   "What's the status of onboarding and create a follow-up task" → compound, domain: deck`,
     knowledge: `
-  Examples:
+  Examples (ALL factual questions are knowledge — "What is X?", "Who does X?", "How does X work?"):
   "Who is Carlos?" → knowledge
   "What's the status of onboarding?" → knowledge
   "What boards do I have?" → knowledge
-  "What's the weather in Lisbon?" → knowledge`,
+  "What's the weather in Lisbon?" → knowledge
+  "What is HeartbeatManager?" → knowledge
+  "Who works on Moltagent?" → knowledge
+  "How does document ingestion work?" → knowledge
+  "Explain the trust boundary to me" → knowledge
+  "What can you do?" → knowledge
+  "What is OpenClaw?" → knowledge
+  "Tell me about the memory architecture" → knowledge`,
     thinking: `
-  Examples:
-  "What do you think about our architecture?" → thinking
-  "If you could redesign X, how would you?" → thinking
-  "Think deeply about what this means" → thinking
-  "What's your honest assessment of..." → thinking
-  "Reflect on your role in the team" → thinking
-  "What does sovereignty mean for you?" → thinking
-  "If you could change one thing about yourself..." → thinking`,
+  Examples (ONLY explicit reflection, opinion, or hypothetical — never factual questions):
+  "Think deeply about what Moltagent means" → thinking
+  "What's your honest assessment of our progress?" → thinking
+  "Reflect on your own capabilities" → thinking
+  "If you could redesign the memory system, how would you?" → thinking
+  "What does sovereignty mean to you personally?" → thinking`,
     greeting: `
   Examples:
   "Hi" / "Hello" / "Good morning" / "Hey there" → greeting`
@@ -101,19 +106,21 @@ const CLASSIFICATION_EXAMPLES = {
   "Prüfe ob Carlos am Dienstag verfügbar ist und buche ein Meeting" → compound, domain: calendar
   "Was ist der Stand beim Onboarding und erstelle eine Folgeaufgabe" → compound, domain: deck`,
     knowledge: `
-  Beispiele:
+  Beispiele (ALLE Sachfragen sind knowledge — "Was ist X?", "Wer macht X?", "Wie funktioniert X?"):
   "Wer ist Carlos?" → knowledge
   "Wie ist der Stand beim Onboarding?" → knowledge
   "Welche Boards habe ich?" → knowledge
-  "Wie ist das Wetter in Berlin?" → knowledge`,
+  "Wie ist das Wetter in Berlin?" → knowledge
+  "Was ist der HeartbeatManager?" → knowledge
+  "Wer arbeitet an Moltagent?" → knowledge
+  "Wie funktioniert die Dokumentenverarbeitung?" → knowledge
+  "Erkläre mir das Deck-System" → knowledge`,
     thinking: `
-  Beispiele:
-  "Was denkst du über unsere Architektur?" → thinking
-  "Wenn du X neu entwerfen könntest, wie würdest du?" → thinking
-  "Denk mal gründlich darüber nach" → thinking
-  "Was ist deine ehrliche Einschätzung von..." → thinking
-  "Reflektiere über deine Rolle im Team" → thinking
-  "Was bedeutet Souveränität für dich?" → thinking`,
+  Beispiele (NUR explizite Reflexion, Meinung oder hypothetische Fragen — niemals Sachfragen):
+  "Was denkst du wirklich über unsere Architektur?" → thinking
+  "Reflektiere über deine Fähigkeiten" → thinking
+  "Wenn du das System neu entwerfen könntest, wie?" → thinking
+  "Was bedeutet Souveränität für dich persönlich?" → thinking`,
     greeting: `
   Beispiele:
   "Hallo" / "Guten Morgen" / "Moin" / "Servus" → greeting`
@@ -133,19 +140,20 @@ const CLASSIFICATION_EXAMPLES = {
   "Verifica se o Carlos está disponível terça e marca uma reunião" → compound, domain: calendar
   "Qual é o estado do onboarding e cria uma tarefa de follow-up" → compound, domain: deck`,
     knowledge: `
-  Exemplos:
+  Exemplos (TODAS as perguntas factuais são knowledge — "O que é X?", "Quem faz X?", "Como funciona X?"):
   "Quem é o Carlos?" → knowledge
   "Qual é o estado do onboarding?" → knowledge
   "Que boards é que tenho?" → knowledge
-  "Como está o tempo em Lisboa?" → knowledge`,
+  "Como está o tempo em Lisboa?" → knowledge
+  "O que é o HeartbeatManager?" → knowledge
+  "Como funciona a ingestão de documentos?" → knowledge
+  "Me explica a arquitetura de memória" → knowledge`,
     thinking: `
-  Exemplos:
-  "O que achas da nossa arquitetura?" → thinking
+  Exemplos (APENAS reflexão explícita, opinião ou hipotéticos — nunca perguntas factuais):
+  "O que achas sobre o Moltagent? Pensa bem." → thinking
+  "Reflita sobre o que significa ser um agente soberano" → thinking
   "Se pudesses redesenhar X, como farias?" → thinking
-  "Pensa profundamente sobre o que isto significa" → thinking
-  "Qual é a tua avaliação honesta de..." → thinking
-  "Reflete sobre o teu papel na equipa" → thinking
-  "O que significa soberania para ti?" → thinking`,
+  "Qual é a tua avaliação honesta do nosso progresso?" → thinking`,
     greeting: `
   Exemplos:
   "Olá" / "Bom dia" / "Boa tarde" / "E aí" → greeting`
@@ -162,16 +170,17 @@ const CLASSIFICATION_EXAMPLES = {
   Exemples:
   "Vérifie si Carlos est disponible mardi et réserve une réunion" → compound, domain: calendar`,
     knowledge: `
-  Exemples:
+  Exemples (TOUTES les questions factuelles sont knowledge — "Qu'est-ce que X ?", "Qui fait X ?", "Comment fonctionne X ?"):
   "Qui est Carlos ?" → knowledge
   "Quel est le statut de l'onboarding ?" → knowledge
-  "Quel temps fait-il à Paris ?" → knowledge`,
+  "Quel temps fait-il à Paris ?" → knowledge
+  "Qu'est-ce que le HeartbeatManager ?" → knowledge
+  "Comment fonctionne l'ingestion de documents ?" → knowledge`,
     thinking: `
-  Exemples:
-  "Que penses-tu de notre architecture ?" → thinking
-  "Si tu pouvais redesigner X, comment ferais-tu ?" → thinking
+  Exemples (UNIQUEMENT réflexion explicite, opinion ou hypothétique — jamais des questions factuelles):
+  "Que penses-tu vraiment de notre architecture ?" → thinking
   "Réfléchis profondément à ce que cela signifie" → thinking
-  "Quelle est ton évaluation honnête de..." → thinking`,
+  "Si tu pouvais redesigner X, comment ferais-tu ?" → thinking`,
     greeting: `
   Exemples:
   "Bonjour" / "Salut" / "Bonsoir" → greeting`
@@ -188,16 +197,17 @@ const CLASSIFICATION_EXAMPLES = {
   Ejemplos:
   "Comprueba si Carlos está disponible el martes y reserva una reunión" → compound, domain: calendar`,
     knowledge: `
-  Ejemplos:
+  Ejemplos (TODAS las preguntas factuales son knowledge — "¿Qué es X?", "¿Quién hace X?", "¿Cómo funciona X?"):
   "¿Quién es Carlos?" → knowledge
   "¿Cuál es el estado del onboarding?" → knowledge
-  "¿Qué tiempo hace en Madrid?" → knowledge`,
+  "¿Qué tiempo hace en Madrid?" → knowledge
+  "¿Qué es el HeartbeatManager?" → knowledge
+  "¿Cómo funciona la ingesta de documentos?" → knowledge`,
     thinking: `
-  Ejemplos:
-  "¿Qué piensas de nuestra arquitectura?" → thinking
-  "Si pudieras rediseñar X, ¿cómo lo harías?" → thinking
+  Ejemplos (SOLO reflexión explícita, opinión o hipotéticos — nunca preguntas factuales):
+  "¿Qué piensas realmente de nuestra arquitectura?" → thinking
   "Piensa profundamente sobre lo que esto significa" → thinking
-  "¿Cuál es tu evaluación honesta de...?" → thinking`,
+  "Si pudieras rediseñar X, ¿cómo lo harías?" → thinking`,
     greeting: `
   Ejemplos:
   "Hola" / "Buenos días" / "Buenas tardes" → greeting`
@@ -229,16 +239,18 @@ COMPOUND — The user wants BOTH knowledge AND action in one message.
   Contains a question AND an action request connected by "and", "then", etc.
 ${examples.compound}
 
-THINKING — The user wants deep reflection, analysis, opinion, or hypothetical reasoning.
-  NOT a factual lookup. NOT a status check. The user wants you to THINK, not retrieve.
-  Signals: "think about", "reflect on", "what do you think", "your opinion", "your assessment",
-  "what does X mean for you", "if you could...", hypothetical questions, philosophical questions,
-  questions about the agent's own nature, identity, or capabilities.
-${examples.thinking}
-
 KNOWLEDGE — Factual questions, lookups, status checks. THIS IS THE DEFAULT.
-  The user wants to know something. Any question. Any lookup. Anything ambiguous.
+  ANY question about facts, people, components, projects, status, or how things work.
+  "What is X?" → ALWAYS knowledge. "Who does X?" → ALWAYS knowledge.
+  "How does X work?" → ALWAYS knowledge. "Explain X" → ALWAYS knowledge.
+  When in doubt → knowledge.
 ${examples.knowledge}
+
+THINKING — ONLY when the user explicitly asks for personal opinion, self-reflection, or hypothetical.
+  REQUIRES one of these signals: "your opinion", "reflect on", "think deeply", "your assessment",
+  "if you could...", "what does X mean to you", "deine Meinung", "tua opinião"
+  WITHOUT these signals → knowledge, not thinking.
+${examples.thinking}
 
 GREETING — A greeting, farewell, or simple social pleasantry.
 ${examples.greeting}
@@ -252,12 +264,10 @@ CONFIRMATION_DECLINED — Short negative reply declining an agent offer.
   Return: {"gate": "confirmation_declined", "confidence": 0.8}
 
 THE CRITICAL TEST:
-  Does the message contain an ACTION VERB (create, send, move, book, delete, remind...)?
-    YES + no question → action
-    YES + also a question → compound
-    NO → is the user asking you to THINK, reflect, or give an opinion? → thinking
-    NO → knowledge (factual, lookup, status)
-  When in doubt → knowledge. Always safe.
+  1. Action verb (create, send, move, book, delete, remind...)? → action (or compound if also a question)
+  2. Asks for personal opinion/reflection with signal words? → thinking
+  3. Everything else → knowledge (DEFAULT)
+  "What is X?" "Who is X?" "How does X work?" → ALWAYS knowledge, NEVER thinking.
 
 CONTEXT-AWARE RULES:
 - Read the <conversation> block FIRST. The user's message usually continues the current topic.
