@@ -60,6 +60,7 @@ class CollectivesClient {
 
     // In-memory mutex map for idempotent section creation (lockKey → Promise)
     this._sectionLocks = new Map();
+    this._sectionCache = new Map(); // lockKey → page object (survives API eventual consistency)
 
     // OCS API base path
     this.ocsBase = '/ocs/v2.php/apps/collectives/api/v1.0';
@@ -255,11 +256,16 @@ class CollectivesClient {
   async ensureSection(collectiveId, sectionName) {
     const lockKey = (sectionName || '').toLowerCase().trim();
 
+    // Fast path: already created this session, skip API entirely
+    if (this._sectionCache.has(lockKey)) {
+      return this._sectionCache.get(lockKey);
+    }
+
     // If another caller is already creating this section, wait for it then
-    // do a fresh lookup — the creator will have populated the page by then.
+    // return from cache — the creator will have populated it.
     if (this._sectionLocks.has(lockKey)) {
       await this._sectionLocks.get(lockKey);
-      return this._findSectionPage(collectiveId, sectionName);
+      return this._sectionCache.get(lockKey) || await this._findSectionPage(collectiveId, sectionName);
     }
 
     // Claim the lock before doing any I/O so later callers queue behind us.
@@ -270,7 +276,10 @@ class CollectivesClient {
     try {
       // Re-check after acquiring lock in case a previous run just created it.
       const existing = await this._findSectionPage(collectiveId, sectionName);
-      if (existing) return existing;
+      if (existing) {
+        this._sectionCache.set(lockKey, existing);
+        return existing;
+      }
 
       // Find the landing page (parentId 0) to use as parent for new sections.
       const pages = await this.listPages(collectiveId);
@@ -279,6 +288,7 @@ class CollectivesClient {
       const parentId = landing ? landing.id : 0;
 
       const created = await this.createPage(collectiveId, parentId, sectionName);
+      this._sectionCache.set(lockKey, created);
       return created;
     } finally {
       // Always release the lock, even on error, so waiting callers unblock.
