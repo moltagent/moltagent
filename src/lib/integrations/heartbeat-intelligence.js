@@ -21,7 +21,7 @@
 
 'use strict';
 
-const { parseFrontmatter, mergeFrontmatter } = require('../knowledge/frontmatter');
+const { parseFrontmatter, mergeFrontmatter, serializeFrontmatter } = require('../knowledge/frontmatter');
 const { JOBS } = require('../llm/router');
 const { filterOwnerEvents } = require('./calendar-scoping');
 
@@ -289,8 +289,9 @@ class FreshnessChecker {
         const accessCount = parseInt(frontmatter.access_count || '0', 10);
         const confidence = frontmatter.confidence || 'medium';
 
-        // Outcome 1: COMPOST — never accessed + past decay + low confidence
-        if (accessCount === 0 && confidence === 'low') {
+        // Outcome 1: COMPOST — never accessed + past decay + low confidence + single source
+        const sourceCount = this._countSources(body);
+        if (accessCount === 0 && confidence === 'low' && sourceCount <= 1) {
           await this._compostPage(page, frontmatter, body);
           composted.push(page);
           continue;
@@ -357,28 +358,48 @@ class FreshnessChecker {
    * @param {string} body - Page body (without frontmatter)
    */
   async _compostPage(page, frontmatter, body) {
+    const trimmed = (body || '').replace(/^#[^\n]*\n+/, '').trim();
+    const firstSentence = trimmed.match(/^[^.!?\n]+[.!?]/)?.[0] || trimmed.slice(0, 200);
+
+    const archiveFm = {
+      type: 'archive',
+      original_type: frontmatter.type || 'unknown',
+      created: frontmatter.created || 'unknown',
+      archived: new Date().toISOString(),
+      original_confidence: frontmatter.confidence || 'unknown',
+      access_count: frontmatter.access_count || 0,
+      reason: 'unused_past_decay',
+    };
+
+    const archiveBody = `# ${page.title} (Archived)\n\n${firstSentence}\n\n---\n*Archived by FreshnessChecker. Original had ${frontmatter.access_count || 0} accesses, confidence: ${frontmatter.confidence || 'unknown'}. Composted: never retrieved, past decay period.*\n`;
+
+    // Move to Meta/Archive via ensureSection chokepoint
     try {
-      // Compress to first sentence or first 200 chars
-      const trimmed = (body || '').replace(/^#[^\n]*\n+/, '').trim();
-      const firstSentence = trimmed.match(/^[^.!?\n]+[.!?]/)?.[0] || trimmed.slice(0, 200);
+      const collectiveId = await this.wiki.resolveCollective();
+      const metaSection = await this.wiki.ensureSection(collectiveId, 'Meta');
+      const archiveSection = await this.wiki.ensureSection(collectiveId, 'Archive', metaSection.id);
 
-      const archiveFm = {
-        type: 'archive',
-        original_type: frontmatter.type || 'unknown',
-        created: frontmatter.created || 'unknown',
-        archived: new Date().toISOString(),
-        original_confidence: frontmatter.confidence || 'unknown',
-        access_count: frontmatter.access_count || 0,
-        reason: 'unused_past_decay',
-      };
+      const archivePage = await this.wiki.createPage(collectiveId, archiveSection.id, page.title);
+      const archivePath = archivePage.filePath
+        ? `${archivePage.filePath}/${archivePage.fileName}`
+        : archivePage.fileName || `${page.title}.md`;
+      await this.wiki.writePageContent(archivePath, serializeFrontmatter(archiveFm, archiveBody));
 
-      const archiveBody = `# ${page.title} (Archived)\n\n${firstSentence}\n\n---\n*Archived by FreshnessChecker. Original had ${frontmatter.access_count || 0} accesses, confidence: ${frontmatter.confidence || 'unknown'}. Composted: never retrieved, past decay period.*\n`;
+      // Trash original
+      if (page.id) {
+        await this.wiki.trashPage(collectiveId, page.id);
+      }
 
-      await this.wiki.writePageWithFrontmatter(page.title, archiveFm, archiveBody);
-
-      console.log(`[Freshness] Composted: ${page.title} (0 accesses, ${frontmatter.confidence} confidence)`);
+      console.log(`[Freshness] Composted → Meta/Archive: ${page.title} (0 accesses, ${frontmatter.confidence} confidence)`);
     } catch (err) {
-      console.warn(`[Freshness] Failed to compost ${page.title}:`, err.message);
+      // Fallback: overwrite in place
+      console.warn(`[Freshness] Archive-move failed for ${page.title}, falling back to in-place:`, err.message);
+      try {
+        await this.wiki.writePageWithFrontmatter(page.title, archiveFm, archiveBody);
+        console.log(`[Freshness] Composted in-place (fallback): ${page.title}`);
+      } catch (fallbackErr) {
+        console.warn(`[Freshness] Fallback compost also failed for ${page.title}:`, fallbackErr.message);
+      }
     }
   }
 
@@ -400,6 +421,9 @@ class FreshnessChecker {
       // Boost confidence for actively used pages
       if (accessCount >= 5 && frontmatter.confidence !== 'high') {
         updates.confidence = 'high';
+      } else if (frontmatter.confidence === 'low') {
+        // Page is clearly still useful if accessed within 30 days — restore to medium
+        updates.confidence = 'medium';
       }
 
       const merged = mergeFrontmatter(frontmatter, updates);
@@ -472,6 +496,30 @@ class FreshnessChecker {
     const date = dateInput instanceof Date ? dateInput : new Date(dateInput);
     const now = new Date();
     return Math.max(0, Math.floor((now - date) / (1000 * 60 * 60 * 24)));
+  }
+
+  /**
+   * Count distinct source references in page body.
+   * Multi-source pages carry more evidentiary weight and resist composting.
+   * @param {string} body - Page body (without frontmatter)
+   * @returns {number}
+   */
+  _countSources(body) {
+    if (!body) return 0;
+    const sources = new Set();
+    const patterns = [
+      /\*Extracted from:\s*(.+?)\*/g,
+      /\*Also referenced in:\s*(.+?)\*/g,
+      /\*\*Source:\*\*\s*`?(.+?)`?\s*$/gm,
+    ];
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(body)) !== null) {
+        const src = match[1].trim();
+        if (src && src !== 'unknown') sources.add(src.toLowerCase());
+      }
+    }
+    return sources.size;
   }
 }
 

@@ -236,6 +236,7 @@ When the user says "remember this", "note that", "keep track of":
 - When a user corrects you about a fact that's in the wiki, update the wiki page
 - When multiple wiki pages cover the same topic, consolidate them
 - Mark pages with appropriate `decay_days` frontmatter so stale content surfaces for review
+- When search returns archived pages (type: archive), tell the user it's older information that may be outdated. Offer to verify and restore it if they need it. Do not present archived content as current knowledge.
 
 ## Memory & Recall
 

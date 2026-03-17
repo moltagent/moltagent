@@ -188,6 +188,22 @@ try {
   DailyDigest = null;
 }
 
+let DocumentIngestor;
+try {
+  DocumentIngestor = require('./lib/integrations/document-ingestor');
+} catch {
+  console.warn('[WARN] DocumentIngestor not available');
+  DocumentIngestor = null;
+}
+
+let TextExtractor;
+try {
+  ({ TextExtractor } = require('./lib/extraction/text-extractor'));
+} catch {
+  console.warn('[WARN] TextExtractor not available');
+  TextExtractor = null;
+}
+
 let NCFilesClient;
 try {
   ({ NCFilesClient } = require('./lib/integrations/nc-files-client'));
@@ -884,6 +900,27 @@ async function main() {
     }
   }
 
+  // Wire DocumentIngestor: file events → text extraction → entity extraction → wiki pages
+  let documentIngestor = null;
+  if (DocumentIngestor && TextExtractor && entityExtractor && resilientWriter && ncFilesClient) {
+    try {
+      const textExtractor = new TextExtractor();
+      documentIngestor = new DocumentIngestor({
+        ncFilesClient,
+        textExtractor,
+        entityExtractor,
+        knowledgeGraph,
+        wikiWriter: resilientWriter,
+        learningLog,
+        llmRouter,
+        logger: console
+      });
+      console.log('[INIT] DocumentIngestor ready');
+    } catch (err) {
+      console.warn(`[INIT] DocumentIngestor failed: ${err.message}`);
+    }
+  }
+
   // Wire co-access, vector, gap, graph into existing MemorySearcher
   if (memorySearcher) {
     if (coAccessGraph) memorySearcher.coAccessGraph = coAccessGraph;
@@ -1133,10 +1170,18 @@ async function main() {
   // Wire heartbeat reference into StatusReporter (circular dependency resolved here)
   statusReporter.heartbeat = heartbeat;
 
-  // Wire NC Flow events into HeartbeatManager
+  // Wire NC Flow events into HeartbeatManager + DocumentIngestor
   const handleFlowEvent = (event) => heartbeat.enqueueExternalEvent(event);
   activityPoller.on('event', handleFlowEvent);
   webhookReceiver.on('event', handleFlowEvent);
+
+  // Wire file events into DocumentIngestor for automatic wiki page creation
+  if (documentIngestor) {
+    const handleFileEvent = (event) => documentIngestor.onFileEvent(event);
+    activityPoller.on('event', handleFileEvent);
+    webhookReceiver.on('event', handleFileEvent);
+    console.log('[INIT] DocumentIngestor wired to NC Flow events');
+  }
 
   // Register NC Flow integration in capabilities
   capabilityRegistry.registerIntegration({

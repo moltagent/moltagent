@@ -333,6 +333,7 @@ class DocumentIngestor {
         const exists = await this._pageExists(section, entity.name);
         if (exists) {
           this._createdEntityPages.add(dedupKey);
+          this._trackEntityAccess(section, entity.name, filePath).catch(() => {});
           continue;
         }
 
@@ -344,6 +345,7 @@ class DocumentIngestor {
         if (match) {
           this.logger.info(`[DocumentIngestor] Entity dedup: "${entity.name}" matches existing "${match.title}" (${match.reason})`);
           this._createdEntityPages.add(dedupKey);
+          this._trackEntityAccess(section, match.title, filePath).catch(() => {});
           continue; // Don't create duplicate page
         }
 
@@ -750,6 +752,8 @@ class DocumentIngestor {
       `source: "${sourcePath.replace(/[\n\r"]/g, ' ').trim()}"`,
       `created: ${now}`,
       `decay_days: 180`,
+      `access_count: 0`,
+      `confidence: medium`,
       '---',
       '',
       `# ${entity.name}`,
@@ -917,6 +921,57 @@ or
       this.logger.warn(`[DocumentIngestor] Entity dedup check failed: ${err.message}`);
     }
     return null;
+  }
+
+  /**
+   * Track entity page access during dedup enrichment.
+   * Increments access_count and sets last_accessed. Fire-and-forget.
+   * @param {string} section - Wiki section (e.g. 'People')
+   * @param {string} pageName - Page title
+   * @param {string} sourcePath - File that referenced this entity
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _trackEntityAccess(section, pageName, sourcePath) {
+    try {
+      const { parseFrontmatter, mergeFrontmatter, serializeFrontmatter } = require('../knowledge/frontmatter');
+
+      // Try both Collectives path conventions
+      let result = await this.wikiWriter.readPage?.(`${section}/${pageName}/Readme.md`).catch(() => null);
+      if (!result?.content) {
+        result = await this.wikiWriter.readPage?.(`${section}/${pageName}.md`).catch(() => null);
+      }
+      if (!result?.content) return;
+
+      const { frontmatter, body } = parseFrontmatter(result.content);
+      if (!frontmatter || Object.keys(frontmatter).length === 0) return;
+
+      const count = (parseInt(frontmatter.access_count, 10) || 0) + 1;
+      const updates = {
+        access_count: count,
+        last_accessed: new Date().toISOString().split('T')[0],
+      };
+
+      // Restore confidence on first re-encounter
+      if (frontmatter.confidence === 'low' && count === 1) {
+        updates.confidence = 'medium';
+      }
+
+      const merged = mergeFrontmatter(frontmatter, updates);
+
+      // Append source reference if new
+      let updatedBody = body;
+      if (sourcePath && !body.includes(sourcePath)) {
+        updatedBody = body.trimEnd() + `\n\n*Also referenced in: ${sourcePath}*\n`;
+      }
+
+      const pagePath = `${section}/${pageName}.md`;
+      await this.wikiWriter.updatePage(pagePath, serializeFrontmatter(merged, updatedBody));
+      this.logger.info(`[DocumentIngestor] Entity access tracked: ${section}/${pageName} (count: ${count})`);
+    } catch (err) {
+      // Fire-and-forget — never break ingestion
+      this.logger.warn?.(`[DocumentIngestor] Entity access tracking failed for ${pageName}: ${err.message}`);
+    }
   }
 }
 
