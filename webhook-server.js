@@ -915,9 +915,10 @@ async function initialize() {
     }
   }
 
-  // 7b3a. Wiki bootstrap (non-blocking)
+  // 7b3a. Wiki bootstrap (non-blocking but awaitable by ingestor)
+  let wikiBootstrapDone = Promise.resolve();
   if (collectivesClient) {
-    (async () => {
+    wikiBootstrapDone = (async () => {
       try {
         const result = await collectivesClient.bootstrapDefaultPages();
         if (result.created.length > 0) {
@@ -1287,6 +1288,8 @@ async function initialize() {
         entityExtractor,
         knowledgeGraph,
         wikiWriter: resilientWriter,
+        learningLog,  // may be null here; will be wired after init
+        llmRouter,    // enables DocumentClassifier for type-specific extraction
         logger: console
       });
       console.log('[INIT] DocumentIngestor ready');
@@ -1357,6 +1360,10 @@ async function initialize() {
         collectivesClient: collectivesClient
       });
       console.log('[INIT] ContextLoader ready (agent memory enabled)');
+      // Wire learningLog into DocumentIngestor (created earlier without it)
+      if (documentIngestor && learningLog) {
+        documentIngestor.learningLog = learningLog;
+      }
     } catch (err) {
       console.warn(`[INIT] ContextLoader failed: ${err.message}`);
     }
@@ -2143,8 +2150,12 @@ async function initialize() {
           if (appConfig.ingestion?.startupScan !== false) {
             const watchDirs = appConfig.ingestion?.watchDirectories || [];
             if (watchDirs.length > 0) {
-              documentIngestor.scanOnStartup(watchDirs);
-              console.log(`[INIT] DocumentIngestor startup scan queued: ${watchDirs.join(', ')}`);
+              // Wait for wiki bootstrap to complete before scanning, so OCS
+              // section lookups succeed and don't fall back to WebDAV mkdir
+              wikiBootstrapDone.then(() => {
+                documentIngestor.scanOnStartup(watchDirs);
+                console.log(`[INIT] DocumentIngestor startup scan queued: ${watchDirs.join(', ')}`);
+              });
             }
           }
         }
