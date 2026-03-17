@@ -57,6 +57,7 @@
 
 const path = require('path');
 const { TextExtractor } = require('../extraction/text-extractor');
+const { DocumentClassifier } = require('../extraction/document-classifier');
 
 /** Maximum characters fed to entity extraction (first 10 KB + last 2 KB). */
 const EXTRACT_HEAD = 10 * 1024;
@@ -94,6 +95,32 @@ const EXT_TO_SECTION = {
   webp: 'Images',
 };
 
+/**
+ * Protected page names that must NEVER be targets for entity page creation.
+ * These are system pages maintained by other modules.
+ * @type {Set<string>}
+ */
+const PROTECTED_PAGES = new Set([
+  'learning log', 'pending questions', 'memory manifesto',
+  'knowledge stats', 'decisions index', 'sessions index',
+  'welcome email template',
+]);
+
+/**
+ * Normalize an entity name for dedup comparison.
+ * Lowercases, collapses whitespace, and strips trailing "(N)" suffixes
+ * that Nextcloud Collectives appends on title collision.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+function normalizeEntityName(name) {
+  if (!name) return '';
+  return name.toLowerCase().trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*\(\d+\)$/, '');
+}
+
 class DocumentIngestor {
   /**
    * @param {Object} deps
@@ -102,9 +129,11 @@ class DocumentIngestor {
    * @param {Object} deps.entityExtractor    - EntityExtractor instance
    * @param {Object} deps.knowledgeGraph     - KnowledgeGraph instance (used indirectly via entityExtractor)
    * @param {Object} deps.wikiWriter         - ResilientWikiWriter instance
+   * @param {Object} [deps.llmRouter]        - LLM router (used to auto-create DocumentClassifier)
+   * @param {Object} [deps.classifier]       - DocumentClassifier instance (optional; auto-created if llmRouter given)
    * @param {Object} [deps.logger]           - Logger (defaults to console)
    */
-  constructor({ ncFilesClient, textExtractor, entityExtractor, knowledgeGraph, wikiWriter, logger } = {}) {
+  constructor({ ncFilesClient, textExtractor, entityExtractor, knowledgeGraph, wikiWriter, learningLog, llmRouter, classifier, logger } = {}) {
     if (!ncFilesClient)   throw new Error('DocumentIngestor requires ncFilesClient');
     if (!textExtractor)   throw new Error('DocumentIngestor requires textExtractor');
     if (!entityExtractor) throw new Error('DocumentIngestor requires entityExtractor');
@@ -117,7 +146,14 @@ class DocumentIngestor {
     // internally because EntityExtractor.extractFromPage() writes directly to the graph.
     this.knowledgeGraph = knowledgeGraph || null;
     this.wikiWriter     = wikiWriter;
+    this.learningLog    = learningLog || null;
     this.logger         = logger || console;
+
+    this.classifier = classifier || null;
+    // Auto-create classifier if router available
+    if (!this.classifier && llmRouter) {
+      this.classifier = new DocumentClassifier({ llmRouter, logger: this.logger });
+    }
 
     /** @type {Set<string>} Tracks successfully processed file paths. */
     this._processed = new Set();
@@ -187,10 +223,51 @@ class DocumentIngestor {
     const filename = path.basename(filePath);
     const filenameNoExt = filename.replace(/\.[^.]+$/, '');
 
+    // 6b. CLASSIFY: Determine document type before extraction
+    let classification = { type: 'REFERENCE', confidence: 0.5 };
+    if (this.classifier) {
+      try {
+        classification = await this.classifier.classify(rawText, filename, path.extname(filePath));
+        this.logger.info(`[DocumentIngestor] ${filename} → ${classification.type} (${classification.confidence})`);
+      } catch (err) {
+        this.logger.warn(`[DocumentIngestor] Classification failed for ${filename}: ${err.message}`);
+      }
+    }
+
+    // 6c. SKIP non-content types
+    if (classification.type === 'TEMPLATE' || classification.type === 'SYSTEM') {
+      this.logger.info(`[DocumentIngestor] Skipped ${classification.type}: ${filename}`);
+      this._processed.add(filePath);
+      return { filePath, skipped: true, reason: classification.type.toLowerCase() };
+    }
+
+    // 6d. VISUAL reclassification — if OCR produced usable text, reclassify
+    if (classification.type === 'VISUAL' && rawText.length > 100 && this.classifier) {
+      try {
+        const reclass = await this.classifier.classify(rawText, filename, 'ocr-text');
+        if (reclass.type !== 'VISUAL') {
+          this.logger.info(`[DocumentIngestor] VISUAL reclassified → ${reclass.type}`);
+          classification = { ...reclass, originalType: 'VISUAL' };
+        }
+      } catch { /* keep original VISUAL classification */ }
+      // Skip if reclassified to non-content type
+      if (classification.type === 'TEMPLATE' || classification.type === 'SYSTEM') {
+        this.logger.info(`[DocumentIngestor] Skipped ${classification.type} (reclassified from VISUAL): ${filename}`);
+        this._processed.add(filePath);
+        return { filePath, skipped: true, reason: classification.type.toLowerCase() };
+      }
+    }
+
     // Run LLM extraction — returns summary + typed entities, populates graph
     let extractionResult = { summary: '', entities: [] };
     try {
-      extractionResult = await this.entityExtractor.extractEntitiesFromDocument(filenameNoExt, truncatedText) || { summary: '', entities: [] };
+      // Use type-specific prompt if classifier provides one
+      const typePrompt = this.classifier?.getExtractionPrompt(classification.type, truncatedText, filename);
+      if (typePrompt) {
+        extractionResult = await this.entityExtractor.extractWithPrompt(typePrompt) || { summary: '', entities: [] };
+      } else {
+        extractionResult = await this.entityExtractor.extractEntitiesFromDocument(filenameNoExt, truncatedText) || { summary: '', entities: [] };
+      }
     } catch (err) {
       this.logger.warn(`[DocumentIngestor] Entity extraction error for ${filePath}: ${err.message}`);
     }
@@ -219,7 +296,7 @@ class DocumentIngestor {
 
       try {
         const section = this._sectionForEntityType(entity.type);
-        const dedupKey = `${section}/${entity.name}`.toLowerCase();
+        const dedupKey = `${section}/${normalizeEntityName(entity.name)}`;
 
         // Fast in-memory dedup (survives batch parallelism)
         if (this._createdEntityPages.has(dedupKey)) continue;
@@ -241,11 +318,23 @@ class DocumentIngestor {
       }
     }
 
+    // Record ingestion in Learning Log
+    if (this.learningLog && typeof this.learningLog.learned === 'function') {
+      try {
+        await this.learningLog.learned(
+          `Ingested document "${path.basename(filePath)}": ${summary || 'no summary'} (${entities.length} entities, ${entityPagesCreated} pages created)`,
+          `document-ingestor:${filePath}`
+        );
+      } catch (err) {
+        this.logger.warn(`[DocumentIngestor] Learning log write failed: ${err.message}`);
+      }
+    }
+
     // Mark as processed only after successful pipeline run
     this._processed.add(filePath);
 
     this.logger.info(
-      `[DocumentIngestor] Processed ${filePath} → ${entities.length} entities, ` +
+      `[DocumentIngestor] Processed ${filePath} → ${classification.type} (${classification.confidence}), ${entities.length} entities, ` +
       `${entityPagesCreated} pages, reference stub in ${sectionPath}/${pageName}`
     );
 
@@ -257,6 +346,7 @@ class DocumentIngestor {
       entitiesFound: entities.length,
       entityPagesCreated,
       wikiResult,
+      classification: classification.type,
     };
   }
 
@@ -311,6 +401,15 @@ class DocumentIngestor {
       }
     }
 
+    // Flush Learning Log entries that accumulated during the batch
+    if (this.learningLog && typeof this.learningLog.flushWrites === 'function') {
+      try {
+        await this.learningLog.flushWrites();
+      } catch (err) {
+        this.logger.warn(`[DocumentIngestor] Learning log flush failed: ${err.message}`);
+      }
+    }
+
     this.logger.info(`[DocumentIngestor] Directory scan complete: ${processed}/${total} files processed, ${errors} errors`);
     return { total, processed, errors, details };
   }
@@ -331,7 +430,7 @@ class DocumentIngestor {
       try {
         const result = await this.wikiWriter.listPages(section);
         for (const page of (result?.pages || [])) {
-          const title = (page.title || '').toLowerCase();
+          const title = normalizeEntityName(page.title);
           if (title && title !== 'readme') {
             this._createdEntityPages.add(`${section}/${title}`);
           }
@@ -631,6 +730,13 @@ class DocumentIngestor {
    */
   _shouldCreateWikiPage(entity) {
     if (!entity || !entity.name || entity.name.length <= 2) return false;
+
+    // Block protected system pages
+    if (PROTECTED_PAGES.has(normalizeEntityName(entity.name))) return false;
+
+    // Block null/empty descriptions — graph-only entities
+    if (!entity.description || entity.description === 'null') return false;
+
     const type = entity.type;
     // Organizations and agents always get wiki pages — workspace knowledge
     if (type === 'organization' || type === 'company' || type === 'agent') return true;
@@ -649,14 +755,31 @@ class DocumentIngestor {
    * @returns {Promise<boolean>}
    */
   async _pageExists(section, name) {
-    try {
-      const result = await this.wikiWriter.listPages(section);
-      const pages  = result?.pages || [];
-      const nameLower = name.toLowerCase();
-      return pages.some(p => (p.title || '').toLowerCase() === nameLower);
-    } catch {
-      return false; // If listing fails, proceed with creation
+    const normalized = normalizeEntityName(name);
+    if (!normalized) return true; // Block empty names
+
+    // Check protected pages
+    if (PROTECTED_PAGES.has(normalized)) return true;
+
+    // Check ALL entity sections, not just the target section
+    const allSections = ['People', 'Agents', 'Organizations', 'Projects', 'Procedures', 'Research', 'Documents', 'Images'];
+    for (const s of allSections) {
+      try {
+        const result = await this.wikiWriter.listPages(s);
+        const pages = result?.pages || [];
+        for (const p of pages) {
+          const pageNorm = normalizeEntityName(p.title);
+          if (pageNorm === normalized) {
+            // Log Collectives "(N)" collision duplicates (not mere case differences)
+            if (p.title !== name && /\(\d+\)$/.test(p.title)) {
+              this.logger.warn(`[DocumentIngestor] Collision detected: "${p.title}" in ${s} matches "${name}"`);
+            }
+            return true;
+          }
+        }
+      } catch { /* section may not exist yet */ }
     }
+    return false;
   }
 
   /**
@@ -674,6 +797,13 @@ class DocumentIngestor {
       project: 'Projects',
       decision: 'Projects',
       procedure: 'Procedures',
+      component: 'Components',
+      module: 'Components',
+      subsystem: 'Components',
+      vm: 'Infrastructure',
+      server: 'Infrastructure',
+      service: 'Infrastructure',
+      deployment: 'Infrastructure',
     };
     return map[type] || 'Research';
   }

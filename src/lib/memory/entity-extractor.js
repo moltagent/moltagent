@@ -45,6 +45,9 @@ class EntityExtractor {
     this.router = llmRouter || null;
     this.logger = logger || console;
     this._stats = { lightweight: 0, deep: 0, entities: 0, triples: 0 };
+
+    /** @private Falsy description strings that indicate graph-only entities (no wiki page) */
+    this._falsyDescriptions = new Set(['null', 'none', 'n/a', 'undefined', '']);
   }
 
   // ===========================================================================
@@ -113,21 +116,37 @@ Respond ONLY with JSON:
   "summary": "2-3 sentence summary of what this document is about",
   "entities": [
     {
-      "name": "exact name as written",
+      "name": "exact name as written in the document",
       "type": "person|agent|project|organization|tool|concept",
       "significance": "high|medium|low",
-      "description": "one sentence about this entity's role or relevance"
+      "description": "one sentence paraphrasing what the SOURCE DOCUMENT says about this entity, or null"
     }
   ],
   "relationships": [{"from": "...", "predicate": "...", "to": "..."}]
 }
 
+CRITICAL RULE: Every entity name you return MUST appear AS A NAMED ENTITY in the source text, verbatim.
+
+DO NOT:
+- Expand abbreviations into entity names (CISO is a role, not an entity called "CISoar")
+- Combine adjacent words into new entity names
+- Create entity names that don't appear as written in the source document
+- Infer relationships from proximity. If 'CISoar' appears near text about development, that does NOT mean CISoar develops anything mentioned nearby
+- Editorialize. If a document criticizes a product, describe what the product IS, not the criticism
+
+VERIFICATION: Before returning any entity, confirm you can find the EXACT name string in the source text.
+
+DESCRIPTION RULES:
+- Your description must be a direct paraphrase of what the SOURCE DOCUMENT says
+- If you cannot point to a specific sentence that supports your description, set description to null
+- If the document does not explicitly state what an entity IS or DOES, set description to null
+
 ENTITY TYPE rules:
 - person: actual human beings (e.g. "Carlos", "Sarah Chen"). NOT software, NOT companies, NOT AI models.
-- agent: AI assistants, language models, bots, or artificial persons that interact with the workspace (e.g. "Claude Opus", "Claude Code", "MoltAgent", "OpenClaw"). Use this for any named AI system or model that acts as a participant.
-- organization: companies, teams, institutions, cloud providers, vendors, clients (e.g. "TheCatalyne", "Hetzner", "Anthropic"). Also use for any entity that is clearly a company.
+- agent: AI assistants, language models, bots, or artificial persons (e.g. "Claude Opus", "MoltAgent", "OpenClaw"). Use for any named AI system or model.
+- organization: companies, teams, institutions, cloud providers, vendors, clients (e.g. "TheCatalyne", "Hetzner", "Anthropic").
 - project: named projects with scope and goals (e.g. "Project Phoenix")
-- tool: generic software, libraries, frameworks that are used as building blocks (e.g. "Node.js", "Nextcloud", "WebDAV"). NOT AI models that act as agents.
+- tool: generic software, libraries, frameworks used as building blocks (e.g. "Node.js", "Nextcloud", "WebDAV"). NOT AI models that act as agents.
 - concept: abstract ideas, methodologies (e.g. "Zero Trust", "AGPL-3.0")
 
 SIGNIFICANCE rules:
@@ -136,6 +155,10 @@ SIGNIFICANCE rules:
 - low: generic software mention, abstract concept, common technical term
 
 RELATIONSHIP predicates: leads, led_by, managed_by, works_on, works_at, reports_to, belongs_to, employed_by, affiliated_with, client_of, depends_on, related_to, has_goal, has_status, uses, built_with, mentioned_in
+
+RELATIONSHIP RULES:
+- Extract relationships ONLY from explicit statements in the document
+- DO NOT infer relationships from text proximity
 
 If nothing worth extracting, respond: {"summary":"","entities":[],"relationships":[]}`;
 
@@ -147,34 +170,79 @@ If nothing worth extracting, respond: {"summary":"","entities":[],"relationships
       });
 
       const parsed = this._parseJson(rawResponse.result || rawResponse);
-      if (!parsed) return { summary: '', entities: [] };
-
-      // Register ALL entities in the graph
-      if (Array.isArray(parsed.entities)) {
-        for (const entity of parsed.entities) {
-          if (!entity || !entity.name) continue;
-          this.graph.addEntity(entity.name, entity.type || 'concept');
-          this._stats.entities++;
-        }
-      }
-
-      // Register ALL relationships as triples
-      if (Array.isArray(parsed.relationships)) {
-        for (const rel of parsed.relationships) {
-          if (!rel || !rel.from || !rel.to || !rel.predicate) continue;
-          const fromId = this.graph.addEntity(rel.from, 'concept');
-          const toId   = this.graph.addEntity(rel.to, 'concept');
-          this.graph.addTriple(fromId, rel.predicate, toId);
-          this._stats.triples++;
-        }
-      }
-
-      return {
-        summary:  parsed.summary  || '',
-        entities: parsed.entities || [],
-      };
+      return this._processExtractionResult(parsed);
     } catch (err) {
       this.logger.warn(`[EntityExtractor] Document extraction failed: ${err.message}`);
+      return { summary: '', entities: [] };
+    }
+  }
+
+  /**
+   * Register entities/relationships in graph and filter for wiki-worthy entities.
+   * Shared post-processing for extractEntitiesFromDocument and extractWithPrompt.
+   * @param {Object} parsed - Parsed LLM response with summary, entities, relationships
+   * @returns {{summary: string, entities: Array}}
+   * @private
+   */
+  _processExtractionResult(parsed) {
+    if (!parsed) return { summary: '', entities: [] };
+
+    // Register ALL entities in the graph
+    if (Array.isArray(parsed.entities)) {
+      for (const entity of parsed.entities) {
+        if (!entity || !entity.name) continue;
+        this.graph.addEntity(entity.name, entity.type || 'concept');
+        this._stats.entities++;
+      }
+    }
+
+    // Register ALL relationships as triples
+    if (Array.isArray(parsed.relationships)) {
+      for (const rel of parsed.relationships) {
+        if (!rel || !rel.from || !rel.to || !rel.predicate) continue;
+        const fromId = this.graph.addEntity(rel.from, 'concept');
+        const toId   = this.graph.addEntity(rel.to, 'concept');
+        this.graph.addTriple(fromId, rel.predicate, toId);
+        this._stats.triples++;
+      }
+    }
+
+    // Filter out entities without descriptions — graph-only, no wiki page
+    const describedEntities = (parsed.entities || []).filter(
+      e => e && e.description && !this._falsyDescriptions.has(e.description.toLowerCase().trim())
+    );
+
+    return {
+      summary:  parsed.summary  || '',
+      entities: describedEntities,
+    };
+  }
+
+  /**
+   * Run a pre-built extraction prompt and return entities.
+   * Used by DocumentClassifier for type-specific extraction.
+   * @param {string} prompt - Complete LLM prompt (including content)
+   * @returns {Promise<{summary: string, entities: Array}>}
+   */
+  async extractWithPrompt(prompt) {
+    if (!this.router) return { summary: '', entities: [] };
+
+    // Yield to user messages — don't block Ollama when user is waiting
+    if (ollamaGate.isUserActive()) return { summary: '', entities: [] };
+
+    if (!prompt || typeof prompt !== 'string') return { summary: '', entities: [] };
+
+    try {
+      const rawResponse = await this.router.route({
+        job: 'synthesis',
+        content: prompt,
+        requirements: { maxTokens: 2000 },
+      });
+
+      const parsed = this._parseJson(rawResponse.result || rawResponse);
+      return this._processExtractionResult(parsed);
+    } catch (err) {
+      this.logger.warn(`[EntityExtractor] extractWithPrompt failed: ${err.message}`);
       return { summary: '', entities: [] };
     }
   }
@@ -265,6 +333,17 @@ Respond ONLY with JSON:
   "relationships": [{"from": "...", "predicate": "...", "to": "..."}]
 }
 
+CRITICAL RULE: Every entity name you return MUST appear AS A NAMED ENTITY in the source text, verbatim.
+
+DO NOT:
+- Expand abbreviations into entity names (CISO is a role, not "CISoar")
+- Combine adjacent words into new entity names
+- Create entity names that don't appear as written in the source document
+- Infer relationships from proximity
+- Editorialize descriptions
+
+VERIFICATION: Before returning any entity, confirm you can find the EXACT name string in the source text.
+
 ENTITY rules:
 - Each entity should appear ONLY ONCE with its most accurate type
 - "Project Phoenix" is a project, not a person. Only use "person" for actual people (e.g. "Fu", "Sarah", "Carlos")
@@ -274,11 +353,11 @@ ENTITY rules:
 - Type must be one of: person, agent, project, organization, tool, concept
 
 RELATIONSHIP rules:
-- Extract relationships that are explicitly stated in the text
+- Extract relationships that are EXPLICITLY stated in the text
+- DO NOT infer relationships from text proximity
 - Predicates: leads, led_by, managed_by, works_on, works_at, reports_to, belongs_to, employed_by, affiliated_with, client_of, contacts, contact_for, responsible_for, depends_on, related_to, has_goal, has_status, blocks
 - "led by Fu" → {"from": "Project Phoenix", "predicate": "led_by", "to": "Fu"}
 - "works at TheCatalyne" → {"from": "Sarah", "predicate": "works_at", "to": "TheCatalyne"}
-- Do NOT infer relationships that aren't clearly stated
 
 If nothing worth extracting, respond: {"entities":[],"relationships":[]}`;
 

@@ -596,7 +596,10 @@ class CollectivesClient {
     const landingPage = pageList.find(p => p.parentId === 0);
     const rootParentId = landingPage ? landingPage.id : 0;
 
-    const sections = appConfig.knowledge?.sections || ['People', 'Projects', 'Procedures', 'Research', 'Meta'];
+    const sections = appConfig.knowledge?.sections || [
+      'People', 'Projects', 'Procedures', 'Research', 'Meta',
+      'Components', 'Infrastructure', 'Organizations', 'Agents', 'Documents', 'Sessions',
+    ];
 
     // Track created pages locally (API may not reflect them immediately)
     let metaPageRef = pageList.find(p => (p.title || '').toLowerCase() === 'meta') || null;
