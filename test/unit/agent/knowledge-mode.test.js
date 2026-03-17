@@ -164,14 +164,14 @@ asyncTest('TC-KM-013: Knowledge intent is in INTENTS constant', async () => {
 // ============================================================
 
 asyncTest('TC-KM-014: Classification prompt includes knowledge gate', async () => {
-  const prompt = IntentRouter.CLASSIFICATION_SYSTEM_PROMPT;
+  const prompt = IntentRouter.buildClassificationPrompt('EN');
   assert.ok(prompt.includes('knowledge'), 'Prompt should include knowledge');
   assert.ok(prompt.includes('KNOWLEDGE'), 'Prompt should have KNOWLEDGE section');
   assert.ok(prompt.includes('ACTION'), 'Prompt should have ACTION section to distinguish from knowledge');
 });
 
 asyncTest('TC-KM-015: Classification prompt includes "when in doubt → knowledge"', async () => {
-  const prompt = IntentRouter.CLASSIFICATION_SYSTEM_PROMPT;
+  const prompt = IntentRouter.buildClassificationPrompt('EN');
   assert.ok(prompt.includes('When in doubt'), 'Prompt should have "when in doubt" guidance');
   assert.ok(prompt.includes('knowledge'), 'Default should be knowledge');
 });
@@ -180,15 +180,17 @@ asyncTest('TC-KM-015: Classification prompt includes "when in doubt → knowledg
 // Post-Classification Guard Tests
 // ============================================================
 
-asyncTest('TC-KM-016: Guard reclassifies "What\'s Carlos\'s email?" from email to knowledge', async () => {
-  // LLM returns email_read (keyword match on "email") — guard should fix it
-  const router = createRouter('{"intent":"email_read"}');
+asyncTest('TC-KM-016: LLM returning knowledge gate for email question is honoured', async () => {
+  // v4.0.0: no _postClassifyGuard. If the LLM correctly returns knowledge, we honour it.
+  // If LLM returns email_read (legacy intent), _parseClassification maps it to action gate.
+  // This test verifies the LLM-native path: when LLM returns knowledge, result is knowledge.
+  const router = createRouter('{"gate":"knowledge","confidence":0.9}');
   const result = await router.classify("What's Carlos's email?");
-  assert.strictEqual(result.gate, 'knowledge', 'Should be reclassified to knowledge');
+  assert.strictEqual(result.gate, 'knowledge', 'LLM returning knowledge should be honoured');
 });
 
-asyncTest('TC-KM-017: Guard reclassifies "Who is Carlos and what\'s his email?" to knowledge', async () => {
-  const router = createRouter('{"intent":"email_read"}');
+asyncTest('TC-KM-017: LLM returning knowledge for compound question is honoured', async () => {
+  const router = createRouter('{"gate":"knowledge","confidence":0.9}');
   const result = await router.classify("Who is Carlos and what's his email?");
   assert.strictEqual(result.gate, 'knowledge');
 });
@@ -199,11 +201,12 @@ asyncTest('TC-KM-018: Guard keeps "Send an email to Carlos" as email', async () 
   assert.strictEqual(result.domain, 'email', 'Should stay as email — has action verb "send"');
 });
 
-asyncTest('TC-KM-019: Guard reclassifies "Check my inbox" to knowledge (no action verb)', async () => {
-  // "check" is not an action verb in the three-gate system — this is a lookup/query, not an action
-  const router = createRouter('{"intent":"email_read"}');
+asyncTest('TC-KM-019: LLM returning knowledge for "Check my inbox" is honoured', async () => {
+  // v4.0.0: the LLM is taught to classify "check my inbox" as knowledge (no action verb).
+  // If the LLM correctly returns knowledge, it is honoured directly.
+  const router = createRouter('{"gate":"knowledge","confidence":0.9}');
   const result = await router.classify('Check my inbox');
-  assert.strictEqual(result.gate, 'knowledge', 'Should be reclassified to knowledge — "check" is not an action verb');
+  assert.strictEqual(result.gate, 'knowledge', 'LLM returning knowledge should be honoured');
 });
 
 asyncTest('TC-KM-020: Guard keeps "Draft a reply to Sarah" as email', async () => {
@@ -212,17 +215,17 @@ asyncTest('TC-KM-020: Guard keeps "Draft a reply to Sarah" as email', async () =
   assert.strictEqual(result.domain, 'email', 'Should stay as email — has action verb "draft"');
 });
 
-asyncTest('TC-KM-021: Guard reclassifies "Do we have Sarah\'s email address?" to knowledge', async () => {
-  const router = createRouter('{"intent":"email_read"}');
+asyncTest('TC-KM-021: LLM returning knowledge for email question is honoured', async () => {
+  const router = createRouter('{"gate":"knowledge","confidence":0.9}');
   const result = await router.classify("Do we have Sarah's email address?");
   assert.strictEqual(result.gate, 'knowledge');
 });
 
-test('TC-KM-022: Prompt includes negative email examples using three-gate format', () => {
-  const prompt = IntentRouter.CLASSIFICATION_SYSTEM_PROMPT;
-  // The three-gate prompt explains the distinction via the ACTION VERB test
-  assert.ok(prompt.includes("Carlos's email"), 'Should show email question as knowledge example');
-  assert.ok(prompt.includes('no action verb'), 'Should explain the action verb test');
+test('TC-KM-022: Prompt teaches LLM to distinguish knowledge from action using action verb test', () => {
+  const prompt = IntentRouter.buildClassificationPrompt('EN');
+  // The prompt explains the distinction via the action verb test
+  assert.ok(prompt.includes('Action verb'), 'Should explain the action verb test');
+  assert.ok(prompt.includes('knowledge'), 'Should reference knowledge gate as default');
 });
 
 setTimeout(() => {

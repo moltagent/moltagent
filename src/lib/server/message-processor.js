@@ -1652,23 +1652,15 @@ class MessageProcessor {
       throw new Error('No LLM router available for knowledge synthesis');
     }
 
-    // Step 1: Extract search terms (reuse enricher's extraction if available)
-    let searchTerms = enricher?._extractSearchTerms
-      ? enricher._extractSearchTerms(message)
-      : this._extractBasicSearchTerms(message);
-    // Fallback: if extraction yields nothing, use truncated raw message
-    if (searchTerms.length === 0) {
-      searchTerms = [message.substring(0, 100).replace(/[^\w\s]/g, ' ').trim()];
-    }
+    // Step 1: Extract search terms via LLM (language-agnostic keyword extraction)
+    let searchTerms = await this._extractSearchTermsLLM(message, router);
 
-    // Expand search terms for short/referential messages using conversation context
-    if (liveContext?.lastUserIntent && (
-      message.split(/\s+/).length < 6 ||
-      /\b(that|it|this|those|the one|more|about it)\b/i.test(message)
-    )) {
-      const contextTerms = enricher?._extractSearchTerms
-        ? enricher._extractSearchTerms(liveContext.lastUserIntent)
-        : this._extractBasicSearchTerms(liveContext.lastUserIntent);
+    // Pronoun resolution: when message contains references like "it", "that", "more about",
+    // resolve from previous message context. Uses LLM extraction on the previous message.
+    if (searchTerms.length === 0 && liveContext?.lastUserIntent &&
+      /\b(that|it|this|those|the one|more about|about it|about that|about this|davon|darüber|dazu|isso|disso|aquilo)\b/i.test(message)
+    ) {
+      const contextTerms = await this._extractSearchTermsLLM(liveContext.lastUserIntent, router);
       searchTerms = [...new Set([...searchTerms, ...contextTerms])];
     }
 
@@ -2362,20 +2354,52 @@ RULES:
   }
 
   /**
-   * Basic search term extraction when enricher is not available.
+   * Extract 1-4 search keywords from a message using the fast LLM model.
+   * Language-agnostic — no stop word lists, no hardcoded patterns.
+   * Falls back to enricher entity extraction if LLM is unavailable.
+   *
+   * @param {string} message - User message
+   * @param {Object} router - LLM router instance
+   * @returns {Promise<string[]>} 1-4 keyword/noun phrases
    * @private
    */
-  _extractBasicSearchTerms(message) {
-    const stopWords = new Set(['what', 'who', 'where', 'when', 'how', 'why', 'is', 'are', 'was',
-      'were', 'do', 'does', 'did', 'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at',
-      'to', 'for', 'of', 'with', 'by', 'about', 'you', 'know', 'tell', 'me', 'my', 'your',
-      'can', 'could', 'would', 'should', 'have', 'has', 'had', 'be', 'been', 'being', 'that',
-      'this', 'from', 'it', 'its', 'i', 'we', 'they', 'he', 'she']);
-    return message
-      .replace(/[^\w\s'-]/g, ' ')
-      .split(/\s+/)
-      .filter(w => w.length >= 3 && !stopWords.has(w.toLowerCase()))
-      .map(w => w.toLowerCase());
+  async _extractSearchTermsLLM(message, router) {
+    if (!router) {
+      // No router — fall back to enricher's capitalized-word extraction
+      const enricher = this.microPipeline?.memoryContextEnricher;
+      return enricher?._extractSearchTerms?.(message) || [];
+    }
+
+    try {
+      const result = await router.route({
+        job: 'classification',
+        task: 'extract_search_terms',
+        content: `Extract 1-4 search keywords from this message. Return ONLY nouns and noun phrases. No question words. No filler verbs. No full sentences. Keep compound concepts together (e.g. "document ingestion" not "document" + "ingestion"). Keep proper nouns intact. Return as JSON array.
+
+Message: "${message.substring(0, 200)}"
+
+JSON array:`,
+        requirements: { maxTokens: 100, temperature: 0.0 }
+      });
+
+      const raw = result?.result || result?.content || '';
+      const match = raw.match(/\[.*?\]/s);
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed
+            .filter(t => typeof t === 'string' && t.length >= 2)
+            .map(t => t.trim())
+            .slice(0, 4);
+        }
+      }
+    } catch (err) {
+      console.warn(`[Message] LLM search term extraction failed: ${err.message}`);
+    }
+
+    // Fallback: enricher's capitalized-word extraction
+    const enricher = this.microPipeline?.memoryContextEnricher;
+    return enricher?._extractSearchTerms?.(message) || [];
   }
 
   // ---------------------------------------------------------------------------
