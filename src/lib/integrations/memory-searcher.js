@@ -324,6 +324,7 @@ class MemorySearcher {
 
     const merged = mergeFrontmatter(page.frontmatter, updates);
     await this.wiki.writePageWithFrontmatter(title, merged, page.body);
+    this.logger.info(`[MemorySearcher] LTP access: "${title}" → count=${count}${updates.confidence ? ', confidence→' + updates.confidence : ''}${updates.decay_days ? ', decay→' + updates.decay_days : ''}`);
   }
 
   /**

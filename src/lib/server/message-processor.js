@@ -2515,6 +2515,14 @@ JSON array:`,
             await self._deepReadWikiResults(pages, searcher, 3);
             items.push(...pages);
           }
+          // LTP: fire access tracking for compound-intent wiki results
+          if (searcher?._recordAccess) {
+            const seen = new Set();
+            for (const r of items) {
+              const t = (r.title || '').trim();
+              if (t && !seen.has(t)) { seen.add(t); searcher._recordAccess(t).catch(() => {}); }
+            }
+          }
           return items;
         } catch { return []; }
       },
