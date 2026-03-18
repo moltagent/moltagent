@@ -103,8 +103,14 @@ class CostTracker {
 
     let raw;
     try {
-      const result = await this.files.readFile(filepath);
-      raw = (typeof result === 'string' ? result : result.content) || '';
+      // Use readFileBuffer to avoid readFile's 50KB truncation
+      if (this.files.readFileBuffer) {
+        const buf = await this.files.readFileBuffer(filepath);
+        raw = buf.toString('utf-8');
+      } else {
+        const result = await this.files.readFile(filepath);
+        raw = (typeof result === 'string' ? result : result.content) || '';
+      }
     } catch {
       // File doesn't exist yet — nothing to restore
       return;
@@ -276,11 +282,16 @@ class CostTracker {
         this._logDirEnsured = true;
       }
 
-      // Try to read existing file, append, and write back
+      // Read existing file as raw buffer to avoid readFile's 50KB truncation
       let existing = '';
       try {
-        const result = await this.files.readFile(filepath);
-        existing = (typeof result === 'string' ? result : result.content) || '';
+        if (this.files.readFileBuffer) {
+          const buf = await this.files.readFileBuffer(filepath);
+          existing = buf.toString('utf-8');
+        } else {
+          const result = await this.files.readFile(filepath);
+          existing = (typeof result === 'string' ? result : result.content) || '';
+        }
       } catch (_e) {
         // File doesn't exist yet — will create new
       }
@@ -319,8 +330,14 @@ class CostTracker {
 
     let raw = '';
     try {
-      const result = await this.files.readFile(jsonlPath);
-      raw = (typeof result === 'string' ? result : result.content) || '';
+      // Use readFileBuffer to avoid readFile's 50KB truncation
+      if (this.files.readFileBuffer) {
+        const buf = await this.files.readFileBuffer(jsonlPath);
+        raw = buf.toString('utf-8');
+      } else {
+        const result = await this.files.readFile(jsonlPath);
+        raw = (typeof result === 'string' ? result : result.content) || '';
+      }
     } catch {
       // No JSONL yet — nothing to summarise
       return;
