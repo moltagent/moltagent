@@ -292,12 +292,13 @@ test('DEFAULT_CARDS has 5 mode cards with Full Auto starred', () => {
   assert.strictEqual(starred[0].title, 'Full Auto');
 });
 
-test('DEFAULT_CARDS has 6 system cards (Models, Daily Digest, Initiative Level, Working Hours, Budget Limits, Voice)', () => {
-  assert.strictEqual(DEFAULT_CARDS.system.length, 6);
+test('DEFAULT_CARDS has 7 system cards (Models, Daily Digest, Initiative Level, Working Hours, Budget Limits, Voice, Search Policy)', () => {
+  assert.strictEqual(DEFAULT_CARDS.system.length, 7);
   const titles = DEFAULT_CARDS.system.map(c => c.title);
   assert.ok(titles.some(t => t.includes('Models')), 'Should include Models card');
   assert.ok(titles.some(t => t.includes('Budget')), 'Should include Budget Limits card');
   assert.ok(titles.some(t => t.includes('Voice')), 'Should include Voice card');
+  assert.ok(titles.some(t => t === 'Search Policy'), 'Should include Search Policy card');
   assert.ok(!titles.some(t => t.includes('Infrastructure')), 'Should NOT include Infrastructure card');
   assert.ok(!titles.some(t => t === 'Search Provider'), 'Should NOT include Search Provider');
   assert.ok(!titles.some(t => t === 'Auto-tag Files'), 'Should NOT include Auto-tag Files');

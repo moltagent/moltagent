@@ -172,7 +172,8 @@ const DEFAULT_CARDS = {
     { title: 'Initiative Level', description: '\u2699\ufe0f1 minimal / \u2699\ufe0f2 moderate / \u2699\ufe0f3 active / \u2699\ufe0f4 autonomous\n\n---\n\nHow proactive your agent is between conversations.\n\u2699\ufe0f1  Only responds when spoken to. No background work.\n\u2699\ufe0f2  Checks inbox, processes queued tasks on heartbeat.\n\u2699\ufe0f3  Suggests improvements, flags issues, prepares briefs.\n\u2699\ufe0f4  Takes action within guardrails without asking first.', defaultLabel: '\u2699\ufe0f2' },
     { title: 'Working Hours',   description: '\u2699\ufe0f1 always / \u2699\ufe0f2 business (09:00-18:00) / \u2699\ufe0f3 extended (07:00-22:00) / \u2699\ufe0f4 custom\n\n---\n\nWhen your agent is allowed to do proactive work. Outside\nthese hours, the agent sleeps \u2014 it still responds if you\nmessage it directly in Talk.\n\u2699\ufe0f1  Always active (24/7).\n\u2699\ufe0f2  Business hours: 09:00-18:00.\n\u2699\ufe0f3  Extended hours: 07:00-22:00.\n\u2699\ufe0f4  Custom: write your hours above the line as HH:MM-HH:MM.', defaultLabel: '\u2699\ufe0f2' },
     { title: '\ud83d\udcb0 Budget Limits', description: '\u2699\ufe0f1 no limits / \u2699\ufe0f2 conservative / \u2699\ufe0f3 moderate / \u2699\ufe0f4 custom\n\n---\n\nCost controls for cloud LLM usage. The agent automatically\nswitches to local models when limits are reached.\n\u2699\ufe0f1  No spending limits.\n\u2699\ufe0f2  Daily: \u20ac2.00 / Monthly: \u20ac30.00\n\u2699\ufe0f3  Daily: \u20ac5.00 / Monthly: \u20ac50.00\n\u2699\ufe0f4  Custom: edit the values above the line.', defaultLabel: '\u2699\ufe0f3' },
-    { title: '\ud83d\udd0a Voice', description: '\u2699\ufe0f1 off / \u2699\ufe0f2 listen / \u2699\ufe0f3 full voice\n\n---\n\nVoice processing mode.\n\u2699\ufe0f1  Off \u2014 voice messages are ignored.\n\u2699\ufe0f2  Listen \u2014 transcribe voice messages, respond as text.\n\u2699\ufe0f3  Full \u2014 transcribe voice, respond with voice + text.', defaultLabel: '\u2699\ufe0f1' }
+    { title: '\ud83d\udd0a Voice', description: '\u2699\ufe0f1 off / \u2699\ufe0f2 listen / \u2699\ufe0f3 full voice\n\n---\n\nVoice processing mode.\n\u2699\ufe0f1  Off \u2014 voice messages are ignored.\n\u2699\ufe0f2  Listen \u2014 transcribe voice messages, respond as text.\n\u2699\ufe0f3  Full \u2014 transcribe voice, respond with voice + text.', defaultLabel: '\u2699\ufe0f1' },
+    { title: 'Search Policy', description: 'mode: research\n\n---\n\nControls whether queries leave your infrastructure.\n\nresearch — Internal knowledge first, web fallback automatic.\nResponses attribute sources (internal vs web).\n\ninternal-first — Internal only by default. Agent offers\nweb search when internal results are thin.\n\nsovereign — No web search under any circumstance. Agent\nanswers from internal knowledge only.' }
   ],
   status: [
     { title: 'Health', description: '\ud83d\udfe2 OK -- Uptime: 0d 0h -- Last error: none' },
@@ -740,6 +741,11 @@ class CockpitManager {
         } else {
           config.voice = 'off';
         }
+      } else if (title === 'Search Policy') {
+        const modeMatch = (card.description || '').match(/^mode:\s*(\S+)/m);
+        const mode = modeMatch ? modeMatch[1].toLowerCase() : 'research';
+        const validModes = ['research', 'internal-first', 'sovereign'];
+        config.searchPolicy = validModes.includes(mode) ? mode : 'research';
       }
     }
 

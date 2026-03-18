@@ -1671,10 +1671,11 @@ class MessageProcessor {
     // Step 2: Parallel multi-source probes
     const probeResults = await this._executeKnowledgeProbes(searchTerms, query, enricher, searcher);
 
-    // Step 2b: Web fallback — if knowledge probes returned insufficient results,
-    // supplement with a web search automatically. No keyword lists, no special
-    // cases. One threshold. Universal fallback.
-    // Count RELEVANT results (title/snippet overlaps with search terms), not just any long snippets
+    // Step 2b: Web fallback — gated by Cockpit Search Policy card.
+    // research: auto-fallback (default). internal-first: offer only. sovereign: never.
+    const cockpitConfig = this.agentLoop?.cockpitManager?.cachedConfig;
+    const searchPolicy = cockpitConfig?.system?.searchPolicy || 'research';
+
     const lowerTerms = searchTerms.map(t => t.toLowerCase());
     const substantiveResults = probeResults.reduce((sum, p) => {
       const relevant = (p.results || []).filter(r => {
@@ -1684,20 +1685,38 @@ class MessageProcessor {
       return sum + relevant.length;
     }, 0);
 
-    // Also fire web when context shows agent previously admitted ignorance
     const contextSuggestsWeb = liveContext?.lastAssistantAction?.admittedIgnorance === true;
+    let webSearchOffered = false;
+
     if (substantiveResults < 2 || (contextSuggestsWeb && substantiveResults < 4)) {
-      if (roomToken) {
-        this.sendTalkReply(roomToken, '\u{1F310} Also checking the web...').catch(() => {});
+      if (searchPolicy === 'research') {
+        // Auto web fallback — current behavior
+        if (roomToken) {
+          this.sendTalkReply(roomToken, '\u{1F310} Also checking the web...').catch(() => {});
+        }
+        const webResults = await this._probeWeb(query);
+        if (webResults.length > 0) {
+          probeResults.push({
+            source: 'web',
+            results: webResults,
+            provenance: 'web_search'
+          });
+          console.log(`[Message] Knowledge insufficient (${substantiveResults} results) — web fallback added ${webResults.length} result(s)`);
+        }
+      } else if (searchPolicy === 'internal-first') {
+        webSearchOffered = true;
+        console.log(`[Message] Knowledge insufficient (${substantiveResults} results) — search policy: internal-first, web search available but not auto-fired`);
+      } else {
+        // sovereign — no web search
+        console.log(`[Message] Knowledge insufficient (${substantiveResults} results) — search policy: sovereign, no web search`);
       }
-      const webResults = await this._probeWeb(query);
-      if (webResults.length > 0) {
-        probeResults.push({
-          source: 'web',
-          results: webResults,
-          provenance: 'web_search'
-        });
-        console.log(`[Message] Knowledge insufficient (${substantiveResults} results) — web fallback added ${webResults.length} result(s)`);
+    }
+
+    // Tag provenance on all results
+    for (const probe of probeResults) {
+      const prov = probe.provenance === 'web_search' ? 'web' : 'internal';
+      for (const r of (probe.results || [])) {
+        if (!r.provenance) r.provenance = prov;
       }
     }
 
@@ -1708,8 +1727,14 @@ class MessageProcessor {
 
     console.log(`[Message] Knowledge probes: ${sourcesConsulted.length} sources consulted, ${sourcesWithResults.length} returned results (${sourcesWithResults.join(', ')})`);
 
-    // Step 4: Synthesis — one LLM call
-    const response = await this._synthesizeKnowledge(query, aggregated, session, router, liveContext);
+    // Step 4: Synthesis — one LLM call with policy-aware context
+    let policyContext = '';
+    if (webSearchOffered) {
+      policyContext = '\n\nNote: Internal knowledge was limited. Offer to search the web for more information if the user would find that helpful.';
+    } else if (searchPolicy === 'sovereign' && substantiveResults < 2) {
+      policyContext = '\n\nNote: Search policy is sovereign — no web search. If internal knowledge is insufficient, state what you know and what gaps exist honestly. Do not offer to search the web.';
+    }
+    const response = await this._synthesizeKnowledge(query, aggregated, session, router, liveContext, policyContext);
 
     return {
       response,
@@ -2186,7 +2211,7 @@ Be thoughtful. Be honest. Be yourself.`;
    * One LLM call — the model's job is ONLY synthesis.
    * @private
    */
-  async _synthesizeKnowledge(query, aggregatedKnowledge, session, router, liveContext) {
+  async _synthesizeKnowledge(query, aggregatedKnowledge, session, router, liveContext, policyContext = '') {
     if (!aggregatedKnowledge) {
       return "I don't have any information about that in my knowledge base.";
     }
@@ -2217,8 +2242,10 @@ RULES:
 - No hedging ("might", "could", "possibly"). Either you found it or you didn't.
 - Be concise. Lead with the most relevant facts.
 - Use the entity names exactly as they appear in the data.
-- Items marked [Source: web] are from web search. Treat as external — useful but unverified. Mention the source naturally.
-- NEVER confirm actions you did not perform. If the user asked to create, send, book, move, or delete something and you only searched for information — say what you found, do NOT claim you did something you didn't. You are a knowledge synthesizer, not an executor.`;
+- Items marked [Source: web] are from web search. Treat as external — useful but unverified.
+- For internal information, say "from our files" or "according to internal documents". For web information, say "from web search" or "according to online sources". Weave attribution naturally — no ugly brackets.
+- Always present internal knowledge first, web enrichment second.
+- NEVER confirm actions you did not perform. If the user asked to create, send, book, move, or delete something and you only searched for information — say what you found, do NOT claim you did something you didn't. You are a knowledge synthesizer, not an executor.${policyContext}`;
 
     const result = await router.route({
       job: 'synthesis',
