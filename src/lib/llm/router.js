@@ -627,8 +627,10 @@ class LLMRouter {
       roster[JOBS.SYNTHESIS] = [...new Set([cheapest, ...local].filter(Boolean))];
       roster[JOBS.DECOMPOSITION] = [...new Set([cheapest, ...local].filter(Boolean))];
 
-      // Tools: local first (structured output), cheapest cloud fallback
-      roster[JOBS.TOOLS] = [...new Set([...local, cheapest].filter(Boolean))];
+      // Tools: cheapest cloud first (Haiku — reliable structured output, 2-3s),
+      // local fallback for sovereign mode. Local models (qwen3:8b) take 60-70s
+      // and produce unreliable structured JSON.
+      roster[JOBS.TOOLS] = [...new Set([cheapest, ...local].filter(Boolean))];
 
       // Research/coding: mid-tier cloud (Sonnet), cheapest fallback
       roster[JOBS.RESEARCH] = [...new Set([midTier, cheapest, ...local].filter(Boolean))];
