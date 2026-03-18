@@ -38,6 +38,7 @@ class BaseExecutor {
   constructor(config = {}) {
     if (!config.router) throw new Error('BaseExecutor requires a router');
     this.router = config.router;
+    this.claudeProvider = config.claudeProvider || null;
     this.guardrailEnforcer = config.guardrailEnforcer || null;
     this.toolGuard = config.toolGuard || null;
     this.activityLogger = config.activityLogger || null;
@@ -76,17 +77,27 @@ class BaseExecutor {
    */
   async _extractJSON(message, extractionPrompt, format, job = 'tools') {
     try {
-      const requirements = { maxTokens: 500, temperature: 0 };
-      if (format) requirements.format = format;
+      let raw;
 
-      const result = await this.router.route({
-        job,
-        task: `extract_${this.constructor.name || 'base'}`,
-        content: extractionPrompt,
-        requirements
-      });
-
-      let raw = (result.result || '').trim();
+      if (this.claudeProvider) {
+        // Direct path — bypasses legacy router chain, uses Haiku for reliable structured output
+        const result = await this.claudeProvider.chat({
+          system: 'Extract parameters as JSON. Return ONLY valid JSON, no markdown, no explanation.',
+          messages: [{ role: 'user', content: extractionPrompt }],
+        });
+        raw = (result.content || '').trim();
+      } else {
+        // Fallback: router path (local-only mode)
+        const requirements = { maxTokens: 500, temperature: 0 };
+        if (format) requirements.format = format;
+        const result = await this.router.route({
+          job,
+          task: `extract_${this.constructor.name || 'base'}`,
+          content: extractionPrompt,
+          requirements
+        });
+        raw = (result.result || '').trim();
+      }
 
       // Strip markdown fences
       raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');

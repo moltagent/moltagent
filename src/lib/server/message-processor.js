@@ -1475,12 +1475,13 @@ class MessageProcessor {
     const router = this.microPipeline.router;
     const tz = this.microPipeline.timezone;
     const aLog = this.microPipeline.activityLogger;
+    const claudeProvider = this.microPipeline.claudeToolsProvider || null;
 
     if (router && !this.microPipeline.executors.calendar && this.microPipeline.calendarClient) {
       try {
         const CalendarExecutor = require('../agent/executors/calendar-executor');
         this.microPipeline.executors.calendar = new CalendarExecutor({
-          router, calendarClient: this.microPipeline.calendarClient,
+          router, claudeProvider, calendarClient: this.microPipeline.calendarClient,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
           activityLogger: aLog, timezone: tz, logger: console
         });
@@ -1494,7 +1495,7 @@ class MessageProcessor {
       try {
         const FileExecutor = require('../agent/executors/file-executor');
         this.microPipeline.executors.file = new FileExecutor({
-          router, ncFilesClient: this.agentLoop.toolRegistry.clients.ncFilesClient,
+          router, claudeProvider, ncFilesClient: this.agentLoop.toolRegistry.clients.ncFilesClient,
           textExtractor: this.agentLoop.toolRegistry.clients.textExtractor || null,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
           activityLogger: aLog, timezone: tz, logger: console
@@ -1509,7 +1510,7 @@ class MessageProcessor {
       try {
         const WikiExecutor = require('../agent/executors/wiki-executor');
         this.microPipeline.executors.wiki = new WikiExecutor({
-          router, toolRegistry,
+          router, claudeProvider, toolRegistry,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
           activityLogger: aLog, timezone: tz, logger: console
         });
@@ -1523,7 +1524,7 @@ class MessageProcessor {
       try {
         const DeckExecutor = require('../agent/executors/deck-executor');
         this.microPipeline.executors.deck = new DeckExecutor({
-          router, toolRegistry,
+          router, claudeProvider, toolRegistry,
           deckClient: toolRegistry.clients?.deckClient || null,
           adminUser: process.env.KNOWLEDGE_ADMIN_USER || this.adminUser || null,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
