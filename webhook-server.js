@@ -1540,6 +1540,18 @@ async function initialize() {
             });
           }
 
+          // Register Haiku in the router so it appears as cheapest cloud provider
+          // in the roster. Haiku is the cost-optimal model for tool-calling,
+          // classification fallback, synthesis, and decomposition.
+          llmRouter.router.registerProvider('claude-haiku', {
+            adapter: 'anthropic',
+            endpoint: 'https://api.anthropic.com/v1/messages',
+            model: 'claude-haiku-4-5-20251001',
+            credentialName: 'claude-api-key',
+            type: 'cloud',
+            costModel: { type: 'per_token', inputPer1M: 0.80, outputPer1M: 4.00 }
+          });
+
           // Activate smart-mix preset on LLMRouter v3
           llmRouter.router.setPreset('smart-mix');
           console.log('[INIT] LLMRouter preset activated: smart-mix');
