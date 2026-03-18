@@ -77,18 +77,24 @@ class IntentDecomposer {
       const result = await this.llmRouter.route({
         job: 'decomposition',
         task: 'intent_decompose',
-        messages: [
-          { role: 'system', content: DECOMPOSE_PROMPT },
-          { role: 'user', content: message.substring(0, 500) }
-        ],
+        system: DECOMPOSE_PROMPT,
+        content: message.substring(0, 500),
         requirements: { maxTokens: 400, temperature: 0.1 }
       });
 
       const raw = result?.result || result?.content || '';
-      const plan = JSON.parse(this._cleanJson(raw));
+      this.logger.log(`[IntentDecomposer] Raw LLM response: ${raw.substring(0, 300)}`);
+      const cleaned = this._cleanJson(raw);
+      let plan;
+      try {
+        plan = JSON.parse(cleaned);
+      } catch (parseErr) {
+        this.logger.warn(`[IntentDecomposer] JSON parse failed: ${parseErr.message} — cleaned: ${cleaned.substring(0, 200)}`);
+        return null;
+      }
 
       if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) {
-        this.logger.warn('[IntentDecomposer] Invalid plan structure');
+        this.logger.warn(`[IntentDecomposer] Invalid plan structure: ${JSON.stringify(plan).substring(0, 200)}`);
         return null;
       }
 
