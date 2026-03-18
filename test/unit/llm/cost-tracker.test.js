@@ -386,7 +386,7 @@ await asyncTest('writeDailySummary() creates CSV with header and row', async () 
   assert.ok(lines[1].includes('0.0500'), 'Should include total cost');
 });
 
-await asyncTest('writeDailySummary() skips if already written today', async () => {
+await asyncTest('writeDailySummary() rate-limits to once per 10 minutes', async () => {
   const today = new Date().toISOString().slice(0, 10);
   const jsonlContent = JSON.stringify({ timestamp: `${today}T10:00:00Z`, model: 'claude-sonnet-4-20250514', job: 'x', cost_usd: 0.01, is_local: false }) + '\n';
   let writeCount = 0;
@@ -400,9 +400,14 @@ await asyncTest('writeDailySummary() skips if already written today', async () =
 
   const tracker = new CostTracker({ ncFilesClient: mockFiles });
   await tracker.writeDailySummary();
-  await tracker.writeDailySummary(); // Second call should be skipped
+  await tracker.writeDailySummary(); // Immediate re-call should be skipped
 
-  assert.strictEqual(writeCount, 1, 'Should only write once per day');
+  assert.strictEqual(writeCount, 1, 'Should skip within 10-minute window');
+
+  // Simulate 11 minutes elapsed
+  tracker._lastSummaryWrite = Date.now() - 11 * 60 * 1000;
+  await tracker.writeDailySummary(); // Should write again
+  assert.strictEqual(writeCount, 2, 'Should write again after 10-minute window');
 });
 
 await asyncTest('writeDailySummary() updates existing row for today', async () => {

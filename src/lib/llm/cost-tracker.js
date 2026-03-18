@@ -80,8 +80,8 @@ class CostTracker {
     // Track whether log directory has been ensured
     this._logDirEnsured = false;
 
-    // Track last daily summary date to avoid duplicates
-    this._lastSummaryDate = null;
+    // Rate-limit daily summary writes (timestamp of last write)
+    this._lastSummaryWrite = 0;
   }
 
   /**
@@ -307,7 +307,9 @@ class CostTracker {
     if (!this.files) return;
 
     const today = this._todayKey();
-    if (this._lastSummaryDate === today) return; // Already written today
+    // Rate-limit: write at most once per 10 minutes
+    const now = Date.now();
+    if (now - this._lastSummaryWrite < 10 * 60 * 1000) return;
 
     const filepath = `${this.logDir}/cost-summary.csv`;
     const header = 'date,total_usd,total_eur,opus_usd,sonnet_usd,haiku_usd,local_calls,cloud_calls,top_job,top_job_usd';
@@ -411,7 +413,7 @@ class CostTracker {
         }
       }
 
-      this._lastSummaryDate = today;
+      this._lastSummaryWrite = Date.now();
       console.log(`[CostTracker] Daily summary written: ${today} $${totalUsd.toFixed(2)} (${cloudCalls} cloud, ${localCalls} local)`);
     } catch (err) {
       console.error(`[CostTracker] Failed to write daily summary: ${err.message}`);
