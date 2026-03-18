@@ -322,6 +322,14 @@ class DocumentIngestor {
     for (const entity of entities) {
       if (!this._shouldCreateWikiPage(entity)) continue;
 
+      // Strip uncertainty flags from entity names → frontmatter field instead
+      const uncertaintyMatch = entity.name.match(/\s*\((ocr-uncertain|transcription-uncertain)\)\s*$/);
+      if (uncertaintyMatch) {
+        entity.name = entity.name.replace(/\s*\((ocr-uncertain|transcription-uncertain)\)\s*$/, '').trim();
+        entity.name_confidence = 'uncertain';
+        entity.name_fidelity = uncertaintyMatch[1].startsWith('ocr') ? 'ocr' : 'transcribed';
+      }
+
       try {
         const section = this._sectionForEntityType(entity.type);
         const dedupKey = `${section}/${normalizeEntityName(entity.name)}`;
@@ -754,11 +762,19 @@ class DocumentIngestor {
       `decay_days: 180`,
       `access_count: 0`,
       `confidence: medium`,
+    ];
+    if (entity.name_confidence) {
+      lines.push(`name_confidence: ${entity.name_confidence}`);
+    }
+    if (entity.name_fidelity) {
+      lines.push(`name_fidelity: ${entity.name_fidelity}`);
+    }
+    lines.push(
       '---',
       '',
       `# ${entity.name}`,
       '',
-    ];
+    );
 
     if (entity.description) {
       lines.push(entity.description, '');
@@ -894,7 +910,7 @@ Rules:
 - Match if names clearly refer to the same real-world entity
 - Account for: name variations, middle initials, OCR errors, phonetic errors, abbreviations
 - Do NOT match if names could plausibly be different entities
-- Names with (ocr-uncertain) or (transcription-uncertain) flags should be matched more generously
+- When source fidelity is ocr or transcribed, match more generously (names may have errors)
 
 Respond ONLY with JSON:
 {"match": true, "index": 1, "reason": "same person, middle initial variation"}

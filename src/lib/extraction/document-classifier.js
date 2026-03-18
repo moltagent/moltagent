@@ -255,10 +255,10 @@ Respond ONLY with JSON: {"type":"<TYPE>","confidence":<0.0-1.0>,"fidelity":"auth
    */
   _fidelityPreamble(fidelity) {
     if (fidelity === 'transcribed') {
-      return `NOTE: This text was produced by speech-to-text. Names may contain phonetic errors (e.g., "Ilco" for "Eelco"). Extract names as written but add (transcription-uncertain) after any name that looks phonetically plausible but possibly misspelled.\n\n`;
+      return `NOTE: This text was produced by speech-to-text. Names may contain phonetic errors (e.g., "Ilco" for "Eelco"). Extract the best-guess correct spelling of names. Do NOT add uncertainty flags or suffixes to names.\n\n`;
     }
     if (fidelity === 'ocr') {
-      return `NOTE: This text was produced by OCR. Names may contain character-level errors (e.g., "Dykara" for "Dykstra"). Extract names as written but add (ocr-uncertain) after any name that looks like a possible OCR error. Ignore layout artifacts, page numbers, and header/footer fragments.\n\n`;
+      return `NOTE: This text was produced by OCR. Names may contain character-level errors (e.g., "Dykara" for "Dykstra"). Extract the best-guess correct spelling of names. Do NOT add uncertainty flags or suffixes to names. Ignore layout artifacts, page numbers, and header/footer fragments.\n\n`;
     }
     return ''; // authored — standard extraction rules apply
   }
