@@ -1545,7 +1545,7 @@ async function initialize() {
           // classification fallback, synthesis, and decomposition.
           llmRouter.router.registerProvider('claude-haiku', {
             adapter: 'anthropic',
-            endpoint: 'https://api.anthropic.com/v1/messages',
+            endpoint: 'https://api.anthropic.com',
             model: 'claude-haiku-4-5-20251001',
             credentialName: 'claude-api-key',
             type: 'cloud',
