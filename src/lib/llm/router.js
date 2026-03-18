@@ -182,7 +182,8 @@ class LLMRouter {
     const options = {
       maxTokens: requirements.maxTokens,
       temperature: requirements.temperature,
-      format: requirements.format
+      format: requirements.format,
+      system: request.system
     };
 
     // Track role usage
@@ -325,6 +326,8 @@ class LLMRouter {
             trigger: context.trigger || 'user_message',
             inputTokens: result.inputTokens || 0,
             outputTokens: result.outputTokens || 0,
+            cacheCreationTokens: result.cacheCreationTokens || 0,
+            cacheReadTokens: result.cacheReadTokens || 0,
             isLocal: provider.type === 'local',
           });
         }

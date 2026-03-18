@@ -60,9 +60,13 @@ class OllamaProvider extends BaseProvider {
       const timeout = setTimeout(() => controller.abort(), 120000); // 120 second timeout
 
       try {
+        const messages = [];
+        if (options.system) messages.push({ role: 'system', content: options.system });
+        messages.push({ role: 'user', content: prompt });
+
         const requestBody = {
             model: this.model,
-            messages: [{ role: 'user', content: prompt }],
+            messages,
             stream: false,
             keep_alive: '10m',
             options: {

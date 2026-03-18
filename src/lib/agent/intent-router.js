@@ -364,11 +364,11 @@ class IntentRouter {
     const language = this.getLanguage();
     const prompt = buildClassificationPrompt(language);
 
-    const content = prompt + '\n\nMessage to classify:\n' + userContent;
     const result = await this.llmRouter.route({
       job: 'classification',
       task: 'classify',
-      content,
+      system: prompt,
+      content: 'Message to classify:\n' + userContent,
       requirements: { maxTokens: 200, temperature: 0.1 }
     });
 

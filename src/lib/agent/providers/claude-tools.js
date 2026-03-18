@@ -95,7 +95,14 @@ class ClaudeToolsProvider {
     };
 
     if (system) {
-      body.system = system;
+      // Enable prompt caching on the system prompt — it's reused across
+      // all tool-calling turns in a conversation, so caching saves ~90%
+      // of input tokens on subsequent requests.
+      body.system = [{
+        type: 'text',
+        text: system,
+        cache_control: { type: 'ephemeral' }
+      }];
     }
 
     if (claudeTools.length > 0) {

@@ -59,6 +59,16 @@ class AnthropicProvider extends BaseProvider {
         ]
       };
 
+      // Enable prompt caching on system prompt — static classification/synthesis
+      // instructions are reused across calls, saving ~90% of input tokens.
+      if (options.system) {
+        requestBody.system = [{
+          type: 'text',
+          text: options.system,
+          cache_control: { type: 'ephemeral' }
+        }];
+      }
+
       // Pass temperature when specified (extraction uses 0 for deterministic output)
       if (typeof options.temperature === 'number') {
         requestBody.temperature = options.temperature;
@@ -93,6 +103,8 @@ class AnthropicProvider extends BaseProvider {
       const result = data.content?.[0]?.text || '';
       const inputTokens = data.usage?.input_tokens || this.estimateTokens(prompt);
       const outputTokens = data.usage?.output_tokens || this.estimateTokens(result);
+      const cacheCreationTokens = data.usage?.cache_creation_input_tokens || 0;
+      const cacheReadTokens = data.usage?.cache_read_input_tokens || 0;
       const tokens = inputTokens + outputTokens;
 
       this.recordSuccess(tokens);
@@ -102,6 +114,8 @@ class AnthropicProvider extends BaseProvider {
         tokens,
         inputTokens,
         outputTokens,
+        cacheCreationTokens,
+        cacheReadTokens,
         cost: this.estimateCost(inputTokens, outputTokens),
         duration: Date.now() - startTime,
         model: this.model,
