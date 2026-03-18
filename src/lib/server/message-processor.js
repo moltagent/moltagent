@@ -1434,18 +1434,28 @@ class MessageProcessor {
       // Haiku is cost-optimal for structured tool calls (~$0.001 per call).
       // Reuse getApiKey from any existing Claude provider in the bridge.
       let getApiKey = null;
-      for (const [, provider] of bridge.chatProviders) {
-        if (provider.getApiKey) { getApiKey = provider.getApiKey; break; }
+      for (const [id, provider] of bridge.chatProviders) {
+        if (typeof provider.getApiKey === 'function') {
+          getApiKey = provider.getApiKey.bind(provider);
+          console.log(`[Message] Found API key source: ${id}`);
+          break;
+        }
       }
       if (getApiKey) {
-        const { ClaudeToolsProvider } = require('./../../agent/providers/claude-tools');
-        this.microPipeline.claudeToolsProvider = new ClaudeToolsProvider({
-          model: 'claude-haiku-4-5-20251001',
-          maxTokens: 1024,
-          timeout: 15000,
-          getApiKey
-        });
-        console.log('[Message] Wired ClaudeToolsProvider (haiku: claude-haiku-4-5-20251001) into MicroPipeline');
+        try {
+          const { ClaudeToolsProvider } = require('../agent/providers/claude-tools');
+          this.microPipeline.claudeToolsProvider = new ClaudeToolsProvider({
+            model: 'claude-haiku-4-5-20251001',
+            maxTokens: 1024,
+            timeout: 15000,
+            getApiKey
+          });
+          console.log('[Message] Wired ClaudeToolsProvider (haiku: claude-haiku-4-5-20251001) into MicroPipeline');
+        } catch (err) {
+          console.warn(`[Message] Failed to create Haiku tools provider: ${err.message}`);
+        }
+      } else {
+        console.warn('[Message] No Claude API key source found in bridge — cloud tool-calling disabled');
       }
     }
 
