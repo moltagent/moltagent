@@ -2251,10 +2251,13 @@ Be thoughtful. Be honest. Be yourself.`;
     const now = new Date();
     const timeStr = `${now.toLocaleDateString('en-US', { weekday: 'long' })}, ${now.toISOString().split('T')[0]} ${now.toTimeString().split(' ')[0]} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
 
-    const prompt = `You are answering a knowledge question. Here is what was found across your data sources:
+    const prompt = `You are a KNOWLEDGE SYNTHESIZER. You can ONLY answer questions — you CANNOT perform actions.
+DO NOT claim you created a card, sent an email, booked a meeting, moved anything, or performed ANY action.
+If the user asked you to DO something, say what you FOUND, then say: "I couldn't complete that action — please ask me separately."
 
 Current date/time: ${timeStr}
 ${conversationBlock}
+Here is what was found across your data sources:
 ${aggregatedKnowledge}
 ${warmMemory ? `\nRecent context:\n${warmMemory}\n` : ''}
 
@@ -2267,8 +2270,7 @@ RULES:
 - Use the entity names exactly as they appear in the data.
 - Items marked [Source: web] are from web search. Treat as external — useful but unverified.
 - For internal information, say "from our files" or "according to internal documents". For web information, say "from web search" or "according to online sources". Weave attribution naturally — no ugly brackets.
-- Always present internal knowledge first, web enrichment second.
-- NEVER confirm actions you did not perform. If the user asked to create, send, book, move, or delete something and you only searched for information — say what you found, do NOT claim you did something you didn't. You are a knowledge synthesizer, not an executor.${policyContext}`;
+- Always present internal knowledge first, web enrichment second.${policyContext}`;
 
     const result = await router.route({
       job: 'synthesis',

@@ -382,7 +382,7 @@ class IntentRouter {
     });
 
     const raw = result?.result || result?.content || '';
-    return this._parseClassification(raw);
+    return this._parseClassification(raw, message);
   }
 
   /**
@@ -410,7 +410,7 @@ class IntentRouter {
       }
     });
 
-    return this._parseClassification(result.content || '');
+    return this._parseClassification(result.content || '', message);
   }
 
   /**
@@ -449,11 +449,16 @@ class IntentRouter {
     // We include it here and rely on the knowledge patterns below to catch "what's on my schedule".
     const hasActionVerb = /\b(create|make|set\s+up|build|send|draft|compose|reply|book|schedule\s+(a|an|the|my)|move|assign|update|delete|remove|remind|add|upload|download|save|store|forward|write|remember|forget)\b/.test(lower);
 
-    // Compound detection: action verb + connector + another operation
+    // Compound detection: action verb + connector + another operation,
+    // OR separate sentences where one is a question/research and another is an action.
+    // "Look into X. Put the results on a card." — no connector, but two distinct intents.
     const compound = hasActionVerb && (
       /\b(and\s+(then\s+)?(check|create|find|send|book|search|move|list|remind|look|tell|show))\b/.test(lower) ||
       /\b(if\s+(not|no|none|empty|nothing)|then\s+(create|send|book|remind|add|move))\b/.test(lower) ||
       /,\s*(and\s+)?(check|create|find|send|book|search|move|list|remind|look|tell|show)\b/.test(lower)
+    ) || (
+      // Sentence-boundary compound: knowledge question/research + action in separate sentences
+      /[.!?]\s+(put|create|save|send|move|add|make|write|book|upload|post|store)\b/i.test(message)
     );
 
     // Domain detection
@@ -496,10 +501,11 @@ class IntentRouter {
    * Parse LLM classification response into structured result.
    * Handles both three-gate format (gate/domain) and legacy intent format.
    * @param {string} content - Raw LLM response
+   * @param {string} [originalMessage] - Original user message for compound promotion safety net
    * @returns {{gate: string, intent: string, domain: string|null, needsHistory: boolean, confidence: number, compound: boolean}}
    * @private
    */
-  _parseClassification(content) {
+  _parseClassification(content, originalMessage = '') {
     // Strip think tags and markdown fences
     let cleaned = content
       .replace(/<think>[\s\S]*?<\/think>/g, '')
@@ -540,7 +546,28 @@ class IntentRouter {
         return { ...COMPLEX_FALLBACK, compound: parsed.compound === true };
       }
 
-      const compound = gate === 'compound' || parsed.compound === true;
+      let compound = gate === 'compound' || parsed.compound === true;
+
+      // Safety net: when the LLM classifies as knowledge but the message contains
+      // a sentence-boundary action ("Look into X. Put it on a card."), promote to compound.
+      // Small models (qwen2.5:3b) frequently miss multi-sentence compound intents.
+      if (!compound && (gate === 'knowledge') && originalMessage) {
+        const hasSentenceBoundaryAction = /[.!?]\s+(put|create|save|send|move|add|make|write|book|upload|post|store)\b/i.test(originalMessage);
+        if (hasSentenceBoundaryAction) {
+          compound = true;
+          gate = 'compound';
+          // Infer domain from action sentence
+          if (!domain) {
+            const actionSentence = originalMessage.match(/[.!?]\s+(.+)/)?.[1]?.toLowerCase() || '';
+            if (/\b(card|deck|board)\b/.test(actionSentence)) domain = 'deck';
+            else if (/\b(email|mail)\b/.test(actionSentence)) domain = 'email';
+            else if (/\b(wiki|page|note)\b/.test(actionSentence)) domain = 'wiki';
+            else if (/\b(calendar|meeting|appointment)\b/.test(actionSentence)) domain = 'calendar';
+            else if (/\b(file|folder|upload)\b/.test(actionSentence)) domain = 'file';
+          }
+          console.log(`[IntentRouter] Promoted knowledge → compound (sentence-boundary action detected, domain: ${domain})`);
+        }
+      }
 
       // Unknown → knowledge (knowledge is the safe default)
       if (gate === 'unknown') {
