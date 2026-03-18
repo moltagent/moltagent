@@ -65,7 +65,10 @@ const CLASSIFICATION_EXAMPLES = {
     compound: `
   Examples:
   "Check if Carlos is available Tuesday and book a meeting" → compound, domain: calendar
-  "What's the status of onboarding and create a follow-up task" → compound, domain: deck`,
+  "What's the status of onboarding and create a follow-up task" → compound, domain: deck
+  "Research what Analytics can do. Create a card with the findings." → compound, domain: deck
+  "What does Nextcloud Forms do? Put it on a Deck card for me." → compound, domain: deck
+  "Look into the project status. Send me a summary by email." → compound, domain: email`,
     knowledge: `
   Examples (ALL factual questions are knowledge — "What is X?", "Who does X?", "How does X work?"):
   "Who is Carlos?" → knowledge
@@ -104,7 +107,9 @@ const CLASSIFICATION_EXAMPLES = {
     compound: `
   Beispiele:
   "Prüfe ob Carlos am Dienstag verfügbar ist und buche ein Meeting" → compound, domain: calendar
-  "Was ist der Stand beim Onboarding und erstelle eine Folgeaufgabe" → compound, domain: deck`,
+  "Was ist der Stand beim Onboarding und erstelle eine Folgeaufgabe" → compound, domain: deck
+  "Recherchiere was Analytics kann. Schreib die Ergebnisse auf eine Karte." → compound, domain: deck
+  "Was macht Nextcloud Forms? Pack es auf eine Deck-Karte." → compound, domain: deck`,
     knowledge: `
   Beispiele (ALLE Sachfragen sind knowledge — "Was ist X?", "Wer macht X?", "Wie funktioniert X?"):
   "Wer ist Carlos?" → knowledge
@@ -138,7 +143,9 @@ const CLASSIFICATION_EXAMPLES = {
     compound: `
   Exemplos:
   "Verifica se o Carlos está disponível terça e marca uma reunião" → compound, domain: calendar
-  "Qual é o estado do onboarding e cria uma tarefa de follow-up" → compound, domain: deck`,
+  "Qual é o estado do onboarding e cria uma tarefa de follow-up" → compound, domain: deck
+  "Pesquisa o que o Analytics faz. Cria um cartão com os resultados." → compound, domain: deck
+  "O que faz o Nextcloud Forms? Põe num cartão do Deck." → compound, domain: deck`,
     knowledge: `
   Exemplos (TODAS as perguntas factuais são knowledge — "O que é X?", "Quem faz X?", "Como funciona X?"):
   "Quem é o Carlos?" → knowledge
@@ -168,7 +175,8 @@ const CLASSIFICATION_EXAMPLES = {
   "Sauvegarde ça dans le wiki" → action, domain: wiki`,
     compound: `
   Exemples:
-  "Vérifie si Carlos est disponible mardi et réserve une réunion" → compound, domain: calendar`,
+  "Vérifie si Carlos est disponible mardi et réserve une réunion" → compound, domain: calendar
+  "Recherche ce que fait Analytics. Crée une carte avec les résultats." → compound, domain: deck`,
     knowledge: `
   Exemples (TOUTES les questions factuelles sont knowledge — "Qu'est-ce que X ?", "Qui fait X ?", "Comment fonctionne X ?"):
   "Qui est Carlos ?" → knowledge
@@ -195,7 +203,8 @@ const CLASSIFICATION_EXAMPLES = {
   "Guarda esto en el wiki" → action, domain: wiki`,
     compound: `
   Ejemplos:
-  "Comprueba si Carlos está disponible el martes y reserva una reunión" → compound, domain: calendar`,
+  "Comprueba si Carlos está disponible el martes y reserva una reunión" → compound, domain: calendar
+  "Investiga qué hace Analytics. Crea una tarjeta con los resultados." → compound, domain: deck`,
     knowledge: `
   Ejemplos (TODAS las preguntas factuales son knowledge — "¿Qué es X?", "¿Quién hace X?", "¿Cómo funciona X?"):
   "¿Quién es Carlos?" → knowledge
@@ -236,7 +245,7 @@ ACTION — The user wants you to DO something.
 ${examples.action}
 
 COMPOUND — The user wants BOTH knowledge AND action in one message.
-  Contains a question AND an action request connected by "and", "then", etc.
+  Two or more distinct intents in the same message, whether connected by "and"/"then" or as separate sentences.
 ${examples.compound}
 
 KNOWLEDGE — Factual questions, lookups, status checks. THIS IS THE DEFAULT.
