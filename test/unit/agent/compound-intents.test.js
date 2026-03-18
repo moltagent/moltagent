@@ -103,7 +103,7 @@ asyncTest('TC-CI-005: Simple greeting → compound: false in regex fallback', as
 // ============================================================
 
 test('TC-CI-006: Classification prompt includes COMPOUND gate section', () => {
-  const prompt = IntentRouter.CLASSIFICATION_SYSTEM_PROMPT;
+  const prompt = IntentRouter.buildClassificationPrompt('EN');
   assert.ok(prompt.includes('COMPOUND'), 'Prompt should have COMPOUND section');
   assert.ok(prompt.includes('compound'), 'Prompt should mention compound');
 });
@@ -336,8 +336,8 @@ test('TC-CI-021: _cleanJson strips think tags and markdown fences', () => {
 // ============================================================
 
 test('TC-CI-022: INTENT_SCHEMA includes compound property', () => {
-  // Verify the schema was updated to include compound
-  const prompt = IntentRouter.CLASSIFICATION_SYSTEM_PROMPT;
+  // Verify the prompt references compound gate
+  const prompt = IntentRouter.buildClassificationPrompt('EN');
   assert.ok(prompt.includes('compound'), 'Prompt should reference compound');
 });
 
