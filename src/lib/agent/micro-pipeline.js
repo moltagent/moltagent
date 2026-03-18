@@ -659,9 +659,15 @@ Sub-questions:`;
       throw err;
     }
 
-    // Guard: need both toolRegistry and ollamaToolsProvider for tool-calling
-    if (!this.toolRegistry || !this.ollamaToolsProvider) {
-      this.logger.warn(`[MicroPipeline] Domain task "${intent}" but no toolRegistry/ollamaToolsProvider — falling back`);
+    // Select tools provider: cloud-ok → Claude (Haiku), local-only → Ollama (qwen3:8b)
+    // Same trust boundary pattern as classification escalation.
+    const cloudOk = this.claudeToolsProvider && this.router?.hasCloudPlayers?.();
+    const toolsProvider = cloudOk ? this.claudeToolsProvider : this.ollamaToolsProvider;
+    const providerLabel = cloudOk ? `cloud:${this.claudeToolsProvider.model}` : `local:${this.ollamaToolsProvider?.model}`;
+
+    // Guard: need both toolRegistry and a tools provider
+    if (!this.toolRegistry || !toolsProvider) {
+      this.logger.warn(`[MicroPipeline] Domain task "${intent}" but no toolRegistry/toolsProvider — falling back`);
       return this._handleChat(message, context);
     }
 
@@ -677,7 +683,7 @@ Sub-questions:`;
       ? `Context: ${context.warmMemory.substring(0, 300)}\n\nUser (${context.userName || 'unknown'}): ${message}`
       : `User (${context.userName || 'unknown'}): ${message}`;
 
-    this.logger.info(`[MicroPipeline] Domain task: ${intent} (${tools.length} tools, ${this.domainToolTimeout}ms timeout) → local tool-calling`);
+    this.logger.info(`[MicroPipeline] Domain task: ${intent} (${tools.length} tools) → ${providerLabel}`);
 
     try {
       // Set request context on tool registry so tools know who's calling
@@ -694,23 +700,23 @@ Sub-questions:`;
       const messages = [{ role: 'user', content: userPrompt }];
 
       for (let i = 0; i < MAX_ITERATIONS; i++) {
-        const llmResult = await this.ollamaToolsProvider.chat({
+        const llmResult = await toolsProvider.chat({
           system: systemPrompt,
           messages,
           tools,
           timeout: this.domainToolTimeout
         });
 
-        // Record local LLM call with CostTracker
+        // Record LLM call with CostTracker
         if (this.costTracker) {
           this.costTracker.record({
-            model: this.ollamaToolsProvider.model || 'ollama-local',
-            provider: 'ollama-local',
+            model: toolsProvider.model || (cloudOk ? 'claude-haiku' : 'ollama-local'),
+            provider: cloudOk ? 'anthropic-claude' : 'ollama-local',
             job: `domain:${intent}`,
             trigger: context.trigger || 'user_message',
             inputTokens: llmResult._inputTokens || 0,
             outputTokens: llmResult._outputTokens || 0,
-            isLocal: true,
+            isLocal: !cloudOk,
           });
         }
 

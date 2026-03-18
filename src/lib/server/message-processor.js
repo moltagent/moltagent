@@ -1417,15 +1417,22 @@ class MessageProcessor {
       console.log('[Message] Wired ToolRegistry into MicroPipeline for domain tool-calling');
     }
 
-    // Extract local OllamaToolsProvider from the RouterChatBridge
+    // Extract tool-calling providers from the RouterChatBridge
     const bridge = this.agentLoop.llmProvider;
-    if (bridge?.chatProviders && !this.microPipeline.ollamaToolsProvider) {
+    if (bridge?.chatProviders) {
       for (const [id, provider] of bridge.chatProviders) {
-        // OllamaToolsProvider has endpoint + model fields and a chat() method
-        if (provider.endpoint && provider.model && typeof provider.chat === 'function') {
+        if (typeof provider.chat !== 'function') continue;
+
+        // OllamaToolsProvider: has endpoint + model (local)
+        if (!this.microPipeline.ollamaToolsProvider && provider.endpoint && provider.model) {
           this.microPipeline.ollamaToolsProvider = provider;
           console.log(`[Message] Wired OllamaToolsProvider (${id}: ${provider.model}) into MicroPipeline`);
-          break;
+        }
+
+        // ClaudeToolsProvider: has getApiKey but no endpoint (cloud)
+        if (!this.microPipeline.claudeToolsProvider && provider.getApiKey && !provider.endpoint) {
+          this.microPipeline.claudeToolsProvider = provider;
+          console.log(`[Message] Wired ClaudeToolsProvider (${id}: ${provider.model}) into MicroPipeline`);
         }
       }
     }
