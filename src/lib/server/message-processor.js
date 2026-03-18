@@ -563,16 +563,28 @@ class MessageProcessor {
 
       // Card-link short-circuit: when the agent just created a card and user asks for the link,
       // construct and return it immediately. No classification, no probes needed.
+      // GUARD: verify card creation via action ledger, not just response text pattern.
+      // The LLM can hallucinate "card #N" in compound fallback responses — text matching alone
+      // is not trustworthy. Cross-check against the action ledger which only records real API calls.
       const earlyLiveContext = session ? buildLiveContext(session, pipelineMessage) : null;
       if (earlyLiveContext?.lastAssistantAction?.type === 'card_created' &&
           earlyLiveContext.lastAssistantAction.cardId &&
           /\b(link|url|card|created|made|just)\b/i.test(pipelineMessage)) {
         const cardId = earlyLiveContext.lastAssistantAction.cardId;
-        const ncUrl = (this.ncRequestManager?.ncUrl || process.env.NC_URL || '').replace(/\/$/, '');
-        if (ncUrl) {
-          const cardUrl = `${ncUrl}/apps/deck/card/${cardId}`;
-          response = `Here's the card: [#${cardId}](${cardUrl})`;
-          result = { intent: 'card_link_shortcircuit', provider: 'context' };
+        // Cross-check: action ledger must contain a deck card creation with this ID
+        const ledgerConfirmed = (session.actionLedger || []).some(a =>
+          a.type?.startsWith('deck_create') &&
+          String(a.refs?.cardId) === String(cardId)
+        );
+        if (ledgerConfirmed) {
+          const ncUrl = (this.ncRequestManager?.ncUrl || process.env.NC_URL || '').replace(/\/$/, '');
+          if (ncUrl) {
+            const cardUrl = `${ncUrl}/apps/deck/card/${cardId}`;
+            response = `Here's the card: [#${cardId}](${cardUrl})`;
+            result = { intent: 'card_link_shortcircuit', provider: 'context' };
+          }
+        } else {
+          console.warn(`[Message] Card-link short-circuit blocked: card #${cardId} not confirmed in action ledger`);
         }
       }
 
@@ -663,10 +675,15 @@ class MessageProcessor {
             }
             result = { intent: 'smart_mix_compound', provider: 'local' };
           } catch (compoundErr) {
-            // Compound decomposition failed — fall back to knowledge mode
-            console.warn(`[Message] Compound decomposition failed, falling back to knowledge: ${compoundErr.message}`);
+            // Compound decomposition failed — fall back to knowledge-only mode.
+            // CRITICAL: knowledge pipeline CANNOT perform actions (create cards, send emails, etc).
+            // The response MUST NOT claim actions were performed — append an honest disclaimer.
+            console.warn(`[Message] Compound decomposition failed, falling back to knowledge-only: ${compoundErr.message}`);
+            const compoundFallbackPolicy = '\n\nCRITICAL CONSTRAINT: You are running in KNOWLEDGE-ONLY mode because the action pipeline failed. ' +
+              'You CANNOT create cards, move cards, send emails, book appointments, or perform ANY action. ' +
+              'If the user asked you to do something, answer the knowledge part of their question, then clearly state that you could not complete the requested action and they should ask again separately.';
             try {
-              const knowledgeResult = await this._handleKnowledgeQuery(pipelineMessage, session, liveContext, extracted.token);
+              const knowledgeResult = await this._handleKnowledgeQuery(pipelineMessage, session, liveContext, extracted.token, compoundFallbackPolicy);
               if (typeof knowledgeResult === 'object' && knowledgeResult !== null) {
                 this._captureActionRecord(session, knowledgeResult.actionRecord);
                 if (knowledgeResult.enrichmentBlock) _enrichmentBlock = knowledgeResult.enrichmentBlock;
@@ -674,6 +691,12 @@ class MessageProcessor {
                 response = knowledgeResult.response || "I don't have any information about that.";
               } else {
                 response = knowledgeResult || "I don't have any information about that.";
+              }
+              // Always append honest disclaimer — the knowledge pipeline cannot perform actions.
+              // Don't rely on regex to detect whether the LLM acknowledged the failure;
+              // the LLM operates in multiple languages and phrasings are unpredictable.
+              if (response) {
+                response += '\n\n⚠️ I wasn\'t able to complete the action part of your request (e.g. creating a card). Please ask me to do that as a separate message.';
               }
               result = { intent: 'smart_mix_compound_fallback', provider: 'local' };
             } catch (fallbackErr) {
@@ -1643,7 +1666,7 @@ class MessageProcessor {
    * @returns {Promise<{response: string, actionRecord: Object, enrichmentBlock?: string}>}
    * @private
    */
-  async _handleKnowledgeQuery(message, session, liveContext, roomToken) {
+  async _handleKnowledgeQuery(message, session, liveContext, roomToken, extraPolicy = '') {
     const enricher = this.microPipeline?.memoryContextEnricher;
     const searcher = this.microPipeline?.memorySearcher;
     const router = this.microPipeline?.router;
@@ -1734,7 +1757,7 @@ class MessageProcessor {
     } else if (searchPolicy === 'sovereign' && substantiveResults < 2) {
       policyContext = '\n\nNote: Search policy is sovereign — no web search. If internal knowledge is insufficient, state what you know and what gaps exist honestly. Do not offer to search the web.';
     }
-    const response = await this._synthesizeKnowledge(query, aggregated, session, router, liveContext, policyContext);
+    const response = await this._synthesizeKnowledge(query, aggregated, session, router, liveContext, policyContext + extraPolicy);
 
     return {
       response,
