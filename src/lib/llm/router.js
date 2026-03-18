@@ -721,6 +721,7 @@ class LLMRouter {
     }
 
     let chain = [...(this._roster[job] || this._roster[JOBS.QUICK] || [])];
+    if (job === JOBS.TOOLS) console.log(`[LLMRouter] TOOLS chain resolved: [${chain.join(', ')}]`);
 
     if (options.forceLocal) {
       chain = chain.filter(id => {

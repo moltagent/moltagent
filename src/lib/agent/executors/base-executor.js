@@ -81,6 +81,7 @@ class BaseExecutor {
 
       const result = await this.router.route({
         job,
+        task: `extract_${this.constructor.name || 'base'}`,
         content: extractionPrompt,
         requirements
       });

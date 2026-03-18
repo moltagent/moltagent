@@ -84,7 +84,9 @@ class LegacyLLMRouter {
 
     if (typeof taskOrConfig === 'object' && taskOrConfig !== null) {
       request = {
+        job: taskOrConfig.job,
         task: taskOrConfig.task,
+        system: taskOrConfig.system,
         content: taskOrConfig.content,
         requirements: taskOrConfig.requirements || taskOrConfig.options || {},
         context: taskOrConfig.context
