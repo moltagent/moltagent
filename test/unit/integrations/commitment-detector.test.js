@@ -1,5 +1,15 @@
+/*
+ * Moltagent - Sovereign AI Agent Platform
+ * Copyright (C) 2026 Moltagent Contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
 /**
- * CommitmentDetector Unit Tests
+ * CommitmentDetector Unit Tests (LLM-based v2)
  *
  * Run: node test/unit/integrations/commitment-detector.test.js
  *
@@ -9,16 +19,37 @@
 'use strict';
 
 const assert = require('assert');
-const { test, summary, exitWithCode } = require('../../helpers/test-runner');
+const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 
-const { detectCommitments } = require('../../../src/lib/integrations/commitment-detector');
+const { CommitmentDetector } = require('../../../src/lib/integrations/commitment-detector');
 
 // ---------------------------------------------------------------------------
-// Fixtures
+// Mock helpers
 // ---------------------------------------------------------------------------
 
-function makeCtx(...pairs) {
-  // pairs: alternating user / assistant strings
+/** Create a mock llmRouter that returns the given JSON array as LLM output */
+function mockRouter(responseArray) {
+  return {
+    route: async () => ({ result: JSON.stringify(responseArray) })
+  };
+}
+
+/** Create a mock llmRouter that throws on route() */
+function failingRouter(errMsg = 'LLM offline') {
+  return {
+    route: async () => { throw new Error(errMsg); }
+  };
+}
+
+/** Create a mock llmRouter that returns the given raw text (for testing fence stripping) */
+function rawRouter(text) {
+  return {
+    route: async () => ({ result: text })
+  };
+}
+
+/** Conversation helper: alternating user/assistant messages */
+function makeConv(...pairs) {
   const messages = [];
   for (let i = 0; i < pairs.length; i++) {
     messages.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: pairs[i] });
@@ -26,164 +57,147 @@ function makeCtx(...pairs) {
   return messages;
 }
 
+const silentLogger = { warn: () => {} };
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-console.log('CommitmentDetector Unit Tests');
-console.log('==============================\n');
+console.log('CommitmentDetector Unit Tests (LLM-based v2)');
+console.log('=============================================\n');
 
 // --- Guard / edge cases ---
 
-test('returns empty array for null input', () => {
-  assert.deepStrictEqual(detectCommitments(null), []);
+test('throws if llmRouter is not provided', () => {
+  assert.throws(() => new CommitmentDetector({ logger: silentLogger }), /llmRouter/);
 });
 
-test('returns empty array for empty array input', () => {
-  assert.deepStrictEqual(detectCommitments([]), []);
+asyncTest('returns empty array for null input', async () => {
+  const cd = new CommitmentDetector({ llmRouter: mockRouter([]), logger: silentLogger });
+  assert.deepStrictEqual(await cd.detect(null), []);
 });
 
-test('returns empty array when no assistant messages present', () => {
-  const ctx = [
-    { role: 'user', content: 'Can you help me?' },
-    { role: 'user', content: 'Please respond.' },
+asyncTest('returns empty array for empty array input', async () => {
+  const cd = new CommitmentDetector({ llmRouter: mockRouter([]), logger: silentLogger });
+  assert.deepStrictEqual(await cd.detect([]), []);
+});
+
+asyncTest('returns empty array when less than 2 messages', async () => {
+  const cd = new CommitmentDetector({ llmRouter: mockRouter([]), logger: silentLogger });
+  assert.deepStrictEqual(await cd.detect([{ role: 'user', content: 'hi' }]), []);
+});
+
+// --- Core detection via LLM ---
+
+asyncTest('returns commitments from LLM response', async () => {
+  const llmOutput = [
+    { title: 'Research NC Forms capabilities', type: 'research', context: 'User asked about NC Forms' }
   ];
-  assert.deepStrictEqual(detectCommitments(ctx), []);
+  const cd = new CommitmentDetector({ llmRouter: mockRouter(llmOutput), logger: silentLogger });
+  const result = await cd.detect(makeConv('Can you research NC Forms?', 'I will look into NC Forms for you.'));
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].title, 'Research NC Forms capabilities');
+  assert.strictEqual(result[0].type, 'research');
+  assert.ok(result[0].context.length > 0);
 });
 
-test('returns empty array when assistant messages contain no commitments', () => {
-  const ctx = makeCtx('What is 2 + 2?', 'Two plus two equals four.');
-  assert.deepStrictEqual(detectCommitments(ctx), []);
+asyncTest('returns empty array when LLM finds no commitments', async () => {
+  const cd = new CommitmentDetector({ llmRouter: mockRouter([]), logger: silentLogger });
+  const result = await cd.detect(makeConv('What is 2+2?', 'Two plus two equals four.'));
+  assert.deepStrictEqual(result, []);
 });
 
-// --- Type: promise ---
-
-test('detects "I will" as promise type', () => {
-  const ctx = makeCtx('Can you handle that?', 'I will take care of it by end of day.');
-  const results = detectCommitments(ctx);
-  assert.strictEqual(results.length, 1);
-  assert.strictEqual(results[0].type, 'promise');
-  assert.ok(results[0].text.includes('I will take care of it'));
+asyncTest('caps results at 5 commitments', async () => {
+  const llmOutput = Array.from({ length: 8 }, (_, i) => ({
+    title: `Task ${i + 1}`, type: 'action', context: `Context ${i + 1}`
+  }));
+  const cd = new CommitmentDetector({ llmRouter: mockRouter(llmOutput), logger: silentLogger });
+  const result = await cd.detect(makeConv('Do everything', 'I will do all eight things.'));
+  assert.ok(result.length <= 5, `Expected <= 5 but got ${result.length}`);
 });
 
-test('detects contraction I\'ll as promise type', () => {
-  const ctx = makeCtx('Will you do it?', "I'll handle that task for you.");
-  const results = detectCommitments(ctx);
-  assert.strictEqual(results.length, 1);
-  assert.strictEqual(results[0].type, 'promise');
+// --- Type normalisation ---
+
+asyncTest('normalises unknown type to action', async () => {
+  const llmOutput = [{ title: 'Do something', type: 'banana', context: 'test' }];
+  const cd = new CommitmentDetector({ llmRouter: mockRouter(llmOutput), logger: silentLogger });
+  const result = await cd.detect(makeConv('test', 'test'));
+  assert.strictEqual(result[0].type, 'action');
 });
 
-// --- Type: research ---
-
-test('detects "let me look into" as research type', () => {
-  const ctx = makeCtx('Any news on that?', 'Let me look into that and report back.');
-  const results = detectCommitments(ctx);
-  assert.strictEqual(results.length, 1);
-  assert.strictEqual(results[0].type, 'research');
-});
-
-test('detects "let me research" as research type', () => {
-  const ctx = makeCtx('Can you find out?', 'Let me research the topic for you.');
-  const results = detectCommitments(ctx);
-  assert.strictEqual(results.length, 1);
-  assert.strictEqual(results[0].type, 'research');
-});
-
-// --- Type: offer ---
-
-test('detects "I can look into" as offer type', () => {
-  const ctx = makeCtx('Is that possible?', 'I can look into the options available.');
-  const results = detectCommitments(ctx);
-  assert.strictEqual(results.length, 1);
-  assert.strictEqual(results[0].type, 'offer');
-});
-
-// --- Type: follow-up ---
-
-test('detects "I\'ll follow up" as follow-up type (not plain promise)', () => {
-  const ctx = makeCtx('Okay thanks.', "I'll follow up with you tomorrow.");
-  const results = detectCommitments(ctx);
-  assert.strictEqual(results.length, 1);
-  assert.strictEqual(results[0].type, 'follow-up');
-});
-
-test('detects "I will get back to you" as follow-up type', () => {
-  const ctx = makeCtx('When will you respond?', 'I will get back to you once I have more information.');
-  const results = detectCommitments(ctx);
-  assert.strictEqual(results.length, 1);
-  assert.strictEqual(results[0].type, 'follow-up');
-});
-
-// --- Type: action ---
-
-test('detects "I\'ll send" as action type', () => {
-  const ctx = makeCtx('Can you forward that?', "I'll send you the document shortly.");
-  const results = detectCommitments(ctx);
-  assert.strictEqual(results.length, 1);
-  assert.strictEqual(results[0].type, 'action');
-});
-
-// --- Exclusions ---
-
-test('excludes "I will not" negation sentences', () => {
-  const ctx = makeCtx('Will you share secrets?', 'I will not share any private data with third parties.');
-  assert.deepStrictEqual(detectCommitments(ctx), []);
-});
-
-test('excludes hypothetical phrasing', () => {
-  const ctx = makeCtx('What would you do?', 'If I were to handle this, I would suggest a different approach.');
-  assert.deepStrictEqual(detectCommitments(ctx), []);
-});
-
-test('excludes sentences shorter than 10 characters', () => {
-  // Force a short match by injecting a tiny assistant message
-  const ctx = [{ role: 'assistant', content: 'I will.' }];
-  assert.deepStrictEqual(detectCommitments(ctx), []);
-});
-
-// --- Context attachment ---
-
-test('attaches preceding user message as context', () => {
-  const ctx = makeCtx('Please draft the report.', "I'll draft the report and send it over.");
-  const results = detectCommitments(ctx);
-  assert.strictEqual(results.length, 1);
-  assert.strictEqual(results[0].context, 'Please draft the report.');
-});
-
-test('context is empty string when no preceding user message exists', () => {
-  const ctx = [{ role: 'assistant', content: "I'll prepare the summary for you." }];
-  const results = detectCommitments(ctx);
-  assert.strictEqual(results.length, 1);
-  assert.strictEqual(results[0].context, '');
-});
-
-// --- Deduplication ---
-
-test('deduplicates identical commitment sentences across messages', () => {
-  const ctx = [
-    { role: 'user',      content: 'First ask.' },
-    { role: 'assistant', content: "I'll take care of it right away." },
-    { role: 'user',      content: 'Second ask.' },
-    { role: 'assistant', content: "I'll take care of it right away." },
+asyncTest('preserves valid types: follow-up, research, action', async () => {
+  const llmOutput = [
+    { title: 'Follow up task', type: 'follow-up', context: 'a' },
+    { title: 'Research task', type: 'research', context: 'b' },
+    { title: 'Action task', type: 'action', context: 'c' },
   ];
-  const results = detectCommitments(ctx);
-  assert.strictEqual(results.length, 1);
+  const cd = new CommitmentDetector({ llmRouter: mockRouter(llmOutput), logger: silentLogger });
+  const result = await cd.detect(makeConv('test', 'test'));
+  assert.strictEqual(result[0].type, 'follow-up');
+  assert.strictEqual(result[1].type, 'research');
+  assert.strictEqual(result[2].type, 'action');
 });
 
-// --- Max 5 cap ---
+// --- Error handling ---
 
-test('returns at most 5 commitments', () => {
-  const lines = [
-    "I will send you the report.",
-    "I'll draft the proposal today.",
-    "I will schedule the meeting.",
-    "I'll follow up tomorrow morning.",
-    "I will prepare the summary.",
-    "I'll set up the demo for you.",
-  ].join('  ');
-  const ctx = [{ role: 'user', content: 'Do everything.' }, { role: 'assistant', content: lines }];
-  const results = detectCommitments(ctx);
-  assert.ok(results.length <= 5, `Expected <= 5 but got ${results.length}`);
+asyncTest('returns empty array on LLM failure', async () => {
+  const cd = new CommitmentDetector({ llmRouter: failingRouter(), logger: silentLogger });
+  const result = await cd.detect(makeConv('test', 'I will do it'));
+  assert.deepStrictEqual(result, []);
+});
+
+asyncTest('returns empty array on invalid JSON from LLM', async () => {
+  const cd = new CommitmentDetector({ llmRouter: rawRouter('not json at all'), logger: silentLogger });
+  const result = await cd.detect(makeConv('test', 'test'));
+  assert.deepStrictEqual(result, []);
+});
+
+asyncTest('handles markdown-fenced JSON from LLM', async () => {
+  const fenced = '```json\n[{"title":"Follow up on report","type":"follow-up","context":"report request"}]\n```';
+  const cd = new CommitmentDetector({ llmRouter: rawRouter(fenced), logger: silentLogger });
+  const result = await cd.detect(makeConv('test', 'test'));
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].title, 'Follow up on report');
+});
+
+// --- Validation: skips entries with empty title ---
+
+asyncTest('skips entries with missing or empty title', async () => {
+  const llmOutput = [
+    { title: '', type: 'action', context: 'empty' },
+    { title: 'Valid task', type: 'action', context: 'ok' },
+    { type: 'action', context: 'no title field' },
+  ];
+  const cd = new CommitmentDetector({ llmRouter: mockRouter(llmOutput), logger: silentLogger });
+  const result = await cd.detect(makeConv('test', 'test'));
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].title, 'Valid task');
+});
+
+// --- Context truncation ---
+
+asyncTest('truncates context to 100 chars', async () => {
+  const longContext = 'A'.repeat(200);
+  const llmOutput = [{ title: 'Task', type: 'action', context: longContext }];
+  const cd = new CommitmentDetector({ llmRouter: mockRouter(llmOutput), logger: silentLogger });
+  const result = await cd.detect(makeConv('test', 'test'));
+  assert.strictEqual(result[0].context.length, 100);
+});
+
+// --- Prompt construction (verify LLM receives condensed conversation) ---
+
+asyncTest('sends condensed conversation to LLM', async () => {
+  let capturedPrompt = '';
+  const capturingRouter = {
+    route: async ({ content }) => {
+      capturedPrompt = content;
+      return { result: '[]' };
+    }
+  };
+  const cd = new CommitmentDetector({ llmRouter: capturingRouter, logger: silentLogger });
+  await cd.detect(makeConv('Hello agent', 'Hello user, how can I help?'));
+  assert.ok(capturedPrompt.includes('User: Hello agent'));
+  assert.ok(capturedPrompt.includes('Agent: Hello user, how can I help?'));
 });
 
 // ---------------------------------------------------------------------------

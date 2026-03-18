@@ -105,7 +105,11 @@ function createMockDeck() {
 
     getComments: async () => [],
 
-    addComment: async () => ({})
+    addComment: async () => ({}),
+
+    _getIds: async () => ({ boardId: 1, stacks: {}, labels: {} }),
+
+    baseUrl: 'https://nc.test'
   };
 }
 
@@ -557,6 +561,7 @@ asyncTest('TC-PBM-015: _checkDoing detects stale card (48h no update)', async ()
     notifyUser: (msg) => notifications.push(msg)
   });
 
+  // Card with human assignee — tier 2 will trigger Talk notification
   deck._cards.doing.push({
     id: 60,
     title: 'Stale doing task',
@@ -564,23 +569,15 @@ asyncTest('TC-PBM-015: _checkDoing detects stale card (48h no update)', async ()
     duedate: null,
     lastModified: hoursAgo(49),
     createdAt: daysAgo(5),
-    labels: []
+    labels: [],
+    assignedUsers: [{ participant: { uid: 'fu' } }]
   });
 
-  await pbm._checkDoing();
+  const result = await pbm._checkDoing();
 
-  // The stale card should trigger a notification or label update
-  // Exact behavior depends on implementation; verify some side-effect occurred
-  const card = deck._cards.doing.find(c => c.id === 60) ||
-               deck._cards.inbox.find(c => c.id === 60);
-  assert.ok(card, 'Stale card should still exist (moved or flagged)');
-
-  // Check that stale detection produced a side-effect:
-  // Either a notification was sent, a label was added, or the card was moved
-  const sideEffect = notifications.length > 0 ||
-    (card.labels && card.labels.some(l => /stale|stuck/i.test(l.title))) ||
-    deck._cards.inbox.some(c => c.id === 60);
-  assert.ok(sideEffect, 'Stale card should trigger a notification, label, or move');
+  assert.ok(result.stale, 'Result should indicate stale card');
+  // Tier 2: human assigned → Talk notification
+  assert.ok(notifications.length > 0, 'Stale card with human assignee should trigger Talk notification');
 });
 
 // ----------------------------------------------------------

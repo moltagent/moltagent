@@ -20,227 +20,191 @@
  * -------------------
  * Problem: During a conversation the agent makes verbal commitments (promises,
  * research pledges, follow-up offers) that need to be surfaced so the user or
- * the agent itself can track and honour them.  These live only inside message
- * text; no structured signal exists at creation time.
+ * the agent itself can track and honour them. Regex-based detection is
+ * English-only, brittle against paraphrase, and requires constant maintenance
+ * as new commitment phrasings emerge.
  *
- * Pattern: Pure regex scan over the assistant turn history.  Each assistant
- * message is sentence-tokenised, each sentence is tested against an ordered
- * set of commitment patterns (most specific first so follow-up > promise when
- * both match).  The preceding user message is attached as context.  Results
- * are deduplicated by normalised text and capped at 5.
+ * Pattern: Single LLM call over the condensed conversation tail. The LLM
+ * already understands intent, language, and nuance — so it is the right tool
+ * for classifying commitments. The detector condenses the last 20 messages
+ * (each capped at 300 chars), sends one synthesis-job prompt, and parses the
+ * JSON response. No language-specific rules. Works in German, Portuguese, or
+ * any other language the LLM understands.
  *
  * Key Dependencies:
- *   - None (pure logic, no I/O)
+ *   - llmRouter  (route({ content, job, responseFormat }))
+ *   - logger     (warn)
  *
  * Data Flow:
- *   context ([{role, content}])
- *     → filter assistant messages
- *     → sentence-split each message
- *     → regex match against COMMITMENT_PATTERNS
- *     → attach preceding user message as context
- *     → deduplicate by normalised sentence
- *     → cap at MAX_RESULTS
- *     → return [{text, context, type}]
+ *   messages ([{role, content}])
+ *     → guard (null / empty / < 2 messages → [])
+ *     → condense last 20 messages, each truncated to 300 chars
+ *     → single LLM call (job: SYNTHESIS)
+ *     → parse JSON array from response
+ *     → validate + cap at MAX_COMMITMENTS
+ *     → return [{title, type, context}]
  *
  * Dependency Map:
- *   commitment-detector.js depends on: nothing
- *   Used by: proactive-evaluator, heartbeat-intelligence (future)
+ *   commitment-detector.js depends on: llm/router (JOBS constant)
+ *   Used by: session-persister
  *
  * @module integrations/commitment-detector
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 'use strict';
+
+const { JOBS } = require('../llm/router');
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_RESULTS = 5;
-const MIN_SENTENCE_LENGTH = 10;
+const MAX_MESSAGES = 20;      // Tail of conversation fed to the LLM
+const MAX_MSG_CHARS = 300;    // Per-message character cap for condensation
+const MAX_COMMITMENTS = 5;    // Hard cap on returned commitments
 
-/**
- * Ordered pattern list.  Each entry is tested in sequence; the FIRST match
- * wins.  More specific patterns (follow-up) must come before more general
- * ones (promise / action) to avoid wrong classification.
- *
- * @type {Array<{pattern: RegExp, type: string}>}
- */
-const COMMITMENT_PATTERNS = [
-  // follow-up — must precede plain promise/action because it is more specific
-  { pattern: /\bI['']ll\b.*?\b(follow up|get back to you|circle back)\b/i,  type: 'follow-up' },
-  { pattern: /\bI will\b.*?\b(follow up|get back to you|circle back)\b/i,   type: 'follow-up' },
-
-  // research offers
-  { pattern: /\blet me\s+(research|look into|check|find|investigate|prepare|draft|dig into)\b/i, type: 'research' },
-  { pattern: /\bI can\s+(look into|research|check|find|prepare|set up)\b/i,                      type: 'offer' },
-
-  // concrete action commitments
-  { pattern: /\bI['']ll\b.*?\b(send|create|write|draft|schedule|set up|prepare)\b/i, type: 'action' },
-
-  // generic promise — broad patterns last so they don't shadow specifics above
-  { pattern: /\bI will\b(?!\s+not\b)/i, type: 'promise' },
-  { pattern: /\bI['']ll\b(?!\s+not\b)/i, type: 'promise' },
-];
-
-/**
- * Sentences containing these phrases are treated as hypothetical and excluded.
- * @type {RegExp}
- */
-const HYPOTHETICAL_RE = /\bif I were to\b|\bI would suggest\b/i;
-
-/**
- * Current-action narration: the agent is describing what it's doing NOW,
- * not committing to a future action. Exclude these.
- * @type {RegExp}
- */
-const NARRATION_RE = /\blet me check\b|\bI('m| am) (checking|looking|searching|reading)\b|\bI (need|require)\b.*\bfrom you\b|\bTo proceed,? I need\b|\bI found\b|\bI see\b/i;
-
-/**
- * Conditional offers: "I can X if you Y" or "Confirm and I'll" — not yet committed.
- * @type {RegExp}
- */
-const CONDITIONAL_RE = /\bI can\b.*\bif you\b|\bonce you\b.*\bI['']ll\b|\bconfirm\b.*\bI['']ll\b|\bI can now\b/i;
-
-/**
- * Explicit negations that should be excluded despite matching commitment
- * patterns.  The individual patterns already exclude "I will not" and
- * "I'll not" via negative lookahead, but belt-and-suspenders for edge cases.
- * @type {RegExp}
- */
-const NEGATION_RE = /\bI will not\b|\bI won't\b|\bI can't\b/i;
+// Valid commitment types the LLM is allowed to return
+const VALID_TYPES = new Set(['follow-up', 'research', 'action']);
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Class
 // ---------------------------------------------------------------------------
 
 /**
- * Split text into sentences using a simple heuristic: split on punctuation
- * followed by whitespace or end-of-string, while respecting common
- * abbreviations imperfectly (good-enough for commitment detection).
+ * LLM-based commitment detector.
  *
- * @param {string} text
- * @returns {string[]}
+ * Replaces the regex-based detectCommitments() function with a single
+ * LLM call that understands intent across all languages and phrasings.
  */
-function splitSentences(text) {
-  if (!text || typeof text !== 'string') return [];
-
-  // Normalise newlines to spaces so multi-line assistant messages work.
-  const normalised = text.replace(/\r?\n/g, ' ').trim();
-
-  // Split on sentence-ending punctuation followed by whitespace or EOS.
-  // We keep the delimiter attached to the preceding segment.
-  const raw = normalised.split(/(?<=[.!?])\s+(?=[A-Z"'(])|(?<=[.!?])$/);
-
-  return raw
-    .map(s => s.trim())
-    .filter(s => s.length >= MIN_SENTENCE_LENGTH);
-}
-
-/**
- * Normalise a sentence for deduplication: lowercase, collapse whitespace,
- * strip trailing punctuation.
- *
- * @param {string} sentence
- * @returns {string}
- */
-function normalise(sentence) {
-  return sentence
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .replace(/[.!?,;:]+$/, '')
-    .trim();
-}
-
-/**
- * Return true if the sentence should be excluded from commitment detection.
- *
- * @param {string} sentence
- * @returns {boolean}
- */
-function isExcluded(sentence) {
-  return HYPOTHETICAL_RE.test(sentence) || NEGATION_RE.test(sentence) ||
-    NARRATION_RE.test(sentence) || CONDITIONAL_RE.test(sentence);
-}
-
-/**
- * Find the type of the first matching commitment pattern, or null if none.
- *
- * @param {string} sentence
- * @returns {string|null}
- */
-function matchCommitmentType(sentence) {
-  for (const { pattern, type } of COMMITMENT_PATTERNS) {
-    if (pattern.test(sentence)) {
-      return type;
+class CommitmentDetector {
+  /**
+   * @param {Object} options
+   * @param {Object} options.llmRouter - LLM router with a route() method
+   * @param {Object} [options.logger]  - Logger with a warn() method (defaults to console)
+   */
+  constructor({ llmRouter, logger }) {
+    if (!llmRouter) {
+      throw new Error('CommitmentDetector requires llmRouter');
     }
+    this.llm = llmRouter;
+    this.logger = logger || console;
   }
-  return null;
-}
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Detect commitments made by the assistant in a conversation context.
- *
- * @param {Array<{role: string, content: string}>} context - Conversation messages.
- * @returns {Array<{text: string, context: string, type: string}>}
- */
-function detectCommitments(context) {
-  if (!Array.isArray(context) || context.length === 0) return [];
-
-  const results = [];
-  const seen = new Set(); // normalised sentence strings for deduplication
-
-  for (let i = 0; i < context.length; i++) {
-    const message = context[i];
-
-    // Only inspect assistant messages.
-    if (!message || message.role !== 'assistant') continue;
-
-    const content = message.content;
-    if (!content || typeof content !== 'string') continue;
-
-    // Find the nearest preceding user message to attach as context.
-    let precedingUserContent = '';
-    for (let j = i - 1; j >= 0; j--) {
-      if (context[j] && context[j].role === 'user') {
-        precedingUserContent = context[j].content || '';
-        break;
-      }
+  /**
+   * Detect unfulfilled commitments the agent made to the user.
+   *
+   * @param {Array<{role: string, content: string}>} messages - Conversation messages
+   * @returns {Promise<Array<{title: string, type: string, context: string}>>}
+   */
+  async detect(messages) {
+    // Guard: null / empty / too-short input
+    if (!Array.isArray(messages) || messages.length < 2) {
+      return [];
     }
 
-    const sentences = splitSentences(content);
+    // Condense: take last MAX_MESSAGES messages, truncate each to MAX_MSG_CHARS
+    const tail = messages.slice(-MAX_MESSAGES);
+    const condensed = tail
+      .map(m => {
+        const role = m.role === 'assistant' ? 'Agent' : 'User';
+        const content = (typeof m.content === 'string' ? m.content : String(m.content || ''))
+          .replace(/\r?\n/g, ' ')
+          .trim()
+          .substring(0, MAX_MSG_CHARS);
+        return `${role}: ${content}`;
+      })
+      .join('\n');
 
-    for (const sentence of sentences) {
-      if (results.length >= MAX_RESULTS) break;
+    const prompt = [
+      'You are analyzing a conversation between a user and an AI agent.',
+      'Identify commitments the AGENT made TO THE USER that were not completed within this conversation.',
+      '',
+      'A commitment is a specific promise or obligation the agent took on, such as:',
+      '- Agreeing to follow up on something later',
+      '- Promising to research or look into a topic',
+      '- Offering to create, send, draft, or schedule something',
+      '',
+      'Do NOT include:',
+      '- Narration of current actions ("let me check", "I am searching")',
+      '- Explanations of agent capabilities',
+      '- Actions that were completed within this conversation',
+      '- Hypothetical statements ("if you want, I could...")',
+      '- Conditional offers that the user did not accept',
+      '',
+      'For each unfulfilled commitment, return a JSON object with:',
+      '  "title": a short action phrase (5-8 words) describing the commitment',
+      '  "type": one of "follow-up", "research", or "action"',
+      '  "context": a brief phrase (max 100 chars) summarising what triggered the commitment',
+      '',
+      `Return a JSON array. Return at most ${MAX_COMMITMENTS} items. If there are no commitments, return [].`,
+      'Return ONLY the JSON array — no explanation, no markdown fences.',
+      '',
+      'Conversation:',
+      condensed,
+    ].join('\n');
 
-      if (isExcluded(sentence)) continue;
-
-      const type = matchCommitmentType(sentence);
-      if (!type) continue;
-
-      const key = normalise(sentence);
-      if (seen.has(key)) continue;
-
-      seen.add(key);
-      results.push({
-        text: sentence,
-        context: precedingUserContent,
-        type,
+    let result;
+    try {
+      result = await this.llm.route({
+        content: prompt,
+        job: JOBS.SYNTHESIS,
+        responseFormat: 'json',
       });
+    } catch (err) {
+      this.logger.warn('[CommitmentDetector] LLM call failed:', err.message);
+      return [];
     }
 
-    if (results.length >= MAX_RESULTS) break;
-  }
+    // Extract text from router response — router returns { result: '...' }
+    const text = (result?.result || result?.content || '').trim();
 
-  return results;
+    if (!text) {
+      this.logger.warn('[CommitmentDetector] LLM returned empty response');
+      return [];
+    }
+
+    // Parse JSON — strip markdown fences if the model included them
+    let parsed;
+    try {
+      const jsonText = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+      parsed = JSON.parse(jsonText);
+    } catch (err) {
+      this.logger.warn('[CommitmentDetector] Failed to parse LLM JSON:', err.message, '| raw:', text.substring(0, 200));
+      return [];
+    }
+
+    if (!Array.isArray(parsed)) {
+      this.logger.warn('[CommitmentDetector] LLM response was not a JSON array');
+      return [];
+    }
+
+    // Validate each entry and cap at MAX_COMMITMENTS
+    const commitments = [];
+    for (const item of parsed) {
+      if (commitments.length >= MAX_COMMITMENTS) break;
+
+      if (!item || typeof item !== 'object') continue;
+
+      const title = typeof item.title === 'string' ? item.title.trim() : '';
+      if (!title) continue;
+
+      // Normalise type: default to 'action' if the LLM returned something unexpected
+      const type = VALID_TYPES.has(item.type) ? item.type : 'action';
+
+      const context = typeof item.context === 'string'
+        ? item.context.trim().substring(0, 100)
+        : '';
+
+      commitments.push({ title, type, context });
+    }
+
+    return commitments;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
-module.exports = { detectCommitments };
+module.exports = { CommitmentDetector };

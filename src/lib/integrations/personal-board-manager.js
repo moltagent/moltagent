@@ -387,40 +387,240 @@ class PersonalBoardManager {
   }
 
   /**
-   * Check whether the active doing card is stale (no update in 48h) and
-   * notify the owner if so.
+   * Check all doing cards for staleness and apply escalation tiers:
    *
-   * @returns {Promise<{stale: boolean, cardTitle: string|null}>}
+   *   Tier 1 — Self-manage (no Talk notification):
+   *     Card has no human assignee AND no due date.
+   *     >14 days stale: auto-move to 'planned' with explanation comment.
+   *     7-14 days stale: add self-check comment (max once per 7 days).
+   *     2-7 days stale: skip.
+   *
+   *   Tier 2 — Notify human (Talk, 24h cooldown):
+   *     Card has human assignee, OR has due date, OR neither tier-1 nor tier-3.
+   *     Posts to Talk and stamps a 'Stale check' comment to enforce cooldown.
+   *
+   *   Tier 3 — Urgent (Talk, no cooldown):
+   *     Card carries label 'promise' AND its due date is past.
+   *     Always notifies immediately.
+   *
+   * @returns {Promise<{stale: boolean, cardTitle: string|null, actions: string[]}>}
    * @private
    */
   async _checkDoing() {
+    const actions = [];
+    let anyStale = false;
+    let firstDoingTitle = null;
+
     try {
       const cards = await this.deck.getCardsInStack('doing');
-      if (cards.length === 0) return { stale: false, cardTitle: null };
+      if (cards.length === 0) return { stale: false, cardTitle: null, actions };
 
-      const card = cards[0];
-      const lastModSec = this._toEpochSec(card.lastModified || card.createdAt);
-      const age = Date.now() - (lastModSec * 1000);
-
-      if (Number.isFinite(age) && age > this.STALE_DOING_MS) {
-        const daysSince = Math.round(age / MS_PER_DAY);
-        const message = `Task "${card.title}" has been in Doing for ${daysSince} day(s) without updates. Need help or should it move to Waiting?`;
-        console.log(`${LOG_PREFIX} Stale doing card: "${card.title}" (${daysSince}d)`);
-
-        try {
-          await this.notifyUser({ type: 'working-memory', message });
-        } catch (notifyErr) {
-          console.log(`${LOG_PREFIX} Could not notify user about stale card: ${notifyErr.message}`);
-        }
-
-        return { stale: true, cardTitle: card.title };
+      // Resolve boardId once for card link construction (cached by DeckClient)
+      let boardId = null;
+      try {
+        const ids = await this.deck._getIds();
+        boardId = ids.boardId;
+      } catch {
+        // boardId stays null — card links will be omitted gracefully
       }
 
-      return { stale: false, cardTitle: card.title };
+      for (const card of cards) {
+        try {
+          const lastModSec = this._toEpochSec(card.lastModified || card.createdAt);
+          const age = Date.now() - (lastModSec * 1000);
+
+          if (!Number.isFinite(age) || age <= this.STALE_DOING_MS) {
+            // Not stale yet — record title for the summary but take no action
+            if (!firstDoingTitle) firstDoingTitle = card.title;
+            continue;
+          }
+
+          const days = Math.round(age / MS_PER_DAY);
+          anyStale = true;
+          if (!firstDoingTitle) firstDoingTitle = card.title;
+
+          console.log(`${LOG_PREFIX} Stale doing card: "${card.title}" (${days}d)`);
+
+          // Determine which tier applies
+          const hasHuman = this._hasHumanAssigned(card);
+          const hasDue = !!card.duedate;
+          const isPromisePastDue = this._hasLabel(card, 'promise') && this._isPastDue(card);
+
+          // --- Tier 3: urgent promise past due — no cooldown ---
+          if (isPromisePastDue) {
+            const cardUrl = this._buildCardUrl(boardId, card.id);
+            const talkMsg = `📋 Task "${card.title.substring(0, 60)}" has been in Doing for ${days} day(s). ${cardUrl ? `[Open card](${cardUrl})` : ''}\nPromise is past due — needs immediate attention.`;
+            try {
+              await this.notifyUser({ type: 'working-memory', message: talkMsg });
+              actions.push(`tier3-urgent:${card.id}`);
+              console.log(`${LOG_PREFIX} Tier 3 urgent notification sent for "${card.title}"`);
+            } catch (notifyErr) {
+              console.log(`${LOG_PREFIX} Could not send tier-3 notification for card ${card.id}: ${notifyErr.message}`);
+            }
+            try {
+              await this.deck.addComment(card.id, `Stale check: in Doing for ${days} days. Notified user in Talk (tier-3 urgent).`, 'STATUS');
+            } catch (commentErr) {
+              console.log(`${LOG_PREFIX} Could not stamp tier-3 comment on card ${card.id}: ${commentErr.message}`);
+            }
+            continue;
+          }
+
+          // --- Tier 1: no human assigned AND no due date — self-manage ---
+          if (!hasHuman && !hasDue) {
+            if (days > 14) {
+              // Auto-move to planned
+              try {
+                await this.deck.addComment(
+                  card.id,
+                  `Stale check: in Doing for ${days} days with no assignee or due date. Auto-moving to Planned for later review.`,
+                  'STATUS'
+                );
+                await this.deck.moveCard(card.id, 'doing', 'planned');
+                actions.push(`tier1-auto-move:${card.id}`);
+                console.log(`${LOG_PREFIX} Tier 1 auto-move: "${card.title}" moved from doing to planned (${days}d stale)`);
+              } catch (moveErr) {
+                console.log(`${LOG_PREFIX} Could not auto-move card ${card.id} to planned: ${moveErr.message}`);
+              }
+            } else if (days > 7) {
+              // Self-check comment — max once per 7 days
+              const recentlySelfChecked = await this._wasRecentlyNotified(card.id, 7 * 24);
+              if (!recentlySelfChecked) {
+                try {
+                  await this.deck.addComment(
+                    card.id,
+                    `Stale check: in Doing for ${days} days. No assignee or due date — self-managing. Consider moving to Waiting or Planned if blocked.`,
+                    'STATUS'
+                  );
+                  actions.push(`tier1-self-check:${card.id}`);
+                  console.log(`${LOG_PREFIX} Tier 1 self-check comment added for "${card.title}" (${days}d)`);
+                } catch (commentErr) {
+                  console.log(`${LOG_PREFIX} Could not add self-check comment on card ${card.id}: ${commentErr.message}`);
+                }
+              } else {
+                console.log(`${LOG_PREFIX} Tier 1 self-check skipped for "${card.title}" — already checked within 7 days`);
+              }
+            }
+            // 2-7 days: no action for tier-1 cards
+            continue;
+          }
+
+          // --- Tier 2: human assigned or has due date — notify with 24h cooldown ---
+          const alreadyNotified = await this._wasRecentlyNotified(card.id, 24);
+          if (alreadyNotified) {
+            console.log(`${LOG_PREFIX} Tier 2 notification skipped for "${card.title}" — already notified within 24h`);
+            continue;
+          }
+
+          const cardUrl = this._buildCardUrl(boardId, card.id);
+          const talkMsg = `📋 Task "${card.title.substring(0, 60)}" has been in Doing for ${days} day(s). ${cardUrl ? `[Open card](${cardUrl})` : ''}\nNeed help, or should it move to Waiting?`;
+          try {
+            await this.notifyUser({ type: 'working-memory', message: talkMsg });
+            actions.push(`tier2-notify:${card.id}`);
+            console.log(`${LOG_PREFIX} Tier 2 notification sent for "${card.title}" (${days}d)`);
+          } catch (notifyErr) {
+            console.log(`${LOG_PREFIX} Could not send tier-2 notification for card ${card.id}: ${notifyErr.message}`);
+          }
+          try {
+            await this.deck.addComment(card.id, `Stale check: in Doing for ${days} days. Notified user in Talk.`, 'STATUS');
+          } catch (commentErr) {
+            console.log(`${LOG_PREFIX} Could not stamp tier-2 comment on card ${card.id}: ${commentErr.message}`);
+          }
+        } catch (cardErr) {
+          console.log(`${LOG_PREFIX} _checkDoing error on card ${card?.id}: ${cardErr.message}`);
+        }
+      }
     } catch (err) {
       console.log(`${LOG_PREFIX} _checkDoing error: ${err.message}`);
-      return { stale: false, cardTitle: null };
+      return { stale: false, cardTitle: null, actions };
     }
+
+    return { stale: anyStale, cardTitle: firstDoingTitle, actions };
+  }
+
+  /**
+   * Check if a stale notification was posted recently.
+   *
+   * Looks for comments by a moltagent actor that contain 'Stale check'
+   * within the given cooldown window.
+   *
+   * @param {number} cardId
+   * @param {number} cooldownHours - hours to check back
+   * @returns {Promise<boolean>}
+   * @private
+   */
+  async _wasRecentlyNotified(cardId, cooldownHours = 24) {
+    try {
+      const comments = await this.deck.getComments(cardId);
+      if (!Array.isArray(comments) || comments.length === 0) return false;
+
+      const cutoff = Date.now() - (cooldownHours * 3600 * 1000);
+      return comments.some(c => {
+        const isMoltagent = /molt/i.test(c.actorId || '');
+        const isStaleCheck = (c.message || '').includes('Stale check');
+        const commentTime = new Date(c.creationDateTime).getTime();
+        return isMoltagent && isStaleCheck && commentTime > cutoff;
+      });
+    } catch {
+      // If we cannot check, assume not notified to avoid suppressing alerts
+      return false;
+    }
+  }
+
+  /**
+   * Return true if the card's due date is in the past.
+   *
+   * @param {Object} card
+   * @returns {boolean}
+   * @private
+   */
+  _isPastDue(card) {
+    if (!card.duedate) return false;
+    return new Date(card.duedate).getTime() < Date.now();
+  }
+
+  /**
+   * Return true if the card has at least one human (non-agent) assignee.
+   *
+   * Considers any uid that does NOT start with 'molt' (case-insensitive) as human.
+   *
+   * @param {Object} card
+   * @returns {boolean}
+   * @private
+   */
+  _hasHumanAssigned(card) {
+    if (!card.assignedUsers || card.assignedUsers.length === 0) return false;
+    return card.assignedUsers.some(u => {
+      const uid = u.participant?.uid || u.uid || '';
+      return !/^molt/i.test(uid);
+    });
+  }
+
+  /**
+   * Return true if the card carries a label with the given title (case-insensitive).
+   *
+   * @param {Object} card
+   * @param {string} labelTitle
+   * @returns {boolean}
+   * @private
+   */
+  _hasLabel(card, labelTitle) {
+    const labels = Array.isArray(card.labels) ? card.labels : [];
+    return labels.some(l => (l.title || '').toLowerCase() === labelTitle.toLowerCase());
+  }
+
+  /**
+   * Build a Deck card URL, returning null if boardId or cardId is missing.
+   *
+   * @param {number|null} boardId
+   * @param {number} cardId
+   * @returns {string|null}
+   * @private
+   */
+  _buildCardUrl(boardId, cardId) {
+    if (!boardId || !cardId) return null;
+    const base = (this.deck.baseUrl || '').replace(/\/$/, '');
+    if (!base) return null;
+    return `${base}/index.php/apps/deck/board/${boardId}/card/${cardId}`;
   }
 
   /**

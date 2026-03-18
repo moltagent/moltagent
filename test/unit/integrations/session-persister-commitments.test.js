@@ -39,9 +39,15 @@ function createMockWikiClient() {
   };
 }
 
-function createMockLLMRouter() {
+function createMockLLMRouter({ commitments = [] } = {}) {
+  let callCount = 0;
   return {
-    route: async function () {
+    route: async function ({ responseFormat } = {}) {
+      callCount++;
+      // Commitment detector requests JSON format; summary generation does not
+      if (responseFormat === 'json') {
+        return { result: JSON.stringify(commitments) };
+      }
       return { result: '## Summary\nDiscussed project tasks.\n## Open Items\n- Follow up on contracts' };
     }
   };
@@ -83,7 +89,12 @@ console.log('\n=== SessionPersister Commitment Detection Tests ===\n');
 
 asyncTest('TC-SPC-001: Session with commitment creates Personal board card', async () => {
   const wiki = createMockWikiClient();
-  const router = createMockLLMRouter();
+  const router = createMockLLMRouter({
+    commitments: [
+      { title: 'Look into ManeraMedia contract', type: 'research', context: 'User asked about ManeraMedia' },
+      { title: 'Follow up tomorrow', type: 'follow-up', context: 'Agent promised follow-up' }
+    ]
+  });
   const pbm = createMockPersonalBoardManager();
 
   const persister = new SessionPersister({
@@ -162,7 +173,12 @@ asyncTest('TC-SPC-003: No personalBoardManager → no error', async () => {
 
 asyncTest('TC-SPC-004: Commitment card includes context from user message', async () => {
   const wiki = createMockWikiClient();
-  const router = createMockLLMRouter();
+  const router = createMockLLMRouter({
+    commitments: [
+      { title: 'Review ManeraMedia contract', type: 'action', context: 'ManeraMedia contract needs review' },
+      { title: 'Research project timeline', type: 'research', context: 'User asked about timeline' }
+    ]
+  });
   const pbm = createMockPersonalBoardManager();
 
   const persister = new SessionPersister({
@@ -186,7 +202,7 @@ asyncTest('TC-SPC-004: Commitment card includes context from user message', asyn
 
   // At least one card should reference the context
   const hasContext = pbm._cards.some(c =>
-    c.description && c.description.includes('Context:')
+    c.description && c.description.includes('**Context:**')
   );
   assert.ok(hasContext, 'Card description should include user context');
 });

@@ -18,7 +18,7 @@
 const { JOBS } = require('../llm/router');
 const TrustGate = require('../security/trust-gate');
 const MythDetector = require('../security/myth-detector');
-const { detectCommitments } = require('./commitment-detector');
+const { CommitmentDetector } = require('./commitment-detector');
 
 /**
  * SessionPersister - Session Transcript Persistence
@@ -70,6 +70,7 @@ class SessionPersister {
     this.router = llmRouter;
     this.rhythmTracker = rhythmTracker || null;
     this.personalBoardManager = personalBoardManager || null;
+    this.commitmentDetector = llmRouter ? new CommitmentDetector({ llmRouter, logger: console }) : null;
     this.config = config;
     this.minContextForPersistence = 6;
     this.minExchanges = 4; // At least 4 user/assistant messages (2 exchanges)
@@ -182,21 +183,25 @@ class SessionPersister {
         }
       }
 
-      // Commitment detection: create Personal board cards for promises made
-      if (this.personalBoardManager) {
+      // Commitment detection: create Personal board cards for unfulfilled promises
+      if (this.personalBoardManager && this.commitmentDetector) {
         try {
-          const commitments = detectCommitments(session.context);
-          const labelMap = { 'follow-up': 'follow-up', 'research': 'research', 'offer': 'research' };
+          const commitments = await this.commitmentDetector.detect(session.context);
+          const labelMap = { 'follow-up': 'follow-up', 'research': 'research', 'action': 'promise' };
           for (const commitment of commitments) {
-            const contextSnippet = commitment.context
-              ? commitment.context.substring(0, 200)
-              : '';
+            const description = [
+              `**Context:** ${commitment.context || 'No context'}`,
+              '',
+              `Session: ${leafTitle}`,
+              `Detected: ${new Date().toISOString().split('T')[0]}`,
+            ].join('\n');
+
             await this.personalBoardManager.createPersonalCard({
-              title: commitment.text.substring(0, 100),
-              description: `Commitment from session ${leafTitle}\n\nContext: ${contextSnippet}`,
+              title: commitment.title,
+              description,
               label: labelMap[commitment.type] || 'promise'
             });
-            console.log(`[SessionPersister] Created commitment card: "${commitment.text.substring(0, 60)}"`);
+            console.log(`[SessionPersister] Created commitment card: "${commitment.title}"`);
           }
           if (commitments.length > 0) {
             console.log(`[SessionPersister] ${commitments.length} commitment(s) captured to Personal board`);
