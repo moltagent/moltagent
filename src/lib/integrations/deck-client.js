@@ -1436,8 +1436,41 @@ class DeckClient {
   }
 
   /**
-   * Ensure MoltAgent and card creator are assigned
-   * Called when picking up a task
+   * Get all cards assigned to a specific user across all stacks.
+   *
+   * Iterates every stack on the configured board and filters cards
+   * by assignedUsers.  Returns an array of card objects enriched
+   * with a `stackName` field so the caller knows where each card lives.
+   *
+   * @param {string} userId - Username to filter by (case-insensitive)
+   * @returns {Promise<Array>} Cards assigned to the user
+   */
+  async getCardsAssignedTo(userId) {
+    const { stacks } = await this._getIds();
+    const uid = (userId || '').toLowerCase();
+    const results = [];
+
+    for (const [stackName, stackId] of Object.entries(stacks)) {
+      if (!stackId) continue;
+      try {
+        const cards = await this.getCardsInStack(stackName);
+        for (const card of cards) {
+          const assigned = card.assignedUsers || [];
+          const match = assigned.some(u =>
+            (u.participant?.uid || u.uid || '').toLowerCase() === uid
+          );
+          if (match) results.push({ ...card, stackName });
+        }
+      } catch {
+        // Stack read failed — skip silently
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Ensure MoltAgent and card creator are assigned.
+   * Called when picking up a task.
    * @param {number} cardId - Card ID
    * @param {string} stackName - Stack the card is in
    * @param {string} creatorId - Original card creator username

@@ -563,12 +563,12 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_create_card',
-      description: 'Create a new card (task) on a board. Cards are created in the Inbox stack by default. Use the board parameter to target a specific board.',
+      description: 'Create a new card (task) on a board. ALWAYS include a description with relevant context from the conversation — findings, results, next steps, or details discussed. If the user asks to save findings or results to a card, include that content in the description field. Cards are created in the Inbox stack by default.',
       parameters: {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Card title' },
-          description: { type: 'string', description: 'Card description (optional)' },
+          description: { type: 'string', description: 'Card content — include findings, context, results, or next steps from the conversation. Use markdown formatting. Always provide when the user asks to save results or findings.' },
           stack: {
             type: 'string',
             description: 'Stack to create in (default: Inbox)',

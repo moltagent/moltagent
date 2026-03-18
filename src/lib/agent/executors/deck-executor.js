@@ -1029,7 +1029,26 @@ Respond with ONLY the title, nothing else.`;
     const toolArgs = { title: params.card_title };
     if (params.description) toolArgs.description = params.description;
     if (params.stack_name) toolArgs.stack = this._normalizeStackName(params.stack_name);
-    if (params.board_name) toolArgs.board = params.board_name;
+    const targetBoard = this._resolveTargetBoard(params, context);
+    if (targetBoard) toolArgs.board = targetBoard;
+
+    // Living Context fallback: if description is thin, enrich from conversation
+    if ((!toolArgs.description || toolArgs.description.length < 50) && context?.getRecentContext) {
+      try {
+        const recentMessages = context.getRecentContext();
+        if (Array.isArray(recentMessages)) {
+          const lastAssistant = [...recentMessages].reverse().find(m => m.role === 'assistant');
+          if (lastAssistant?.content && lastAssistant.content.length > 50) {
+            const findings = lastAssistant.content.substring(0, 2000);
+            toolArgs.description = toolArgs.description
+              ? `${toolArgs.description}\n\n---\n\n${findings}`
+              : findings;
+          }
+        }
+      } catch (err) {
+        this.logger.warn(`[DeckExec] Living Context enrichment failed: ${err.message}`);
+      }
+    }
 
     const result = await this.toolRegistry.execute('deck_create_card', toolArgs);
 
@@ -1062,15 +1081,39 @@ Respond with ONLY the title, nothing else.`;
       }
     }
 
+    // Auto-assign requesting user if no explicit assignee was specified
+    if (!params.assignee && context?.userName && cardIdMatch) {
+      const userId = context.userName;
+      if (!/^moltagent$/i.test(userId)) {
+        try {
+          await this.toolRegistry.execute('deck_assign_user', {
+            card: `#${cardIdMatch[1]}`,
+            user: userId
+          });
+        } catch (err) {
+          this.logger.warn(`[DeckExec] Auto-assign ${userId} failed: ${err.message}`);
+        }
+      }
+    }
+
     this._logActivity('deck_create',
       `Created card: ${params.card_title}`,
       { card: params.card_title, stack: params.stack_name, board: params.board_name },
       context
     );
 
+    const cardId = cardIdMatch ? cardIdMatch[1] : null;
     return {
       response: result.result,
-      actionRecord: { type: 'deck_create', refs: { card: params.card_title } }
+      actionRecord: {
+        type: 'deck_create',
+        refs: {
+          card: params.card_title,
+          cardId,
+          board: toolArgs.board || null,
+          stack: toolArgs.stack || 'Inbox'
+        }
+      }
     };
   }
 
@@ -1082,6 +1125,8 @@ Respond with ONLY the title, nothing else.`;
     if (!params.card_title) {
       return { response: 'Which card should I move?' };
     }
+    // Resolve card reference from context (handles "that", "it", etc.)
+    params.card_title = await this._resolveCardReference(params.card_title, context);
     if (!params.stack_name) {
       return { response: `Where should I move "${params.card_title}"? Name a stack (e.g., Doing, Done, Inbox).` };
     }
@@ -1117,6 +1162,7 @@ Respond with ONLY the title, nothing else.`;
     if (!params.card_title) {
       return { response: 'Which card should I update?' };
     }
+    params.card_title = await this._resolveCardReference(params.card_title, context);
 
     const toolArgs = { card: params.card_title };
     let hasUpdate = false;
@@ -1164,6 +1210,7 @@ Respond with ONLY the title, nothing else.`;
     if (!params.card_title) {
       return { response: 'Which card should I delete?' };
     }
+    params.card_title = await this._resolveCardReference(params.card_title, context);
 
     const guardResult = await this._checkGuardrails('deck_delete_card', {
       card: params.card_title
@@ -1201,6 +1248,7 @@ Respond with ONLY the title, nothing else.`;
     if (!params.card_title) {
       return { response: 'Which card should I assign?' };
     }
+    params.card_title = await this._resolveCardReference(params.card_title, context);
     if (!params.assignee) {
       return { response: `Who should I assign to "${params.card_title}"?` };
     }
@@ -1257,6 +1305,96 @@ Respond with ONLY the title, nothing else.`;
       response: result.result,
       actionRecord: { type: 'deck_label', refs: { card: params.card_title, label: params.label_name } }
     };
+  }
+
+  /**
+   * Resolve a card reference that might be a pronoun ("that", "it"),
+   * partial reference ("the stale card"), or shorthand.
+   *
+   * Resolution order:
+   *   1. If reference looks like an explicit card identifier (title or #ID), return as-is
+   *   2. Check recent actions in context for a single recently-referenced card
+   *   3. Check recent conversation context for card titles mentioned by the assistant
+   *   4. Fall through to original reference (let toolRegistry attempt fuzzy match)
+   *
+   * @param {string} reference - Raw card reference from user
+   * @param {Object} context - Execution context with getRecentActions, getRecentContext
+   * @returns {Promise<string>} Resolved card title or ID
+   * @private
+   */
+  async _resolveCardReference(reference, context) {
+    // Short references are likely pronouns or implicit references
+    const isShortRef = /^(that|it|this|the card|the task|that one|this one|the first one|the stale card|the one)$/i.test((reference || '').trim());
+
+    if (!isShortRef) return reference; // Looks like an explicit title/ID — use as-is
+
+    // Check ActionLedger for recently referenced cards
+    if (context?.getRecentActions) {
+      try {
+        const recentActions = context.getRecentActions('deck');
+        if (Array.isArray(recentActions) && recentActions.length > 0) {
+          // Find the most recent deck action with a card reference
+          for (let i = recentActions.length - 1; i >= 0; i--) {
+            const action = recentActions[i];
+            if (action.refs?.cardId) return `#${action.refs.cardId}`;
+            if (action.refs?.card) return action.refs.card;
+          }
+        }
+      } catch (err) {
+        // ActionLedger not available — continue to next resolver
+      }
+    }
+
+    // Check recent conversation context for card titles in assistant messages
+    if (context?.getRecentContext) {
+      try {
+        const recentMessages = context.getRecentContext();
+        if (Array.isArray(recentMessages)) {
+          const assistantMsgs = recentMessages.filter(m => m.role === 'assistant');
+          for (let i = assistantMsgs.length - 1; i >= 0; i--) {
+            const content = assistantMsgs[i].content || '';
+            // Match card titles in notification format: Task "Card Title"
+            const titleMatch = content.match(/Task "([^"]+)"/);
+            if (titleMatch) return titleMatch[1];
+            // Match card creation format: Created [Card Title](url)
+            const linkMatch = content.match(/Created \[([^\]]+)\]/);
+            if (linkMatch) return linkMatch[1];
+          }
+        }
+      } catch (err) {
+        // Context not available — fall through
+      }
+    }
+
+    // Could not resolve — return original reference for fuzzy matching attempt
+    return reference;
+  }
+
+  /**
+   * Determine the target board for card creation based on context.
+   *
+   * Priority:
+   *   1. Explicit board name from params
+   *   2. Default based on source (commitment/proactive → Personal, user request → MoltAgent Tasks)
+   *
+   * @param {Object} params - Tool call parameters
+   * @param {Object} context - Execution context
+   * @returns {string|undefined} Board name, or undefined for default
+   * @private
+   */
+  _resolveTargetBoard(params, context) {
+    // Explicit board name takes priority
+    if (params.board_name) return params.board_name;
+
+    // Autonomous agent work → Personal board
+    if (context?.source === 'commitment_detector' ||
+        context?.source === 'proactive_evaluator' ||
+        context?.source === 'freshness_checker') {
+      return 'Personal';
+    }
+
+    // User-initiated → default task board (undefined lets toolRegistry use its default)
+    return undefined;
   }
 
   /**
