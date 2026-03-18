@@ -334,19 +334,24 @@ class IntentRouter {
     message = message || '';
 
     try {
-      // Primary: route through LLM Router job system when available
+      // Primary: cheapest/most-local model first
+      let result;
       if (this.llmRouter) {
-        return await this._classifyViaRouter(message, recentContext);
+        result = await this._classifyViaRouter(message, recentContext);
+      } else {
+        result = await this._classifyWithModel(this.fastModel, message, recentContext);
       }
 
-      // Fallback: direct to Ollama provider (fast model first, escalate on low confidence)
-      const result = await this._classifyWithModel(this.fastModel, message, recentContext);
-
-      // If fast model returns unknown/zero-confidence, retry with smart model
+      // Escalation: if the fast model returned garbage (no JSON → confidence 0)
+      // or unknown, retry with a smarter model. This handles qwen2.5:3b role-playing
+      // instead of classifying — it returns prose instead of JSON.
+      // Chain: qwen2.5:3b → (garbage?) → qwen3:8b → (fail?) → regex fallback
       if ((result.gate === 'knowledge' && result.confidence === 0) || result.gate === 'unknown') {
+        console.log(`[IntentRouter] Fast model returned garbage (confidence=${result.confidence}, gate=${result.gate}), escalating to smart model`);
         try {
-          return await this._classifyWithModel(this.smartModel, message, recentContext);
+          result = await this._classifyWithModel(this.smartModel, message, recentContext);
         } catch (_retryErr) {
+          console.warn(`[IntentRouter] Smart model escalation failed: ${_retryErr.message}`);
           return this._regexFallback(message);
         }
       }
@@ -355,11 +360,14 @@ class IntentRouter {
     } catch (err) {
       // Primary path failed — try smart model directly
       try {
-        return await this._classifyWithModel(this.smartModel, message, recentContext);
+        if (this.provider) {
+          return await this._classifyWithModel(this.smartModel, message, recentContext);
+        }
       } catch (_fallbackErr) {
-        // Both models failed — regex fallback (English-only emergency path)
-        return this._regexFallback(message);
+        // intentional fall-through
       }
+      // Both models failed — regex fallback (English-only emergency path)
+      return this._regexFallback(message);
     }
   }
 
@@ -382,6 +390,7 @@ class IntentRouter {
     });
 
     const raw = result?.result || result?.content || '';
+    console.log(`[IntentRouter] LLM raw classification: ${raw.substring(0, 200)}`);
     return this._parseClassification(raw, message);
   }
 
@@ -515,7 +524,10 @@ class IntentRouter {
 
     // Extract JSON object
     const match = cleaned.match(/\{[^}]+\}/);
-    if (!match) return { ...COMPLEX_FALLBACK };
+    if (!match) {
+      console.warn(`[IntentRouter] No JSON in classification response, falling back`);
+      return { ...COMPLEX_FALLBACK };
+    }
 
     try {
       const parsed = JSON.parse(match[0]);
@@ -543,9 +555,11 @@ class IntentRouter {
 
       // Validate gate
       if (!gate || (!VALID_GATES.has(gate) && !PASSTHROUGH_INTENTS.has(gate))) {
+        console.warn(`[IntentRouter] Invalid gate "${gate}", falling back`);
         return { ...COMPLEX_FALLBACK, compound: parsed.compound === true };
       }
 
+      console.log(`[IntentRouter] Parsed: gate=${gate}, domain=${domain}, confidence=${confidence}`);
       let compound = gate === 'compound' || parsed.compound === true;
 
       // Safety net: when the LLM classifies as knowledge but the message contains
