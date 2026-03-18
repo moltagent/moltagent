@@ -1005,8 +1005,15 @@ Respond with ONLY the title, nothing else.`;
    * @private
    */
   async _executeCreate(params, context) {
-    if (!params.card_title) {
-      if (params.delegated) {
+    // Title intelligence: generate a meaningful title when the extracted title
+    // is missing OR is a vague reference ("these results", "that info", "it", etc).
+    // The LLM extracts card_title from the user's words, but compound actions often
+    // contain pronouns referencing earlier conversation, not actionable titles.
+    const isVagueTitle = params.card_title &&
+      /^(these|those|the|that|this|it|my|some|your)\b/i.test(params.card_title.trim()) &&
+      params.card_title.trim().split(/\s+/).length <= 4;
+    if (!params.card_title || isVagueTitle) {
+      if (params.delegated || isVagueTitle) {
         params.card_title = await this._generateDefaultCardTitle(
           params._rawMessage,
           params.stack_name,

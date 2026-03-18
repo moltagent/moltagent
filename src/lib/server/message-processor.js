@@ -301,6 +301,9 @@ class MessageProcessor {
     /** @type {string[]} - Names the bot responds to */
     this.botNames = deps.botNames || ['moltagent'];
 
+    /** @type {Object|null} - SelfRecovery (deferred action retry via Personal board) */
+    this.selfRecovery = deps.selfRecovery || null;
+
     // ClarificationManager is set by _wireMicroPipelineDomainTools() above
 
     /** @type {Map<string, Array>} - Silent observation buffer per room */
@@ -696,7 +699,21 @@ class MessageProcessor {
               // Don't rely on regex to detect whether the LLM acknowledged the failure;
               // the LLM operates in multiple languages and phrasings are unpredictable.
               if (response) {
-                response += '\n\n⚠️ I wasn\'t able to complete the action part of your request (e.g. creating a card). Please ask me to do that as a separate message.';
+                response += '\n\n⚠️ I wasn\'t able to complete the action part of your request — I\'ve noted it and will complete it shortly.';
+              }
+              // Self-recovery: park the failed action on the Personal board
+              // for the heartbeat to pick up. Fire-and-forget.
+              if (this.selfRecovery) {
+                this.selfRecovery.createRecoveryCard({
+                  originalRequest: pipelineMessage.substring(0, 500),
+                  completedPart: (response || '').substring(0, 2000),
+                  failedAction: `Action from compound request: "${pipelineMessage.substring(0, 200)}"`,
+                  reason: `Compound decomposition failed: ${compoundErr.message}`,
+                  recoveryInstructions: `Complete the action part of this request. The user (${extracted.user}) asked: "${pipelineMessage.substring(0, 300)}". ` +
+                    `The research/knowledge part was answered. Now execute the action (create card, send email, etc.) and assign the result to ${extracted.user}.`,
+                  userId: extracted.user,
+                  sessionId: extracted.token
+                }).catch(() => {});
               }
               result = { intent: 'smart_mix_compound_fallback', provider: 'local' };
             } catch (fallbackErr) {

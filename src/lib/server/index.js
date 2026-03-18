@@ -105,7 +105,8 @@ function createServerComponents(deps) {
     budgetEnforcer,
     adminUser,
     proactiveEvaluator,
-    sessionPersister
+    sessionPersister,
+    selfRecovery
   } = deps;
 
   // Create command handler first (used by message processor)
@@ -145,7 +146,8 @@ function createServerComponents(deps) {
     budgetEnforcer,
     adminUser: adminUser || '',
     proactiveEvaluator,
-    referenceResolver: deps.referenceResolver || null
+    referenceResolver: deps.referenceResolver || null,
+    selfRecovery: selfRecovery || null
   });
 
   // Create webhook handler (uses message processor)

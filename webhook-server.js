@@ -154,6 +154,14 @@ try {
   PersonalBoardManager = null;
 }
 
+let SelfRecovery;
+try {
+  SelfRecovery = require('./src/lib/agent/self-recovery');
+} catch {
+  console.warn('[WARN] SelfRecovery not available');
+  SelfRecovery = null;
+}
+
 let RSVPTracker;
 try {
   RSVPTracker = require('./src/lib/integrations/rsvp-tracker');
@@ -1080,6 +1088,13 @@ async function initialize() {
     }
   }
 
+  // 7b7c. Initialize SelfRecovery (deferred action retry via Personal board)
+  let selfRecovery = null;
+  if (SelfRecovery && personalBoardManager) {
+    selfRecovery = new SelfRecovery({ personalBoardManager, logger: console });
+    console.log('[INIT] SelfRecovery ready');
+  }
+
   // 7b8. Initialize SessionManager, SessionPersister, MemorySearcher (Session 29b)
   if (SessionManager) {
     sessionManager = new SessionManager({
@@ -1894,6 +1909,7 @@ async function initialize() {
     adminUser: appConfig.cockpit?.adminUser || '',
     proactiveEvaluator: _buildProactiveEvaluator(agentLoop, llmRouter, talkQueue, appConfig),
     referenceResolver: _buildReferenceResolver(llmRouter),
+    selfRecovery,
     onTokenDiscovered: (token) => {
       // Save token for email monitor notifications (use first room we see)
       if (token && !defaultTalkToken) {
