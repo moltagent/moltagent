@@ -1420,20 +1420,32 @@ class MessageProcessor {
     // Extract tool-calling providers from the RouterChatBridge
     const bridge = this.agentLoop.llmProvider;
     if (bridge?.chatProviders) {
+      // Wire local Ollama provider
       for (const [id, provider] of bridge.chatProviders) {
         if (typeof provider.chat !== 'function') continue;
-
-        // OllamaToolsProvider: has endpoint + model (local)
         if (!this.microPipeline.ollamaToolsProvider && provider.endpoint && provider.model) {
           this.microPipeline.ollamaToolsProvider = provider;
           console.log(`[Message] Wired OllamaToolsProvider (${id}: ${provider.model}) into MicroPipeline`);
+          break;
         }
+      }
 
-        // ClaudeToolsProvider: has getApiKey but no endpoint (cloud)
-        if (!this.microPipeline.claudeToolsProvider && provider.getApiKey && !provider.endpoint) {
-          this.microPipeline.claudeToolsProvider = provider;
-          console.log(`[Message] Wired ClaudeToolsProvider (${id}: ${provider.model}) into MicroPipeline`);
-        }
+      // Create dedicated Haiku tools provider for cloud-ok tool-calling.
+      // Haiku is cost-optimal for structured tool calls (~$0.001 per call).
+      // Reuse getApiKey from any existing Claude provider in the bridge.
+      let getApiKey = null;
+      for (const [, provider] of bridge.chatProviders) {
+        if (provider.getApiKey) { getApiKey = provider.getApiKey; break; }
+      }
+      if (getApiKey) {
+        const { ClaudeToolsProvider } = require('./../../agent/providers/claude-tools');
+        this.microPipeline.claudeToolsProvider = new ClaudeToolsProvider({
+          model: 'claude-haiku-4-5-20251001',
+          maxTokens: 1024,
+          timeout: 15000,
+          getApiKey
+        });
+        console.log('[Message] Wired ClaudeToolsProvider (haiku: claude-haiku-4-5-20251001) into MicroPipeline');
       }
     }
 
