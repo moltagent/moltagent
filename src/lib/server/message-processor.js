@@ -1671,6 +1671,23 @@ class MessageProcessor {
     // Step 2: Parallel multi-source probes
     const probeResults = await this._executeKnowledgeProbes(searchTerms, query, enricher, searcher);
 
+    // LTP: Record access for wiki pages retrieved by knowledge probes (fire-and-forget).
+    // Knowledge probes bypass MemorySearcher.search(), so access tracking must happen here.
+    if (searcher?._recordAccess) {
+      const wikiSources = new Set(['wiki_direct', 'wiki_pages', 'wiki_content']);
+      const accessedTitles = new Set();
+      for (const probe of probeResults) {
+        if (!wikiSources.has(probe.source)) continue;
+        for (const r of (probe.results || [])) {
+          const title = (r.title || '').trim();
+          if (title && !accessedTitles.has(title)) {
+            accessedTitles.add(title);
+            searcher._recordAccess(title).catch(() => {});
+          }
+        }
+      }
+    }
+
     // Step 2b: Web fallback — if knowledge probes returned insufficient results,
     // supplement with a web search automatically. No keyword lists, no special
     // cases. One threshold. Universal fallback.
