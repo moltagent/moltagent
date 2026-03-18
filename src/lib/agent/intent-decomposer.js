@@ -113,7 +113,7 @@ class IntentDecomposer {
    * @param {Function} [opts.replyFn] - Feedback message sender
    * @returns {Promise<string>} Synthesized response
    */
-  async executePlan(plan, { probeExecutor, actionExecutor, session, replyFn } = {}) {
+  async executePlan(plan, { probeExecutor, actionExecutor, session, replyFn, userContext } = {}) {
     const results = new Map();
 
     // Phase 1: Execute all independent probes in parallel
@@ -172,7 +172,7 @@ class IntentDecomposer {
           hasActions = true;
         }
         try {
-          results.set(step.id, await this._executeAction(step, results, actionExecutor));
+          results.set(step.id, await this._executeAction(step, results, actionExecutor, userContext));
         } catch (err) {
           results.set(step.id, { source: step.source, error: err.message });
         }
@@ -266,7 +266,7 @@ class IntentDecomposer {
    * Execute an action step using the MicroPipeline's domain executors.
    * @private
    */
-  async _executeAction(step, previousResults, actionExecutor) {
+  async _executeAction(step, previousResults, actionExecutor, userContext = {}) {
     if (!actionExecutor) {
       return { source: step.source, error: 'No action executor available' };
     }
@@ -277,9 +277,10 @@ class IntentDecomposer {
     try {
       const response = await actionExecutor.process(actionMessage, {
         intent: step.source,
-        userName: 'system',
-        roomToken: '',
-        warmMemory: ''
+        userName: userContext.userName || 'system',
+        roomToken: userContext.roomToken || '',
+        warmMemory: userContext.warmMemory || '',
+        ...(userContext.getRecentContext ? { getRecentContext: userContext.getRecentContext } : {})
       });
 
       const responseText = typeof response === 'object' ? (response.response || JSON.stringify(response)) : String(response);

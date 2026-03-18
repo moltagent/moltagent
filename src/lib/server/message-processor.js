@@ -2470,7 +2470,13 @@ JSON array:`,
       probeExecutor,
       actionExecutor: this.microPipeline,
       session,
-      replyFn
+      replyFn,
+      userContext: {
+        userName: session?.userId || 'system',
+        roomToken: roomToken || '',
+        warmMemory: session?.warmMemory || '',
+        getRecentContext: session ? () => session.context.slice(-4) : undefined
+      }
     });
 
     return {
