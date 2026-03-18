@@ -29,6 +29,7 @@ class DeckTaskProcessor {
     this.auditLog = auditLog || (async () => {});
     this.config = config;
     this.routeContext = options.routeContext || {};
+    this.notifyUser = options.notifyUser || null;
     
     // Processing state
     this._currentTask = null;
@@ -48,6 +49,7 @@ class DeckTaskProcessor {
     this.registerHandler('research', this._handleResearch.bind(this));
     this.registerHandler('writing', this._handleWriting.bind(this));
     this.registerHandler('admin', this._handleAdmin.bind(this));
+    this.registerHandler('self-recovery', this._handleSelfRecovery.bind(this));
     this.registerHandler('generic', this._handleGeneric.bind(this));
   }
 
@@ -261,6 +263,7 @@ class DeckTaskProcessor {
    */
   _classifyTask(card) {
     // Check labels first (explicit classification)
+    if (card.labels.includes('self-recovery')) return 'self-recovery';
     if (card.labels.includes('research')) return 'research';
     if (card.labels.includes('writing')) return 'writing';
     if (card.labels.includes('admin')) return 'admin';
@@ -417,6 +420,88 @@ I can provide guidance on how to accomplish this task.
     );
     error.needsHumanInput = true;
     throw error;
+  }
+
+  /**
+   * Handle self-recovery tasks — failed actions that need to be retried.
+   * The card description contains structured recovery instructions written
+   * by the SelfRecovery class. The LLM reads them and executes the action.
+   * @private
+   */
+  async _handleSelfRecovery(card) {
+    const description = card.description || '';
+
+    // Extract the userId from the structured description
+    const userMatch = description.match(/\*\*User:\*\*\s*(\S+)/);
+    const userId = userMatch?.[1] || null;
+
+    // Ask the LLM to interpret recovery instructions and produce action params
+    const prompt = this._buildPrompt('self-recovery', card, `
+You are recovering from a failed action. The card below contains recovery instructions.
+Read the instructions carefully and produce ONLY a JSON object with the action to take.
+
+Card Title: ${card.title}
+Card Description:
+${description}
+
+Return JSON: {"action": "deck_create_card", "title": "...", "description": "...", "board": "...", "assignee": "..."}
+If the action is not a card creation, return: {"action": "none", "summary": "what was done"}
+Return ONLY valid JSON.
+    `);
+
+    const response = await this.router.route({
+      job: JOBS.TOOLS,
+      task: 'self_recovery',
+      content: prompt,
+      requirements: { maxTokens: 500, temperature: 0.1 },
+      context: this.routeContext
+    });
+
+    const raw = response?.result || '';
+    let actionResult = 'Recovery processed but no action could be extracted.';
+
+    try {
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const action = JSON.parse(jsonMatch[0]);
+        if (action.action === 'deck_create_card' && action.title) {
+          // Create the card the user originally wanted
+          const newCard = await this.deck.createCard('inbox', {
+            title: action.title,
+            description: action.description || description
+          });
+          const cardId = newCard?.id;
+          actionResult = `Created card "${action.title}" (#${cardId || '?'})`;
+
+          // Assign to the requesting user if specified
+          if (cardId && (action.assignee || userId)) {
+            try {
+              await this.deck.assignUser(cardId, 'inbox', action.assignee || userId);
+            } catch (assignErr) {
+              console.warn(`[DeckProcessor] Self-recovery assign failed: ${assignErr.message}`);
+            }
+          }
+
+          console.log(`[DeckProcessor] Self-recovery: ${actionResult}`);
+        } else {
+          actionResult = action.summary || 'Recovery action completed.';
+        }
+      }
+    } catch (parseErr) {
+      console.warn(`[DeckProcessor] Self-recovery JSON parse failed: ${parseErr.message}`);
+      actionResult = raw.substring(0, 500);
+    }
+
+    // Notify the user in Talk that the recovery completed
+    if (this.notifyUser) {
+      this.notifyUser({ message: `✅ I completed a task from our earlier conversation: ${actionResult}` }).catch(() => {});
+    }
+
+    return {
+      summary: `✅ Recovery complete: ${actionResult}`,
+      full: `Self-recovery task processed.\n\n${actionResult}`,
+      provider: response.provider
+    };
   }
 
   /**

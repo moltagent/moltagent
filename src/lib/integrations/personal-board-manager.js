@@ -78,7 +78,8 @@ const LABELS = [
   { title: 'follow-up', color: 'ED7D31' },
   { title: 'waiting-input', color: 'FF6F61' },
   { title: 'ingestion', color: '4472C4' },
-  { title: 'promise', color: '9B59B6' }
+  { title: 'promise', color: '9B59B6' },
+  { title: 'self-recovery', color: 'E74C3C' }
 ];
 
 const MS_PER_DAY = 24 * 3600 * 1000;
@@ -692,7 +693,8 @@ class PersonalBoardManager {
     const labels = Array.isArray(card.labels) ? card.labels : [];
     for (const lbl of labels) {
       const name = (lbl.title || '').toLowerCase();
-      if (name === 'promise') score += 30;
+      if (name === 'self-recovery') score += 40; // highest — user is waiting
+      else if (name === 'promise') score += 30;
       else if (name === 'follow-up') score += 20;
       else if (name === 'research') score += 5;
     }
