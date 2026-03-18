@@ -267,6 +267,169 @@ test('PRICING table is exported as static property', () => {
   assert.strictEqual(CostTracker.PRICING['qwen3:8b'].input, 0);
 });
 
+// --- Restore Tests ---
+
+await asyncTest('restore() is no-op when no ncFilesClient', async () => {
+  const tracker = new CostTracker();
+  await tracker.restore();
+  assert.strictEqual(tracker.daily.cost, 0);
+  assert.strictEqual(tracker.monthly.cost, 0);
+});
+
+await asyncTest('restore() rehydrates daily and monthly totals from JSONL', async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+
+  const jsonlContent = [
+    JSON.stringify({ timestamp: `${yesterday}T10:00:00Z`, model: 'claude-sonnet-4-20250514', job: 'thinking', cost_usd: 0.05, is_local: false }),
+    JSON.stringify({ timestamp: `${today}T08:00:00Z`, model: 'claude-sonnet-4-20250514', job: 'writing', cost_usd: 0.03, is_local: false }),
+    JSON.stringify({ timestamp: `${today}T09:00:00Z`, model: 'phi4-mini', job: 'quick', cost_usd: 0, is_local: true }),
+    JSON.stringify({ timestamp: `${today}T10:00:00Z`, model: 'claude-haiku-4-5-20251001', job: 'synthesis', cost_usd: 0.01, is_local: false }),
+  ].join('\n') + '\n';
+
+  const mockFiles = {
+    readFile: async () => ({ content: jsonlContent }),
+  };
+
+  const tracker = new CostTracker({ ncFilesClient: mockFiles });
+  await tracker.restore();
+
+  // Monthly: all 3 cloud calls + 1 local
+  assert.strictEqual(tracker.monthly.cloudCalls, 3);
+  assert.strictEqual(tracker.monthly.localCalls, 1);
+  assert.strictEqual(tracker.monthly.cost.toFixed(4), '0.0900');
+
+  // Daily: only today's entries (2 cloud + 1 local)
+  assert.strictEqual(tracker.daily.cloudCalls, 2);
+  assert.strictEqual(tracker.daily.localCalls, 1);
+  assert.strictEqual(tracker.daily.cost.toFixed(4), '0.0400');
+});
+
+await asyncTest('restore() handles missing JSONL file gracefully', async () => {
+  const mockFiles = {
+    readFile: async () => { throw new Error('not found'); },
+  };
+  const tracker = new CostTracker({ ncFilesClient: mockFiles });
+  await tracker.restore();
+  assert.strictEqual(tracker.daily.cost, 0);
+  assert.strictEqual(tracker.monthly.cloudCalls, 0);
+});
+
+await asyncTest('restore() skips malformed JSONL lines', async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const jsonlContent = [
+    'this is not json',
+    '',
+    JSON.stringify({ timestamp: `${today}T10:00:00Z`, model: 'claude-sonnet-4-20250514', job: 'thinking', cost_usd: 0.05, is_local: false }),
+    '{ broken json }}}',
+  ].join('\n') + '\n';
+
+  const mockFiles = {
+    readFile: async () => ({ content: jsonlContent }),
+  };
+  const tracker = new CostTracker({ ncFilesClient: mockFiles });
+  await tracker.restore();
+
+  assert.strictEqual(tracker.daily.cloudCalls, 1);
+  assert.strictEqual(tracker.daily.cost.toFixed(4), '0.0500');
+});
+
+await asyncTest('restore() populates byJob correctly', async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const jsonlContent = [
+    JSON.stringify({ timestamp: `${today}T08:00:00Z`, model: 'claude-sonnet-4-20250514', job: 'thinking', cost_usd: 0.03, is_local: false }),
+    JSON.stringify({ timestamp: `${today}T09:00:00Z`, model: 'claude-sonnet-4-20250514', job: 'thinking', cost_usd: 0.02, is_local: false }),
+    JSON.stringify({ timestamp: `${today}T10:00:00Z`, model: 'phi4-mini', job: 'quick', cost_usd: 0, is_local: true }),
+  ].join('\n') + '\n';
+
+  const mockFiles = {
+    readFile: async () => ({ content: jsonlContent }),
+  };
+  const tracker = new CostTracker({ ncFilesClient: mockFiles });
+  await tracker.restore();
+
+  assert.strictEqual(tracker.daily.byJob['thinking:cloud'].toFixed(4), '0.0500');
+  assert.strictEqual(tracker.daily.byJob['quick:local'], 0);
+});
+
+// --- Daily Summary CSV Tests ---
+
+await asyncTest('writeDailySummary() is no-op when no ncFilesClient', async () => {
+  const tracker = new CostTracker();
+  await tracker.writeDailySummary(); // Should not throw
+});
+
+await asyncTest('writeDailySummary() creates CSV with header and row', async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const jsonlContent = [
+    JSON.stringify({ timestamp: `${today}T10:00:00Z`, model: 'claude-sonnet-4-20250514', job: 'thinking', cost_usd: 0.05, is_local: false }),
+    JSON.stringify({ timestamp: `${today}T11:00:00Z`, model: 'phi4-mini', job: 'quick', cost_usd: 0, is_local: true }),
+  ].join('\n') + '\n';
+
+  let writtenContent = null;
+  const mockFiles = {
+    readFile: async (path) => {
+      if (path.endsWith('.csv')) throw new Error('not found'); // CSV doesn't exist yet
+      return { content: jsonlContent }; // JSONL exists
+    },
+    writeFile: async (_path, content) => { writtenContent = content; },
+  };
+
+  const tracker = new CostTracker({ ncFilesClient: mockFiles, usdToEur: 0.92 });
+  await tracker.writeDailySummary();
+
+  assert.ok(writtenContent, 'Should write CSV content');
+  assert.ok(writtenContent.startsWith('date,total_usd'), 'Should start with CSV header');
+  const lines = writtenContent.trim().split('\n');
+  assert.strictEqual(lines.length, 2, 'Should have header + 1 data row');
+  assert.ok(lines[1].startsWith(today), 'Data row should start with today\'s date');
+  assert.ok(lines[1].includes('0.0500'), 'Should include total cost');
+});
+
+await asyncTest('writeDailySummary() skips if already written today', async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const jsonlContent = JSON.stringify({ timestamp: `${today}T10:00:00Z`, model: 'claude-sonnet-4-20250514', job: 'x', cost_usd: 0.01, is_local: false }) + '\n';
+  let writeCount = 0;
+  const mockFiles = {
+    readFile: async (path) => {
+      if (path.endsWith('.csv')) throw new Error('not found');
+      return { content: jsonlContent };
+    },
+    writeFile: async () => { writeCount++; },
+  };
+
+  const tracker = new CostTracker({ ncFilesClient: mockFiles });
+  await tracker.writeDailySummary();
+  await tracker.writeDailySummary(); // Second call should be skipped
+
+  assert.strictEqual(writeCount, 1, 'Should only write once per day');
+});
+
+await asyncTest('writeDailySummary() updates existing row for today', async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const jsonlContent = JSON.stringify({ timestamp: `${today}T10:00:00Z`, model: 'claude-sonnet-4-20250514', job: 'thinking', cost_usd: 0.08, is_local: false }) + '\n';
+
+  const existingCsv = `date,total_usd,total_eur,opus_usd,sonnet_usd,haiku_usd,local_calls,cloud_calls,top_job,top_job_usd\n${today},0.0500,0.0460,0.0000,0.0500,0.0000,0,1,thinking,0.0500\n`;
+
+  let writtenContent = null;
+  const mockFiles = {
+    readFile: async (path) => {
+      if (path.endsWith('.csv')) return { content: existingCsv };
+      return { content: jsonlContent };
+    },
+    writeFile: async (_path, content) => { writtenContent = content; },
+  };
+
+  // Reset _lastSummaryDate so it runs
+  const tracker = new CostTracker({ ncFilesClient: mockFiles });
+  await tracker.writeDailySummary();
+
+  assert.ok(writtenContent, 'Should update CSV');
+  const lines = writtenContent.trim().split('\n');
+  assert.strictEqual(lines.length, 2, 'Should still have header + 1 row (updated, not duplicated)');
+  assert.ok(lines[1].includes('0.0800'), 'Should have updated cost value');
+});
+
 summary();
 exitWithCode();
 })();

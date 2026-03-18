@@ -79,6 +79,93 @@ class CostTracker {
 
     // Track whether log directory has been ensured
     this._logDirEnsured = false;
+
+    // Track last daily summary date to avoid duplicates
+    this._lastSummaryDate = null;
+  }
+
+  /**
+   * Rehydrate daily and monthly accumulators from the JSONL audit log.
+   * Call once after construction, before any route() calls.
+   * Reads the current month's JSONL from NC Files, parses each line,
+   * and sums today's and this month's totals into the accumulators.
+   *
+   * Safe to call multiple times — always rebuilds from source of truth.
+   * Non-fatal: if the file doesn't exist or can't be read, accumulators
+   * stay at zero (identical to current behaviour on fresh start).
+   */
+  async restore() {
+    if (!this.files) return;
+
+    const filename = `costs-${this._monthKey()}.jsonl`;
+    const filepath = `${this.logDir}/${filename}`;
+    const today = this._todayKey();
+
+    let raw;
+    try {
+      const result = await this.files.readFile(filepath);
+      raw = (typeof result === 'string' ? result : result.content) || '';
+    } catch {
+      // File doesn't exist yet — nothing to restore
+      return;
+    }
+
+    if (!raw || typeof raw !== 'string') return;
+
+    // Reset accumulators before rehydrating
+    this.daily = { cost: 0, cloudCalls: 0, localCalls: 0, byJob: {} };
+    this.monthly = { cost: 0, cloudCalls: 0, localCalls: 0, byJob: {} };
+
+    const lines = raw.split('\n');
+    let restored = 0;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      let entry;
+      try {
+        entry = JSON.parse(trimmed);
+      } catch {
+        continue; // Skip malformed lines
+      }
+
+      const entryDate = (entry.timestamp || '').slice(0, 10);
+      const isLocal = !!entry.is_local;
+      const cost = Number(entry.cost_usd) || 0;
+
+      // Monthly accumulation (all entries in this file are current month)
+      if (isLocal) {
+        this.monthly.localCalls++;
+      } else {
+        this.monthly.cost += cost;
+        this.monthly.cloudCalls++;
+      }
+
+      const jobKey = `${entry.job || 'unknown'}:${isLocal ? 'local' : 'cloud'}`;
+      this.monthly.byJob[jobKey] = (this.monthly.byJob[jobKey] || 0) + cost;
+
+      // Daily accumulation (only today's entries)
+      if (entryDate === today) {
+        if (isLocal) {
+          this.daily.localCalls++;
+        } else {
+          this.daily.cost += cost;
+          this.daily.cloudCalls++;
+        }
+        this.daily.byJob[jobKey] = (this.daily.byJob[jobKey] || 0) + cost;
+      }
+
+      restored++;
+    }
+
+    if (restored > 0) {
+      console.log(
+        `[CostTracker] Restored ${restored} entries from ${filename} | ` +
+        `Day: $${this.daily.cost.toFixed(2)} (${this.daily.cloudCalls} cloud, ${this.daily.localCalls} local) | ` +
+        `Month: $${this.monthly.cost.toFixed(2)} (${this.monthly.cloudCalls} cloud, ${this.monthly.localCalls} local)`
+      );
+    }
   }
 
   /**
@@ -193,7 +280,7 @@ class CostTracker {
       let existing = '';
       try {
         const result = await this.files.readFile(filepath);
-        existing = result.content || '';
+        existing = (typeof result === 'string' ? result : result.content) || '';
       } catch (_e) {
         // File doesn't exist yet — will create new
       }
@@ -204,6 +291,130 @@ class CostTracker {
       console.error(`[CostTracker] Failed to write cost log: ${err.message}`);
       // Put entries back in buffer to retry next flush
       this._buffer.unshift(...entries);
+    }
+  }
+
+  /**
+   * Write or update a daily cost summary CSV to NC Files.
+   * Called by HeartbeatManager once per heartbeat cycle.
+   * Appends one row per day; skips if today's row was already written.
+   *
+   * CSV path: {logDir}/cost-summary.csv
+   * Columns: date,total_usd,total_eur,opus_usd,sonnet_usd,haiku_usd,
+   *          local_calls,cloud_calls,top_job,top_job_usd
+   */
+  async writeDailySummary() {
+    if (!this.files) return;
+
+    const today = this._todayKey();
+    if (this._lastSummaryDate === today) return; // Already written today
+
+    const filepath = `${this.logDir}/cost-summary.csv`;
+    const header = 'date,total_usd,total_eur,opus_usd,sonnet_usd,haiku_usd,local_calls,cloud_calls,top_job,top_job_usd';
+
+    // Aggregate today's data from the JSONL
+    const jsonlPath = `${this.logDir}/costs-${this._monthKey()}.jsonl`;
+
+    let raw = '';
+    try {
+      const result = await this.files.readFile(jsonlPath);
+      raw = (typeof result === 'string' ? result : result.content) || '';
+    } catch {
+      // No JSONL yet — nothing to summarise
+      return;
+    }
+
+    // Parse today's entries from JSONL
+    let totalUsd = 0;
+    let opusUsd = 0;
+    let sonnetUsd = 0;
+    let haikuUsd = 0;
+    let localCalls = 0;
+    let cloudCalls = 0;
+    const jobCosts = {};
+
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      let entry;
+      try { entry = JSON.parse(trimmed); } catch { continue; }
+
+      const entryDate = (entry.timestamp || '').slice(0, 10);
+      if (entryDate !== today) continue;
+
+      const cost = Number(entry.cost_usd) || 0;
+      const model = entry.model || '';
+
+      if (entry.is_local) {
+        localCalls++;
+      } else {
+        cloudCalls++;
+        totalUsd += cost;
+      }
+
+      if (/opus/i.test(model)) opusUsd += cost;
+      else if (/sonnet/i.test(model)) sonnetUsd += cost;
+      else if (/haiku/i.test(model)) haikuUsd += cost;
+
+      const job = entry.job || 'unknown';
+      jobCosts[job] = (jobCosts[job] || 0) + cost;
+    }
+
+    // Find top job
+    let topJob = '';
+    let topJobUsd = 0;
+    for (const [job, cost] of Object.entries(jobCosts)) {
+      if (cost > topJobUsd) { topJob = job; topJobUsd = cost; }
+    }
+
+    const totalEur = totalUsd * this.usdToEur;
+
+    // Build the CSV row
+    const row = [
+      today,
+      totalUsd.toFixed(4),
+      totalEur.toFixed(4),
+      opusUsd.toFixed(4),
+      sonnetUsd.toFixed(4),
+      haikuUsd.toFixed(4),
+      localCalls,
+      cloudCalls,
+      topJob.replace(/,/g, ';'), // Escape commas in job name
+      topJobUsd.toFixed(4),
+    ].join(',');
+
+    try {
+      // Read existing CSV
+      let existing = '';
+      try {
+        const result = await this.files.readFile(filepath);
+        existing = (typeof result === 'string' ? result : result.content) || '';
+      } catch {
+        // File doesn't exist yet — will create with header
+      }
+
+      if (!existing) {
+        // New file: header + row
+        await this.files.writeFile(filepath, header + '\n' + row + '\n');
+      } else {
+        // Check if today's row already exists (idempotent)
+        if (existing.includes(today + ',')) {
+          // Replace today's row with updated values
+          const lines = existing.split('\n');
+          const updated = lines.map(l => l.startsWith(today + ',') ? row : l).join('\n');
+          await this.files.writeFile(filepath, updated);
+        } else {
+          // Append new row
+          const content = existing.endsWith('\n') ? existing : existing + '\n';
+          await this.files.writeFile(filepath, content + row + '\n');
+        }
+      }
+
+      this._lastSummaryDate = today;
+      console.log(`[CostTracker] Daily summary written: ${today} $${totalUsd.toFixed(2)} (${cloudCalls} cloud, ${localCalls} local)`);
+    } catch (err) {
+      console.error(`[CostTracker] Failed to write daily summary: ${err.message}`);
     }
   }
 

@@ -722,6 +722,12 @@ class HeartbeatManager {
             } catch (err) {
               console.error('[Heartbeat] Cost log flush failed:', err.message);
             }
+            // Write daily cost summary CSV (idempotent — updates today's row)
+            try {
+              await this.costTracker.writeDailySummary();
+            } catch (err) {
+              console.error('[Heartbeat] Cost summary write failed:', err.message);
+            }
           }
 
           results.cockpit = { read: true, updated: true };

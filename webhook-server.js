@@ -1490,6 +1490,12 @@ async function initialize() {
         logDir: 'Logs',
         usdToEur: 0.92,
       });
+      // Rehydrate accumulators from JSONL before wiring into router
+      try {
+        await costTracker.restore();
+      } catch (err) {
+        console.warn('[INIT] CostTracker restore failed (non-fatal):', err.message);
+      }
       // Wire CostTracker into LLMRouter so all route() calls are metered
       if (llmRouter?.router) {
         llmRouter.router.costTracker = costTracker;
