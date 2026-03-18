@@ -1671,23 +1671,6 @@ class MessageProcessor {
     // Step 2: Parallel multi-source probes
     const probeResults = await this._executeKnowledgeProbes(searchTerms, query, enricher, searcher);
 
-    // LTP: Record access for wiki pages retrieved by knowledge probes (fire-and-forget).
-    // Knowledge probes bypass MemorySearcher.search(), so access tracking must happen here.
-    if (searcher?._recordAccess) {
-      const wikiSources = new Set(['wiki_direct', 'wiki_pages', 'wiki_content']);
-      const accessedTitles = new Set();
-      for (const probe of probeResults) {
-        if (!wikiSources.has(probe.source)) continue;
-        for (const r of (probe.results || [])) {
-          const title = (r.title || '').trim();
-          if (title && !accessedTitles.has(title)) {
-            accessedTitles.add(title);
-            searcher._recordAccess(title).catch(() => {});
-          }
-        }
-      }
-    }
-
     // Step 2b: Web fallback — if knowledge probes returned insufficient results,
     // supplement with a web search automatically. No keyword lists, no special
     // cases. One threshold. Universal fallback.
@@ -1831,10 +1814,35 @@ Be thoughtful. Be honest. Be yourself.`;
     const ncSearch = searcher?.nc;
 
     // -----------------------------------------------------------------------
-    // Probe 0: Direct wiki page lookup — bypasses search ranking entirely.
-    // Extracts capitalized words (likely entity names like "Carlos", "Paradiesgarten")
-    // and calls findPageByTitle + readPageContent. This is the most reliable
-    // path because it doesn't depend on NC Search ranking or provider bugs.
+    // Probe 0: Unified wiki search — routes through MemorySearcher for
+    // three-channel fusion (keyword + vector + graph), access tracking (LTP),
+    // co-access expansion, archive fallback, and gap detection.
+    // Replaces three separate NC Unified Search probes with one call that
+    // activates 2,500 lines of search intelligence.
+    // -----------------------------------------------------------------------
+    if (searcher?.search) {
+      probes.push(
+        searcher.search(searchQuery, { maxResults: 10 })
+          .then(async (results) => {
+            const items = (results || []).filter(r => r.source === 'Wiki').map(r => ({
+              title: r.title || '',
+              snippet: r.excerpt || '',
+              sourceTag: 'wiki',
+              url: r.link || '',
+              archived: r.archived || false,
+            }));
+            // Deep-read top results to replace search snippets with full page content
+            await this._deepReadWikiResults(items, searcher, 5);
+            return { source: 'wiki_unified', results: items, provenance: 'stored_knowledge' };
+          })
+          .catch(() => ({ source: 'wiki_unified', results: [], provenance: 'stored_knowledge' }))
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // Probe 1: Direct wiki page lookup — exact entity name matching.
+    // Catches pages that NC Unified Search misses due to ranking or indexing.
+    // Complements the unified search with reliable direct title lookups.
     // -----------------------------------------------------------------------
     if (wiki && wiki.findPageByTitle && wiki.readPageContent) {
       const entityNames = this._extractEntityNames(query);
@@ -1852,56 +1860,7 @@ Be thoughtful. Be honest. Be yourself.`;
     }
 
     // -----------------------------------------------------------------------
-    // Probe 1: NC Unified Search — "collectives-pages" provider (page titles).
-    // Returns clean page titles with proper URLs. Most relevant for knowledge
-    // queries. Deep-read top 3 results for actual page content.
-    // -----------------------------------------------------------------------
-    if (ncSearch) {
-      probes.push(
-        ncSearch.searchProvider('collectives-pages', searchQuery, 5)
-          .then(async (results) => {
-            const items = (results || []).map(r => ({
-              title: r.title || '',
-              snippet: r.subline || '',
-              sourceTag: 'wiki',
-              url: r.resourceUrl || ''
-            }));
-            await this._deepReadWikiResults(items, searcher, 3);
-            return { source: 'wiki_pages', results: items, provenance: 'stored_knowledge' };
-          })
-          .catch(() => ({ source: 'wiki_pages', results: [], provenance: 'stored_knowledge' }))
-      );
-    }
-
-    // -----------------------------------------------------------------------
-    // Probe 2: NC Unified Search — "collectives-page-content" provider (full-text).
-    // Finds pages where the search term appears in the body. Titles are content
-    // snippets so need title extraction. Only keep People/Projects pages, skip
-    // session echoes (handled separately in Probe 4).
-    // -----------------------------------------------------------------------
-    if (ncSearch) {
-      probes.push(
-        ncSearch.searchProvider('collectives-page-content', searchQuery, 5)
-          .then(async (results) => {
-            // Split: structured knowledge vs session echoes
-            const knowledgeResults = (results || []).filter(r =>
-              !(r.subline || '').toLowerCase().includes('sessions')
-            );
-            const items = knowledgeResults.map(r => ({
-              title: r.title || '',
-              snippet: r.subline || '',
-              sourceTag: 'wiki',
-              url: r.resourceUrl || ''
-            }));
-            await this._deepReadWikiResults(items, searcher, 2);
-            return { source: 'wiki_content', results: items, provenance: 'stored_knowledge' };
-          })
-          .catch(() => ({ source: 'wiki_content', results: [], provenance: 'stored_knowledge' }))
-      );
-    }
-
-    // -----------------------------------------------------------------------
-    // Probe 3: Deck (cached board state — keyword match on cards)
+    // Probe 2: Deck (cached board state — keyword match on cards)
     // -----------------------------------------------------------------------
     if (enricher?._searchDeck) {
       probes.push(
@@ -2488,41 +2447,17 @@ JSON array:`,
 
     return {
       probeWiki: async (terms) => {
-        const ncSearch = searcher?.nc;
-        const wiki = searcher?.wiki;
-        if (!ncSearch) return [];
+        if (!searcher?.search) return [];
         try {
-          // Query collectives-pages (clean titles) + direct entity lookup in parallel
           const query = terms.join(' ');
-          const [pageResults, entityResults] = await Promise.allSettled([
-            ncSearch.searchProvider('collectives-pages', query, 5),
-            wiki ? self._directWikiLookup(self._extractEntityNames(query), wiki) : []
-          ]);
-
-          const items = [];
-          // Direct entity lookups first (highest confidence)
-          if (entityResults.status === 'fulfilled') {
-            items.push(...(entityResults.value || []));
-          }
-          // Then collectives-pages results
-          if (pageResults.status === 'fulfilled') {
-            const pages = (pageResults.value || []).map(r => ({
-              title: r.title || '',
-              snippet: r.subline || '',
-              sourceTag: 'wiki',
-              url: r.resourceUrl || ''
-            }));
-            await self._deepReadWikiResults(pages, searcher, 3);
-            items.push(...pages);
-          }
-          // LTP: fire access tracking for compound-intent wiki results
-          if (searcher?._recordAccess) {
-            const seen = new Set();
-            for (const r of items) {
-              const t = (r.title || '').trim();
-              if (t && !seen.has(t)) { seen.add(t); searcher._recordAccess(t).catch(() => {}); }
-            }
-          }
+          const results = await searcher.search(query, { maxResults: 8 });
+          const items = (results || []).filter(r => r.source === 'Wiki').map(r => ({
+            title: r.title || '',
+            snippet: r.excerpt || '',
+            sourceTag: 'wiki',
+            url: r.link || '',
+          }));
+          await self._deepReadWikiResults(items, searcher, 3);
           return items;
         } catch { return []; }
       },
