@@ -286,6 +286,7 @@ class IntentDecomposer {
         userName: userContext.userName || 'system',
         roomToken: userContext.roomToken || '',
         warmMemory: userContext.warmMemory || '',
+        compoundAction: true, // signals executors that titles/boards are agent-decided
         ...(userContext.getRecentContext ? { getRecentContext: userContext.getRecentContext } : {})
       });
 

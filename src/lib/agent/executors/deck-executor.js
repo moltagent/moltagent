@@ -189,6 +189,12 @@ Message: "${message.substring(0, 400)}"`;
     params._rawMessage = message;
     params._agentKnowledge = (context && context.warmMemory) || '';
 
+    // Compound actions are always delegated — the user delegated the entire
+    // multi-step flow, so the agent should decide titles, boards, etc.
+    if (context?.compoundAction) {
+      params.delegated = true;
+    }
+
     if (params.requires_clarification) {
       const missingFields = Array.isArray(params.missing_fields) && params.missing_fields.length > 0
         ? params.missing_fields
