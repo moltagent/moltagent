@@ -277,8 +277,15 @@ class IntentDecomposer {
       return { source: step.source, error: 'No action executor available' };
     }
 
-    // Build the action as a simple message for the domain executor
-    const actionMessage = step.query || '';
+    // Build the action message with probe findings inlined.
+    // The decomposer's action query is generic ("create a card with findings").
+    // The executor's LLM needs to see the actual content to extract a meaningful
+    // title and description. Inline the findings so the message is self-contained.
+    const probeFindings = this._aggregateProbeFindings(previousResults);
+    let actionMessage = step.query || '';
+    if (probeFindings) {
+      actionMessage += `\n\nFindings from research:\n${probeFindings.substring(0, 3000)}`;
+    }
 
     try {
       const response = await actionExecutor.process(actionMessage, {
@@ -287,6 +294,7 @@ class IntentDecomposer {
         roomToken: userContext.roomToken || '',
         warmMemory: userContext.warmMemory || '',
         compoundAction: true, // signals executors that titles/boards are agent-decided
+        probeFindings, // also available directly for card description
         ...(userContext.getRecentContext ? { getRecentContext: userContext.getRecentContext } : {})
       });
 
@@ -300,6 +308,31 @@ class IntentDecomposer {
     } catch (err) {
       return { source: step.source, error: err.message };
     }
+  }
+
+  /**
+   * Aggregate findings from completed probe steps into a single text block.
+   * Used to populate card descriptions in compound action steps.
+   * @param {Map} results - Step results map
+   * @returns {string|null} Aggregated findings or null if no probe results
+   * @private
+   */
+  _aggregateProbeFindings(results) {
+    if (!results || results.size === 0) return null;
+
+    const lines = [];
+    for (const [, result] of results) {
+      if (result.error || result.skipped || !result.results) continue;
+      for (const r of result.results) {
+        const title = r.title || '';
+        const content = r.snippet || r.content || '';
+        if (content) {
+          lines.push(title ? `**${title}**\n${content}` : content);
+        }
+      }
+    }
+
+    return lines.length > 0 ? lines.join('\n\n---\n\n') : null;
   }
 
   /**

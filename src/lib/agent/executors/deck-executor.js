@@ -1041,6 +1041,10 @@ Respond with ONLY the title, nothing else.`;
 
     const toolArgs = { title: params.card_title };
     if (params.description) toolArgs.description = params.description;
+    // Compound actions carry probe findings — use them as card description
+    if (!toolArgs.description && context?.probeFindings) {
+      toolArgs.description = context.probeFindings;
+    }
     if (params.stack_name) toolArgs.stack = this._normalizeStackName(params.stack_name);
     const targetBoard = this._resolveTargetBoard(params, context);
     if (targetBoard) toolArgs.board = targetBoard;
