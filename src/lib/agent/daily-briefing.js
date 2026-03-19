@@ -20,14 +20,16 @@ class DailyBriefing {
    * @param {Object} [opts.deckClient] - Deck client for task counts
    * @param {Object} [opts.caldavClient] - CalDAV client for today's events
    * @param {Object} [opts.budgetEnforcer] - Budget enforcer for cost report
+   * @param {Object} [opts.costTracker] - CostTracker for per-call cost data (preferred over budgetEnforcer)
    * @param {Object} [opts.collectivesClient] - Wiki client (unused for now, reserved)
    * @param {string} [opts.timezone='UTC'] - IANA timezone for date calculation
    * @param {Object} [opts.ownerIds] - Owner identities for calendar alert scoping
    */
-  constructor({ deckClient, caldavClient, budgetEnforcer, collectivesClient, timezone, ownerIds } = {}) {
+  constructor({ deckClient, caldavClient, budgetEnforcer, costTracker, collectivesClient, timezone, ownerIds } = {}) {
     this.deck = deckClient || null;
     this.caldav = caldavClient || null;
     this.budget = budgetEnforcer || null;
+    this.costTracker = costTracker || null;
     this.wiki = collectivesClient || null;
     this._timezone = timezone || 'UTC';
     this._ownerIds = ownerIds || null;
@@ -90,9 +92,14 @@ class DailyBriefing {
       parts.push('- Tasks: Could not check');
     }
 
-    // Cost summary
+    // Cost summary — prefer CostTracker (EUR, per-call audit) over BudgetEnforcer
     try {
-      if (this.budget) {
+      if (this.costTracker) {
+        const totals = this.costTracker.getTotals();
+        const monthlyEur = totals.monthly.costEur.toFixed(2);
+        const dailyEur = totals.daily.costEur.toFixed(2);
+        parts.push(`- Costs: €${monthlyEur} this month (€${dailyEur} today)`);
+      } else if (this.budget) {
         const report = this.budget.getFullReport();
         if (report) {
           let monthlySpent = 0;

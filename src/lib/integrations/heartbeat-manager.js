@@ -808,7 +808,8 @@ class HeartbeatManager {
       }
 
       // Daily Digest poster: post morning summary to Talk at configured time
-      if (this._cockpitDailyDigest && this._cockpitDailyDigest !== 'off' &&
+      // Requires initiative level >= 3 (agent prepares briefs at this level)
+      if (level >= 3 && this._cockpitDailyDigest && this._cockpitDailyDigest !== 'off' &&
           this.dailyBriefing && this.talkSendQueue && this.primaryRoomToken) {
         try {
           const today = this._todayDate();

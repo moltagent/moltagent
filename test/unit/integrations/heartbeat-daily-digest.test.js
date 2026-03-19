@@ -351,6 +351,7 @@ console.log('\n=== Heartbeat Daily Digest Tests ===\n');
     };
 
     const config = createMockConfig({
+      initiativeLevel: 3,
       dailyBriefing: mockDailyBriefing,
       talkSendQueue: mockTalkSendQueue,
       primaryRoomToken: 'room123'
@@ -428,7 +429,7 @@ console.log('\n=== Heartbeat Daily Digest Tests ===\n');
     };
 
     const config = createMockConfig({
-      initiativeLevel: 2,
+      initiativeLevel: 3,
       dailyBriefing: throwingDailyBriefing,
       talkSendQueue: mockTalkSendQueue,
       primaryRoomToken: 'room123',

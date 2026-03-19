@@ -72,6 +72,14 @@ try {
   DailyBriefing = null;
 }
 
+let CostTracker;
+try {
+  CostTracker = require('./lib/llm/cost-tracker');
+} catch {
+  console.warn('[WARN] CostTracker not available');
+  CostTracker = null;
+}
+
 let SessionManager;
 try {
   SessionManager = require('../src/security/session-manager');
@@ -472,6 +480,17 @@ async function main() {
     getCredential: credentialBroker.createGetter(),
     proactiveDailyBudget: appConfig.proactive.dailyCloudBudget
   });
+
+  // Wire CostTracker for per-call cost audit
+  let costTracker = null;
+  if (CostTracker && ncFilesClient) {
+    costTracker = new CostTracker({ ncFilesClient });
+    llmRouter.costTracker = costTracker;
+    costTracker.restore().catch(err =>
+      console.warn(`[INIT] CostTracker restore failed: ${err.message}`)
+    );
+    console.log('[INIT] CostTracker wired to LLM router');
+  }
 
   // Test Ollama connection
   const ollamaTest = await llmRouter.testConnection();
@@ -1092,7 +1111,8 @@ async function main() {
     ownerIds,
     collectivesClient,
     ncFilesClient,
-    resilientWriter
+    resilientWriter,
+    costTracker
   });
 
   // Wire Semantic Awareness components into HeartbeatManager
@@ -1157,6 +1177,7 @@ async function main() {
         caldavClient: heartbeat.caldavClient,
         deckClient: heartbeat.deckClient,
         budgetEnforcer: llmRouter.budget,
+        costTracker,
         collectivesClient: collectivesClient,
         timezone: heartbeat.settings.timezone,
         ownerIds
