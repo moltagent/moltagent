@@ -2105,6 +2105,26 @@ Be thoughtful. Be honest. Be yourself.`;
   }
 
   /**
+   * Extract collective ID and page ID from an NC Unified Search resourceUrl.
+   * URL: /apps/collectives/{CollectiveName}-{collectiveId}/{PageSlug}-{pageId}
+   * @param {string} url
+   * @returns {{collectiveId: number, pageId: number}|null}
+   * @private
+   */
+  _extractIdsFromUrl(url) {
+    if (!url) return null;
+    const idx = url.indexOf('/apps/collectives/');
+    if (idx === -1) return null;
+    const rest = url.substring(idx + '/apps/collectives/'.length);
+    const parts = rest.split('/');
+    if (parts.length < 2) return null;
+    const collectiveMatch = parts[0].match(/-(\d+)$/);
+    const pageMatch = parts[parts.length - 1].match(/-(\d+)$/);
+    if (!collectiveMatch || !pageMatch) return null;
+    return { collectiveId: parseInt(collectiveMatch[1], 10), pageId: parseInt(pageMatch[1], 10) };
+  }
+
+  /**
    * List children of a wiki section parent page.
    * Uses listPages + filePath filtering to find subpages.
    * Reads top 5 children by title and returns their content snippets.
