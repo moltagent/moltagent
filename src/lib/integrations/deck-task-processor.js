@@ -256,10 +256,12 @@ class DeckTaskProcessor {
         }
       }
 
-      // Notify the user in Talk that the task is ready for review
+      // Notify the user in Talk with deep link to the card
       if (this.notifyUser) {
         const title = card.title || 'a task';
-        this.notifyUser({ message: `📋 "${title}" is ready for your review.` }).catch(() => {});
+        const ncUrl = (this.deck.baseUrl || '').replace(/\/$/, '');
+        const cardLink = ncUrl ? `[${title}](${ncUrl}/apps/deck/card/${card.id})` : `"${title}"`;
+        this.notifyUser({ message: `📋 ${cardLink} is ready for your review.` }).catch(() => {});
       }
 
       return { taskType, result };
