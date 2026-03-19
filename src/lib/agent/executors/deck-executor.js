@@ -1113,6 +1113,18 @@ Respond with ONLY the title, nothing else.`;
       }
     }
 
+    // Compound actions with findings: mark the card as done — the content is
+    // complete, the DeckTaskProcessor only needs to deliver it (move to Review,
+    // assign user, notify). No re-synthesis needed.
+    if (context?.compoundAction && context?.probeFindings && cardIdMatch && this.deckClient) {
+      try {
+        await this.deckClient.markCardDone(cardIdMatch[1], toolArgs.stack || 'inbox');
+        this.logger.info(`[DeckExec] Compound card #${cardIdMatch[1]} marked done — ready for delivery`);
+      } catch (err) {
+        this.logger.warn(`[DeckExec] Could not mark card done: ${err.message}`);
+      }
+    }
+
     this._logActivity('deck_create',
       `Created card: ${params.card_title}`,
       { card: params.card_title, stack: params.stack_name, board: params.board_name },

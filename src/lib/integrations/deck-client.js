@@ -750,6 +750,31 @@ class DeckClient {
   }
 
   /**
+   * Mark a card as done without moving it between stacks.
+   * Sets the done timestamp — DeckTaskProcessor uses this to fast-track
+   * delivery (move to Review, assign, notify) without re-processing.
+   * @param {number} cardId
+   * @param {string} stackName - Current stack
+   */
+  async markCardDone(cardId, stackName) {
+    const { boardId } = await this._getIds();
+    const stackId = await this._resolveStackId(stackName);
+    const card = await this.getCard(cardId, stackName);
+
+    await this._request(
+      'PUT',
+      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`,
+      {
+        title: card.title,
+        type: card.type || 'plain',
+        owner: card.owner?.uid || card.owner || this.username,
+        done: new Date().toISOString()
+      }
+    );
+    console.log(`[Deck] Card ${cardId} marked done`);
+  }
+
+  /**
    * Get card details
    * @param {number} cardId - Card ID
    * @param {string} stackName - Stack the card is in

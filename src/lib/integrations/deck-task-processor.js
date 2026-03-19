@@ -203,6 +203,24 @@ class DeckTaskProcessor {
     console.log(`[DeckProcessor] Processing: "${card.title}"`);
     this._currentTask = card;
 
+    // Fast-track: card already marked done by the compound pipeline.
+    // The Description has the complete deliverable — just deliver it.
+    if (card.done) {
+      console.log(`[DeckProcessor] Card "${card.title}" already done — fast-tracking to Review`);
+      await this.deck.moveCard(card.id, 'inbox', 'review');
+      const reviewer = this._resolveReviewer(card);
+      if (reviewer) {
+        try { await this.deck.assignUser(card.id, 'review', reviewer); }
+        catch (e) { console.log(`[DeckProcessor] Review assign: ${e.message}`); }
+      }
+      if (this.notifyUser) {
+        const ncUrl = (this.deck.baseUrl || '').replace(/\/$/, '');
+        const cardLink = ncUrl ? `[${card.title}](${ncUrl}/apps/deck/card/${card.id})` : `"${card.title}"`;
+        this.notifyUser({ message: `📋 ${cardLink} is ready for your review.` }).catch(() => {});
+      }
+      return { taskType: 'done-delivery', result: { summary: 'Delivered completed card to Review.' } };
+    }
+
     // Store original description for review
     const originalDescription = card.description || '';
 
@@ -242,11 +260,7 @@ class DeckTaskProcessor {
         result.summary
       );
 
-      // Assign card to the human reviewer — card.owner is usually the bot,
-      // so fall back to the configured reviewUser (admin/primary user).
-      const cardOwner = card.owner?.uid || card.owner;
-      const botName = (this.deck.username || 'moltagent').toLowerCase();
-      const reviewer = (cardOwner && cardOwner.toLowerCase() !== botName) ? cardOwner : this.reviewUser;
+      const reviewer = this._resolveReviewer(card);
       if (reviewer) {
         try {
           await this.deck.assignUser(card.id, 'review', reviewer);
@@ -307,6 +321,20 @@ class DeckTaskProcessor {
     }
 
     return 'generic';
+  }
+
+  /**
+   * Resolve the human reviewer for a card. Card owner is usually the bot,
+   * so fall back to the configured reviewUser (admin/primary user).
+   * @param {Object} card
+   * @returns {string|null}
+   * @private
+   */
+  _resolveReviewer(card) {
+    const cardOwner = card.owner?.uid || card.owner;
+    const botName = (this.deck.username || 'moltagent').toLowerCase();
+    if (cardOwner && cardOwner.toLowerCase() !== botName) return cardOwner;
+    return this.reviewUser || null;
   }
 
   // ============================================================
