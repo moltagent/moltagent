@@ -142,6 +142,38 @@ class IntentDecomposer {
       await Promise.allSettled(probePromises);
     }
 
+    // Phase 1b: Web fallback — fire if probes returned thin results and policy allows.
+    // Count results that have actual content (not just empty snippets or errors).
+    const searchPolicy = userContext?.searchPolicy || 'research';
+    if (searchPolicy !== 'sovereign' && probeExecutor?.probeWeb) {
+      let substantiveCount = 0;
+      for (const [, r] of results) {
+        if (r.error || r.skipped || !r.results) continue;
+        for (const item of r.results) {
+          if ((item.snippet || item.content || '').trim().length > 20) substantiveCount++;
+        }
+      }
+
+      if (substantiveCount < 2) {
+        try {
+          const webQuery = plan.originalMessage || '';
+          const webResults = await probeExecutor.probeWeb(webQuery);
+          if (webResults.length > 0) {
+            // Assign a synthetic step id that won't collide with plan step ids
+            const webStepId = 'web_fallback';
+            results.set(webStepId, {
+              source: 'web',
+              results: webResults,
+              provenance: 'web_search'
+            });
+            console.log(`[IntentDecomposer] Thin probe results (${substantiveCount}) — web fallback added ${webResults.length} result(s)`);
+          }
+        } catch (err) {
+          console.log(`[IntentDecomposer] Web fallback error: ${err.message}`);
+        }
+      }
+    }
+
     // Phase 2: Execute dependent steps sequentially
     const dependentSteps = plan.steps.filter(s =>
       !independentProbes.includes(s) && s.type !== 'synthesis'
@@ -264,6 +296,13 @@ class IntentDecomposer {
           provenance: 'conversation_history'
         };
 
+      case 'web':
+        return {
+          source: 'web',
+          results: await (probeExecutor.probeWeb || (() => []))(step.query || terms.join(' ')),
+          provenance: 'web_search'
+        };
+
       default:
         return { source: step.source, results: [], provenance: 'unknown' };
     }
@@ -285,7 +324,7 @@ class IntentDecomposer {
     const probeFindings = this._aggregateProbeFindings(previousResults);
     let actionMessage = step.query || '';
     if (probeFindings) {
-      actionMessage += `\n\nContent for the card:\n${probeFindings.substring(0, 3000)}`;
+      actionMessage += `\n\nResearch findings (use only the actual content — ignore any technical tags like [Semantic match...], [Graph:...], score values, or collection paths):\n${probeFindings.substring(0, 3000)}`;
     }
 
     try {

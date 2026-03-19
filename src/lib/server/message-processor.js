@@ -2522,6 +2522,7 @@ JSON array:`,
         userName: session?.userId || 'system',
         roomToken: roomToken || '',
         warmMemory: session?.warmMemory || '',
+        searchPolicy: this.agentLoop?.cockpitManager?.cachedConfig?.system?.searchPolicy || 'research',
         getRecentContext: session ? () => session.context.slice(-4) : undefined
       }
     });
@@ -2601,6 +2602,12 @@ JSON array:`,
             snippet: r.summary || r.content || '',
             sourceTag: 'graph'
           }));
+        } catch { return []; }
+      },
+
+      probeWeb: async (query) => {
+        try {
+          return await self._probeWeb(query);
         } catch { return []; }
       },
 
