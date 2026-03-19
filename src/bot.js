@@ -640,7 +640,6 @@ async function main() {
       resilientWriter = new ResilientWikiWriter({
         collectivesClient,
         ncFilesClient,
-        collectivePath: 'Collectives/' + (appConfig.knowledge?.collectiveName || 'Moltagent Knowledge'),
         logger: console,
         ocsTimeoutMs: 10000
       });

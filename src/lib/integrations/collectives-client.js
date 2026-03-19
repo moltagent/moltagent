@@ -48,10 +48,11 @@ class CollectivesClient {
     // Configuration
     this.collectiveName = config.collectiveName || appConfig.knowledge?.collectiveName || 'Moltagent Knowledge';
 
-    // Cache for collective ID
+    // Cache for collective ID and WebDAV path
     this._cache = {
       collectiveId: null,
       collectiveName: null,
+      collectivePath: null,
       collectivesTTL: 0
     };
 
@@ -200,7 +201,31 @@ class CollectivesClient {
     this._cache.collectiveName = this.collectiveName;
     this._cache.collectivesTTL = Date.now() + 5 * 60 * 1000;
 
+    // Discover the WebDAV collectivePath from any page (the API knows the real path)
+    if (!this._cache.collectivePath) {
+      try {
+        const pages = await this.listPages(collective.id);
+        const anyPage = (Array.isArray(pages) ? pages : []).find(p => p.collectivePath);
+        if (anyPage) {
+          this._cache.collectivePath = anyPage.collectivePath;
+        }
+      } catch {
+        // Non-fatal — _webdavBasePath() will use fallback
+      }
+    }
+
     return collective.id;
+  }
+
+  /**
+   * Get the WebDAV base path for this collective's files.
+   * Uses the API-provided collectivePath when available (discovered during resolveCollective),
+   * falls back to the legacy hardcoded prefix if not yet resolved.
+   * @returns {string} Path relative to user files root (e.g. ".Collectives/Moltagent Knowledge")
+   * @private
+   */
+  _webdavBasePath() {
+    return this._cache.collectivePath || `.Collectives/${this.collectiveName}`;
   }
 
   // ===========================================================================
@@ -470,7 +495,7 @@ class CollectivesClient {
    */
   async readPageContent(pagePath) {
     if (pagePath.includes('..')) throw new CollectivesApiError('Path traversal not allowed');
-    const fullPath = `Collectives/${this.collectiveName}/${pagePath}`;
+    const fullPath = `${this._webdavBasePath()}/${pagePath}`;
     try {
       const response = await this._webdavRequest('GET', fullPath);
       const raw = typeof response.body === 'string' ? response.body : (response.body ? String(response.body) : '');
@@ -489,7 +514,7 @@ class CollectivesClient {
    */
   async writePageContent(pagePath, content) {
     if (pagePath.includes('..')) throw new CollectivesApiError('Path traversal not allowed');
-    const fullPath = `Collectives/${this.collectiveName}/${pagePath}`;
+    const fullPath = `${this._webdavBasePath()}/${pagePath}`;
     const sanitized = this._sanitizeContent(content);
     await this._webdavRequest('PUT', fullPath, sanitized);
   }

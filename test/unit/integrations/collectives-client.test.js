@@ -24,12 +24,12 @@ const SAMPLE_COLLECTIVES = [
 ];
 
 const SAMPLE_PAGES = [
-  { id: 100, title: 'People', parentId: 0, emoji: '👥', fileName: 'Readme.md', filePath: 'People' },
-  { id: 101, title: 'Projects', parentId: 0, emoji: '📁', fileName: 'Readme.md', filePath: 'Projects' },
-  { id: 102, title: 'Meta', parentId: 0, emoji: '⚙️', fileName: 'Readme.md', filePath: 'Meta' },
-  { id: 200, title: 'John Smith', parentId: 100, emoji: '', fileName: 'Readme.md', filePath: 'People/John Smith' },
-  { id: 201, title: 'Q3 Campaign', parentId: 101, emoji: '', fileName: 'Readme.md', filePath: 'Projects/Q3 Campaign' },
-  { id: 300, title: 'Learning Log', parentId: 102, emoji: '', fileName: 'Readme.md', filePath: 'Meta/Learning Log' }
+  { id: 100, title: 'People', parentId: 0, emoji: '👥', fileName: 'Readme.md', filePath: 'People', collectivePath: '.Collectives/Moltagent Knowledge' },
+  { id: 101, title: 'Projects', parentId: 0, emoji: '📁', fileName: 'Readme.md', filePath: 'Projects', collectivePath: '.Collectives/Moltagent Knowledge' },
+  { id: 102, title: 'Meta', parentId: 0, emoji: '⚙️', fileName: 'Readme.md', filePath: 'Meta', collectivePath: '.Collectives/Moltagent Knowledge' },
+  { id: 200, title: 'John Smith', parentId: 100, emoji: '', fileName: 'Readme.md', filePath: 'People/John Smith', collectivePath: '.Collectives/Moltagent Knowledge' },
+  { id: 201, title: 'Q3 Campaign', parentId: 101, emoji: '', fileName: 'Readme.md', filePath: 'Projects/Q3 Campaign', collectivePath: '.Collectives/Moltagent Knowledge' },
+  { id: 300, title: 'Learning Log', parentId: 102, emoji: '', fileName: 'Readme.md', filePath: 'Meta/Learning Log', collectivePath: '.Collectives/Moltagent Knowledge' }
 ];
 
 const SAMPLE_PAGE_CONTENT = `---
@@ -89,12 +89,12 @@ function createCollectivesMockNC(overrides = {}) {
   };
 
   // WebDAV responses
-  defaultResponses['GET:/remote.php/dav/files/testuser/Collectives/Moltagent Knowledge/John Smith/Readme.md'] = {
+  defaultResponses['GET:/remote.php/dav/files/testuser/.Collectives/Moltagent Knowledge/John Smith/Readme.md'] = {
     status: 200,
     body: SAMPLE_PAGE_CONTENT,
     headers: {}
   };
-  defaultResponses['PUT:/remote.php/dav/files/testuser/Collectives/Moltagent Knowledge/John Smith/Readme.md'] = {
+  defaultResponses['PUT:/remote.php/dav/files/testuser/.Collectives/Moltagent Knowledge/John Smith/Readme.md'] = {
     status: 201,
     body: '',
     headers: {}
@@ -242,7 +242,7 @@ asyncTest('readPageContent fetches via WebDAV path', async () => {
 
 asyncTest('readPageContent returns null on 404', async () => {
   const mockNC = createMockNCRequestManager({
-    'GET:/remote.php/dav/files/testuser/Collectives/Moltagent Knowledge/Missing/Readme.md': () => {
+    'GET:/remote.php/dav/files/testuser/.Collectives/Moltagent Knowledge/Missing/Readme.md': () => {
       const err = new Error('Not found');
       err.statusCode = 404;
       throw err;
@@ -267,7 +267,7 @@ asyncTest('readPageContent returns null on 404', async () => {
 asyncTest('writePageContent PUTs via WebDAV path', async () => {
   let capturedMethod, capturedPath;
   const mockNC = createMockNCRequestManager({
-    'PUT:/remote.php/dav/files/testuser/Collectives/Moltagent Knowledge/Test/Readme.md': (path, options) => {
+    'PUT:/remote.php/dav/files/testuser/.Collectives/Moltagent Knowledge/Test/Readme.md': (path, options) => {
       capturedMethod = options.method;
       capturedPath = path;
       return { status: 201, body: '', headers: {} };
@@ -324,7 +324,7 @@ asyncTest('readPageWithFrontmatter returns parsed frontmatter + body', async () 
       body: { ocs: { data: SAMPLE_PAGES } },
       headers: {}
     },
-    'GET:/remote.php/dav/files/testuser/Collectives/Moltagent Knowledge/People/John Smith/Readme.md': {
+    'GET:/remote.php/dav/files/testuser/.Collectives/Moltagent Knowledge/People/John Smith/Readme.md': {
       status: 200, body: SAMPLE_PAGE_CONTENT, headers: {}
     }
   });
@@ -370,13 +370,13 @@ test('createMockCollectivesClient provides expected methods', () => {
 // -- Wikilink Resolution --
 
 const PAGES_WITH_FILEIDS = [
-  { id: 1, title: 'Moltagent Knowledge', parentId: 0, fileId: 4000 },  // Landing page
-  { id: 100, title: 'People', parentId: 1, fileId: 4001 },
-  { id: 101, title: 'Projects', parentId: 1, fileId: 4002 },
-  { id: 102, title: 'Meta', parentId: 1, fileId: 4003 },
-  { id: 200, title: 'John Smith', parentId: 100, fileId: 4010 },
-  { id: 201, title: 'Q3 Campaign', parentId: 101, fileId: 4020 },
-  { id: 300, title: 'Learning Log', parentId: 102, fileId: 4030 }
+  { id: 1, title: 'Moltagent Knowledge', parentId: 0, fileId: 4000, collectivePath: '.Collectives/Moltagent Knowledge' },
+  { id: 100, title: 'People', parentId: 1, fileId: 4001, collectivePath: '.Collectives/Moltagent Knowledge' },
+  { id: 101, title: 'Projects', parentId: 1, fileId: 4002, collectivePath: '.Collectives/Moltagent Knowledge' },
+  { id: 102, title: 'Meta', parentId: 1, fileId: 4003, collectivePath: '.Collectives/Moltagent Knowledge' },
+  { id: 200, title: 'John Smith', parentId: 100, fileId: 4010, collectivePath: '.Collectives/Moltagent Knowledge' },
+  { id: 201, title: 'Q3 Campaign', parentId: 101, fileId: 4020, collectivePath: '.Collectives/Moltagent Knowledge' },
+  { id: 300, title: 'Learning Log', parentId: 102, fileId: 4030, collectivePath: '.Collectives/Moltagent Knowledge' }
 ];
 
 function createWikilinkMockNC(overrides = {}) {
@@ -443,7 +443,8 @@ asyncTest('resolveWikilinks caches page map across calls', async () => {
   const client = new CollectivesClient(mockNC);
   await client.resolveWikilinks('[[People]]');
   await client.resolveWikilinks('[[Projects]]');
-  assert.strictEqual(listPagesCallCount, 1, 'listPages should only be called once');
+  // 1 call from resolveCollective (path discovery) + 1 from wikilink map build = 2
+  assert.strictEqual(listPagesCallCount, 2, 'listPages should be called twice (path discovery + wikilink map)');
 });
 
 asyncTest('resolveWikilinks gracefully handles API error', async () => {
@@ -469,7 +470,7 @@ asyncTest('writePageWithFrontmatter resolves wikilinks before writing', async ()
     'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/search?search=Test%20Page': {
       status: 200, body: { ocs: { data: [] } }, headers: {}
     },
-    'PUT:/remote.php/dav/files/testuser/Collectives/Moltagent Knowledge/Test Page.md': (path, options) => {
+    'PUT:/remote.php/dav/files/testuser/.Collectives/Moltagent Knowledge/Test Page.md': (path, options) => {
       writtenContent = options.body;
       return { status: 201, body: '', headers: {} };
     }

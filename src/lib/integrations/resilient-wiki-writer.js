@@ -57,12 +57,26 @@ class ResilientWikiWriter {
 
     this.collectivesClient = collectivesClient;
     this.ncFilesClient = ncFilesClient;
-    this.collectivePath = collectivePath || 'Collectives/Moltagent Knowledge';
+    this.collectivePath = collectivePath || null;
     this.logger = logger || console;
     this.ocsTimeoutMs = ocsTimeoutMs || 10000;
 
     this._ocsHealthy = true;
     this._ocsLastFailure = 0;
+  }
+
+  /**
+   * Get the WebDAV base path for the collective.
+   * Prefers API-discovered path from CollectivesClient, falls back to explicit or default.
+   * @returns {string}
+   * @private
+   */
+  _basePath() {
+    if (this.collectivePath) return this.collectivePath;
+    if (this.collectivesClient?._webdavBasePath) {
+      return this.collectivesClient._webdavBasePath();
+    }
+    return '.Collectives/Moltagent Knowledge';
   }
 
   /**
@@ -118,7 +132,7 @@ class ResilientWikiWriter {
    */
   async updatePage(pagePath, content) {
     try {
-      const fullPath = `${this.collectivePath}/${pagePath}`;
+      const fullPath = `${this._basePath()}/${pagePath}`;
       await this.ncFilesClient.writeFile(fullPath, content);
       return { success: true, method: 'webdav' };
     } catch (err) {
@@ -148,7 +162,7 @@ class ResilientWikiWriter {
    */
   async readPage(pagePath) {
     try {
-      const fullPath = `${this.collectivePath}/${pagePath}`;
+      const fullPath = `${this._basePath()}/${pagePath}`;
       return await this.ncFilesClient.readFile(fullPath);
     } catch (err) {
       this.logger.error?.('[ResilientWikiWriter] readPage failed:', err.message);
@@ -185,7 +199,7 @@ class ResilientWikiWriter {
     }
 
     try {
-      const fullPath = `${this.collectivePath}/${sectionPath}`;
+      const fullPath = `${this._basePath()}/${sectionPath}`;
       const entries = await this.ncFilesClient.listDirectory(fullPath);
       const pages = (entries || []).map(e => ({
         title: (e.name || '').replace(/\.md$/i, ''),
@@ -269,7 +283,7 @@ class ResilientWikiWriter {
   // ── Internal: WebDAV create path ──
 
   async _createViaWebDAV(sectionPath, pageName, content) {
-    const sectionDir = `${this.collectivePath}/${sectionPath}`;
+    const sectionDir = `${this._basePath()}/${sectionPath}`;
     await this.ncFilesClient.mkdir(sectionDir);
 
     const filePath = `${sectionDir}/${pageName}.md`;
