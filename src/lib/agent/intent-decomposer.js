@@ -348,12 +348,10 @@ Compose a clear, concise response that:
 
     try {
       const result = await this.llmRouter.route({
-        job: 'quick',
+        job: 'synthesis',
         task: 'compound_synthesis',
-        messages: [
-          { role: 'system', content: prompt },
-          { role: 'user', content: plan.originalMessage || 'Summarize the results.' }
-        ],
+        system: prompt,
+        content: plan.originalMessage || 'Summarize the results.',
         requirements: { maxTokens: 1000, temperature: 0.3 }
       });
 
