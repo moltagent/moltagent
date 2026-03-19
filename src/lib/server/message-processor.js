@@ -2109,18 +2109,20 @@ Be thoughtful. Be honest. Be yourself.`;
 
   /**
    * Extract the wiki page path from an NC Unified Search resourceUrl.
-   * URL format: /apps/collectives/p/{collectiveId}/{Section}/{PageTitle}
-   * Returns: "{Section}/{PageTitle}.md" for readPageContent.
+   * URL: https://host/apps/collectives/Moltagent%20Knowledge/People/Eelco%20H.%20Dykstra
+   * Returns: "People/Eelco H. Dykstra.md" for readPageContent.
    * @param {string} url
    * @returns {string|null}
    * @private
    */
   _extractPagePathFromUrl(url) {
     if (!url) return null;
-    // Match /p/{id}/{rest} or /p/{id}/{section}/{page}
-    const match = url.match(/\/p\/\d+\/(.+)/);
-    if (!match) return null;
-    const pagePath = decodeURIComponent(match[1]);
+    const collectiveName = CONFIG.knowledge?.collectiveName || 'Moltagent Knowledge';
+    const marker = `/apps/collectives/${encodeURIComponent(collectiveName)}/`;
+    const idx = url.indexOf(marker);
+    if (idx === -1) return null;
+    const pagePath = decodeURIComponent(url.substring(idx + marker.length));
+    if (!pagePath) return null;
     return pagePath.endsWith('.md') ? pagePath : pagePath + '.md';
   }
 
