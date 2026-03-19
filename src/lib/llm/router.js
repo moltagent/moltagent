@@ -263,6 +263,7 @@ class LLMRouter {
       // Check circuit breaker
       const circuitCheck = this.circuitBreaker.canRequest(providerId);
       if (!circuitCheck.allowed) {
+        console.log(`[LLMRouter] Skipping ${providerId}: circuit open (${circuitCheck.state}), retryAt ${circuitCheck.retryAt}`);
         errors.push({ provider: providerId, error: 'Circuit open', state: circuitCheck.state, retryAt: circuitCheck.retryAt });
         failoverPath.push(providerId);
         continue;
@@ -271,6 +272,7 @@ class LLMRouter {
       // Check backoff
       const backoffCheck = this.backoff.shouldWait(providerId);
       if (backoffCheck.shouldWait) {
+        console.log(`[LLMRouter] Skipping ${providerId}: in backoff until ${new Date(backoffCheck.nextRetry).toISOString()}`);
         errors.push({ provider: providerId, error: 'In backoff', retryAt: backoffCheck.nextRetry });
         failoverPath.push(providerId);
         continue;
@@ -281,6 +283,7 @@ class LLMRouter {
       const rateLimitCheck = this.rateLimits.canRequest(providerId, estimatedTokens);
 
       if (!rateLimitCheck.allowed) {
+        console.log(`[LLMRouter] Skipping ${providerId}: ${rateLimitCheck.reason}`);
         errors.push({ provider: providerId, error: rateLimitCheck.reason });
         failoverPath.push(providerId);
         continue;
@@ -291,6 +294,7 @@ class LLMRouter {
       const budgetCheck = this.budget.canSpend(providerId, estimatedCost);
 
       if (!budgetCheck.allowed) {
+        console.log(`[LLMRouter] Skipping ${providerId}: ${budgetCheck.reason}`);
         errors.push({ provider: providerId, error: budgetCheck.reason });
         failoverPath.push(providerId);
         continue;
@@ -403,6 +407,7 @@ class LLMRouter {
         };
 
       } catch (error) {
+        console.log(`[LLMRouter] Provider ${providerId} failed: ${error.message}`);
         errors.push({ provider: providerId, error: error.message, status: error.status });
         failoverPath.push(providerId);
 
