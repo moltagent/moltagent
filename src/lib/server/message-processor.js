@@ -2075,17 +2075,14 @@ Be thoughtful. Be honest. Be yourself.`;
     const wiki = searcher?.wiki;
     if (!wiki || !wiki.readPageContent) return;
 
-    const collectiveName = wiki.collectiveName;
-    if (!collectiveName) return;
-
     const toRead = items.filter(r => r.url && r.sourceTag !== 'graph').slice(0, maxReads);
-    console.log(`[DeepRead] collectiveName="${collectiveName}", ${toRead.length}/${items.length} items to read`);
+    console.log(`[DeepRead] ${toRead.length}/${items.length} items to read`);
 
     const seenPaths = new Set();
 
     const reads = toRead.map(async (item) => {
       try {
-        const pagePath = this._extractPagePathFromUrl(item.url, collectiveName);
+        const pagePath = this._extractPagePathFromUrl(item.url);
         console.log(`[DeepRead] URL="${(item.url || '').substring(0, 80)}" → path="${pagePath}"`);
         if (!pagePath || seenPaths.has(pagePath)) return;
         seenPaths.add(pagePath);
@@ -2107,22 +2104,22 @@ Be thoughtful. Be honest. Be yourself.`;
   }
 
   /**
-   * Extract the page path from an NC Collectives resourceUrl by splitting on
-   * the known collective name. No regex, no ID extraction.
-   * URL: /apps/collectives/{CollectiveName}/{PagePath}
+   * Extract the page path from an NC Collectives resourceUrl.
+   * Skips the first segment (collective name + ID) and returns the rest.
+   * URL: /apps/collectives/{CollectiveName-ID}/{PagePath}
    * @param {string} url
-   * @param {string} collectiveName - Known collective name (e.g. "Moltagent Knowledge")
    * @returns {string|null} Page path (e.g. "People/Carlos") or null
    * @private
    */
-  _extractPagePathFromUrl(url, collectiveName) {
-    if (!url || !collectiveName) return null;
-    const decoded = decodeURIComponent(url);
-    const anchor = '/apps/collectives/' + collectiveName;
-    const anchorIdx = decoded.indexOf(anchor);
-    if (anchorIdx === -1) return null;
-    const rest = decoded.substring(anchorIdx + anchor.length).replace(/^\//, '').replace(/\/$/, '');
-    return rest || null;
+  _extractPagePathFromUrl(url) {
+    if (!url) return null;
+    const idx = url.indexOf('/apps/collectives/');
+    if (idx === -1) return null;
+    const afterCollectives = url.substring(idx + '/apps/collectives/'.length);
+    const slashIdx = afterCollectives.indexOf('/');
+    if (slashIdx === -1) return null;
+    const raw = afterCollectives.substring(slashIdx + 1).replace(/\/$/, '');
+    return raw ? decodeURIComponent(raw) : null;
   }
 
   /**
