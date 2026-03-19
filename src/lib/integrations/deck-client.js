@@ -771,6 +771,7 @@ class DeckClient {
         title: card.title,
         type: card.type || 'plain',
         owner: card.owner?.uid || card.owner || this.username,
+        description: card.description || '',
         done: new Date().toISOString()
       }
     );
