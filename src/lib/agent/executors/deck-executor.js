@@ -1040,10 +1040,12 @@ Respond with ONLY the title, nothing else.`;
     }
 
     const toolArgs = { title: params.card_title };
-    if (params.description) toolArgs.description = params.description;
-    // Compound actions carry probe findings — use them as card description
-    if (!toolArgs.description && context?.probeFindings) {
-      toolArgs.description = context.probeFindings;
+    // Probe findings replace the LLM's compressed description at creation time.
+    // The LLM picks the title. The code writes the content. One API call.
+    if (context?.probeFindings && context.probeFindings.length > (params.description?.length || 0)) {
+      toolArgs.description = context.probeFindings.substring(0, 4000);
+    } else if (params.description) {
+      toolArgs.description = params.description;
     }
     if (params.stack_name) toolArgs.stack = this._normalizeStackName(params.stack_name);
     const targetBoard = this._resolveTargetBoard(params, context);
@@ -1077,22 +1079,6 @@ Respond with ONLY the title, nothing else.`;
     const card = result.card || null;
     const cardId = card?.id ? String(card.id) : null;
     const stackName = (toolArgs.stack || 'inbox').toLowerCase();
-
-    // Post-creation: write full probe findings directly as description.
-    // The tool-calling LLM produces good titles but compresses findings into
-    // thin descriptions. Bypass that: overwrite with the raw probe content.
-    if (context?.compoundAction && context?.probeFindings && cardId && this.deckClient) {
-      try {
-        await this.deckClient.updateCard(cardId, stackName, {
-          title: params.card_title,
-          type: 'plain',
-          description: context.probeFindings.substring(0, 4000)
-        });
-        this.logger.info(`[DeckExec] Card #${cardId} description updated with ${context.probeFindings.length} chars of probe findings`);
-      } catch (err) {
-        this.logger.warn(`[DeckExec] Post-creation description update failed: ${err.message}`);
-      }
-    }
 
     if (params.due_date && cardId) {
       try {
