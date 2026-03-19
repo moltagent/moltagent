@@ -47,7 +47,7 @@ function createMockToolRegistry(responses = {}) {
       if (responses[name]) {
         return typeof responses[name] === 'function' ? responses[name](args) : responses[name];
       }
-      return { success: true, result: 'Created [Test Card](url) #42 in Inbox.' };
+      return { success: true, result: 'Created [Test Card](url) in Inbox.', card: { id: 42, boardId: 1, stackId: 1 } };
     },
     getCalls: () => calls,
     getCallsFor: (name) => calls.filter(c => c.name === name)
