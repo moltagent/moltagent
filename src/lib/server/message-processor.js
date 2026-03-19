@@ -2089,8 +2089,10 @@ Be thoughtful. Be honest. Be yourself.`;
 
         const page = await wiki.getPage(ids.collectiveId, ids.pageId);
         if (!page) return;
+        console.log(`[DeepRead] getPage(${ids.collectiveId}, ${ids.pageId}): title="${page.title}", filePath="${page.filePath}", fileName="${page.fileName}"`);
 
         const pagePath = wiki._buildPagePath(page);
+        console.log(`[DeepRead] _buildPagePath → "${pagePath}"`);
         const content = await wiki.readPageContent(pagePath);
         console.log(`[DeepRead] "${page.title}" (id=${ids.pageId}) → ${content ? content.trim().length + ' chars' : 'null'}`);
 
