@@ -341,6 +341,17 @@ class IntentDecomposer {
       });
 
       const responseText = typeof response === 'object' ? (response.response || JSON.stringify(response)) : String(response);
+
+      // Mark the card as done if findings were provided — the content is complete.
+      if (probeFindings && userContext.markCardDone) {
+        const cardIdMatch = responseText.match(/#(\d+)/);
+        if (cardIdMatch) {
+          userContext.markCardDone(cardIdMatch[1]).catch(err =>
+            this.logger.warn(`[IntentDecomposer] markCardDone failed: ${err.message}`)
+          );
+        }
+      }
+
       return {
         source: step.source,
         results: [{ title: step.query, snippet: responseText }],

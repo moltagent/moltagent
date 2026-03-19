@@ -2523,7 +2523,10 @@ JSON array:`,
         roomToken: roomToken || '',
         warmMemory: session?.warmMemory || '',
         searchPolicy: this.agentLoop?.cockpitManager?.cachedConfig?.system?.searchPolicy || 'research',
-        getRecentContext: session ? () => session.context.slice(-4) : undefined
+        getRecentContext: session ? () => session.context.slice(-4) : undefined,
+        markCardDone: this.microPipeline?.deckClient
+          ? (cardId) => this.microPipeline.deckClient.markCardDone(cardId, 'inbox')
+          : null
       }
     });
 
