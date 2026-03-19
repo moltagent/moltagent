@@ -714,6 +714,9 @@ class DeckClient {
       throw new DeckApiError(`Unknown stack: ${stackName}`);
     }
 
+    // TRACE-5: What's being sent to Deck API?
+    console.log(`[TRACE-5] Creating card: title="${(card.title || '').substring(0, 60)}", description length: ${(card.description || '').length}`);
+
     // Create the card
     const newCard = await this._request(
       'POST',

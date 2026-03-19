@@ -582,6 +582,8 @@ class ToolRegistry {
         required: ['title']
       },
       handler: async (args) => {
+        // TRACE-4: What params did the tool-calling LLM produce?
+        console.log(`[TRACE-4] deck_create_card: title="${(args.title || '').substring(0, 60)}", description length: ${(args.description || '').length}`);
         try {
           // Board-targeted creation
           if (args.board) {

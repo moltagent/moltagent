@@ -176,6 +176,13 @@ class IntentDecomposer {
       }
     }
 
+    // TRACE-1: What did probes return?
+    console.log(`[TRACE-1] Probe results: ${results.size} entries, keys: ${[...results.keys()].join(', ')}`);
+    for (const [key, val] of results) {
+      const items = val.results || [];
+      console.log(`[TRACE-1]   ${key}: ${items.length} items, first title: "${(items[0]?.title || 'none').substring(0, 50)}", first content length: ${(items[0]?.fullContent || items[0]?.snippet || items[0]?.content || '').length}`);
+    }
+
     // Phase 2: Execute dependent steps sequentially
     const dependentSteps = plan.steps.filter(s =>
       !independentProbes.includes(s) && s.type !== 'synthesis'
@@ -324,10 +331,16 @@ class IntentDecomposer {
     // The executor's LLM needs to see the actual content to extract a meaningful
     // title and description. Inline the findings so the message is self-contained.
     const probeFindings = this._aggregateProbeFindings(previousResults);
+    // TRACE-2: What did aggregation produce?
+    console.log(`[TRACE-2] Aggregated findings: ${probeFindings ? probeFindings.length + ' chars' : 'NULL'}`);
+    if (probeFindings) console.log(`[TRACE-2] First 200 chars: ${probeFindings.substring(0, 200)}`);
+
     let actionMessage = step.query || '';
     if (probeFindings) {
       actionMessage += `\n\nResearch findings (use only the actual content — ignore any technical tags like [Semantic match...], [Graph:...], score values, or collection paths):\n${probeFindings.substring(0, 3000)}`;
     }
+    // TRACE-3: What goes to the tool-calling LLM?
+    console.log(`[TRACE-3] Action message length: ${actionMessage.length}, starts with: "${actionMessage.substring(0, 100)}"`);
 
     try {
       const response = await actionExecutor.process(actionMessage, {
@@ -343,13 +356,12 @@ class IntentDecomposer {
       const responseText = typeof response === 'object' ? (response.response || JSON.stringify(response)) : String(response);
 
       // Mark the card as done if findings were provided — the content is complete.
-      if (probeFindings && userContext.markCardDone) {
-        const cardIdMatch = responseText.match(/card\/(\d+)/) || responseText.match(/#(\d+)/);
-        if (cardIdMatch) {
-          userContext.markCardDone(cardIdMatch[1]).catch(err =>
-            this.logger.warn(`[IntentDecomposer] markCardDone failed: ${err.message}`)
-          );
-        }
+      const cardIdMatch = responseText.match(/card\/(\d+)/) || responseText.match(/#(\d+)/);
+      console.log(`[TRACE-6] Card ID from response: ${cardIdMatch?.[1] || 'NOT FOUND'}, probeFindings: ${!!probeFindings}, markCardDone: ${!!userContext.markCardDone}, responseText starts: "${responseText.substring(0, 80)}"`);
+      if (probeFindings && userContext.markCardDone && cardIdMatch) {
+        userContext.markCardDone(cardIdMatch[1]).catch(err =>
+          this.logger.warn(`[IntentDecomposer] markCardDone failed: ${err.message}`)
+        );
       }
 
       return {
