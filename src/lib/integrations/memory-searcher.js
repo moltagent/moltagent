@@ -61,55 +61,37 @@ const SOURCE_PRIORITY = {
   calendar:                    6,
 };
 
-// Frontmatter-typed sections: pages under these paths have structured
-// knowledge (person, project, procedure, decision). Boost 2x.
-const TYPED_SECTIONS = /\/(people|projects|procedures|decisions)\//i;
-
-// Meta infrastructure pages (Learning Log, Pending Questions, etc.).
-// Useful for the system, rarely useful as context for the user. Demote 0.3x.
-const META_SECTION = /\/meta\//i;
-
-// Session pages: compressed conversations that may contain ungrounded content.
-const SESSION_SECTION = /\/(sessions)\//i;
-
-// Pattern to detect inline ungrounded markers left by Layer 2 relaxed mode.
-const UNGROUNDED_MARKER = /\[ungrounded\]/i;
-
-/**
- * Layer 3: Trust-aware scoring for session-sourced results.
- * Session summaries are the lowest-trust knowledge source in the system.
- * Wiki pages are curated; deck cards are actionable state; session summaries
- * are compressed conversations that may contain ungrounded assistant output.
- *
- * @param {Object} result - Search result with subline/snippet content
- * @returns {number} Multiplier (0.2 for ungrounded, 0.7 for legacy, 1.0 for trusted)
- */
-function _sessionTrustMultiplier(result) {
-  const snippet = (result.subline || result.snippet || '');
-
-  // Content with inline [ungrounded] markers → heavily demoted
-  if (UNGROUNDED_MARKER.test(snippet)) return 0.2;
-
-  // Legacy sessions (pre-Layer 1, no trust metadata) → moderate caution
-  return 0.7;
-}
+// Score multipliers by frontmatter type. Entity pages with structured
+// knowledge rank highest; infrastructure and reference stubs rank lowest.
+// The type comes from page frontmatter (populated by page-templates.js
+// and document-ingestor.js), cached via _typeCache in MemorySearcher.
+const TYPE_SCORE = Object.freeze({
+  person:               2.0,
+  project:              2.0,
+  organization:         2.0,
+  procedure:            2.0,
+  decision:             2.0,
+  research:             1.5,
+  meta:                 0.3,
+  'document-ref':       0.5,
+  session_transcript:   0.7,
+});
 
 /**
- * Score multiplier based on page path/section.
- * Pages with structured frontmatter types get 2x; Meta/ pages get 0.3x.
- * Session pages are scored by trust metadata (Layer 3 Bullshit Protection).
- * @param {Object} result - Search result with link field
+ * Score multiplier based on page type from frontmatter.
+ * Falls back to 1.0 for unknown types — no path regex needed.
+ * @param {Object} result - Search result
+ * @param {Map} typeCache - title → frontmatter type cache
  * @returns {number} Multiplier
  */
-function _pageScoreMultiplier(result) {
-  const link = result.link || '';
-  if (META_SECTION.test(link)) return 0.3;
-  if (TYPED_SECTIONS.test(link)) return 2.0;
+function _pageScoreMultiplier(result, typeCache) {
+  const title = result.title || '';
+  const type = typeCache?.get(title);
+  if (type && TYPE_SCORE[type] !== undefined) return TYPE_SCORE[type];
 
-  // Layer 3: Trust-aware retrieval — session pages scored by trust metadata
-  if (SESSION_SECTION.test(link)) {
-    return _sessionTrustMultiplier(result);
-  }
+  // Ungrounded session content — demote heavily
+  const snippet = (result.subline || result.snippet || '');
+  if (snippet.includes('[ungrounded]')) return 0.2;
 
   return 1.0;
 }
@@ -137,6 +119,9 @@ class MemorySearcher {
     this.knowledgeGraph = knowledgeGraph || null;
     this.logger = logger;
     this._providers = null;
+    // Frontmatter type cache: title → type string. Populated by _recordAccess
+    // which already reads frontmatter on every search hit. Zero extra API calls.
+    this._typeCache = new Map();
   }
 
   /**
@@ -300,6 +285,11 @@ class MemorySearcher {
   async _recordAccess(title) {
     const page = await this.wiki.readPageWithFrontmatter(title);
     if (!page) return;
+
+    // Cache the frontmatter type for scoring — piggybacks on access tracking
+    if (page.frontmatter?.type) {
+      this._typeCache.set(title, page.frontmatter.type);
+    }
 
     const now = new Date().toISOString();
     const count = (parseInt(page.frontmatter.access_count, 10) || 0) + 1;
@@ -504,10 +494,9 @@ class MemorySearcher {
         cs.vector * CHANNEL_WEIGHTS.vector +
         cs.graph * CHANNEL_WEIGHTS.graph;
 
-      // Frontmatter-aware score adjustment:
-      // Pages with structured type (person, project, etc.) are higher-value knowledge.
-      // Meta/ pages (Learning Log, Pending Questions, Knowledge Stats) are infrastructure.
-      r._fusionScore *= _pageScoreMultiplier(r);
+      // Frontmatter-aware score adjustment via cached page types.
+      // Entity pages (person, project, organization) get 2x; reference stubs get 0.5x.
+      r._fusionScore *= _pageScoreMultiplier(r, this._typeCache);
 
       // Clean up internal score fields
       delete r._kwScore;

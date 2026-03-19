@@ -142,19 +142,21 @@ class IntentDecomposer {
       await Promise.allSettled(probePromises);
     }
 
-    // Phase 1b: Web fallback — fire if probes returned thin results and policy allows.
-    // Count results that have actual content (not just empty snippets or errors).
+    // Phase 1b: Web fallback — fire if probes returned thin content and policy allows.
+    // Measure total content volume, not result count. After deep reads, if the wiki
+    // has pointers but not substance (< 500 chars total ≈ one decent paragraph),
+    // the web fallback fires to enrich.
     const searchPolicy = userContext?.searchPolicy || 'research';
     if (searchPolicy !== 'sovereign' && probeExecutor?.probeWeb) {
-      let substantiveCount = 0;
+      let totalContentLength = 0;
       for (const [, r] of results) {
         if (r.error || r.skipped || !r.results) continue;
         for (const item of r.results) {
-          if ((item.snippet || item.content || '').trim().length > 20) substantiveCount++;
+          totalContentLength += (item.snippet || item.content || '').trim().length;
         }
       }
 
-      if (substantiveCount < 2) {
+      if (totalContentLength < 500) {
         try {
           const webQuery = plan.originalMessage || '';
           const webResults = await probeExecutor.probeWeb(webQuery);
@@ -166,7 +168,7 @@ class IntentDecomposer {
               results: webResults,
               provenance: 'web_search'
             });
-            console.log(`[IntentDecomposer] Thin probe results (${substantiveCount}) — web fallback added ${webResults.length} result(s)`);
+            console.log(`[IntentDecomposer] Thin probe content (${totalContentLength} chars) — web fallback added ${webResults.length} result(s)`);
           }
         } catch (err) {
           console.log(`[IntentDecomposer] Web fallback error: ${err.message}`);
