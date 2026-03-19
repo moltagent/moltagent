@@ -2076,7 +2076,7 @@ Be thoughtful. Be honest. Be yourself.`;
     if (!wiki || !wiki.readPageContent) return;
 
     const toRead = items.filter(r => (r.title || r.url) && r.sourceTag !== 'graph').slice(0, maxReads);
-    console.log(`[DeepRead] Attempting ${toRead.length} deep reads (of ${items.length} items, max ${maxReads})`);
+    console.log(`[DeepRead] Attempting ${toRead.length} deep reads (of ${items.length} items, max ${maxReads}): ${items.map((r, i) => `${i}:"${(r.title || '').substring(0, 40)}" tag=${r.sourceTag}`).join(', ')}`);
 
     // Deduplicate by resolved page title to avoid reading the same page twice
     const seenPages = new Set();
@@ -2098,7 +2098,7 @@ Be thoughtful. Be honest. Be yourself.`;
         }
 
         if (!found) {
-          console.log(`[DeepRead] No page found for "${item.title}" (candidates: ${candidates.join(', ')})`);
+          console.log(`[DeepRead] No page found for "${item.title}" url="${item.url}" (candidates: ${candidates.join(', ')})`);
           return;
         }
 
