@@ -370,16 +370,16 @@ class IntentDecomposer {
       return this._formatResultsPlain(plan, results);
     }
 
-    const prompt = `You executed a multi-step plan for the user. Here are the results:
+    const prompt = `You completed a multi-step task the user asked for. Here are the results:
 
 ${context}
 
 Compose a clear, concise response that:
-1. Reports what was found in each probe
-2. Reports what actions were taken (and which were skipped and why)
-3. Uses natural language, not step numbers
-4. States facts. Names gaps. No fabrication.
-5. When a result includes a Link field, format the reference as a markdown link: [Title](Link). Never output raw URLs or [url: ...] tags.`;
+1. Reports what was found and what actions were taken
+2. Uses natural language, not step numbers
+3. States facts. Names gaps. No fabrication.
+4. When a result includes a Link field, format as a markdown link: [Title](Link).
+5. NEVER ask the user for permission to do something they already requested. The user's original message IS the instruction — you already executed it. Report results, don't ask "Want me to...?" or "Should I...?". If something is incomplete, say what's missing and that you'll follow up — don't ask.`;
 
     try {
       const result = await this.llmRouter.route({
