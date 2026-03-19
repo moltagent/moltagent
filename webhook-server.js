@@ -557,7 +557,7 @@ function _buildReferenceResolver(llmRouter) {
   if (!ReferenceResolver || !llmRouter?.router) return null;
   try {
     const resolver = new ReferenceResolver({
-      router: llmRouter.router,
+      router: llmRouter,
       logger: console
     });
     console.log('[INIT] ReferenceResolver ready');
@@ -1278,7 +1278,7 @@ async function initialize() {
   if (knowledgeGraph && llmRouter) {
     try {
       const EntityExtractor = require('./src/lib/memory/entity-extractor');
-      entityExtractor = new EntityExtractor({ knowledgeGraph, llmRouter: llmRouter.router, logger: console });
+      entityExtractor = new EntityExtractor({ knowledgeGraph, llmRouter: llmRouter, logger: console });
       console.log('[INIT] EntityExtractor ready');
     } catch (err) {
       console.warn(`[INIT] EntityExtractor failed: ${err.message}`);
@@ -1307,7 +1307,7 @@ async function initialize() {
   if (collectivesClient && llmRouter) {
     try {
       const DailyDigest = require('./src/lib/memory/daily-digest');
-      dailyDigest = new DailyDigest({ wikiClient: collectivesClient, llmRouter: llmRouter.router, logger: console });
+      dailyDigest = new DailyDigest({ wikiClient: collectivesClient, llmRouter: llmRouter, logger: console });
       console.log('[INIT] DailyDigest ready');
     } catch (err) {
       console.warn(`[INIT] DailyDigest failed: ${err.message}`);
@@ -1503,8 +1503,8 @@ async function initialize() {
         console.warn('[INIT] CostTracker restore failed (non-fatal):', err.message);
       }
       // Wire CostTracker into LLMRouter so all route() calls are metered
-      if (llmRouter?.router) {
-        llmRouter.router.costTracker = costTracker;
+      if (llmRouter) {
+        llmRouter.costTracker = costTracker;
       }
       console.log('[INIT] CostTracker ready');
 
@@ -1523,7 +1523,7 @@ async function initialize() {
 
           // Register ollama-fast in the router so roster can reference it
           if (ollamaFastProvider) {
-            llmRouter.router.registerProvider('ollama-fast', {
+            llmRouter.registerProvider('ollama-fast', {
               adapter: 'ollama',
               endpoint: ollamaConfig.endpoint || CONFIG.ollama.url,
               model: fastModel,
@@ -1534,7 +1534,7 @@ async function initialize() {
           // Register Haiku in the router so it appears as cheapest cloud provider
           // in the roster. Haiku is the cost-optimal model for tool-calling,
           // classification fallback, synthesis, and decomposition.
-          llmRouter.router.registerProvider('claude-haiku', {
+          llmRouter.registerProvider('claude-haiku', {
             adapter: 'anthropic',
             endpoint: 'https://api.anthropic.com',
             model: 'claude-haiku-4-5-20251001',
@@ -1544,21 +1544,21 @@ async function initialize() {
           });
 
           // Activate smart-mix preset on LLMRouter v3
-          llmRouter.router.setPreset('smart-mix');
+          llmRouter.setPreset('smart-mix');
           console.log('[INIT] LLMRouter preset activated: smart-mix');
 
           // Override QUICK chain: ollama-fast (qwen2.5:3b) first for speed
           if (ollamaFastProvider) {
-            const roster = llmRouter.router.getRoster();
+            const roster = llmRouter.getRoster();
             if (roster && roster.quick) {
               roster.quick = ['ollama-fast', ...roster.quick.filter(id => id !== 'ollama-fast')];
-              llmRouter.router.setRoster(roster);
+              llmRouter.setRoster(roster);
               console.log(`[INIT] QUICK chain: ollama-fast (${fastModel}) → ${roster.quick.slice(1).join(' → ')}`);
             }
           }
 
           llmProvider = new RouterChatBridge({
-            router: llmRouter.router,
+            router: llmRouter,
             chatProviders,
             costTracker,
             logger: console,
@@ -1716,7 +1716,7 @@ async function initialize() {
       modelScout.discover().then(() => {
         const localRoster = modelScout.generateLocalRoster();
         if (localRoster && llmRouter) {
-          llmRouter.router.setLocalRoster(localRoster);
+          llmRouter.setLocalRoster(localRoster);
           console.log(`[INIT] Local roster: ${modelScout.getSummary()}`);
         }
       }).catch(err => {
@@ -1731,7 +1731,7 @@ async function initialize() {
     try {
       deferralQueue = new DeferralQueue({
         ncFilesClient,
-        llmRouter: llmRouter.router,
+        llmRouter: llmRouter,
         logger: console
       });
       deferralQueue.load().catch(err =>
@@ -1772,7 +1772,7 @@ async function initialize() {
       }
 
       microPipeline = new MicroPipeline({
-        llmRouter: llmRouter.router,
+        llmRouter: llmRouter,
         memorySearcher,
         memoryContextEnricher,
         deckClient: deckClient2,
@@ -2080,7 +2080,7 @@ async function initialize() {
           heartbeatManager.heartbeatExtractor = new HeartbeatExtractor({
             activityLogger,
             wikiClient: collectivesClient,
-            llmRouter: llmRouter.router,
+            llmRouter: llmRouter,
             memorySearcher,
             logger: console
           });
@@ -2177,7 +2177,7 @@ async function initialize() {
           heartbeatManager.metadataGardener = new MetadataGardener({
             collectivesClient,
             resilientWriter,
-            router: llmRouter.router,
+            router: llmRouter,
             logger: console,
             pagesPerTick: 2
           });
