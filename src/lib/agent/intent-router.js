@@ -562,10 +562,11 @@ class IntentRouter {
       console.log(`[IntentRouter] Parsed: gate=${gate}, domain=${domain}, confidence=${confidence}`);
       let compound = gate === 'compound' || parsed.compound === true;
 
-      // Safety net: when the LLM classifies as knowledge but the message contains
-      // a sentence-boundary action ("Look into X. Put it on a card."), promote to compound.
-      // Small models (qwen2.5:3b) frequently miss multi-sentence compound intents.
-      if (!compound && (gate === 'knowledge') && originalMessage) {
+      // Safety net: when the LLM classifies as knowledge or action but the message
+      // contains BOTH a question/research AND an action, promote to compound.
+      // Small models frequently classify "Research X and put it on a card" as either
+      // knowledge (missing the action) or action (missing the research).
+      if (!compound && (gate === 'knowledge' || gate === 'action') && originalMessage) {
         const hasSentenceBoundaryAction = /[.!?]\s+(put|create|save|send|move|add|make|write|book|upload|post|store)\b/i.test(originalMessage);
         if (hasSentenceBoundaryAction) {
           compound = true;
