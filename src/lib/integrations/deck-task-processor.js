@@ -241,6 +241,23 @@ class DeckTaskProcessor {
         result.summary
       );
 
+      // Assign card to the requesting user for review (not just Moltagent)
+      const reviewer = card.owner?.uid || card.owner;
+      if (reviewer) {
+        try {
+          await this.deck.assignUser(card.id, 'review', reviewer);
+        } catch (assignErr) {
+          // May already be assigned — not a blocker
+          console.log(`[DeckProcessor] Review assign ${reviewer}: ${assignErr.message}`);
+        }
+      }
+
+      // Notify the user in Talk that the task is ready for review
+      if (this.notifyUser) {
+        const title = card.title || 'a task';
+        this.notifyUser({ message: `📋 "${title}" is ready for your review.` }).catch(() => {});
+      }
+
       return { taskType, result };
 
 
