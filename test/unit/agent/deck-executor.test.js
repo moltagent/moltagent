@@ -142,7 +142,7 @@ asyncTest('Get with missing title asks for clarification', async () => {
 
 asyncTest('Create card in default stack', async () => {
   const registry = createMockToolRegistry({
-    deck_create_card: { success: true, result: 'Created "Buy groceries" (card #10) in Inbox.' }
+    deck_create_card: { success: true, result: 'Created "Buy groceries" in Inbox.', card: { id: 10, boardId: 1, stackId: 1 } }
   });
   const executor = new DeckExecutor({
     router: createMockRouter({ result: JSON.stringify({ action: 'create', card_title: 'Buy groceries' }) }),
@@ -153,14 +153,13 @@ asyncTest('Create card in default stack', async () => {
   const result = await executor.execute('Create a task called Buy groceries', { userName: 'alice' });
   const resp = getResponse(result);
   assert.ok(resp.includes('Buy groceries'), `Should confirm creation, got: ${resp}`);
-  assert.ok(resp.includes('#10'), `Should include card ID, got: ${resp}`);
   const call = registry.getCallsFor('deck_create_card')[0];
   assert.strictEqual(call.args.title, 'Buy groceries');
 });
 
 asyncTest('Create card in named stack', async () => {
   const registry = createMockToolRegistry({
-    deck_create_card: { success: true, result: 'Created "Deploy v2" (card #11) in Working.' }
+    deck_create_card: { success: true, result: 'Created "Deploy v2" in Working.', card: { id: 11, boardId: 1, stackId: 1 } }
   });
   const executor = new DeckExecutor({
     router: createMockRouter({ result: JSON.stringify({ action: 'create', card_title: 'Deploy v2', stack_name: 'Doing' }) }),
@@ -458,7 +457,7 @@ asyncTest('Delete blocked by guardrail returns action-blocked message', async ()
 
 asyncTest('Create with due_date calls deck_set_due_date follow-up', async () => {
   const registry = createMockToolRegistry({
-    deck_create_card: { success: true, result: 'Created "Report" (card #15) in Inbox.' },
+    deck_create_card: { success: true, result: 'Created "Report" in Inbox.', card: { id: 15, boardId: 1, stackId: 1 } },
     deck_set_due_date: { success: true, result: 'Due date set.' }
   });
   const executor = new DeckExecutor({
@@ -470,12 +469,12 @@ asyncTest('Create with due_date calls deck_set_due_date follow-up', async () => 
   await executor.execute('Create task Report due tomorrow', { userName: 'alice' });
   assert.strictEqual(registry.getCallsFor('deck_set_due_date').length, 1, 'Should call deck_set_due_date');
   const call = registry.getCallsFor('deck_set_due_date')[0];
-  assert.strictEqual(call.args.card, '#15', 'Should extract card ID from create result');
+  assert.strictEqual(call.args.card, '#15', 'Should use structured card ID');
 });
 
 asyncTest('Create with assignee calls deck_assign_user follow-up', async () => {
   const registry = createMockToolRegistry({
-    deck_create_card: { success: true, result: 'Created "Design" (card #20) in Inbox.' },
+    deck_create_card: { success: true, result: 'Created "Design" in Inbox.', card: { id: 20, boardId: 1, stackId: 1 } },
     deck_assign_user: { success: true, result: 'Assigned bob.' }
   });
   const executor = new DeckExecutor({

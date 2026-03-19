@@ -228,10 +228,16 @@ class ToolRegistry {
     }
 
     try {
-      const result = await tool.handler(args || {});
+      const raw = await tool.handler(args || {});
+      // Handlers may return {text, card} for structured data alongside the response.
+      // The text goes to result (for display), the card object passes through directly.
+      if (typeof raw === 'object' && raw !== null && raw.text) {
+        const { text, ...structured } = raw;
+        return { success: true, result: text, ...structured };
+      }
       return {
         success: true,
-        result: typeof result === 'string' ? result : JSON.stringify(result)
+        result: typeof raw === 'string' ? raw : JSON.stringify(raw)
       };
     } catch (err) {
       // 403: graceful message for shared boards without write permission
@@ -605,7 +611,10 @@ class ToolRegistry {
             );
 
             if (!card || !card.id) return `Failed to create "${args.title}" — the server returned an empty response. Try again.`;
-            return `Created ${deckLink(args.title, deckCardUrl(card.id))} in "${stack.title}" on board "${board.title}".`;
+            return {
+              text: `Created ${deckLink(args.title, deckCardUrl(card.id))} in "${stack.title}" on board "${board.title}".`,
+              card: { id: card.id, boardId: board.id, stackId: stack.id }
+            };
           }
 
           // Default board creation
@@ -616,7 +625,10 @@ class ToolRegistry {
           });
 
           if (!card || !card.id) return `Failed to create "${args.title}" — no card ID returned. Try again.`;
-          return `Created ${deckLink(args.title, deckCardUrl(card.id))} in ${args.stack || 'Inbox'}.`;
+          return {
+            text: `Created ${deckLink(args.title, deckCardUrl(card.id))} in ${args.stack || 'Inbox'}.`,
+            card: { id: card.id, boardId: card.boardId || null, stackId: card.stackId || null }
+          };
         } catch (err) {
           this.logger.error(`[deck_create_card] ${err.message}`);
           return `Failed to create card: ${err.message}`;

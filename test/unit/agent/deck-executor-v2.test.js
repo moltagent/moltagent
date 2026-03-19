@@ -341,7 +341,7 @@ asyncTest('Delegation: create card with delegation generates title', async () =>
       return { result: 'Write Architecture Blog Post' };
     }),
     toolRegistry: createMockToolRegistry({
-      deck_create_card: { success: true, result: 'Created "Write Architecture Blog Post" (card #50) in Inbox.' }
+      deck_create_card: { success: true, result: 'Created "Write Architecture Blog Post" in Inbox.', card: { id: 50, boardId: 1, stackId: 1 } }
     }),
     logger: silentLogger
   });

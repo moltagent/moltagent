@@ -355,11 +355,13 @@ class IntentDecomposer {
 
       const responseText = typeof response === 'object' ? (response.response || JSON.stringify(response)) : String(response);
 
+      // Structured card data from the executor — no regex on response text
+      const card = (typeof response === 'object' && response?.card) || null;
+      const cardId = card?.id ? String(card.id) : null;
+
       // Mark the card as done if findings were provided — the content is complete.
-      const cardIdMatch = responseText.match(/card\/(\d+)/) || responseText.match(/#(\d+)/);
-      console.log(`[TRACE-6] Card ID from response: ${cardIdMatch?.[1] || 'NOT FOUND'}, probeFindings: ${!!probeFindings}, markCardDone: ${!!userContext.markCardDone}, responseText starts: "${responseText.substring(0, 80)}"`);
-      if (probeFindings && userContext.markCardDone && cardIdMatch) {
-        userContext.markCardDone(cardIdMatch[1]).catch(err =>
+      if (probeFindings && userContext.markCardDone && cardId) {
+        userContext.markCardDone(cardId).catch(err =>
           this.logger.warn(`[IntentDecomposer] markCardDone failed: ${err.message}`)
         );
       }
@@ -368,7 +370,8 @@ class IntentDecomposer {
         source: step.source,
         results: [{ title: step.query, snippet: responseText }],
         provenance: 'action_result',
-        actionTaken: true
+        actionTaken: true,
+        card
       };
     } catch (err) {
       return { source: step.source, error: err.message };

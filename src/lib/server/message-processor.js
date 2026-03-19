@@ -2079,11 +2079,14 @@ Be thoughtful. Be honest. Be yourself.`;
     if (!collectiveName) return;
 
     const toRead = items.filter(r => r.url && r.sourceTag !== 'graph').slice(0, maxReads);
+    console.log(`[DeepRead] collectiveName="${collectiveName}", ${toRead.length}/${items.length} items to read`);
+
     const seenPaths = new Set();
 
     const reads = toRead.map(async (item) => {
       try {
         const pagePath = this._extractPagePathFromUrl(item.url, collectiveName);
+        console.log(`[DeepRead] URL="${(item.url || '').substring(0, 80)}" → path="${pagePath}"`);
         if (!pagePath || seenPaths.has(pagePath)) return;
         seenPaths.add(pagePath);
 

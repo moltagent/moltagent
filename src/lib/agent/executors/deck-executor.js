@@ -1073,29 +1073,30 @@ Respond with ONLY the title, nothing else.`;
       return { response: `Could not create card: ${result.error || 'unknown error'}` };
     }
 
-    // Follow-up ops (due date, assignee) are fire-and-forget — card is already created
-    const cardIdMatch = (result.result || '').match(/#(\d+)/);
+    // Structured card data flows to all downstream consumers — no regex on response text
+    const card = result.card || null;
+    const cardId = card?.id ? String(card.id) : null;
+    const stackName = (toolArgs.stack || 'inbox').toLowerCase();
 
     // Post-creation: write full probe findings directly as description.
     // The tool-calling LLM produces good titles but compresses findings into
     // thin descriptions. Bypass that: overwrite with the raw probe content.
-    if (context?.compoundAction && context?.probeFindings && cardIdMatch && this.deckClient) {
+    if (context?.compoundAction && context?.probeFindings && cardId && this.deckClient) {
       try {
-        await this.deckClient.updateCard(
-          cardIdMatch[1],
-          (toolArgs.stack || 'inbox').toLowerCase(),
-          { description: context.probeFindings.substring(0, 4000) }
-        );
-        this.logger.info(`[DeckExec] Card #${cardIdMatch[1]} description updated with ${context.probeFindings.length} chars of probe findings`);
+        await this.deckClient.updateCard(cardId, stackName, {
+          description: context.probeFindings.substring(0, 4000)
+        });
+        this.logger.info(`[DeckExec] Card #${cardId} description updated with ${context.probeFindings.length} chars of probe findings`);
       } catch (err) {
         this.logger.warn(`[DeckExec] Post-creation description update failed: ${err.message}`);
       }
     }
-    if (params.due_date && cardIdMatch) {
+
+    if (params.due_date && cardId) {
       try {
         const resolved = this._resolveDate(params.due_date) || params.due_date;
         await this.toolRegistry.execute('deck_set_due_date', {
-          card: `#${cardIdMatch[1]}`,
+          card: `#${cardId}`,
           duedate: resolved
         });
       } catch (err) {
@@ -1103,10 +1104,10 @@ Respond with ONLY the title, nothing else.`;
       }
     }
 
-    if (params.assignee && cardIdMatch) {
+    if (params.assignee && cardId) {
       try {
         await this.toolRegistry.execute('deck_assign_user', {
-          card: `#${cardIdMatch[1]}`,
+          card: `#${cardId}`,
           user: params.assignee
         });
       } catch (err) {
@@ -1115,12 +1116,12 @@ Respond with ONLY the title, nothing else.`;
     }
 
     // Auto-assign requesting user if no explicit assignee was specified
-    if (!params.assignee && context?.userName && cardIdMatch) {
+    if (!params.assignee && context?.userName && cardId) {
       const userId = context.userName;
       if (!/^moltagent$/i.test(userId)) {
         try {
           await this.toolRegistry.execute('deck_assign_user', {
-            card: `#${cardIdMatch[1]}`,
+            card: `#${cardId}`,
             user: userId
           });
         } catch (err) {
@@ -1132,10 +1133,10 @@ Respond with ONLY the title, nothing else.`;
     // Compound actions with findings: mark the card as done — the content is
     // complete, the DeckTaskProcessor only needs to deliver it (move to Review,
     // assign user, notify). No re-synthesis needed.
-    if (context?.compoundAction && context?.probeFindings && cardIdMatch && this.deckClient) {
+    if (context?.compoundAction && context?.probeFindings && cardId && this.deckClient) {
       try {
-        await this.deckClient.markCardDone(cardIdMatch[1], toolArgs.stack || 'inbox');
-        this.logger.info(`[DeckExec] Compound card #${cardIdMatch[1]} marked done — ready for delivery`);
+        await this.deckClient.markCardDone(cardId, stackName);
+        this.logger.info(`[DeckExec] Compound card #${cardId} marked done — ready for delivery`);
       } catch (err) {
         this.logger.warn(`[DeckExec] Could not mark card done: ${err.message}`);
       }
@@ -1147,9 +1148,9 @@ Respond with ONLY the title, nothing else.`;
       context
     );
 
-    const cardId = cardIdMatch ? cardIdMatch[1] : null;
     return {
       response: result.result,
+      card,
       actionRecord: {
         type: 'deck_create',
         refs: {
