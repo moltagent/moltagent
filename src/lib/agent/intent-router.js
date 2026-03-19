@@ -334,39 +334,28 @@ class IntentRouter {
     message = message || '';
 
     try {
-      // Primary: cheapest/most-local model first
-      let result;
-      if (this.llmRouter) {
-        result = await this._classifyViaRouter(message, recentContext);
-      } else {
-        result = await this._classifyWithModel(this.fastModel, message, recentContext);
+      // Cloud-ok: Haiku classifies correctly every time. No escalation needed.
+      // Local-only: qwen3:8b first, qwen2.5:3b fallback, regex last resort.
+      const cloudOk = this.llmRouter?.hasCloudPlayers?.();
+
+      if (cloudOk && this.llmRouter) {
+        return await this._classifyViaRouter(message, recentContext);
       }
 
-      // Escalation: if the fast model returned garbage (no JSON → confidence 0)
-      // or unknown, retry with a smarter model. This handles qwen2.5:3b role-playing
-      // instead of classifying — it returns prose instead of JSON.
-      // Chain: qwen2.5:3b → (garbage?) → qwen3:8b → (fail?) → regex fallback
-      if ((result.gate === 'knowledge' && result.confidence === 0) || result.gate === 'unknown') {
-        console.log(`[IntentRouter] Fast model returned garbage (confidence=${result.confidence}, gate=${result.gate}), escalating to smart model`);
-        try {
-          result = await this._classifyWithModel(this.smartModel, message, recentContext);
-        } catch (_retryErr) {
-          console.warn(`[IntentRouter] Smart model escalation failed: ${_retryErr.message}`);
-          return this._regexFallback(message);
-        }
-      }
-
+      // Local-only path: fast model → smart model → regex
+      const result = this.provider
+        ? await this._classifyWithModel(this.smartModel, message, recentContext)
+        : await this._classifyViaRouter(message, recentContext);
       return result;
     } catch (err) {
-      // Primary path failed — try smart model directly
+      // Primary failed — try fast model, then regex
       try {
         if (this.provider) {
-          return await this._classifyWithModel(this.smartModel, message, recentContext);
+          return await this._classifyWithModel(this.fastModel, message, recentContext);
         }
       } catch (_fallbackErr) {
         // intentional fall-through
       }
-      // Both models failed — regex fallback (English-only emergency path)
       return this._regexFallback(message);
     }
   }
@@ -458,16 +447,11 @@ class IntentRouter {
     // We include it here and rely on the knowledge patterns below to catch "what's on my schedule".
     const hasActionVerb = /\b(create|make|set\s+up|build|send|draft|compose|reply|book|schedule\s+(a|an|the|my)|move|assign|update|delete|remove|remind|add|upload|download|save|store|forward|write|remember|forget)\b/.test(lower);
 
-    // Compound detection: action verb + connector + another operation,
-    // OR separate sentences where one is a question/research and another is an action.
-    // "Look into X. Put the results on a card." — no connector, but two distinct intents.
+    // Compound detection: action verb + connector + another operation
     const compound = hasActionVerb && (
       /\b(and\s+(then\s+)?(check|create|find|send|book|search|move|list|remind|look|tell|show))\b/.test(lower) ||
       /\b(if\s+(not|no|none|empty|nothing)|then\s+(create|send|book|remind|add|move))\b/.test(lower) ||
       /,\s*(and\s+)?(check|create|find|send|book|search|move|list|remind|look|tell|show)\b/.test(lower)
-    ) || (
-      // Sentence-boundary compound: knowledge question/research + action in separate sentences
-      /[.!?]\s+(put|create|save|send|move|add|make|write|book|upload|post|store)\b/i.test(message)
     );
 
     // Domain detection
@@ -560,29 +544,7 @@ class IntentRouter {
       }
 
       console.log(`[IntentRouter] Parsed: gate=${gate}, domain=${domain}, confidence=${confidence}`);
-      let compound = gate === 'compound' || parsed.compound === true;
-
-      // Safety net: when the LLM classifies as knowledge or action but the message
-      // contains BOTH a question/research AND an action, promote to compound.
-      // Small models frequently classify "Research X and put it on a card" as either
-      // knowledge (missing the action) or action (missing the research).
-      if (!compound && (gate === 'knowledge' || gate === 'action') && originalMessage) {
-        const hasSentenceBoundaryAction = /[.!?]\s+(put|create|save|send|move|add|make|write|book|upload|post|store)\b/i.test(originalMessage);
-        if (hasSentenceBoundaryAction) {
-          compound = true;
-          gate = 'compound';
-          // Infer domain from action sentence
-          if (!domain) {
-            const actionSentence = originalMessage.match(/[.!?]\s+(.+)/)?.[1]?.toLowerCase() || '';
-            if (/\b(card|deck|board)\b/.test(actionSentence)) domain = 'deck';
-            else if (/\b(email|mail)\b/.test(actionSentence)) domain = 'email';
-            else if (/\b(wiki|page|note)\b/.test(actionSentence)) domain = 'wiki';
-            else if (/\b(calendar|meeting|appointment)\b/.test(actionSentence)) domain = 'calendar';
-            else if (/\b(file|folder|upload)\b/.test(actionSentence)) domain = 'file';
-          }
-          console.log(`[IntentRouter] Promoted knowledge → compound (sentence-boundary action detected, domain: ${domain})`);
-        }
-      }
+      const compound = gate === 'compound' || parsed.compound === true;
 
       // Unknown → knowledge (knowledge is the safe default)
       if (gate === 'unknown') {

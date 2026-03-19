@@ -2182,42 +2182,6 @@ Be thoughtful. Be honest. Be yourself.`;
    * 3. Raw title as fallback
    * @private
    */
-  _extractPageTitleCandidates(item) {
-    const candidates = [];
-
-    // 1. URL slug: /apps/collectives/.../PageName-12345 → "PageName"
-    if (item.url) {
-      const urlMatch = item.url.match(/\/([^/]+)-\d+\s*$/);
-      if (urlMatch) {
-        // URL-decode and replace hyphens with spaces
-        const slug = decodeURIComponent(urlMatch[1]).replace(/-/g, ' ');
-        candidates.push(slug);
-      }
-    }
-
-    // 2. Markdown header: "# Carlos\n..." → "Carlos"
-    if (item.title) {
-      const headerMatch = item.title.match(/^#\s+(.+)$/m);
-      if (headerMatch) {
-        candidates.push(headerMatch[1].trim());
-      }
-    }
-
-    // 3. Raw title (cleaned): take first line, strip markdown
-    if (item.title) {
-      const firstLine = item.title.split('\n').find(l => l.trim());
-      if (firstLine) {
-        const cleaned = firstLine.replace(/^#+\s*/, '').replace(/[*_`]/g, '').trim();
-        if (cleaned.length >= 2 && cleaned.length <= 100) {
-          candidates.push(cleaned);
-        }
-      }
-    }
-
-    // Deduplicate while preserving order
-    return [...new Set(candidates)];
-  }
-
   /**
    * Aggregate probe results into a structured knowledge block with provenance.
    * @private
