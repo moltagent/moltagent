@@ -2551,9 +2551,10 @@ JSON array:`,
             sourceTag: 'wiki',
             url: r.link || '',
           }));
+          console.log(`[probeWiki] ${results?.length || 0} search results, ${items.length} wiki items, urls: ${items.slice(0, 3).map(i => i.url?.substring(0, 60) || 'none').join(' | ')}`);
           await self._deepReadWikiResults(items, searcher, 3);
           return items;
-        } catch { return []; }
+        } catch (err) { console.warn(`[probeWiki] Error: ${err.message}`); return []; }
       },
 
       probeDeck: async (terms) => {
