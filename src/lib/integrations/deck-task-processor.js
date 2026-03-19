@@ -288,7 +288,16 @@ class DeckTaskProcessor {
         return { taskType, blocked: true, reason: error.message };
       }
 
-      // Real error - fail the task
+      // Transient errors (budget/provider exhaustion) → retry next heartbeat
+      const msg = error.message || '';
+      const isTransient = /budget.*exhaust|providers? exhausted|no providers? available|rate.limit|loop detected/i.test(msg);
+      if (isTransient) {
+        console.log(`[DeckProcessor] Transient failure for "${card.title}": ${msg}`);
+        await this.deck.retryTask(card.id, 'working', msg);
+        return { taskType, retry: true, reason: msg };
+      }
+
+      // Permanent error - fail the task
       await this.deck.failTask(card.id, 'working', `Error: ${error.message}`, true);
       throw error;
     }

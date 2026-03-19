@@ -929,7 +929,7 @@ asyncTest('TC-TASK-006: Block task moves to inbox with question', async () => {
   assert.strictEqual(commentType, 'QUESTION');
 });
 
-asyncTest('TC-TASK-007: Fail task adds blocked comment and moves to inbox', async () => {
+asyncTest('TC-TASK-007: Fail task adds error comment and moves to inbox', async () => {
   let commentType = null;
   let commentMessage = null;
   let movedTo = null;
@@ -949,7 +949,7 @@ asyncTest('TC-TASK-007: Fail task adds blocked comment and moves to inbox', asyn
 
   await client.failTask(1001, 'working', 'Error occurred');
 
-  assert.strictEqual(commentType, 'BLOCKED');
+  assert.strictEqual(commentType, 'ERROR');
   assert.ok(commentMessage.includes('Could not complete task'));
   assert.strictEqual(movedTo, 101); // moves back to inbox
 });
@@ -1396,6 +1396,20 @@ test('TC-AWAIT-010: comments in non-ID order still finds latest by ID', () => {
     { id: 101, message: '[STATUS] Accepted', actorId: 'moltagent' },
   ];
   assert.strictEqual(isAwaitingHumanResponse(comments, 'moltagent'), true);
+});
+
+test('TC-AWAIT-011: bot [ERROR] as last comment → not awaiting (permanent failure)', () => {
+  const comments = [
+    { id: 700, message: '[ERROR] Could not complete task: timeout', actorId: 'moltagent' },
+  ];
+  assert.strictEqual(isAwaitingHumanResponse(comments, 'moltagent'), false);
+});
+
+test('TC-AWAIT-012: bot [RETRY] as last comment → not awaiting (transient failure)', () => {
+  const comments = [
+    { id: 800, message: '[RETRY] Processing failed: provider budget exceeded. Will retry next heartbeat.', actorId: 'moltagent' },
+  ];
+  assert.strictEqual(isAwaitingHumanResponse(comments, 'moltagent'), false);
 });
 
 // --- Summary ---

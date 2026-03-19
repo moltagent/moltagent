@@ -64,17 +64,6 @@ fallbackChain:
   claude-sonnet: [ollama-local]
   claude-haiku: [ollama-local]
 
-# Budget limits in USD
-budgets:
-  daily:
-    anthropic-claude: 2.00
-    claude-sonnet: 3.00
-    claude-haiku: 5.00
-  monthly:
-    anthropic-claude: 50.00
-    claude-sonnet: 30.00
-    claude-haiku: 50.00
-
 # Search provider configuration
 search:
   default_provider: searxng

@@ -20,7 +20,7 @@ const appConfig = require('../config');
  * Used to distinguish bot comments from human comments in scanners.
  * @type {string[]}
  */
-const BOT_PREFIXES = ['[STATUS]', '[PROGRESS]', '[DONE]', '[QUESTION]', '[ERROR]', '[BLOCKED]', '[REVIEW]', '[FOLLOWUP]', '[MENTION]', '[GATE]'];
+const BOT_PREFIXES = ['[STATUS]', '[PROGRESS]', '[DONE]', '[QUESTION]', '[ERROR]', '[BLOCKED]', '[REVIEW]', '[FOLLOWUP]', '[MENTION]', '[GATE]', '[RETRY]'];
 
 /**
  * Check if the bot has already responded to the most recent human comment.
@@ -1317,11 +1317,30 @@ class DeckClient {
    */
   async failTask(cardId, currentStack, errorMessage, moveToInbox = true) {
     try {
-      await this.addComment(cardId, `Could not complete task: ${errorMessage}`, 'BLOCKED');
+      await this.addComment(cardId, `Could not complete task: ${errorMessage}`, 'ERROR');
     } catch (e) {
       console.warn(`[Deck] Could not add comment: ${e.message}`);
     }
     if (moveToInbox && currentStack !== 'inbox') {
+      await this.moveCard(cardId, currentStack, 'inbox');
+    }
+  }
+
+  /**
+   * Mark a task for retry — transient failure (budget, provider exhaustion).
+   * Uses [RETRY] prefix which is NOT in AWAITING_PATTERNS, so the card
+   * will be picked up again on the next heartbeat cycle.
+   * @param {number} cardId - Card ID
+   * @param {string} currentStack - Current stack name
+   * @param {string} reason - Why the retry is needed
+   */
+  async retryTask(cardId, currentStack, reason) {
+    try {
+      await this.addComment(cardId, `Processing failed: ${reason}. Will retry next heartbeat.`, 'RETRY');
+    } catch (e) {
+      console.warn(`[Deck] Could not add retry comment: ${e.message}`);
+    }
+    if (currentStack !== 'inbox') {
       await this.moveCard(cardId, currentStack, 'inbox');
     }
   }
