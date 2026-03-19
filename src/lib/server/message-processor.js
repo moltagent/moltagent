@@ -2073,31 +2073,28 @@ Be thoughtful. Be honest. Be yourself.`;
    */
   async _deepReadWikiResults(items, searcher, maxReads = 3) {
     const wiki = searcher?.wiki;
-    if (!wiki || !wiki.readPageContent) return;
+    if (!wiki || !wiki.readPageContent || !wiki.getPage) return;
 
     const toRead = items.filter(r => r.url && r.sourceTag !== 'graph').slice(0, maxReads);
-
-    // Deduplicate by page path
     const seenPages = new Set();
 
     const reads = toRead.map(async (item) => {
       try {
-        // Extract page path from the NC Unified Search URL.
-        // URL format: /apps/collectives/p/{collectiveId}/{Section}/{PageTitle}
-        // We need: {Section}/{PageTitle}.md for readPageContent.
-        const pagePath = this._extractPagePathFromUrl(item.url);
-        if (!pagePath) return;
+        const ids = this._extractIdsFromUrl(item.url);
+        if (!ids) return;
+        if (seenPages.has(ids.pageId)) return;
+        seenPages.add(ids.pageId);
 
-        if (seenPages.has(pagePath)) return;
-        seenPages.add(pagePath);
+        const page = await wiki.getPage(ids.collectiveId, ids.pageId);
+        if (!page) return;
 
+        const pagePath = wiki._buildPagePath(page);
         const content = await wiki.readPageContent(pagePath);
-        console.log(`[DeepRead] "${pagePath}" → ${content ? content.trim().length + ' chars' : 'null'}`);
+        console.log(`[DeepRead] "${page.title}" (id=${ids.pageId}) → ${content ? content.trim().length + ' chars' : 'null'}`);
+
         if (content && content.trim().length >= 50) {
-          item.snippet = content.substring(0, 800);
-          // Extract clean title from path: "People/Eelco H. Dykstra.md" → "Eelco H. Dykstra"
-          const pathTitle = pagePath.split('/').pop().replace(/\.md$/i, '');
-          if (pathTitle) item.title = pathTitle;
+          item.snippet = content.substring(0, 2000);
+          item.title = page.title || item.title;
         }
       } catch (err) {
         console.warn(`[DeepRead] Failed for "${item.url}": ${err.message}`);
@@ -2105,25 +2102,6 @@ Be thoughtful. Be honest. Be yourself.`;
     });
 
     await Promise.allSettled(reads);
-  }
-
-  /**
-   * Extract the wiki page path from an NC Unified Search resourceUrl.
-   * URL: https://host/apps/collectives/Moltagent%20Knowledge/People/Eelco%20H.%20Dykstra
-   * Returns: "People/Eelco H. Dykstra.md" for readPageContent.
-   * @param {string} url
-   * @returns {string|null}
-   * @private
-   */
-  _extractPagePathFromUrl(url) {
-    if (!url) return null;
-    const collectiveName = CONFIG.knowledge?.collectiveName || 'Moltagent Knowledge';
-    const marker = `/apps/collectives/${encodeURIComponent(collectiveName)}/`;
-    const idx = url.indexOf(marker);
-    if (idx === -1) return null;
-    const pagePath = decodeURIComponent(url.substring(idx + marker.length));
-    if (!pagePath) return null;
-    return pagePath.endsWith('.md') ? pagePath : pagePath + '.md';
   }
 
   /**
