@@ -321,25 +321,16 @@ class IntentDecomposer {
   _aggregateProbeFindings(results) {
     if (!results || results.size === 0) return null;
 
+    // Pass raw probe content to the action message. The extraction LLM (Haiku)
+    // naturally ignores search metadata tags — no code-level stripping needed.
     const lines = [];
     for (const [, result] of results) {
       if (result.error || result.skipped || !result.results) continue;
       for (const r of result.results) {
-        // Strip search metadata — only keep actual content
-        let title = (r.title || '').replace(/\[.*?score:.*?\]/gi, '').trim();
-        let content = (r.snippet || r.content || '')
-          .replace(/\[Semantic match.*?\]/gi, '')
-          .replace(/\[Graph:.*?\]/gi, '')
-          .replace(/\[BM25.*?\]/gi, '')
-          .replace(/In collective [\w\s-]+ - [\w\s-]+/gi, '')
-          .replace(/\n{3,}/g, '\n\n')
-          .trim();
-        if (content.length < 10) continue; // skip empty/trivial matches
-        if (title && !content.includes(title)) {
-          lines.push(`**${title}**\n${content}`);
-        } else {
-          lines.push(content);
-        }
+        const title = (r.title || '').trim();
+        const content = (r.snippet || r.content || '').trim();
+        if (!content && !title) continue;
+        lines.push(title ? `**${title}**\n${content}` : content);
       }
     }
 
