@@ -41,7 +41,8 @@ try {
 // Optional modules - gracefully handle if not present
 let LLMRouter, AuditLogger, CalendarHandler, EmailHandler, CalDAVClient;
 try {
-  LLMRouter = require('./src/lib/llm-router');
+  const llmModule = require('./src/lib/llm');
+  LLMRouter = llmModule.LLMRouter;
 } catch {
   console.warn('[WARN] LLM Router not available, using stub');
   LLMRouter = null;
@@ -735,18 +736,25 @@ async function initialize() {
   // 5. Initialize LLM Router (if available)
   if (LLMRouter) {
     console.log('[INIT] Setting up LLM Router...');
-    llmRouter = new LLMRouter({
-      ollama: CONFIG.ollama,
-      auditLog: auditLogger ? auditLogger.log.bind(auditLogger) : consoleAuditLog,
-      getCredential: credentialBroker.createGetter(),
-      proactiveDailyBudget: appConfig.proactive.dailyCloudBudget
-    });
+    const { loadConfig: loadLLMConfig } = require('./src/lib/llm');
+    const llmConfig = loadLLMConfig({ getCredential: credentialBroker.createGetter() });
+    // Apply runtime Ollama overrides from CONFIG
+    if (llmConfig.providers?.['ollama-local'] && CONFIG.ollama?.url) {
+      llmConfig.providers['ollama-local'].endpoint = CONFIG.ollama.url;
+    }
+    if (llmConfig.providers?.['ollama-local'] && CONFIG.ollama?.model) {
+      llmConfig.providers['ollama-local'].model = CONFIG.ollama.model;
+    }
+    llmConfig.auditLog = auditLogger ? auditLogger.log.bind(auditLogger) : consoleAuditLog;
+    llmConfig.proactiveDailyBudget = appConfig.proactive.dailyCloudBudget;
+    llmRouter = new LLMRouter(llmConfig);
 
-    const connectionTest = await llmRouter.testConnection();
-    if (connectionTest.connected) {
-      console.log(`[INIT] Ollama connected. Models: ${connectionTest.models?.join(', ') || 'N/A'}`);
+    const results = await llmRouter.testConnections();
+    const ollamaResult = results['ollama-local'];
+    if (ollamaResult?.connected) {
+      console.log(`[INIT] Ollama connected. Models: ${ollamaResult.models?.join(', ') || 'N/A'}`);
     } else {
-      console.warn(`[INIT] Ollama not available: ${connectionTest.error}`);
+      console.warn(`[INIT] Ollama not available: ${ollamaResult?.error || 'unknown'}`);
     }
   }
 
