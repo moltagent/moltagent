@@ -2076,6 +2076,7 @@ Be thoughtful. Be honest. Be yourself.`;
     if (!wiki || !wiki.readPageContent) return;
 
     const toRead = items.filter(r => (r.title || r.url) && r.sourceTag !== 'graph').slice(0, maxReads);
+    console.log(`[DeepRead] Attempting ${toRead.length} deep reads (of ${items.length} items, max ${maxReads})`);
 
     // Deduplicate by resolved page title to avoid reading the same page twice
     const seenPages = new Set();
@@ -2096,7 +2097,10 @@ Be thoughtful. Be honest. Be yourself.`;
           }
         }
 
-        if (!found) return;
+        if (!found) {
+          console.log(`[DeepRead] No page found for "${item.title}" (candidates: ${candidates.join(', ')})`);
+          return;
+        }
 
         // Skip if we already read this page (dedup across items)
         const pageKey = found.path || resolvedTitle;
@@ -2104,6 +2108,7 @@ Be thoughtful. Be honest. Be yourself.`;
         seenPages.add(pageKey);
 
         const content = await wiki.readPageContent(found.path);
+        console.log(`[DeepRead] "${resolvedTitle}" (path: ${found.path}) → ${content ? content.trim().length + ' chars' : 'null'}`);
         if (content && content.trim().length >= 50) {
           item.snippet = content.substring(0, 800);
           item.title = found.page?.title || resolvedTitle;
@@ -2131,8 +2136,8 @@ Be thoughtful. Be honest. Be yourself.`;
         if (found.page?.id && wiki.buildPageUrl) {
           item.url = wiki.buildPageUrl(found.page?.title || resolvedTitle, found.page.id);
         }
-      } catch {
-        // Keep the search snippet on read failure
+      } catch (err) {
+        console.warn(`[DeepRead] Failed for "${item.title}": ${err.message}`);
       }
     });
 

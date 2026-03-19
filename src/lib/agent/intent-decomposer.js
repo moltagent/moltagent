@@ -344,7 +344,7 @@ class IntentDecomposer {
 
       // Mark the card as done if findings were provided — the content is complete.
       if (probeFindings && userContext.markCardDone) {
-        const cardIdMatch = responseText.match(/#(\d+)/);
+        const cardIdMatch = responseText.match(/card\/(\d+)/) || responseText.match(/#(\d+)/);
         if (cardIdMatch) {
           userContext.markCardDone(cardIdMatch[1]).catch(err =>
             this.logger.warn(`[IntentDecomposer] markCardDone failed: ${err.message}`)
