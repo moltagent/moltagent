@@ -1085,6 +1085,7 @@ Respond with ONLY the title, nothing else.`;
       try {
         await this.deckClient.updateCard(cardId, stackName, {
           title: params.card_title,
+          type: 'plain',
           description: context.probeFindings.substring(0, 4000)
         });
         this.logger.info(`[DeckExec] Card #${cardId} description updated with ${context.probeFindings.length} chars of probe findings`);

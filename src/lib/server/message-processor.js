@@ -2073,27 +2073,30 @@ Be thoughtful. Be honest. Be yourself.`;
    */
   async _deepReadWikiResults(items, searcher, maxReads = 3) {
     const wiki = searcher?.wiki;
-    if (!wiki || !wiki.readPageContent) return;
+    if (!wiki || !wiki.readPageContent || !wiki.getPage) return;
 
     const toRead = items.filter(r => r.url && r.sourceTag !== 'graph').slice(0, maxReads);
     console.log(`[DeepRead] ${toRead.length}/${items.length} items to read`);
 
-    const seenPaths = new Set();
+    const seenPages = new Set();
 
     const reads = toRead.map(async (item) => {
       try {
-        const pagePath = this._extractPagePathFromUrl(item.url);
-        console.log(`[DeepRead] URL="${(item.url || '').substring(0, 80)}" → path="${pagePath}"`);
-        if (!pagePath || seenPaths.has(pagePath)) return;
-        seenPaths.add(pagePath);
+        const ids = this._extractIdsFromUrl(item.url);
+        console.log(`[DeepRead] URL="${(item.url || '').substring(0, 80)}" → collectiveId=${ids?.collectiveId}, pageId=${ids?.pageId}`);
+        if (!ids || seenPages.has(ids.pageId)) return;
+        seenPages.add(ids.pageId);
 
-        // Try leaf page first (PagePath.md), then section parent (PagePath/Readme.md)
-        let content = await wiki.readPageContent(pagePath + '.md');
-        if (!content) content = await wiki.readPageContent(pagePath + '/Readme.md');
-        console.log(`[DeepRead] "${pagePath}" → ${content ? content.trim().length + ' chars' : 'null'}`);
+        const page = await wiki.getPage(ids.collectiveId, ids.pageId);
+        if (!page) return;
+
+        const pagePath = wiki._buildPagePath(page);
+        const content = await wiki.readPageContent(pagePath);
+        console.log(`[DeepRead] "${page.title}" (id=${ids.pageId}) → ${content ? content.trim().length + ' chars' : 'null'}`);
 
         if (content && content.trim().length >= 50) {
           item.snippet = content.substring(0, 2000);
+          item.title = page.title || item.title;
         }
       } catch (err) {
         console.warn(`[DeepRead] Failed for "${item.url}": ${err.message}`);
@@ -2104,22 +2107,26 @@ Be thoughtful. Be honest. Be yourself.`;
   }
 
   /**
-   * Extract the page path from an NC Collectives resourceUrl.
-   * Skips the first segment (collective name + ID) and returns the rest.
-   * URL: /apps/collectives/{CollectiveName-ID}/{PagePath}
+   * Extract collective ID and page ID from an NC Collectives resourceUrl.
+   * URL: /apps/collectives/{Name}-{collectiveId}/{Slug}-{pageId}
    * @param {string} url
-   * @returns {string|null} Page path (e.g. "People/Carlos") or null
+   * @returns {{collectiveId: number, pageId: number}|null}
    * @private
    */
-  _extractPagePathFromUrl(url) {
+  _extractIdsFromUrl(url) {
     if (!url) return null;
     const idx = url.indexOf('/apps/collectives/');
     if (idx === -1) return null;
     const afterCollectives = url.substring(idx + '/apps/collectives/'.length);
-    const slashIdx = afterCollectives.indexOf('/');
-    if (slashIdx === -1) return null;
-    const raw = afterCollectives.substring(slashIdx + 1).replace(/\/$/, '');
-    return raw ? decodeURIComponent(raw) : null;
+    const segments = afterCollectives.split('/');
+    if (segments.length < 2) return null;
+    const collectiveMatch = segments[0].match(/-(\d+)$/);
+    const pageMatch = segments[segments.length - 1].match(/-(\d+)$/);
+    if (!collectiveMatch || !pageMatch) return null;
+    return {
+      collectiveId: parseInt(collectiveMatch[1], 10),
+      pageId: parseInt(pageMatch[1], 10)
+    };
   }
 
   /**
