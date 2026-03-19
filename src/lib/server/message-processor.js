@@ -2075,73 +2075,53 @@ Be thoughtful. Be honest. Be yourself.`;
     const wiki = searcher?.wiki;
     if (!wiki || !wiki.readPageContent) return;
 
-    const toRead = items.filter(r => (r.title || r.url) && r.sourceTag !== 'graph').slice(0, maxReads);
-    console.log(`[DeepRead] Attempting ${toRead.length} deep reads (of ${items.length} items, max ${maxReads}): ${items.map((r, i) => `${i}:"${(r.title || '').substring(0, 40)}" tag=${r.sourceTag}`).join(', ')}`);
+    const toRead = items.filter(r => r.url && r.sourceTag !== 'graph').slice(0, maxReads);
 
-    // Deduplicate by resolved page title to avoid reading the same page twice
+    // Deduplicate by page path
     const seenPages = new Set();
 
     const reads = toRead.map(async (item) => {
       try {
-        // Search result titles from NC Unified Search are often content snippets,
-        // not actual page titles. Extract a cleaner title from the URL slug if available.
-        const candidates = this._extractPageTitleCandidates(item);
+        // Extract page path from the NC Unified Search URL.
+        // URL format: /apps/collectives/p/{collectiveId}/{Section}/{PageTitle}
+        // We need: {Section}/{PageTitle}.md for readPageContent.
+        const pagePath = this._extractPagePathFromUrl(item.url);
+        if (!pagePath) return;
 
-        let found = null;
-        let resolvedTitle = null;
-        for (const candidate of candidates) {
-          found = await wiki.findPageByTitle(candidate);
-          if (found) {
-            resolvedTitle = candidate;
-            break;
-          }
-        }
+        if (seenPages.has(pagePath)) return;
+        seenPages.add(pagePath);
 
-        if (!found) {
-          console.log(`[DeepRead] No page found for "${item.title}" url="${item.url}" (candidates: ${candidates.join(', ')})`);
-          return;
-        }
-
-        // Skip if we already read this page (dedup across items)
-        const pageKey = found.path || resolvedTitle;
-        if (seenPages.has(pageKey)) return;
-        seenPages.add(pageKey);
-
-        const content = await wiki.readPageContent(found.path);
-        console.log(`[DeepRead] "${resolvedTitle}" (path: ${found.path}) → ${content ? content.trim().length + ' chars' : 'null'}`);
+        const content = await wiki.readPageContent(pagePath);
+        console.log(`[DeepRead] "${pagePath}" → ${content ? content.trim().length + ' chars' : 'null'}`);
         if (content && content.trim().length >= 50) {
           item.snippet = content.substring(0, 800);
-          item.title = found.page?.title || resolvedTitle;
-        } else {
-          // Empty or stub page — check if it's a section parent with children
-          const children = await this._listSectionChildren(wiki, found.page?.title || resolvedTitle);
-          if (children.length > 0) {
-            // Replace stub with children summaries
-            item.title = found.page?.title || resolvedTitle;
-            item.snippet = children.map(c => `**${c.title}**: ${c.snippet}`).join('\n\n');
-            // Inject remaining children as extra items so synthesis sees them
-            for (let ci = 1; ci < children.length && ci < 5; ci++) {
-              items.push({
-                title: children[ci].title,
-                snippet: children[ci].snippet,
-                sourceTag: 'wiki',
-                url: children[ci].url || ''
-              });
-            }
-          } else if (content) {
-            item.snippet = content.substring(0, 800);
-            item.title = found.page?.title || resolvedTitle;
-          }
-        }
-        if (found.page?.id && wiki.buildPageUrl) {
-          item.url = wiki.buildPageUrl(found.page?.title || resolvedTitle, found.page.id);
+          // Extract clean title from path: "People/Eelco H. Dykstra.md" → "Eelco H. Dykstra"
+          const pathTitle = pagePath.split('/').pop().replace(/\.md$/i, '');
+          if (pathTitle) item.title = pathTitle;
         }
       } catch (err) {
-        console.warn(`[DeepRead] Failed for "${item.title}": ${err.message}`);
+        console.warn(`[DeepRead] Failed for "${item.url}": ${err.message}`);
       }
     });
 
     await Promise.allSettled(reads);
+  }
+
+  /**
+   * Extract the wiki page path from an NC Unified Search resourceUrl.
+   * URL format: /apps/collectives/p/{collectiveId}/{Section}/{PageTitle}
+   * Returns: "{Section}/{PageTitle}.md" for readPageContent.
+   * @param {string} url
+   * @returns {string|null}
+   * @private
+   */
+  _extractPagePathFromUrl(url) {
+    if (!url) return null;
+    // Match /p/{id}/{rest} or /p/{id}/{section}/{page}
+    const match = url.match(/\/p\/\d+\/(.+)/);
+    if (!match) return null;
+    const pagePath = decodeURIComponent(match[1]);
+    return pagePath.endsWith('.md') ? pagePath : pagePath + '.md';
   }
 
   /**
