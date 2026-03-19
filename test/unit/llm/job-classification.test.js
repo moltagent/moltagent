@@ -62,26 +62,6 @@ test('TC-CLASS-CONST-002: JOBS is frozen', () => {
 // Integration tests (async — run before summary)
 // ============================================================
 
-console.log('\n--- Integration: message-router ---\n');
-
-asyncTest('TC-CLASS-INT-001: message-router chat fallback passes job: JOBS.QUICK', async () => {
-  const spy = createSpyRouter();
-  const MessageRouter = require('../../../src/lib/handlers/message-router');
-  const mr = new MessageRouter({
-    llmRouter: spy,
-    auditLog: async () => {},
-    sendTalkMessage: async () => {},
-    ncRequestManager: { ncUrl: 'https://test.example.com', ncUser: 'test', request: async () => ({ status: 200, body: {} }) }
-  });
-
-  await mr._handleGeneral('Hello there', { user: 'testuser', roomToken: 'test' });
-
-  assert.ok(spy._calls.length >= 1, 'route() should be called at least once');
-  const call = spy._calls[spy._calls.length - 1];
-  assert.strictEqual(call.job, JOBS.QUICK, `Expected job QUICK, got ${call.job}`);
-  assert.strictEqual(call.task, 'chat');
-});
-
 console.log('\n--- Integration: email-handler ---\n');
 
 asyncTest('TC-CLASS-INT-002: email-handler draft passes job: JOBS.WRITING', async () => {
@@ -186,7 +166,6 @@ console.log('\n--- Source Code Verification ---\n');
 test('TC-CLASS-VERIFY-001: no route() calls without job: in source files', () => {
   const srcDir = path.join(__dirname, '../../../src/lib');
   const filesToCheck = [
-    'handlers/message-router.js',
     'handlers/email-handler.js',
     'handlers/calendar-handler.js',
     'services/email-monitor.js',
@@ -211,7 +190,6 @@ test('TC-CLASS-VERIFY-001: no route() calls without job: in source files', () =>
 test('TC-CLASS-VERIFY-002: all modified files import JOBS', () => {
   const srcDir = path.join(__dirname, '../../../src/lib');
   const filesToCheck = [
-    'handlers/message-router.js',
     'handlers/email-handler.js',
     'handlers/calendar-handler.js',
     'services/email-monitor.js',
@@ -263,7 +241,6 @@ test('TC-CLASS-VERIFY-004: session-persister uses synthesis job without sovereig
 test('TC-CLASS-VERIFY-005: all JOBS values used in source match valid job strings', () => {
   const srcDir = path.join(__dirname, '../../../src/lib');
   const filesToCheck = [
-    'handlers/message-router.js',
     'handlers/email-handler.js',
     'handlers/calendar-handler.js',
     'services/email-monitor.js',

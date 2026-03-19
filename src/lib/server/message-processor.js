@@ -10,19 +10,18 @@
  * Activity Streams 2.0 messages from NC Talk webhooks.
  *
  * Key Dependencies:
- * - MessageRouter (for routing non-command messages)
  * - CommandHandler (for slash commands)
  *
  * Data Flow:
  * - Webhook handler passes raw Activity Streams data
  * - Processor extracts message content, user, token, messageId
  * - Filters out bot's own messages
- * - Delegates to CommandHandler or MessageRouter
+ * - Delegates to CommandHandler or AgentLoop
  * - Returns response for Talk reply
  *
  * Integration Points:
  * - Called by WebhookHandler after signature verification
- * - Calls MessageRouter.route() for natural language
+ * - Calls AgentLoop.process() for natural language
  * - Calls CommandHandler.handle() for slash commands
  * - Calls sendTalkReply callback to respond
  *
@@ -55,7 +54,6 @@ const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'se
 
 /**
  * @typedef {Object} ProcessorDependencies
- * @property {Object} messageRouter - MessageRouter instance
  * @property {Object} commandHandler - CommandHandler instance
  * @property {Function} sendTalkReply - Function to send Talk replies
  * @property {Function} auditLog - Audit logging function
@@ -214,9 +212,6 @@ class MessageProcessor {
    * @param {ProcessorDependencies} deps
    */
   constructor(deps) {
-    /** @type {Object} */
-    this.messageRouter = deps.messageRouter;
-
     /** @type {Object} */
     this.commandHandler = deps.commandHandler;
 
@@ -971,25 +966,9 @@ class MessageProcessor {
         result = { intent: 'agent_loop', provider: 'agent' };
         response = response || 'Sorry, I encountered an error processing your message.';
       } else {
-        // Fallback: MessageRouter (pre-Session 14 regex-based routing)
-        let history = [];
-        if (this.conversationContext && extracted.token) {
-          try {
-            history = await this.conversationContext.getHistory(extracted.token, {
-              excludeMessageId: extracted.messageId
-            });
-          } catch (err) {
-            console.warn('[Message] Conversation context fetch failed:', err.message);
-          }
-        }
-
-        result = await this.messageRouter.route(pipelineMessage, {
-          user: extracted.user,
-          token: extracted.token,
-          messageId: extracted.messageId,
-          history
-        });
-        response = result.response || 'Sorry, I encountered an error processing your message.';
+        // No AgentLoop available — agent is not fully configured
+        response = 'Sorry, I am not fully configured yet. Please check the server setup.';
+        result = { intent: 'unconfigured', provider: 'none' };
       }
 
       // V3: Voice reply — synthesize + share audio in Talk when mode is 'full'

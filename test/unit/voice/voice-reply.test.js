@@ -260,7 +260,6 @@ asyncTest('TC-VR-016: Voice input + mode full → replyWithVoice called', async 
   };
 
   const processor = new MessageProcessor({
-    messageRouter: { route: async () => ({ response: 'Hi there', intent: 'chat' }) },
     commandHandler: { handle: async () => ({ response: '' }) },
     sendTalkReply: async () => true,
     auditLog: async () => {},
@@ -300,7 +299,6 @@ asyncTest('TC-VR-017: Voice input + mode listen → text reply only (no voice re
   };
 
   const processor = new MessageProcessor({
-    messageRouter: { route: async () => ({ response: 'Hi there', intent: 'chat' }) },
     commandHandler: { handle: async () => ({ response: '' }) },
     sendTalkReply: async () => true,
     auditLog: async () => {},
@@ -340,7 +338,6 @@ asyncTest('TC-VR-018: replyWithVoice failure → falls back to text reply (text 
   };
 
   const processor = new MessageProcessor({
-    messageRouter: { route: async () => ({ response: 'Hi there', intent: 'chat' }) },
     commandHandler: { handle: async () => ({ response: '' }) },
     sendTalkReply: async () => { textReplySent = true; return true; },
     auditLog: async () => {},

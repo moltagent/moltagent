@@ -2,10 +2,13 @@
  * Budget Enforcer
  *
  * Enforces daily and monthly spending limits per provider.
- * Prevents runaway costs.
+ * Cost data is read from CostTracker (single source of truth).
+ * This module is responsible only for cap checks, degradation callbacks,
+ * and the proactive budget pool (a BudgetEnforcer-only concept not tracked
+ * by CostTracker).
  *
  * @module llm/budget-enforcer
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 class BudgetEnforcer {
@@ -15,6 +18,7 @@ class BudgetEnforcer {
    * @param {Function} [config.onWarning] - Called when warning threshold hit
    * @param {Function} [config.onExhausted] - Called when budget exhausted
    * @param {number} [config.warningThreshold=0.8] - Percentage to trigger warning
+   * @param {number} [config.proactiveDailyBudget=0] - Daily cap for proactive ops (0 = disabled)
    */
   constructor(config = {}) {
     this.budgets = config.budgets || {};
@@ -22,103 +26,28 @@ class BudgetEnforcer {
     this.onExhausted = config.onExhausted || (() => {});
     this.warningThreshold = config.warningThreshold || 0.8;
 
-    // Usage tracking
-    this.usage = new Map();
-
-    // Proactive budget (separate from per-provider budgets)
-    this.proactiveDailyBudget = config.proactiveDailyBudget || 0;  // 0 = disabled
+    // Proactive budget pool (separate from per-provider budgets, in-process only)
+    this.proactiveDailyBudget = config.proactiveDailyBudget || 0;
     this.proactiveUsage = { dailyCost: 0, dailyCalls: 0, dailyTokens: 0 };
     this.proactiveBudgetExhaustedNotified = false;
-
-    // Track when we last reset
-    this.lastDailyReset = this.getDateKey();
-    this.lastMonthlyReset = this.getMonthKey();
+    this._proactiveDay = this._todayKey();
 
     // Budget override state
     this._overrideActive = false;
     this._overrideExpiry = 0;
 
-    // File persistence via NCRequestManager (optional)
-    this.ncRequestManager = config.ncRequestManager || null;
-    this._persistPath = '/remote.php/dav/files/moltagent/Memory/spending.json';
-    this._dirty = false;
+    // CostTracker reference — set post-construction by the caller (e.g. HeartbeatManager)
+    this.costTracker = null;
   }
 
   /**
-   * Get date key for daily tracking
-   * @returns {string}
-   */
-  getDateKey() {
-    return new Date().toISOString().split('T')[0];
-  }
-
-  /**
-   * Get month key for monthly tracking
-   * @returns {string}
-   */
-  getMonthKey() {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-  }
-
-  /**
-   * Check and reset if needed
-   * @private
-   */
-  checkReset() {
-    const today = this.getDateKey();
-    const thisMonth = this.getMonthKey();
-
-    // Daily reset
-    if (today !== this.lastDailyReset) {
-      for (const [providerId, data] of this.usage) {
-        data.dailyCost = 0;
-        data.dailyTokens = 0;
-        data.dailyCalls = 0;
-      }
-      this.proactiveUsage = { dailyCost: 0, dailyCalls: 0, dailyTokens: 0 };
-      this.proactiveBudgetExhaustedNotified = false;
-      this.lastDailyReset = today;
-    }
-
-    // Monthly reset
-    if (thisMonth !== this.lastMonthlyReset) {
-      for (const [providerId, data] of this.usage) {
-        data.monthlyCost = 0;
-        data.monthlyTokens = 0;
-        data.monthlyCalls = 0;
-      }
-      this.lastMonthlyReset = thisMonth;
-    }
-  }
-
-  /**
-   * Get or create usage data for provider
-   * @private
-   */
-  getUsage(providerId) {
-    this.checkReset();
-
-    if (!this.usage.has(providerId)) {
-      this.usage.set(providerId, {
-        dailyCost: 0,
-        dailyTokens: 0,
-        dailyCalls: 0,
-        monthlyCost: 0,
-        monthlyTokens: 0,
-        monthlyCalls: 0,
-        lastCall: null
-      });
-    }
-
-    return this.usage.get(providerId);
-  }
-
-  /**
-   * Check if a request is allowed within budget
+   * Check if a request is allowed within budget.
+   * Reads actual spend from CostTracker when available; falls back to zero
+   * (fail-open) when CostTracker is not wired in.
+   *
    * @param {string} providerId - Provider identifier
    * @param {number} estimatedCost - Estimated cost in USD
-   * @returns {Object} - { allowed, reason?, spent?, budget?, resetAt? }
+   * @returns {Object} { allowed, reason?, spent?, budget?, resetAt? }
    */
   canSpend(providerId, estimatedCost) {
     // Override active = bypass all checks
@@ -133,15 +62,18 @@ class BudgetEnforcer {
       return { allowed: true };
     }
 
-    const usage = this.getUsage(providerId);
+    // Read actual spend from CostTracker (single source of truth)
+    const totals = this.costTracker ? this.costTracker.getTotals() : null;
+    const dailySpent = totals ? totals.daily.costUsd : 0;
+    const monthlySpent = totals ? totals.monthly.costUsd : 0;
 
     // Check daily limit
     if (budget.daily !== undefined) {
-      if (usage.dailyCost + estimatedCost > budget.daily) {
+      if (dailySpent + estimatedCost > budget.daily) {
         return {
           allowed: false,
           reason: 'daily_budget_exceeded',
-          spent: usage.dailyCost,
+          spent: dailySpent,
           budget: budget.daily,
           resetAt: this.getNextDailyReset()
         };
@@ -150,24 +82,24 @@ class BudgetEnforcer {
 
     // Check monthly limit
     if (budget.monthly !== undefined) {
-      if (usage.monthlyCost + estimatedCost > budget.monthly) {
+      if (monthlySpent + estimatedCost > budget.monthly) {
         return {
           allowed: false,
           reason: 'monthly_budget_exceeded',
-          spent: usage.monthlyCost,
+          spent: monthlySpent,
           budget: budget.monthly,
           resetAt: this.getNextMonthlyReset()
         };
       }
     }
 
-    // Check warning threshold
+    // Check warning threshold (daily)
     if (budget.daily !== undefined) {
-      const percentUsed = (usage.dailyCost + estimatedCost) / budget.daily;
+      const percentUsed = (dailySpent + estimatedCost) / budget.daily;
       if (percentUsed >= this.warningThreshold) {
         this.onWarning({
           providerId,
-          spent: usage.dailyCost,
+          spent: dailySpent,
           budget: budget.daily,
           percentUsed: percentUsed * 100
         });
@@ -176,37 +108,28 @@ class BudgetEnforcer {
 
     return {
       allowed: true,
-      dailyRemaining: budget.daily ? budget.daily - usage.dailyCost : undefined,
-      monthlyRemaining: budget.monthly ? budget.monthly - usage.monthlyCost : undefined
+      dailyRemaining: budget.daily ? budget.daily - dailySpent : undefined,
+      monthlyRemaining: budget.monthly ? budget.monthly - monthlySpent : undefined
     };
   }
 
   /**
-   * Record spending
+   * Called after a successful spend to fire the exhausted callback if a daily cap
+   * was just crossed. No accumulation — reads from CostTracker.
+   *
    * @param {string} providerId - Provider identifier
-   * @param {number} cost - Actual cost in USD
-   * @param {number} tokens - Tokens used
    */
-  recordSpend(providerId, cost, tokens) {
-    const usage = this.getUsage(providerId);
-
-    usage.dailyCost += cost;
-    usage.dailyTokens += tokens;
-    usage.dailyCalls++;
-
-    usage.monthlyCost += cost;
-    usage.monthlyTokens += tokens;
-    usage.monthlyCalls++;
-
-    usage.lastCall = Date.now();
-    this._dirty = true;
-
-    // Check if we just hit the budget
+  recordSpend(providerId) {
     const budget = this.budgets[providerId];
-    if (budget?.daily && usage.dailyCost >= budget.daily) {
+    if (!budget?.daily) return;
+
+    const totals = this.costTracker ? this.costTracker.getTotals() : null;
+    const dailySpent = totals ? totals.daily.costUsd : 0;
+
+    if (dailySpent >= budget.daily) {
       this.onExhausted({
         providerId,
-        spent: usage.dailyCost,
+        spent: dailySpent,
         budget: budget.daily,
         resetAt: this.getNextDailyReset()
       });
@@ -214,29 +137,7 @@ class BudgetEnforcer {
   }
 
   /**
-   * Get next daily reset time
-   * @returns {Date}
-   */
-  getNextDailyReset() {
-    const now = new Date();
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(0, 0, 0, 0);
-    return tomorrow;
-  }
-
-  /**
-   * Get next monthly reset time
-   * @returns {Date}
-   */
-  getNextMonthlyReset() {
-    const now = new Date();
-    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-    return nextMonth;
-  }
-
-  /**
-   * Classify an operation as proactive or reactive based on context
+   * Classify an operation as proactive or reactive based on context.
    * @param {Object} context - Operation context with trigger field
    * @returns {string} 'proactive' or 'reactive'
    */
@@ -252,13 +153,13 @@ class BudgetEnforcer {
   }
 
   /**
-   * Check if a proactive operation is allowed within budget
+   * Check if a proactive operation is allowed within the proactive daily budget.
    * @param {number} estimatedCost - Estimated cost in USD
    * @returns {Object} { allowed, reason?, spent?, budget?, remaining? }
    */
   canSpendProactive(estimatedCost) {
-    if (this.proactiveDailyBudget <= 0) return { allowed: true }; // disabled
-    this.checkReset();
+    if (this.proactiveDailyBudget <= 0) return { allowed: true };
+    this._checkProactiveReset();
     if (this.proactiveUsage.dailyCost + estimatedCost > this.proactiveDailyBudget) {
       return {
         allowed: false,
@@ -271,16 +172,15 @@ class BudgetEnforcer {
   }
 
   /**
-   * Record spending against the proactive budget pool
+   * Record spending against the proactive budget pool.
    * @param {number} cost - Actual cost in USD
    * @param {number} tokens - Tokens used
    */
   recordProactiveSpend(cost, tokens) {
-    this.checkReset();
+    this._checkProactiveReset();
     this.proactiveUsage.dailyCost += cost;
     this.proactiveUsage.dailyCalls++;
     this.proactiveUsage.dailyTokens += tokens;
-    this._dirty = true;
 
     if (this.proactiveDailyBudget > 0 &&
         this.proactiveUsage.dailyCost >= this.proactiveDailyBudget &&
@@ -296,70 +196,33 @@ class BudgetEnforcer {
   }
 
   /**
-   * Check if the proactive budget is exhausted
+   * Check if the proactive budget is exhausted.
    * @returns {boolean}
    */
   isProactiveBudgetExhausted() {
     if (this.proactiveDailyBudget <= 0) return false;
-    this.checkReset();
+    this._checkProactiveReset();
     return this.proactiveUsage.dailyCost >= this.proactiveDailyBudget;
   }
 
   /**
-   * Get usage summary for a provider
-   * @param {string} providerId
-   * @returns {Object|null}
+   * Get next daily reset time.
+   * @returns {Date}
    */
-  getUsageSummary(providerId) {
-    const usage = this.usage.get(providerId);
-    if (!usage) return null;
-
-    const budget = this.budgets[providerId] || {};
-
-    return {
-      daily: {
-        cost: usage.dailyCost,
-        tokens: usage.dailyTokens,
-        calls: usage.dailyCalls,
-        budget: budget.daily,
-        percentUsed: budget.daily ? (usage.dailyCost / budget.daily) * 100 : null
-      },
-      monthly: {
-        cost: usage.monthlyCost,
-        tokens: usage.monthlyTokens,
-        calls: usage.monthlyCalls,
-        budget: budget.monthly,
-        percentUsed: budget.monthly ? (usage.monthlyCost / budget.monthly) * 100 : null
-      },
-      lastCall: usage.lastCall
-    };
+  getNextDailyReset() {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(0, 0, 0, 0);
+    return tomorrow;
   }
 
   /**
-   * Get full usage report
-   * @returns {Object}
+   * Get next monthly reset time.
+   * @returns {Date}
    */
-  getFullReport() {
-    this.checkReset();
-
-    const report = {
-      date: this.getDateKey(),
-      month: this.getMonthKey(),
-      providers: {}
-    };
-
-    for (const [providerId] of this.usage) {
-      report.providers[providerId] = this.getUsageSummary(providerId);
-    }
-
-    report.proactive = {
-      dailyCost: this.proactiveUsage.dailyCost,
-      dailyCalls: this.proactiveUsage.dailyCalls,
-      dailyBudget: this.proactiveDailyBudget,
-      exhausted: this.isProactiveBudgetExhausted()
-    };
-
-    return report;
+  getNextMonthlyReset() {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth() + 1, 1);
   }
 
   /**
@@ -388,7 +251,7 @@ class BudgetEnforcer {
   }
 
   /**
-   * Update budget configuration
+   * Update budget configuration.
    * @param {Object} budgets - New budget config
    */
   updateBudgets(budgets) {
@@ -396,104 +259,20 @@ class BudgetEnforcer {
   }
 
   /**
-   * Manually set usage (for loading persisted state)
-   * @param {string} providerId
-   * @param {Object} usageData
+   * Reset proactive accumulator at day boundary.
+   * @private
    */
-  setUsage(providerId, usageData) {
-    this.usage.set(providerId, {
-      dailyCost: usageData.dailyCost || 0,
-      dailyTokens: usageData.dailyTokens || 0,
-      dailyCalls: usageData.dailyCalls || 0,
-      monthlyCost: usageData.monthlyCost || 0,
-      monthlyTokens: usageData.monthlyTokens || 0,
-      monthlyCalls: usageData.monthlyCalls || 0,
-      lastCall: usageData.lastCall || null
-    });
-  }
-
-  /**
-   * Export usage data for persistence
-   * @returns {Object}
-   */
-  exportUsage() {
-    const data = {
-      lastDailyReset: this.lastDailyReset,
-      lastMonthlyReset: this.lastMonthlyReset,
-      providers: {},
-      proactiveUsage: { ...this.proactiveUsage }
-    };
-
-    for (const [providerId, usage] of this.usage) {
-      data.providers[providerId] = { ...usage };
-    }
-
-    return data;
-  }
-
-  /**
-   * Persist current usage data to Nextcloud WebDAV (Memory/spending.json).
-   * Only writes when _dirty flag is set. No-op if ncRequestManager is not configured.
-   * @returns {Promise<void>}
-   */
-  async persist() {
-    if (!this._dirty || !this.ncRequestManager) return;
-    const data = JSON.stringify(this.exportUsage());
-    await this.ncRequestManager.request(this._persistPath, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: data
-    });
-    this._dirty = false;
-  }
-
-  /**
-   * Restore usage data from Nextcloud WebDAV (Memory/spending.json).
-   * Handles 404 gracefully (file doesn't exist yet).
-   * @returns {Promise<void>}
-   */
-  async restore() {
-    if (!this.ncRequestManager) return;
-    try {
-      const response = await this.ncRequestManager.request(this._persistPath, { method: 'GET' });
-      if (response.status === 200 && response.body) {
-        const data = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
-        this.importUsage(data);
-        console.log('[BudgetEnforcer] Restored spending data from file');
-      }
-    } catch (err) {
-      if (err.message?.includes('404') || err.statusCode === 404) {
-        // File doesn't exist yet, that's fine
-        return;
-      }
-      console.warn('[BudgetEnforcer] Could not restore spending data:', err.message);
+  _checkProactiveReset() {
+    const today = this._todayKey();
+    if (today !== this._proactiveDay) {
+      this.proactiveUsage = { dailyCost: 0, dailyCalls: 0, dailyTokens: 0 };
+      this.proactiveBudgetExhaustedNotified = false;
+      this._proactiveDay = today;
     }
   }
 
-  /**
-   * Import usage data from persistence
-   * @param {Object} data
-   */
-  importUsage(data) {
-    if (data.lastDailyReset) this.lastDailyReset = data.lastDailyReset;
-    if (data.lastMonthlyReset) this.lastMonthlyReset = data.lastMonthlyReset;
-
-    if (data.providers) {
-      for (const [providerId, usage] of Object.entries(data.providers)) {
-        this.setUsage(providerId, usage);
-      }
-    }
-
-    if (data.proactiveUsage) {
-      this.proactiveUsage = {
-        dailyCost: data.proactiveUsage.dailyCost || 0,
-        dailyCalls: data.proactiveUsage.dailyCalls || 0,
-        dailyTokens: data.proactiveUsage.dailyTokens || 0
-      };
-    }
-
-    // Check if we need to reset after import
-    this.checkReset();
+  _todayKey() {
+    return new Date().toISOString().slice(0, 10);
   }
 }
 

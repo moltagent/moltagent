@@ -83,10 +83,6 @@ function createMockCommandHandler() {
   return { handle: async () => ({ response: 'Command response' }) };
 }
 
-function createMockMessageRouter() {
-  return { route: async () => ({ response: 'Router response', intent: 'general', provider: 'mock' }) };
-}
-
 async function runTests() {
   console.log('\n=== Talk Multi-Room Tests ===\n');
 
@@ -154,7 +150,7 @@ async function runTests() {
   await asyncTest('MP-001: processes messages from any room (no room filter)', async () => {
     const sendReply = createMockSendTalkReply();
     const processor = new MessageProcessor({
-      messageRouter: createMockMessageRouter(),
+
       commandHandler: createMockCommandHandler(),
       sendTalkReply: sendReply,
       botUsername: 'moltagent'
@@ -186,7 +182,7 @@ async function runTests() {
   await asyncTest('MP-002: reply goes to the same room the message came from', async () => {
     const sendReply = createMockSendTalkReply();
     const processor = new MessageProcessor({
-      messageRouter: createMockMessageRouter(),
+
       commandHandler: createMockCommandHandler(),
       sendTalkReply: sendReply,
       botUsername: 'moltagent'
@@ -210,7 +206,7 @@ async function runTests() {
   await asyncTest('MP-003: message without room token is handled gracefully', async () => {
     const sendReply = createMockSendTalkReply();
     const processor = new MessageProcessor({
-      messageRouter: createMockMessageRouter(),
+
       commandHandler: createMockCommandHandler(),
       sendTalkReply: sendReply,
       botUsername: 'moltagent'
@@ -244,7 +240,7 @@ async function runTests() {
 
     const sendReply = createMockSendTalkReply();
     const processor = new MessageProcessor({
-      messageRouter: createMockMessageRouter(),
+
       commandHandler,
       sendTalkReply: sendReply,
       botUsername: 'moltagent'
@@ -321,7 +317,7 @@ async function runTests() {
     const discoveredTokens = [];
     const sendReply = createMockSendTalkReply();
     const processor = new MessageProcessor({
-      messageRouter: createMockMessageRouter(),
+
       commandHandler: createMockCommandHandler(),
       sendTalkReply: sendReply,
       botUsername: 'moltagent',

@@ -39,7 +39,7 @@ try {
 }
 
 // Optional modules - gracefully handle if not present
-let LLMRouter, AuditLogger, MessageRouter, CalendarHandler, EmailHandler, CalDAVClient;
+let LLMRouter, AuditLogger, CalendarHandler, EmailHandler, CalDAVClient;
 try {
   LLMRouter = require('./src/lib/llm-router');
 } catch {
@@ -52,13 +52,6 @@ try {
 } catch {
   console.warn('[WARN] Audit Logger not available, using console');
   AuditLogger = null;
-}
-
-try {
-  MessageRouter = require('./src/lib/handlers/message-router');
-} catch {
-  console.warn('[WARN] Message Router not available');
-  MessageRouter = null;
 }
 
 try {
@@ -455,7 +448,6 @@ let credentialBroker = null;
 let signatureVerifier = null;
 let llmRouter = null;
 let auditLogger = null;
-let messageRouter = null;
 let caldavClient = null;
 let calendarHandler = null;
 let emailHandler = null;
@@ -1799,25 +1791,6 @@ async function initialize() {
     }
   }
 
-  // 8. Initialize Message Router (if available)
-  if (MessageRouter) {
-    console.log('[INIT] Setting up Message Router...');
-    messageRouter = new MessageRouter({
-      calendarHandler: calendarHandler,
-      emailHandler: emailHandler,
-      skillForgeHandler: skillForgeHandler,
-      deckClient: deckClient2,
-      contextLoader: contextLoader,
-      conversationContext: conversationContext,
-      llmRouter: llmRouter,
-      calendarClient: caldavClient, // Direct CalDAV client for meeting calendar updates
-      auditLog: auditLogger ? auditLogger.log.bind(auditLogger) : consoleAuditLog
-    });
-
-    const stats = messageRouter.getStats();
-    console.log(`[INIT] Message Router ready - Calendar: ${stats.handlersConfigured.calendar}, Email: ${stats.handlersConfigured.email}`);
-  }
-
   // 9. Initialize Email Monitor (if available)
   if (EmailMonitor && llmRouter) {
     console.log('[INIT] Setting up Email Monitor...');
@@ -1894,7 +1867,6 @@ async function initialize() {
 
   serverComponents = createServerComponents({
     signatureVerifier: signatureVerifier,
-    messageRouter: messageRouter,
     llmRouter: llmRouter,
     ncRequestManager: ncRequestManager,
     conversationContext: conversationContext,

@@ -18,12 +18,6 @@ const MessageProcessor = require('../../../src/lib/server/message-processor');
 // Helper: Create mock dependencies
 // ============================================================
 
-function createMockMessageRouter(response = { response: 'Router response', intent: 'general', provider: 'mock' }) {
-  return {
-    route: async () => response
-  };
-}
-
 function createMockCommandHandler(response = { response: 'Command response', intent: 'command', provider: 'mock' }) {
   return {
     handle: async () => response
@@ -49,7 +43,6 @@ function createMockErrorHandler() {
 
 function createProcessor(overrides = {}) {
   return new MessageProcessor({
-    messageRouter: createMockMessageRouter(),
     commandHandler: createMockCommandHandler(),
     sendTalkReply: createMockSendTalkReply(),
     botUsername: 'moltagent',

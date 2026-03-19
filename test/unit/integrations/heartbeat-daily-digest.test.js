@@ -223,16 +223,21 @@ console.log('\n=== Heartbeat Daily Digest Tests ===\n');
   // TC-DD-05: checkAndBuild() includes cost data in output
   // --------------------------------------------------------------------------
   await asyncTest('TC-DD-05: checkAndBuild() includes cost data in output', async () => {
-    const budget = makeBudget({
-      providers: { local: { monthly: { cost: 4.20 } } },
-      proactive: { dailyCost: 0.30 }
-    });
-    const briefing = new DailyBriefing({ budgetEnforcer: budget });
+    // CostTracker is now the single source of truth for costs in DailyBriefing
+    const mockCostTracker = {
+      getTotals: () => ({
+        daily: { costUsd: 0.30, costEur: 0.28, cloudCalls: 2, localCalls: 5 },
+        monthly: { costUsd: 4.20 / 0.92, costEur: 4.20, cloudCalls: 10, localCalls: 30 },
+        localRatio: 75,
+        topSpending: [],
+      })
+    };
+    const briefing = new DailyBriefing({ costTracker: mockCostTracker });
 
     const result = await briefing.checkAndBuild();
 
-    assert.ok(result.includes('$4.20'),
-      'result should contain "$4.20" monthly cost');
+    assert.ok(result.includes('4.20'),
+      'result should contain "4.20" monthly cost in EUR');
   });
 
   // --------------------------------------------------------------------------

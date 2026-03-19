@@ -92,25 +92,13 @@ class DailyBriefing {
       parts.push('- Tasks: Could not check');
     }
 
-    // Cost summary — prefer CostTracker (EUR, per-call audit) over BudgetEnforcer
+    // Cost summary — read from CostTracker (single source of truth)
     try {
       if (this.costTracker) {
         const totals = this.costTracker.getTotals();
         const monthlyEur = totals.monthly.costEur.toFixed(2);
         const dailyEur = totals.daily.costEur.toFixed(2);
         parts.push(`- Costs: €${monthlyEur} this month (€${dailyEur} today)`);
-      } else if (this.budget) {
-        const report = this.budget.getFullReport();
-        if (report) {
-          let monthlySpent = 0;
-          if (report.providers) {
-            for (const p of Object.values(report.providers)) {
-              monthlySpent += p?.monthly?.cost || 0;
-            }
-          }
-          const dailySpent = report.proactive?.dailyCost || 0;
-          parts.push(`- Costs: $${monthlySpent.toFixed(2)} this month ($${dailySpent.toFixed(2)} proactive today)`);
-        }
       }
     } catch { /* skip */ }
 

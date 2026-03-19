@@ -11,13 +11,26 @@ const BudgetEnforcer = require('../../../src/lib/llm/budget-enforcer');
 
 console.log('\n=== BudgetEnforcer Tests ===\n');
 
-// --- Existing Functionality ---
-console.log('\n--- Existing Budget Tests ---\n');
+// Helper: build a mock CostTracker that returns given daily/monthly spend
+function mockTracker(dailyUsd, monthlyUsd) {
+  return {
+    getTotals: () => ({
+      daily: { costUsd: dailyUsd, costEur: dailyUsd * 0.92, cloudCalls: 0, localCalls: 0 },
+      monthly: { costUsd: monthlyUsd, costEur: monthlyUsd * 0.92, cloudCalls: 0, localCalls: 0 },
+      localRatio: 100,
+      topSpending: [],
+    })
+  };
+}
+
+// --- Budget Enforcement Tests ---
+console.log('\n--- Budget Enforcement Tests ---\n');
 
 test('canSpend() allows when under budget', () => {
   const enforcer = new BudgetEnforcer({
     budgets: { claude: { daily: 1.00 } }
   });
+  enforcer.costTracker = mockTracker(0.10, 0.10);
   const result = enforcer.canSpend('claude', 0.10);
   assert.strictEqual(result.allowed, true);
 });
@@ -26,7 +39,7 @@ test('canSpend() blocks when over daily budget', () => {
   const enforcer = new BudgetEnforcer({
     budgets: { claude: { daily: 1.00 } }
   });
-  enforcer.recordSpend('claude', 0.95, 1000);
+  enforcer.costTracker = mockTracker(0.95, 0.95);
   const result = enforcer.canSpend('claude', 0.10);
   assert.strictEqual(result.allowed, false);
   assert.strictEqual(result.reason, 'daily_budget_exceeded');
@@ -36,7 +49,7 @@ test('canSpend() blocks when over monthly budget', () => {
   const enforcer = new BudgetEnforcer({
     budgets: { claude: { monthly: 5.00 } }
   });
-  enforcer.recordSpend('claude', 4.95, 10000);
+  enforcer.costTracker = mockTracker(0, 4.95);
   const result = enforcer.canSpend('claude', 0.10);
   assert.strictEqual(result.allowed, false);
   assert.strictEqual(result.reason, 'monthly_budget_exceeded');
@@ -48,53 +61,48 @@ test('canSpend() allows unlimited when no budget configured', () => {
   assert.strictEqual(result.allowed, true);
 });
 
-test('recordSpend() tracks daily and monthly costs', () => {
+test('canSpend() allows when costTracker is null (fail-open)', () => {
   const enforcer = new BudgetEnforcer({
-    budgets: { claude: { daily: 10.00, monthly: 100.00 } }
+    budgets: { claude: { daily: 1.00 } }
   });
-  enforcer.recordSpend('claude', 0.50, 500);
-  enforcer.recordSpend('claude', 0.30, 300);
-  const summary = enforcer.getUsageSummary('claude');
-  assert.strictEqual(summary.daily.cost, 0.80);
-  assert.strictEqual(summary.daily.tokens, 800);
-  assert.strictEqual(summary.daily.calls, 2);
-  assert.strictEqual(summary.monthly.cost, 0.80);
+  // No costTracker wired — defaults to zero spend (fail-open)
+  const result = enforcer.canSpend('claude', 0.50);
+  assert.strictEqual(result.allowed, true);
 });
 
-test('getFullReport() returns complete report', () => {
+test('canSpend() returns dailyRemaining and monthlyRemaining', () => {
   const enforcer = new BudgetEnforcer({
-    budgets: { claude: { daily: 5.00 } }
+    budgets: { claude: { daily: 1.00, monthly: 10.00 } }
   });
-  enforcer.recordSpend('claude', 0.10, 100);
-  const report = enforcer.getFullReport();
-  assert.ok(report.date);
-  assert.ok(report.month);
-  assert.ok(report.providers.claude);
-  assert.ok(report.proactive);
-  assert.strictEqual(report.proactive.dailyCost, 0);
-  assert.strictEqual(report.proactive.exhausted, false);
+  enforcer.costTracker = mockTracker(0.30, 3.00);
+  const result = enforcer.canSpend('claude', 0.10);
+  assert.strictEqual(result.allowed, true);
+  assert.ok(Math.abs(result.dailyRemaining - 0.70) < 0.0001);
+  assert.ok(Math.abs(result.monthlyRemaining - 7.00) < 0.0001);
 });
 
-test('exportUsage() / importUsage() round-trip', () => {
-  const enforcer1 = new BudgetEnforcer({
-    budgets: { claude: { daily: 5.00 } },
-    proactiveDailyBudget: 0.50
+test('recordSpend() fires onExhausted when daily cap crossed', () => {
+  let exhaustedInfo = null;
+  const enforcer = new BudgetEnforcer({
+    budgets: { claude: { daily: 1.00 } },
+    onExhausted: (info) => { exhaustedInfo = info; }
   });
-  enforcer1.recordSpend('claude', 0.25, 250);
-  enforcer1.recordProactiveSpend(0.10, 100);
+  enforcer.costTracker = mockTracker(1.05, 1.05);
+  enforcer.recordSpend('claude');
+  assert.ok(exhaustedInfo, 'onExhausted should have been called');
+  assert.strictEqual(exhaustedInfo.providerId, 'claude');
+  assert.strictEqual(exhaustedInfo.budget, 1.00);
+});
 
-  const exported = enforcer1.exportUsage();
-
-  const enforcer2 = new BudgetEnforcer({
-    budgets: { claude: { daily: 5.00 } },
-    proactiveDailyBudget: 0.50
+test('recordSpend() does nothing when no budget configured', () => {
+  let called = false;
+  const enforcer = new BudgetEnforcer({
+    budgets: {},
+    onExhausted: () => { called = true; }
   });
-  enforcer2.importUsage(exported);
-
-  const summary = enforcer2.getUsageSummary('claude');
-  assert.strictEqual(summary.daily.cost, 0.25);
-  assert.strictEqual(enforcer2.proactiveUsage.dailyCost, 0.10);
-  assert.strictEqual(enforcer2.proactiveUsage.dailyCalls, 1);
+  enforcer.costTracker = mockTracker(5.00, 5.00);
+  enforcer.recordSpend('unknown');
+  assert.strictEqual(called, false);
 });
 
 // --- Proactive Budget Tests ---
@@ -198,9 +206,9 @@ test('Daily reset clears proactive usage', () => {
   enforcer.recordProactiveSpend(0.50, 500);
   assert.strictEqual(enforcer.isProactiveBudgetExhausted(), true);
 
-  // Simulate day change
-  enforcer.lastDailyReset = '2020-01-01';
-  enforcer.checkReset();
+  // Simulate day change by backdating the internal day key
+  enforcer._proactiveDay = '2020-01-01';
+  enforcer._checkProactiveReset();
 
   assert.strictEqual(enforcer.proactiveUsage.dailyCost, 0);
   assert.strictEqual(enforcer.proactiveUsage.dailyCalls, 0);
@@ -216,7 +224,7 @@ test('activateOverride() bypasses budget limits', () => {
   const enforcer = new BudgetEnforcer({
     budgets: { claude: { daily: 1.00 } }
   });
-  enforcer.recordSpend('claude', 0.95, 1000);
+  enforcer.costTracker = mockTracker(0.95, 0.95);
   // Without override, should be blocked
   assert.strictEqual(enforcer.canSpend('claude', 0.10).allowed, false);
   // Activate override
@@ -236,130 +244,38 @@ test('Override expires after duration', () => {
   const enforcer = new BudgetEnforcer({
     budgets: { claude: { daily: 1.00 } }
   });
-  enforcer.recordSpend('claude', 0.95, 1000);
-  // Activate with very short duration (already expired)
+  enforcer.costTracker = mockTracker(0.95, 0.95);
+  // Activate with already-expired timestamp
   enforcer._overrideActive = true;
-  enforcer._overrideExpiry = Date.now() - 1; // already expired
+  enforcer._overrideExpiry = Date.now() - 1;
   // Should not bypass
   assert.strictEqual(enforcer.canSpend('claude', 0.10).allowed, false);
   assert.strictEqual(enforcer.isOverrideActive(), false);
 });
 
-// --- Persistence Tests (async) ---
+test('updateBudgets() merges new limits', () => {
+  const enforcer = new BudgetEnforcer({ budgets: { claude: { daily: 1.00 } } });
+  enforcer.updateBudgets({ openai: { daily: 0.50 } });
+  assert.ok(enforcer.budgets.claude);
+  assert.ok(enforcer.budgets.openai);
+  assert.strictEqual(enforcer.budgets.openai.daily, 0.50);
+});
+
+test('onWarning() fires when warning threshold crossed', () => {
+  let warnInfo = null;
+  const enforcer = new BudgetEnforcer({
+    budgets: { claude: { daily: 1.00 } },
+    warningThreshold: 0.8,
+    onWarning: (info) => { warnInfo = info; }
+  });
+  enforcer.costTracker = mockTracker(0.75, 0.75);
+  // 0.75 existing + 0.10 estimated = 0.85 = 85% > 80% threshold
+  enforcer.canSpend('claude', 0.10);
+  assert.ok(warnInfo, 'onWarning should have been called');
+  assert.strictEqual(warnInfo.providerId, 'claude');
+});
 
 (async () => {
-console.log('\n--- Persistence Tests ---\n');
-
-await asyncTest('persist() writes JSON via ncRequestManager when dirty', async () => {
-  const requestCalls = [];
-  const mockNC = {
-    request: async (path, options) => {
-      requestCalls.push({ path, options });
-      return { status: 200 };
-    }
-  };
-
-  const enforcer = new BudgetEnforcer({
-    budgets: { claude: { daily: 5.00 } },
-    ncRequestManager: mockNC
-  });
-
-  // Not dirty yet — should not write
-  await enforcer.persist();
-  assert.strictEqual(requestCalls.length, 0, 'Should not write when not dirty');
-
-  // Record spend makes it dirty
-  enforcer.recordSpend('claude', 0.25, 250);
-  assert.strictEqual(enforcer._dirty, true, 'Should be dirty after recordSpend');
-
-  await enforcer.persist();
-  assert.strictEqual(requestCalls.length, 1, 'Should write once when dirty');
-  assert.strictEqual(requestCalls[0].options.method, 'PUT');
-  assert.ok(requestCalls[0].path.includes('spending.json'));
-
-  const written = JSON.parse(requestCalls[0].options.body);
-  assert.ok(written.providers.claude, 'Should include claude provider');
-  assert.strictEqual(enforcer._dirty, false, 'Should clear dirty flag after persist');
-});
-
-await asyncTest('persist() is no-op without ncRequestManager', async () => {
-  const enforcer = new BudgetEnforcer({ budgets: {} });
-  enforcer.recordSpend('test', 0.10, 100);
-  // Should not throw
-  await enforcer.persist();
-  assert.strictEqual(enforcer._dirty, true, 'Dirty flag stays set without ncRequestManager');
-});
-
-await asyncTest('restore() reads JSON and imports usage', async () => {
-  const savedData = {
-    lastDailyReset: new Date().toISOString().split('T')[0],
-    lastMonthlyReset: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
-    providers: {
-      claude: { dailyCost: 1.50, dailyTokens: 1500, dailyCalls: 3, monthlyCost: 10.00, monthlyTokens: 10000, monthlyCalls: 20, lastCall: Date.now() }
-    },
-    proactiveUsage: { dailyCost: 0.25, dailyCalls: 2, dailyTokens: 200 }
-  };
-
-  const mockNC = {
-    request: async (path, options) => {
-      if (options.method === 'GET') {
-        return { status: 200, body: savedData };
-      }
-      return { status: 200 };
-    }
-  };
-
-  const enforcer = new BudgetEnforcer({
-    budgets: { claude: { daily: 5.00 } },
-    ncRequestManager: mockNC
-  });
-
-  await enforcer.restore();
-
-  const summary = enforcer.getUsageSummary('claude');
-  assert.strictEqual(summary.daily.cost, 1.50, 'Should restore daily cost');
-  assert.strictEqual(summary.monthly.cost, 10.00, 'Should restore monthly cost');
-  assert.strictEqual(enforcer.proactiveUsage.dailyCost, 0.25, 'Should restore proactive usage');
-});
-
-await asyncTest('restore() handles 404 gracefully', async () => {
-  const mockNC = {
-    request: async () => {
-      const err = new Error('Not Found 404');
-      err.statusCode = 404;
-      throw err;
-    }
-  };
-
-  const enforcer = new BudgetEnforcer({
-    budgets: {},
-    ncRequestManager: mockNC
-  });
-
-  // Should not throw
-  await enforcer.restore();
-  // Usage should remain at defaults
-  assert.strictEqual(enforcer.usage.size, 0, 'Should have no usage data after 404');
-});
-
-await asyncTest('restore() is no-op without ncRequestManager', async () => {
-  const enforcer = new BudgetEnforcer({ budgets: {} });
-  // Should not throw
-  await enforcer.restore();
-});
-
-test('_dirty flag is set by recordSpend and recordProactiveSpend', () => {
-  const enforcer = new BudgetEnforcer({ budgets: {} });
-  assert.strictEqual(enforcer._dirty, false, 'Should start clean');
-
-  enforcer.recordSpend('claude', 0.10, 100);
-  assert.strictEqual(enforcer._dirty, true, 'recordSpend should set dirty');
-
-  enforcer._dirty = false;
-  enforcer.recordProactiveSpend(0.05, 50);
-  assert.strictEqual(enforcer._dirty, true, 'recordProactiveSpend should set dirty');
-});
-
-summary();
-exitWithCode();
+  summary();
+  exitWithCode();
 })();

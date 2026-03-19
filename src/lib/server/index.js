@@ -47,7 +47,6 @@ const HealthHandler = require('./health-handler');
 /**
  * @typedef {Object} ServerDependencies
  * @property {Object} signatureVerifier - TalkSignatureVerifier instance
- * @property {Object} messageRouter - MessageRouter instance
  * @property {Object} [llmRouter] - LLMRouter instance
  * @property {Object} [ncRequestManager] - NCRequestManager instance
  * @property {Function} sendTalkReply - Function to send Talk replies
@@ -81,7 +80,6 @@ const HealthHandler = require('./health-handler');
 function createServerComponents(deps) {
   const {
     signatureVerifier,
-    messageRouter,
     llmRouter,
     ncRequestManager,
     sendTalkReply,
@@ -112,7 +110,6 @@ function createServerComponents(deps) {
   // Create command handler first (used by message processor)
   const commandHandler = new CommandHandler({
     signatureVerifier,
-    messageRouter,
     llmRouter,
     auditLog,
     allowedBackends,
@@ -124,7 +121,6 @@ function createServerComponents(deps) {
 
   // Create message processor (uses command handler)
   const messageProcessor = new MessageProcessor({
-    messageRouter,
     commandHandler,
     sendTalkReply,
     auditLog,

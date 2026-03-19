@@ -128,6 +128,11 @@ class HeartbeatManager {
     // CostTracker (optional, for per-call audit logging + JSONL flush)
     this.costTracker = config.costTracker || null;
 
+    // Wire CostTracker into BudgetEnforcer so canSpend() reads actual spend
+    if (this.budgetEnforcer && this.costTracker) {
+      this.budgetEnforcer.costTracker = this.costTracker;
+    }
+
     // Cockpit (optional, Deck as control plane)
     this.cockpitManager = config.cockpitManager || null;
 
@@ -683,21 +688,13 @@ class HeartbeatManager {
 
           // Enrich cost report with provider type info (local vs cloud)
           const providerTypes = this._getProviderTypes();
-          let costs = null;
-          if (this.budgetEnforcer) {
-            costs = this.budgetEnforcer.getFullReport();
-            costs._providerTypes = providerTypes;
-          }
+          const costs = null; // BudgetEnforcer no longer accumulates; CostTracker is source of truth
 
           // Get router stats for Model Usage card
           let routerStats = null;
           if (this.llmRouter?.getStats) {
             routerStats = this.llmRouter.getStats();
             routerStats._providerTypes = providerTypes;
-            // Attach budget provider data for monthly call counts
-            if (costs?.providers) {
-              routerStats.budget = { providers: costs.providers };
-            }
           }
 
           // Enrich health with request success rate

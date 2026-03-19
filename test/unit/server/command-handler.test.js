@@ -29,19 +29,6 @@ function createMockSignatureVerifier(stats = {}) {
   };
 }
 
-function createMockMessageRouter(stats = {}) {
-  return {
-    getStats: () => ({
-      pendingConfirmations: stats.pendingConfirmations || 0,
-      handlersConfigured: {
-        calendar: stats.calendar !== false,
-        email: stats.email !== false,
-        llm: stats.llm !== false
-      }
-    })
-  };
-}
-
 // ============================================================
 // Test Suites
 // ============================================================
@@ -124,7 +111,6 @@ console.log('\n--- /status Command Tests ---\n');
 asyncTest('TC-STATUS-001: Return server status', async () => {
   const handler = new CommandHandler({
     signatureVerifier: createMockSignatureVerifier(),
-    messageRouter: createMockMessageRouter(),
     allowedBackends: ['https://cloud.example.com']
   });
   const context = { user: 'testuser', token: 'test-token', messageId: 'msg-123' };
@@ -135,7 +121,6 @@ asyncTest('TC-STATUS-001: Return server status', async () => {
 asyncTest('TC-STATUS-002: Include verification count', async () => {
   const handler = new CommandHandler({
     signatureVerifier: createMockSignatureVerifier({ totalVerifications: 123 }),
-    messageRouter: createMockMessageRouter(),
     allowedBackends: []
   });
   const context = { user: 'testuser', token: 'test-token', messageId: 'msg-123' };
@@ -146,7 +131,6 @@ asyncTest('TC-STATUS-002: Include verification count', async () => {
 asyncTest('TC-STATUS-003: Show handler availability', async () => {
   const handler = new CommandHandler({
     signatureVerifier: createMockSignatureVerifier(),
-    messageRouter: createMockMessageRouter(),
     llmRouter: { test: true },
     allowedBackends: []
   });
@@ -160,7 +144,6 @@ asyncTest('TC-STATUS-003: Show handler availability', async () => {
 asyncTest('TC-STATUS-004: Show allowed backends count', async () => {
   const handler = new CommandHandler({
     signatureVerifier: createMockSignatureVerifier(),
-    messageRouter: createMockMessageRouter(),
     allowedBackends: ['https://cloud1.example.com', 'https://cloud2.example.com']
   });
   const context = { user: 'testuser', token: 'test-token', messageId: 'msg-123' };

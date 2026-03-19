@@ -311,9 +311,9 @@ class LLMRouter {
         }
 
         if (result.cost) {
-          this.budget.recordSpend(providerId, result.cost, result.tokens);
+          this.budget.recordSpend(providerId);
           if (opType === 'proactive') {
-            this.budget.recordProactiveSpend(result.cost, result.tokens);
+            this.budget.recordProactiveSpend(result.cost, result.tokens || 0);
           }
         }
 
@@ -883,7 +883,7 @@ class LLMRouter {
     return {
       ...this.stats,
       rateLimits: this.rateLimits.getSummary(),
-      budget: this.budget.getFullReport(),
+      budget: this.costTracker ? this.costTracker.getTotals() : null,
       backoff: this.backoff.getSummary(),
       circuitBreaker: this.circuitBreaker.getSummary(),
       loopDetector: this.loopDetector.getSummary(),
@@ -1178,9 +1178,9 @@ class LLMRouter {
       }
 
       if (outcome.cost) {
-        this.budget.recordSpend(providerId, outcome.cost, outcome.tokens);
+        this.budget.recordSpend(providerId);
         if (outcome.opType === 'proactive') {
-          this.budget.recordProactiveSpend(outcome.cost, outcome.tokens);
+          this.budget.recordProactiveSpend(outcome.cost, outcome.tokens || 0);
         }
       }
 
