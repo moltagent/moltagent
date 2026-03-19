@@ -195,7 +195,7 @@ Message: "${message.substring(0, 400)}"`;
       params.delegated = true;
     }
 
-    if (params.requires_clarification) {
+    if (params.requires_clarification && !context?.compoundAction) {
       const missingFields = Array.isArray(params.missing_fields) && params.missing_fields.length > 0
         ? params.missing_fields
         : ['details'];

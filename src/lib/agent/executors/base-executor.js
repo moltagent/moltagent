@@ -103,6 +103,10 @@ class BaseExecutor {
       raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
       raw = raw.trim();
 
+      // Extract first JSON object — LLM may append explanation after the JSON
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (jsonMatch) raw = jsonMatch[0];
+
       return JSON.parse(raw);
     } catch (err) {
       this.logger.warn(`[BaseExecutor] JSON extraction failed: ${err.message}`);
