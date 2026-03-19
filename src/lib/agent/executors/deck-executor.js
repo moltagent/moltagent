@@ -1075,6 +1075,22 @@ Respond with ONLY the title, nothing else.`;
 
     // Follow-up ops (due date, assignee) are fire-and-forget — card is already created
     const cardIdMatch = (result.result || '').match(/#(\d+)/);
+
+    // Post-creation: write full probe findings directly as description.
+    // The tool-calling LLM produces good titles but compresses findings into
+    // thin descriptions. Bypass that: overwrite with the raw probe content.
+    if (context?.compoundAction && context?.probeFindings && cardIdMatch && this.deckClient) {
+      try {
+        await this.deckClient.updateCard(
+          cardIdMatch[1],
+          (toolArgs.stack || 'inbox').toLowerCase(),
+          { description: context.probeFindings.substring(0, 4000) }
+        );
+        this.logger.info(`[DeckExec] Card #${cardIdMatch[1]} description updated with ${context.probeFindings.length} chars of probe findings`);
+      } catch (err) {
+        this.logger.warn(`[DeckExec] Post-creation description update failed: ${err.message}`);
+      }
+    }
     if (params.due_date && cardIdMatch) {
       try {
         const resolved = this._resolveDate(params.due_date) || params.due_date;

@@ -2073,28 +2073,27 @@ Be thoughtful. Be honest. Be yourself.`;
    */
   async _deepReadWikiResults(items, searcher, maxReads = 3) {
     const wiki = searcher?.wiki;
-    if (!wiki || !wiki.readPageContent || !wiki.getPage) return;
+    if (!wiki || !wiki.readPageContent) return;
+
+    const collectiveName = wiki.collectiveName;
+    if (!collectiveName) return;
 
     const toRead = items.filter(r => r.url && r.sourceTag !== 'graph').slice(0, maxReads);
-    const seenPages = new Set();
+    const seenPaths = new Set();
 
     const reads = toRead.map(async (item) => {
       try {
-        const ids = this._extractIdsFromUrl(item.url);
-        if (!ids) return;
-        if (seenPages.has(ids.pageId)) return;
-        seenPages.add(ids.pageId);
+        const pagePath = this._extractPagePathFromUrl(item.url, collectiveName);
+        if (!pagePath || seenPaths.has(pagePath)) return;
+        seenPaths.add(pagePath);
 
-        const page = await wiki.getPage(ids.collectiveId, ids.pageId);
-        if (!page) return;
-
-        const pagePath = wiki._buildPagePath(page);
-        const content = await wiki.readPageContent(pagePath);
-        console.log(`[DeepRead] "${page.title}" (id=${ids.pageId}) → ${content ? content.trim().length + ' chars' : 'null'}`);
+        // Try leaf page first (PagePath.md), then section parent (PagePath/Readme.md)
+        let content = await wiki.readPageContent(pagePath + '.md');
+        if (!content) content = await wiki.readPageContent(pagePath + '/Readme.md');
+        console.log(`[DeepRead] "${pagePath}" → ${content ? content.trim().length + ' chars' : 'null'}`);
 
         if (content && content.trim().length >= 50) {
           item.snippet = content.substring(0, 2000);
-          item.title = page.title || item.title;
         }
       } catch (err) {
         console.warn(`[DeepRead] Failed for "${item.url}": ${err.message}`);
@@ -2105,23 +2104,22 @@ Be thoughtful. Be honest. Be yourself.`;
   }
 
   /**
-   * Extract collective ID and page ID from an NC Unified Search resourceUrl.
-   * URL: /apps/collectives/{CollectiveName}-{collectiveId}/{PageSlug}-{pageId}
+   * Extract the page path from an NC Collectives resourceUrl by splitting on
+   * the known collective name. No regex, no ID extraction.
+   * URL: /apps/collectives/{CollectiveName}/{PagePath}
    * @param {string} url
-   * @returns {{collectiveId: number, pageId: number}|null}
+   * @param {string} collectiveName - Known collective name (e.g. "Moltagent Knowledge")
+   * @returns {string|null} Page path (e.g. "People/Carlos") or null
    * @private
    */
-  _extractIdsFromUrl(url) {
-    if (!url) return null;
-    const idx = url.indexOf('/apps/collectives/');
-    if (idx === -1) return null;
-    const rest = url.substring(idx + '/apps/collectives/'.length);
-    const parts = rest.split('/');
-    if (parts.length < 2) return null;
-    const collectiveMatch = parts[0].match(/-(\d+)$/);
-    const pageMatch = parts[parts.length - 1].match(/-(\d+)$/);
-    if (!collectiveMatch || !pageMatch) return null;
-    return { collectiveId: parseInt(collectiveMatch[1], 10), pageId: parseInt(pageMatch[1], 10) };
+  _extractPagePathFromUrl(url, collectiveName) {
+    if (!url || !collectiveName) return null;
+    const decoded = decodeURIComponent(url);
+    const anchor = '/apps/collectives/' + collectiveName;
+    const anchorIdx = decoded.indexOf(anchor);
+    if (anchorIdx === -1) return null;
+    const rest = decoded.substring(anchorIdx + anchor.length).replace(/^\//, '').replace(/\/$/, '');
+    return rest || null;
   }
 
   /**
