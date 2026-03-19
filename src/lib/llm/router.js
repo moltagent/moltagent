@@ -619,8 +619,8 @@ class LLMRouter {
       const local = presetName === 'cloud-first' ? [] : localIds;
       const localFast = presetName === 'cloud-first' ? [] : fastFirst;
 
-      // Quick tasks: fast local first (sub-second), cloud fallback
-      roster[JOBS.QUICK] = [...new Set([...localFast, cheapest].filter(Boolean))];
+      // Quick tasks: cheapest cloud first (Haiku — 2s, reliable), local fallback
+      roster[JOBS.QUICK] = [...new Set([cheapest, ...localFast].filter(Boolean))];
       // Classification: Haiku first (reliable compound detection), local fallback
       roster[JOBS.CLASSIFICATION] = [...new Set([cheapest, ...local].filter(Boolean))];
 

@@ -1555,13 +1555,11 @@ async function initialize() {
           llmRouter.setPreset('smart-mix');
           console.log('[INIT] LLMRouter preset activated: smart-mix');
 
-          // Override QUICK chain: ollama-fast (qwen2.5:3b) first for speed
-          if (ollamaFastProvider) {
+          // Log the QUICK chain (order comes from preset — Haiku first in smart-mix)
+          {
             const roster = llmRouter.getRoster();
-            if (roster && roster.quick) {
-              roster.quick = ['ollama-fast', ...roster.quick.filter(id => id !== 'ollama-fast')];
-              llmRouter.setRoster(roster);
-              console.log(`[INIT] QUICK chain: ollama-fast (${fastModel}) → ${roster.quick.slice(1).join(' → ')}`);
+            if (roster?.quick) {
+              console.log(`[INIT] QUICK chain: ${roster.quick.join(' → ')}`);
             }
           }
 
