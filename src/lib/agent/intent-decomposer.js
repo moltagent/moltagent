@@ -51,7 +51,8 @@ Rules:
 - Probes with no dependencies can run in parallel.
 - Actions that depend on probe results run after those probes complete.
 - Always end with a synthesis step that reports everything.
-- Keep it minimal. 2-5 steps. Don't over-decompose simple queries.`;
+- Keep it minimal. 2-5 steps. Don't over-decompose simple queries.
+- Action step queries must be self-contained. NEVER reference other steps by number ("from steps 1-2", "using step 1 results"). Write the action as if it were a standalone instruction: "Create card: Eelco Dykstra research", not "Create card with info from steps 1-2". The system injects probe results automatically.`;
 
 class IntentDecomposer {
   /**
@@ -284,7 +285,7 @@ class IntentDecomposer {
     const probeFindings = this._aggregateProbeFindings(previousResults);
     let actionMessage = step.query || '';
     if (probeFindings) {
-      actionMessage += `\n\nFindings from research:\n${probeFindings.substring(0, 3000)}`;
+      actionMessage += `\n\nContent for the card:\n${probeFindings.substring(0, 3000)}`;
     }
 
     try {
