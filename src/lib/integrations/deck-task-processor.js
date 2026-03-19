@@ -30,6 +30,7 @@ class DeckTaskProcessor {
     this.config = config;
     this.routeContext = options.routeContext || {};
     this.notifyUser = options.notifyUser || null;
+    this.reviewUser = options.reviewUser || null;
     
     // Processing state
     this._currentTask = null;
@@ -241,8 +242,11 @@ class DeckTaskProcessor {
         result.summary
       );
 
-      // Assign card to the requesting user for review (not just Moltagent)
-      const reviewer = card.owner?.uid || card.owner;
+      // Assign card to the human reviewer — card.owner is usually the bot,
+      // so fall back to the configured reviewUser (admin/primary user).
+      const cardOwner = card.owner?.uid || card.owner;
+      const botName = (this.deck.username || 'moltagent').toLowerCase();
+      const reviewer = (cardOwner && cardOwner.toLowerCase() !== botName) ? cardOwner : this.reviewUser;
       if (reviewer) {
         try {
           await this.deck.assignUser(card.id, 'review', reviewer);

@@ -2075,6 +2075,7 @@ async function initialize() {
         resilientWriter,
         costTracker,
         dailyBriefing,
+        reviewUser: appConfig.cockpit?.adminUser || appConfig.knowledge?.adminUser || '',
         talkSendQueue: talkQueue,
         primaryRoomToken: defaultTalkToken,
         ncFlow: ncFlowActivityPoller || ncFlowWebhookReceiver ? {
