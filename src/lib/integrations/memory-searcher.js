@@ -204,10 +204,9 @@ class MemorySearcher {
                 expanded.push({
                   source: 'Wiki',
                   title: rel.title,
-                  excerpt: `[Co-accessed with "${result.title}"]`,
+                  excerpt: '',
                   link: '',
-                  coAccess: true,
-                  channelScores: { keyword: 0, vector: 0, graph: 0 }
+                  coAccess: true
                 });
                 existingTitles.add(rel.title.toLowerCase());
               }
@@ -378,7 +377,7 @@ class MemorySearcher {
     return results.map(r => ({
       source: 'Wiki',
       title: r.title || r.id,
-      excerpt: `[Semantic match, score: ${r.score.toFixed(2)}]`,
+      excerpt: '',
       link: '',
       semantic: true,
       _vecScore: r.score
@@ -419,7 +418,7 @@ class MemorySearcher {
         results.push({
           source: 'Wiki',
           title: rel.entity.name,
-          excerpt: `[Graph: ${rel.predicate}, ${rel.distance} hop(s) from ${graph.getEntity(id)?.name || id}]`,
+          excerpt: '',
           link: '',
           graph: true,
           _graphScore: distScore
@@ -435,7 +434,7 @@ class MemorySearcher {
         results.push({
           source: 'Wiki',
           title: entity.name,
-          excerpt: `[Graph: direct entity match]`,
+          excerpt: '',
           link: '',
           graph: true,
           _graphScore: 1.0

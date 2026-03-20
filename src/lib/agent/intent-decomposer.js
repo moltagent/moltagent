@@ -337,7 +337,7 @@ class IntentDecomposer {
 
     let actionMessage = step.query || '';
     if (probeFindings) {
-      actionMessage += `\n\nResearch findings (use only the actual content — ignore any technical tags like [Semantic match...], [Graph:...], score values, or collection paths):\n${probeFindings.substring(0, 3000)}`;
+      actionMessage += `\n\nResearch findings:\n${probeFindings.substring(0, 3000)}`;
     }
     // TRACE-3: What goes to the tool-calling LLM?
     console.log(`[TRACE-3] Action message length: ${actionMessage.length}, starts with: "${actionMessage.substring(0, 100)}"`);
@@ -388,8 +388,6 @@ class IntentDecomposer {
   _aggregateProbeFindings(results) {
     if (!results || results.size === 0) return null;
 
-    // Pass raw probe content to the action message. The extraction LLM (Haiku)
-    // naturally ignores search metadata tags — no code-level stripping needed.
     const lines = [];
     for (const [, result] of results) {
       if (result.error || result.skipped || !result.results) continue;
