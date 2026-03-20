@@ -1811,16 +1811,9 @@ class MessageProcessor {
       throw new Error('No LLM router available for thinking synthesis');
     }
 
-    // Gather rich context — same enrichment as cloud path
-    const enricher = this.microPipeline?.memoryContextEnricher;
-    let enrichment = '';
-    if (enricher) {
-      try {
-        enrichment = await enricher.enrich(message, 'thinking') || '';
-      } catch (err) {
-        console.warn(`[Message] Thinking enrichment failed: ${err.message}`);
-      }
-    }
+    // Thinking = opinion/reflection, not fact retrieval.
+    // SOUL.md + living context + warm memory is sufficient — skip enricher
+    // to avoid sending wiki/deck/calendar data to Opus unnecessarily.
 
     // SOUL.md for identity-aware reflection
     let soulContext = '';
@@ -1855,7 +1848,6 @@ class MessageProcessor {
 
 Current date/time: ${dateStr}, ${timeStr} (${tz})
 ${conversationBlock}
-${enrichment ? `\nWORKSPACE KNOWLEDGE:\n${enrichment}\n` : ''}
 ${warmMemoryBlock}
 
 You are being asked to THINK — reflect, analyse, give your opinion, or reason deeply.
