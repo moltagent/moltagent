@@ -638,8 +638,8 @@ class LLMRouter {
       // and produce unreliable structured JSON.
       roster[JOBS.TOOLS] = [...new Set([cheapest, ...local].filter(Boolean))];
 
-      // Research/coding: mid-tier cloud (Sonnet), cheapest fallback
-      roster[JOBS.RESEARCH] = [...new Set([midTier, cheapest, ...local].filter(Boolean))];
+      // Research: cheapest cloud (Haiku — sufficient quality, ~10x cheaper than Sonnet)
+      roster[JOBS.RESEARCH] = [...new Set([cheapest, ...local].filter(Boolean))];
       roster[JOBS.CODING] = [...new Set([midTier, cheapest, ...local].filter(Boolean))];
 
       // Deep/complex: top-tier cloud (Opus), mid fallback, local last
