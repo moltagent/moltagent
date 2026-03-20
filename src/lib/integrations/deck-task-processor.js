@@ -1174,8 +1174,38 @@ Please address the user's ${classification.type}. Be concise and helpful.
         return { handled: false, reason: 'no_response' };
       }
 
-      // Output adapter: post response as card comment instead of Talk message
-      await this.deck.addComment(cardId, response, 'MENTION', { prefix: true });
+      // Output adapter: append full response to card description, post summary as comment.
+      // Description is the work (no char limit), comment is the notification (1000 char limit).
+      let stackName = null;
+      try {
+        const allCards = await this.deck.getAllCards();
+        for (const [stack, cards] of Object.entries(allCards)) {
+          if (cards.some(c => c.id === cardId)) { stackName = stack; break; }
+        }
+      } catch (_) { /* best effort */ }
+
+      if (stackName) {
+        try {
+          const card = await this.deck.getCard(cardId, stackName);
+          const existingDesc = card.description || '';
+          const section = `\n\n---\n\n## @${event.user} asked\n\n> ${mentionComment.message}\n\n${response}`;
+          await this.deck.updateCard(cardId, stackName, {
+            title: card.title,
+            type: card.type || 'plain',
+            owner: card.owner?.uid || card.owner || this.deck.username,
+            description: existingDesc + section
+          });
+        } catch (descErr) {
+          console.warn(`[DeckProcessor] Could not update description for card #${cardId}: ${descErr.message}`);
+        }
+      }
+
+      // Short notification comment (fits 1000 char limit)
+      const summary = response.length > 200
+        ? response.substring(0, 180).replace(/\s+\S*$/, '') + '…'
+        : response;
+      const comment = `${summary}\n\nFull analysis added to card description.`;
+      await this.deck.addComment(cardId, comment, 'MENTION', { prefix: true });
 
       await this.auditLog('deck_mention_handled', {
         cardId,

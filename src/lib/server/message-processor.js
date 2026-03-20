@@ -2079,6 +2079,13 @@ Be thoughtful. Be honest. Be yourself.`;
         if (!page) return;
         console.log(`[DeepRead] getPage(${ids.collectiveId}, ${ids.pageId}): title="${page.title}", filePath="${page.filePath}", fileName="${page.fileName}"`);
 
+        // Filter infrastructure pages by filePath (type cache may not be populated yet)
+        const fp = page.filePath || '';
+        if (/^(Meta|Sessions)(\/|$)/i.test(fp) || /\/(Meta|Sessions)(\/|$)/i.test(fp)) {
+          console.log(`[DeepRead] Skipping infrastructure page: "${page.title}" (filePath="${fp}")`);
+          return;
+        }
+
         const pagePath = wiki._buildPagePath(page);
         console.log(`[DeepRead] _buildPagePath → "${pagePath}"`);
         const content = await wiki.readPageContent(pagePath);
