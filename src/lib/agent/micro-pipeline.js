@@ -659,11 +659,11 @@ Sub-questions:`;
       throw err;
     }
 
-    // Select tools provider: cloud-ok → Claude (Haiku), local-only → Ollama (qwen3:8b)
+    // Select tools provider: cloud-ok → cheapest cloud, local-only → Ollama (qwen3:8b)
     // Same trust boundary pattern as classification escalation.
-    const cloudOk = this.claudeToolsProvider && this.router?.hasCloudPlayers?.();
-    const toolsProvider = cloudOk ? this.claudeToolsProvider : this.ollamaToolsProvider;
-    const providerLabel = cloudOk ? `cloud:${this.claudeToolsProvider.model}` : `local:${this.ollamaToolsProvider?.model}`;
+    const cloudOk = this.cloudToolsProvider && this.router?.hasCloudPlayers?.();
+    const toolsProvider = cloudOk ? this.cloudToolsProvider : this.ollamaToolsProvider;
+    const providerLabel = cloudOk ? `cloud:${this.cloudToolsProvider.model}` : `local:${this.ollamaToolsProvider?.model}`;
 
     // Guard: need both toolRegistry and a tools provider
     if (!this.toolRegistry || !toolsProvider) {

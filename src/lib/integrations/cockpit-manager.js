@@ -1392,27 +1392,12 @@ class CockpitManager {
    * @param {Object} infra - Infrastructure detection result
    * @param {Array} infra.localModels - Available local models
    * @param {boolean} infra.gpuDetected - Whether GPU is available
-   * @param {Array} infra.cloudProviders - Available cloud providers [{name, models}]
+   * @param {Array} infra.cloudProviders - Available cloud providers [{id, adapter, model, costModel}]
    * @returns {Object} Roster: job → provider-ID chain
    */
   _buildRosterFromTrust(trust, prefer, infra) {
     // Security invariant: credentials job is never included here.
     // It is always local-only, enforced by the router's _buildRosterChain().
-    const hasHaiku = (infra.cloudProviders || []).some(p =>
-      p.name === 'Anthropic' || p.models?.some(m => m.toLowerCase().includes('haiku'))
-    );
-    const hasSonnet = (infra.cloudProviders || []).some(p =>
-      p.name === 'Anthropic' || p.models?.some(m => m.toLowerCase().includes('sonnet'))
-    );
-    const hasOpus = (infra.cloudProviders || []).some(p =>
-      p.name === 'Anthropic' || p.models?.some(m => m.toLowerCase().includes('opus'))
-    );
-
-    // Provider IDs matching moltagent-providers.yaml
-    const opus = 'anthropic-claude';   // claude-opus-4-6
-    const sonnet = 'claude-sonnet';    // claude-sonnet-4-5
-    const haiku = 'claude-haiku';      // claude-haiku-4-5
-
     const localFast = 'ollama-fast';
     const localCapable = 'ollama-local';
 
@@ -1431,52 +1416,66 @@ class CockpitManager {
     }
 
     // trust === 'cloud-ok'
+    // Classify available cloud providers by cost tier (provider-agnostic).
+    // infra.cloudProviders carries { id, costModel } per detected provider.
+    const cloudIds = (infra.cloudProviders || []).map(p => p.id).filter(Boolean);
+    if (cloudIds.length === 0) {
+      // No cloud credentials found — fall back to local-only roster
+      return this._buildRosterFromTrust('local-only', prefer, infra);
+    }
+
+    // Sort by output cost descending: most expensive = heavy, cheapest = cheapest
+    const costOf = (id) => {
+      const p = infra.cloudProviders.find(c => c.id === id);
+      return p?.costModel?.outputPer1M || Infinity;
+    };
+    const sorted = [...cloudIds].sort((a, b) => costOf(b) - costOf(a));
+    const heavy = sorted[0];                          // most capable (e.g. Opus, GPT-4o)
+    const workhorse = sorted[1] || heavy;             // mid-tier (e.g. Sonnet, GPT-4o-mini)
+    const cheapest = sorted[sorted.length - 1];       // cheapest (e.g. Haiku, DeepSeek)
+
     if (prefer === 'cost') {
       // Minimize cloud spend: local first, cloud as fallback only
       return {
         quick: [localFast, localCapable],
-        classification: hasHaiku ? [haiku, localFast, localCapable] : [localFast, localCapable],
-        synthesis: hasHaiku
-          ? [haiku, localFast, localCapable]
-          : [localFast, localCapable],
-        decomposition: hasHaiku ? [haiku, localCapable, localFast] : [localCapable, localFast],
-        tools: hasHaiku ? [haiku, localCapable, localFast] : [localCapable, localFast],
-        thinking: [localCapable, hasSonnet ? sonnet : null].filter(Boolean),
-        writing: [localCapable, hasSonnet ? sonnet : null].filter(Boolean),
-        research: [localCapable, hasSonnet ? sonnet : null].filter(Boolean),
-        coding: [localCapable, hasSonnet ? sonnet : null].filter(Boolean)
+        classification: [cheapest, localFast, localCapable],
+        synthesis: [cheapest, localFast, localCapable],
+        decomposition: [cheapest, localCapable, localFast],
+        tools: [cheapest, localCapable, localFast],
+        thinking: [localCapable, workhorse].filter(Boolean),
+        writing: [localCapable, workhorse].filter(Boolean),
+        research: [localCapable, workhorse].filter(Boolean),
+        coding: [localCapable, workhorse].filter(Boolean)
       };
     }
 
     if (prefer === 'quality') {
-      // Maximum quality: Opus for deep work, Sonnet for tools/research
+      // Maximum quality: heavy for deep work, workhorse for tools/research
       return {
         quick: [localFast, localCapable],
-        classification: hasHaiku ? [haiku, localFast, localCapable] : [localFast, localCapable],
-        synthesis: [hasSonnet ? sonnet : null, hasHaiku ? haiku : null, localCapable].filter(Boolean),
-        decomposition: [hasHaiku ? haiku : null, localCapable, localFast].filter(Boolean),
-        tools: hasHaiku ? [haiku, localCapable, localFast] : [localCapable, localFast],
-        thinking: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
-        writing: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
-        research: [hasSonnet ? sonnet : null, hasOpus ? opus : null, localCapable].filter(Boolean),
-        coding: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean)
+        classification: [cheapest, localFast, localCapable],
+        synthesis: [workhorse, cheapest, localCapable].filter(Boolean),
+        decomposition: [cheapest, localCapable, localFast],
+        tools: [cheapest, localCapable, localFast],
+        thinking: [heavy, workhorse, localCapable].filter(Boolean),
+        writing: [heavy, workhorse, localCapable].filter(Boolean),
+        research: [workhorse, heavy, localCapable].filter(Boolean),
+        coding: [heavy, workhorse, localCapable].filter(Boolean)
       };
     }
 
     // Default: prefer === 'speed'
-    // Opus for thinking/writing (best output), Sonnet for research/coding (fast enough)
+    // Heavy for thinking/writing (best output), workhorse for research/coding
     return {
       quick: [localFast, localCapable],
-      classification: hasHaiku ? [haiku, localFast, localCapable] : [localFast, localCapable],
-      synthesis: hasHaiku
-        ? [haiku, localFast, localCapable]
-        : [localFast, localCapable],
-      decomposition: hasHaiku ? [haiku, localCapable, localFast] : [localCapable, localFast],
-      tools: hasHaiku ? [haiku, localCapable, localFast] : [localCapable, localFast],
-      thinking: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
-      writing: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
-      research: [hasSonnet ? sonnet : null, localCapable].filter(Boolean),
-      coding: [hasSonnet ? sonnet : null, localCapable].filter(Boolean)
+      classification: [cheapest, localFast, localCapable],
+      synthesis: [cheapest, localFast, localCapable],
+      decomposition: [cheapest, localCapable, localFast],
+      tools: [cheapest, localCapable, localFast],
+      thinking: [heavy, workhorse, localCapable].filter(Boolean),
+      writing: [heavy, workhorse, localCapable].filter(Boolean),
+      research: [workhorse, localCapable].filter(Boolean),
+      coding: [workhorse, localCapable].filter(Boolean)
     };
   }
 
@@ -1510,7 +1509,7 @@ class CockpitManager {
     desc += `   GPU: ${infra.gpuDetected ? 'detected \u26a1' : 'not detected (CPU inference)'}\n`;
 
     if ((infra.cloudProviders || []).length > 0) {
-      const providers = infra.cloudProviders.map(p => `${p.name} \u2705`).join(', ');
+      const providers = infra.cloudProviders.map(p => `${p.id || p.name} \u2705`).join(', ');
       desc += `   Cloud AI: ${providers}\n`;
     } else {
       desc += '   Cloud AI: no API keys configured\n';
@@ -1619,13 +1618,12 @@ class CockpitManager {
     if ((infra.cloudProviders || []).length > 0) {
       desc += '  Cloud:\n';
       for (const provider of infra.cloudProviders) {
-        desc += `    ${provider.name}: ${(provider.models || []).join(', ')}\n`;
+        desc += `    ${provider.id || provider.name}: ${provider.model || (provider.models || []).join(', ')}\n`;
       }
     }
-    desc += '\nAdd API keys in Nextcloud Passwords:\n';
-    desc += '  anthropic-api-key \u2192 Claude (Opus, Sonnet, Haiku)\n';
-    desc += '  openai-api-key \u2192 GPT-4o\n';
-    desc += '  google-ai-api-key \u2192 Gemini Pro\n';
+    desc += '\nAdd API keys in Nextcloud Passwords (credentialName from YAML):\n';
+    desc += '  Any provider in moltagent-providers.yaml with a credentialName\n';
+    desc += '  is auto-detected when the matching key exists in NC Passwords.\n';
 
     return desc;
   }

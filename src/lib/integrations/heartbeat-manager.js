@@ -1432,26 +1432,25 @@ class HeartbeatManager {
       } catch { /* Can't detect GPU */ }
     }
 
-    // Check API keys via credential broker
-    if (this.credentialBroker) {
-      const keyChecks = [
-        { labels: ['anthropic-api-key', 'claude-api-key'], name: 'Anthropic', models: ['Haiku', 'Sonnet', 'Opus'] },
-        { labels: ['openai-api-key'], name: 'OpenAI', models: ['GPT-4o'] },
-        { labels: ['google-ai-api-key'], name: 'Google', models: ['Gemini Pro'] }
-      ];
-
-      for (const check of keyChecks) {
-        let found = false;
-        for (const label of check.labels) {
-          if (found) break;
-          try {
-            const key = await this.credentialBroker.get(label);
-            if (key) {
-              infra.cloudProviders.push({ name: check.name, models: check.models });
-              found = true;
-            }
-          } catch { /* Key not found */ }
-        }
+    // Check cloud provider credentials via router's registered providers.
+    // Each YAML-configured provider carries its credentialName; the router's
+    // provider instances expose getCredential(). This replaces the old
+    // hardcoded 3-provider list — any provider in the YAML is now discoverable.
+    if (this.llmRouter?.providers) {
+      for (const [id, provider] of this.llmRouter.providers) {
+        if (provider.type === 'local') continue;
+        if (!provider.getCredential) continue;
+        try {
+          const key = await provider.getCredential();
+          if (key) {
+            infra.cloudProviders.push({
+              id,
+              adapter: provider.constructor?.name || 'unknown',
+              model: provider.model,
+              costModel: provider.costModel || {}
+            });
+          }
+        } catch { /* Credential not available */ }
       }
     }
 

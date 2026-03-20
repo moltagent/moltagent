@@ -1422,32 +1422,26 @@ class MessageProcessor {
         }
       }
 
-      // Create dedicated Haiku tools provider for cloud-ok tool-calling.
-      // Haiku is cost-optimal for structured tool calls (~$0.001 per call).
-      // Reuse getApiKey from any existing Claude provider in the bridge.
-      let getApiKey = null;
+      // Find cheapest cloud tools provider from bridge.chatProviders.
+      // The bridge already has ClaudeToolsProvider / OpenAIToolsProvider instances
+      // registered by webhook-server.js for every YAML-configured cloud provider.
+      let cheapestCloud = null;
+      let cheapestCost = Infinity;
       for (const [id, provider] of bridge.chatProviders) {
-        if (typeof provider.getApiKey === 'function') {
-          getApiKey = provider.getApiKey.bind(provider);
-          console.log(`[Message] Found API key source: ${id}`);
-          break;
+        if (typeof provider.chat !== 'function') continue;
+        const routerProvider = this.microPipeline?.router?.providers?.get(id);
+        if (!routerProvider || routerProvider.type === 'local') continue;
+        const cost = routerProvider.costModel?.outputPer1M || Infinity;
+        if (cost < cheapestCost) {
+          cheapestCost = cost;
+          cheapestCloud = { id, provider };
         }
       }
-      if (getApiKey) {
-        try {
-          const { ClaudeToolsProvider } = require('../agent/providers/claude-tools');
-          this.microPipeline.claudeToolsProvider = new ClaudeToolsProvider({
-            model: 'claude-haiku-4-5-20251001',
-            maxTokens: 1024,
-            timeout: 15000,
-            getApiKey
-          });
-          console.log('[Message] Wired ClaudeToolsProvider (haiku: claude-haiku-4-5-20251001) into MicroPipeline');
-        } catch (err) {
-          console.warn(`[Message] Failed to create Haiku tools provider: ${err.message}`);
-        }
+      if (cheapestCloud) {
+        this.microPipeline.cloudToolsProvider = cheapestCloud.provider;
+        console.log(`[Message] Wired cloud tools provider: ${cheapestCloud.id} ($${cheapestCost}/1M output)`);
       } else {
-        console.warn('[Message] No Claude API key source found in bridge — cloud tool-calling disabled');
+        console.warn('[Message] No cloud tools provider found — cloud tool-calling disabled');
       }
     }
 
@@ -1467,13 +1461,13 @@ class MessageProcessor {
     const router = this.microPipeline.router;
     const tz = this.microPipeline.timezone;
     const aLog = this.microPipeline.activityLogger;
-    const claudeProvider = this.microPipeline.claudeToolsProvider || null;
+    const cloudProvider = this.microPipeline.cloudToolsProvider || null;
 
     if (router && !this.microPipeline.executors.calendar && this.microPipeline.calendarClient) {
       try {
         const CalendarExecutor = require('../agent/executors/calendar-executor');
         this.microPipeline.executors.calendar = new CalendarExecutor({
-          router, claudeProvider, calendarClient: this.microPipeline.calendarClient,
+          router, cloudProvider, calendarClient: this.microPipeline.calendarClient,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
           activityLogger: aLog, timezone: tz, logger: console
         });
@@ -1487,7 +1481,7 @@ class MessageProcessor {
       try {
         const FileExecutor = require('../agent/executors/file-executor');
         this.microPipeline.executors.file = new FileExecutor({
-          router, claudeProvider, ncFilesClient: this.agentLoop.toolRegistry.clients.ncFilesClient,
+          router, cloudProvider, ncFilesClient: this.agentLoop.toolRegistry.clients.ncFilesClient,
           textExtractor: this.agentLoop.toolRegistry.clients.textExtractor || null,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
           activityLogger: aLog, timezone: tz, logger: console
@@ -1502,7 +1496,7 @@ class MessageProcessor {
       try {
         const WikiExecutor = require('../agent/executors/wiki-executor');
         this.microPipeline.executors.wiki = new WikiExecutor({
-          router, claudeProvider, toolRegistry,
+          router, cloudProvider, toolRegistry,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
           activityLogger: aLog, timezone: tz, logger: console
         });
@@ -1516,7 +1510,7 @@ class MessageProcessor {
       try {
         const DeckExecutor = require('../agent/executors/deck-executor');
         this.microPipeline.executors.deck = new DeckExecutor({
-          router, claudeProvider, toolRegistry,
+          router, cloudProvider, toolRegistry,
           deckClient: toolRegistry.clients?.deckClient || null,
           adminUser: process.env.KNOWLEDGE_ADMIN_USER || this.adminUser || null,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,

@@ -64,7 +64,11 @@ const localOnlyInfra = { localModels: [], gpuDetected: false, cloudProviders: []
 const anthropicInfra = {
   localModels: [],
   gpuDetected: false,
-  cloudProviders: [{ name: 'Anthropic', models: ['Haiku', 'Sonnet', 'Opus'] }]
+  cloudProviders: [
+    { id: 'claude-haiku', adapter: 'AnthropicProvider', model: 'claude-haiku-4-5-20251001', costModel: { outputPer1M: 4.00 } },
+    { id: 'claude-sonnet', adapter: 'AnthropicProvider', model: 'claude-sonnet-4-5-20250929', costModel: { outputPer1M: 15.00 } },
+    { id: 'anthropic-claude', adapter: 'AnthropicProvider', model: 'claude-opus-4-6', costModel: { outputPer1M: 75.00 } }
+  ]
 };
 
 // Local provider IDs the roster must stay within for local-only trust
@@ -238,12 +242,14 @@ test('TC-TRUST-006: local-only description contains trust badge, model count, an
 // TC-TRUST-007
 // ---------------------------------------------------------------------------
 
-test('TC-TRUST-007: cloud-ok description contains cloud trust badge and Anthropic provider', () => {
+test('TC-TRUST-007: cloud-ok description contains cloud trust badge and provider IDs', () => {
   const cm = makeCM();
   const infra = {
     localModels: [{ name: 'qwen2.5:3b' }],
     gpuDetected: false,
-    cloudProviders: [{ name: 'Anthropic', models: ['Haiku', 'Sonnet', 'Opus'] }]
+    cloudProviders: [
+      { id: 'claude-haiku', adapter: 'AnthropicProvider', model: 'claude-haiku-4-5-20251001', costModel: { outputPer1M: 4.00 } }
+    ]
   };
   const desc = cm._generateModelsCardDescription('cloud-ok', 'speed', infra);
 
@@ -253,8 +259,8 @@ test('TC-TRUST-007: cloud-ok description contains cloud trust badge and Anthropi
     desc.includes('\ud83c\udf10 Trust: Cloud allowed') || desc.includes('Trust: Cloud allowed'),
     'should contain cloud trust badge'
   );
-  // Provider with checkmark
-  assert.ok(desc.includes('Anthropic \u2705'), 'should show Anthropic ✅');
+  // Provider ID with checkmark
+  assert.ok(desc.includes('claude-haiku \u2705'), 'should show claude-haiku ✅');
 });
 
 // ---------------------------------------------------------------------------
@@ -328,6 +334,61 @@ test('TC-TRUST-011: quick chain is always local-only regardless of trust setting
         LOCAL_PROVIDERS.has(provider),
         `cloud-ok/${prefer} quick chain: "${provider}" is not a local provider`
       );
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// TC-TRUST-011b
+// ---------------------------------------------------------------------------
+
+test('TC-TRUST-011b: non-Anthropic providers build roster by cost tier', () => {
+  const cm = makeCM();
+  const deepseekOnlyInfra = {
+    localModels: [],
+    gpuDetected: false,
+    cloudProviders: [
+      { id: 'deepseek', adapter: 'OpenAICompatibleProvider', model: 'deepseek-chat', costModel: { outputPer1M: 0.28 } }
+    ]
+  };
+  const roster = cm._buildRosterFromTrust('cloud-ok', 'speed', deepseekOnlyInfra);
+
+  // With one cloud provider, heavy/workhorse/cheapest all point to 'deepseek'
+  assert.strictEqual(roster.thinking[0], 'deepseek', `thinking[0] should be deepseek, got "${roster.thinking[0]}"`);
+  assert.strictEqual(roster.synthesis[0], 'deepseek', `synthesis[0] should be deepseek, got "${roster.synthesis[0]}"`);
+
+  // Quick chain is still local-only
+  for (const provider of roster.quick) {
+    assert.ok(LOCAL_PROVIDERS.has(provider), `quick chain should be local-only, got "${provider}"`);
+  }
+});
+
+test('TC-TRUST-011c: mixed providers (OpenAI + DeepSeek) classify by cost correctly', () => {
+  const cm = makeCM();
+  const mixedInfra = {
+    localModels: [],
+    gpuDetected: false,
+    cloudProviders: [
+      { id: 'openai-gpt4', adapter: 'OpenAICompatibleProvider', model: 'gpt-4o', costModel: { outputPer1M: 10.00 } },
+      { id: 'deepseek', adapter: 'OpenAICompatibleProvider', model: 'deepseek-chat', costModel: { outputPer1M: 0.28 } }
+    ]
+  };
+  const roster = cm._buildRosterFromTrust('cloud-ok', 'speed', mixedInfra);
+
+  // Heavy (most expensive) → openai-gpt4 for thinking/writing
+  assert.strictEqual(roster.thinking[0], 'openai-gpt4', `thinking[0] should be openai-gpt4 (heavy), got "${roster.thinking[0]}"`);
+  // Cheapest → deepseek for synthesis/classification
+  assert.strictEqual(roster.synthesis[0], 'deepseek', `synthesis[0] should be deepseek (cheapest), got "${roster.synthesis[0]}"`);
+});
+
+test('TC-TRUST-011d: cloud-ok with no cloud credentials falls back to local-only', () => {
+  const cm = makeCM();
+  const roster = cm._buildRosterFromTrust('cloud-ok', 'speed', localOnlyInfra);
+
+  // Should produce same result as local-only since no cloud providers detected
+  for (const job of ['quick', 'synthesis', 'tools', 'thinking', 'writing', 'research', 'coding']) {
+    for (const provider of roster[job]) {
+      assert.ok(LOCAL_PROVIDERS.has(provider), `cloud-ok with no cloud: ${job} chain has "${provider}" which is not local`);
     }
   }
 });

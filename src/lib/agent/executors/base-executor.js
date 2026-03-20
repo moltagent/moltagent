@@ -38,7 +38,7 @@ class BaseExecutor {
   constructor(config = {}) {
     if (!config.router) throw new Error('BaseExecutor requires a router');
     this.router = config.router;
-    this.claudeProvider = config.claudeProvider || null;
+    this.cloudProvider = config.cloudProvider || config.claudeProvider || null;
     this.guardrailEnforcer = config.guardrailEnforcer || null;
     this.toolGuard = config.toolGuard || null;
     this.activityLogger = config.activityLogger || null;
@@ -79,9 +79,9 @@ class BaseExecutor {
     try {
       let raw;
 
-      if (this.claudeProvider) {
-        // Direct path — bypasses legacy router chain, uses Haiku for reliable structured output
-        const result = await this.claudeProvider.chat({
+      if (this.cloudProvider) {
+        // Direct path — bypasses legacy router chain, uses cheapest cloud for reliable structured output
+        const result = await this.cloudProvider.chat({
           system: 'Extract parameters as JSON. Return ONLY valid JSON, no markdown, no explanation.',
           messages: [{ role: 'user', content: extractionPrompt }],
         });
