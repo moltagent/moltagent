@@ -1114,7 +1114,6 @@ Please address the user's ${classification.type}. Be concise and helpful.
       }
 
       // Find the latest comment from this user that mentions us
-      // Comments are returned newest-first by the API
       const mentionComment = comments.find(c => {
         if ((c.actorId || '').toLowerCase() !== (event.user || '').toLowerCase()) return false;
         const mentions = c.mentions || [];
@@ -1128,7 +1127,6 @@ Please address the user's ${classification.type}. Be concise and helpful.
 
       // Check if we already responded to this mention (avoid re-processing)
       const mentionIdx = comments.indexOf(mentionComment);
-      // Look for our response after this comment (earlier in the array = newer)
       const alreadyResponded = comments.slice(0, mentionIdx).some(c =>
         (c.actorId || '').toLowerCase() === myUsername
       );
@@ -1138,62 +1136,50 @@ Please address the user's ${classification.type}. Be concise and helpful.
         return { handled: false, reason: 'already_responded' };
       }
 
-      // Read full card context
-      const cardContext = await this._getMentionCardContext(cardId);
-      if (!cardContext) {
-        return { handled: false, reason: 'card_not_found' };
+      // Get card title for context prefix (from activity event or allCards cache)
+      let cardTitle = event.data?.subject || '';
+      if (!cardTitle) {
+        try {
+          const allCards = await this.deck.getAllCards();
+          for (const cards of Object.values(allCards)) {
+            const match = cards.find(c => c.id === cardId);
+            if (match) { cardTitle = match.title; break; }
+          }
+        } catch (_) { /* best effort */ }
+      }
+      cardTitle = cardTitle || `Card #${cardId}`;
+
+      console.log(`[DeckProcessor] @mention detected on card #${cardId} "${cardTitle}" by ${event.user}`);
+
+      // Input adapter: construct an Activity Streams message for processMessage()
+      const messageProcessor = options.messageProcessor;
+      if (!messageProcessor) {
+        console.error(`[DeckProcessor] @mention: no messageProcessor available`);
+        return { handled: false, reason: 'no_message_processor' };
       }
 
-      console.log(`[DeckProcessor] @mention detected on card #${cardId} "${cardContext.title}" by ${event.user}`);
+      const data = {
+        actor: { id: `users/${event.user}`, name: event.user, type: 'users' },
+        object: {
+          content: `[Card: "${cardTitle}" #${cardId}]\n\n${mentionComment.message}`,
+          id: `deck-mention-${cardId}-${mentionComment.id}`
+        },
+        target: { id: null }  // No Talk room — processMessage handles null tokens
+      };
 
-      // Build card context for the prompt
-      const commentsBlock = cardContext.recentComments.length > 0
-        ? cardContext.recentComments.map(c =>
-            `  ${c.author}: ${c.message}`
-          ).join('\n')
-        : '(no previous comments)';
+      const result = await messageProcessor.process(data);
+      const response = result?.response;
 
-      const contextBlock = [
-        `**Card:** "${cardContext.title}" (Board: ${cardContext.boardTitle}, Stack: ${cardContext.stackTitle})`,
-        cardContext.description ? `**Description:** ${cardContext.description.substring(0, 500)}` : '',
-        cardContext.assignedUsers.length > 0 ? `**Assigned to:** ${cardContext.assignedUsers.join(', ')}` : '',
-        cardContext.duedate ? `**Due:** ${cardContext.duedate}` : '',
-        `\n**Recent comments:**\n${commentsBlock}`,
-      ].filter(Boolean).join('\n');
-
-      const mentionPrompt = `You were @mentioned in a Deck card comment. Respond helpfully and concisely.
-You are ASSISTING on this card — you are NOT the owner. Do NOT move, reassign, or close the card.
-
-${contextBlock}
-
-**${event.user} says:** ${mentionComment.message}
-
-Respond directly to ${event.user}'s request. Use your tools to fulfill the request if possible.`;
-
-      // Route through AgentLoop (with tools) if available, else text-only LLM
-      let response;
-      const agentLoop = options.agentLoop;
-      if (agentLoop) {
-        console.log(`[DeckProcessor] Routing @mention through AgentLoop (with tools)`);
-        response = await agentLoop.process(mentionPrompt, null, {
-          user: event.user,
-          maxIterations: 5,
-          job: 'quick'
-        });
-      } else {
-        response = await this._generateMentionResponse(
-          cardContext,
-          mentionComment.message,
-          event.user
-        );
+      if (!response) {
+        return { handled: false, reason: 'no_response' };
       }
 
-      // Post response as [MENTION]-prefixed comment for consistency with bot prefix detection
+      // Output adapter: post response as card comment instead of Talk message
       await this.deck.addComment(cardId, response, 'MENTION', { prefix: true });
 
       await this.auditLog('deck_mention_handled', {
         cardId,
-        title: cardContext.title,
+        title: cardTitle,
         mentionedBy: event.user,
         commentId: mentionComment.id
       });
@@ -1204,108 +1190,6 @@ Respond directly to ${event.user}'s request. Use your tools to fulfill the reque
     } catch (error) {
       console.error(`[DeckProcessor] @mention processing failed for card ${cardId}: ${error.message}`);
       return { handled: false, reason: 'error', error: error.message };
-    }
-  }
-
-  /**
-   * Get full card context for @mention response generation.
-   * @private
-   * @param {number} cardId - Card ID
-   * @returns {Promise<Object|null>} Card context or null
-   */
-  async _getMentionCardContext(cardId) {
-    try {
-      // We need to find which board/stack this card is in
-      // Use the search-across-boards approach from tool-registry
-      const boards = await this.deck.listBoards();
-
-      for (const board of boards) {
-        try {
-          const stacks = await this.deck.getStacks(board.id);
-          for (const stack of stacks || []) {
-            const card = (stack.cards || []).find(c => c.id === cardId);
-            if (card) {
-              // Get comments for context
-              const comments = await this.deck.getComments(cardId);
-              const recentComments = comments.slice(0, 10).map(c => ({
-                author: c.actorId || 'unknown',
-                message: c.message || '',
-                date: c.creationDateTime || ''
-              }));
-
-              return {
-                id: card.id,
-                title: card.title,
-                description: card.description || '',
-                boardTitle: board.title,
-                stackTitle: stack.title,
-                assignedUsers: (card.assignedUsers || []).map(u =>
-                  u.participant?.uid || u.uid || 'unknown'
-                ),
-                duedate: card.duedate,
-                recentComments
-              };
-            }
-          }
-        } catch (e) {
-          // Board might not be accessible — skip
-          continue;
-        }
-      }
-
-      return null;
-    } catch (error) {
-      console.warn(`[DeckProcessor] Failed to get card context for #${cardId}: ${error.message}`);
-      return null;
-    }
-  }
-
-  /**
-   * Generate a response to an @mention using LLM.
-   * @private
-   * @param {Object} cardContext - Full card context
-   * @param {string} mentionMessage - The comment that mentioned us
-   * @param {string} mentionedBy - Username who mentioned us
-   * @returns {Promise<string>} Response text
-   */
-  async _generateMentionResponse(cardContext, mentionMessage, mentionedBy) {
-    const commentsBlock = cardContext.recentComments.length > 0
-      ? cardContext.recentComments.map(c =>
-          `  ${c.author}: ${c.message}`
-        ).join('\n')
-      : '(no previous comments)';
-
-    const prompt = `You were @mentioned in a card comment. Respond helpfully and concisely.
-You are ASSISTING on this card — you are NOT the owner. Do NOT move, reassign, or close the card.
-
-**Card:** "${cardContext.title}" (Board: ${cardContext.boardTitle}, Stack: ${cardContext.stackTitle})
-${cardContext.description ? `**Description:** ${cardContext.description.substring(0, 500)}` : ''}
-${cardContext.assignedUsers.length > 0 ? `**Assigned to:** ${cardContext.assignedUsers.join(', ')}` : ''}
-${cardContext.duedate ? `**Due:** ${cardContext.duedate}` : ''}
-
-**Recent comments:**
-${commentsBlock}
-
-**${mentionedBy} says:** ${mentionMessage}
-
-Respond directly to ${mentionedBy}'s request. Be concise and helpful. If you can answer directly, do so. If you need to do research or take action, explain what you'll do.`;
-
-    try {
-      const result = await this.router.route({
-        job: JOBS.THINKING,
-        task: 'mention_response',
-        content: prompt,
-        requirements: {
-          role: 'value',
-          quality: 'good'
-        },
-        context: this.routeContext
-      });
-
-      return result.result || 'I received your mention but had trouble generating a response. Please try again.';
-    } catch (error) {
-      console.warn(`[DeckProcessor] Mention response generation failed: ${error.message}`);
-      return `I received your mention regarding "${cardContext.title}" but encountered an error generating a response. Please try again or reach out in Talk.`;
     }
   }
 

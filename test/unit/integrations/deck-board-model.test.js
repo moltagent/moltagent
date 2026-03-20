@@ -255,7 +255,7 @@ asyncTest('processInbox: processes cards assigned to Moltagent', async () => {
 // @Mention Detection Tests
 // ============================================================
 
-asyncTest('processMention: detects @mention and responds', async () => {
+asyncTest('processMention: detects @mention and routes through messageProcessor', async () => {
   const nc = mockNC({
     'GET:/index.php/apps/deck/api/v1.0/boards': SAMPLE_BOARDS,
     'GET:/ocs/v2.php/apps/deck/api/v1.0/cards/100/comments': {
@@ -268,32 +268,38 @@ asyncTest('processMention: detects @mention and responds', async () => {
         }]
       }
     },
-    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks': [],
-    'GET:/index.php/apps/deck/api/v1.0/boards/2/stacks': [],
-    'GET:/index.php/apps/deck/api/v1.0/boards/3/stacks': [{
-      id: 301, title: 'To Do',
-      cards: [{
-        id: 100, title: 'Schedule recording', description: 'Record ep 5',
-        assignedUsers: [{ participant: { uid: 'Funana' } }], duedate: '2026-03-01'
-      }]
+    'GET:/index.php/apps/deck/api/v1.0/boards/8/stacks': [{
+      id: 301, title: 'Inbox',
+      cards: [{ id: 100, title: 'Schedule recording', description: 'Record ep 5' }]
     }],
-    'GET:/index.php/apps/deck/api/v1.0/boards/4/stacks': [],
     'POST:/ocs/v2.php/apps/deck/api/v1.0/cards/100/comments': { ocs: { data: { id: 51 } } }
   });
 
-  const mockRouter = {
-    route: async () => ({ result: 'I can check the calendar.', provider: 'test' })
+  let processedData = null;
+  const mockMessageProcessor = {
+    process: async (data) => {
+      processedData = data;
+      return { response: 'I can check the calendar.' };
+    }
   };
-  const processor = new DeckTaskProcessor({}, mockRouter, async () => {});
+
+  const processor = new DeckTaskProcessor({}, {}, async () => {});
   processor.deck = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
   processor.deck.username = 'moltagent';
 
-  const result = await processor.processMention({
-    type: 'deck_comment_added', objectId: '100', user: 'Funana', data: {}
-  });
+  const result = await processor.processMention(
+    { type: 'deck_comment_added', objectId: '100', user: 'Funana', data: {} },
+    { messageProcessor: mockMessageProcessor }
+  );
   assert.strictEqual(result.handled, true);
   assert.strictEqual(result.reason, 'responded');
   assert.strictEqual(result.cardId, 100);
+  // Verify the message was routed through processMessage with card context
+  assert.ok(processedData);
+  assert.ok(processedData.object.content.includes('find a time slot'));
+  assert.ok(processedData.object.content.includes('[Card:'));
+  assert.strictEqual(processedData.actor.name, 'Funana');
+  assert.strictEqual(processedData.target.id, null);
 });
 
 asyncTest('processMention: ignores own comments (self-mention)', async () => {

@@ -1167,7 +1167,7 @@ class HeartbeatManager {
     const commentEvents = events.filter(e => e.type === 'deck_comment_added');
     for (const event of commentEvents) {
       try {
-        const result = await this.deckProcessor.processMention(event, { agentLoop: this.agentLoop });
+        const result = await this.deckProcessor.processMention(event, { messageProcessor: this.messageProcessor });
         if (result.handled) {
           mentionsHandled++;
         }
