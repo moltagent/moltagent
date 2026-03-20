@@ -152,7 +152,7 @@ class AgentLoop {
           system: systemPrompt,
           messages,
           tools,
-          job: this._classifyJob(messages, tools)
+          job: options.job || this._classifyJob(messages, tools)
         });
       } catch (llmErr) {
         // Salvage: if previous iterations completed tool calls successfully,

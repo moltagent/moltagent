@@ -1177,7 +1177,8 @@ Respond directly to ${event.user}'s request. Use your tools to fulfill the reque
         console.log(`[DeckProcessor] Routing @mention through AgentLoop (with tools)`);
         response = await agentLoop.process(mentionPrompt, null, {
           user: event.user,
-          maxIterations: 5
+          maxIterations: 5,
+          job: 'quick'
         });
       } else {
         response = await this._generateMentionResponse(
