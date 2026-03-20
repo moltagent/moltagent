@@ -322,6 +322,11 @@ class AgentLoop {
         lastResponse = 'I ran into a loop trying to process your request. Please try rephrasing.';
         this.logger.warn(`[AgentLoop] Hit max iterations (${maxIter})`);
       }
+
+      // Fire-and-forget: notify caller of exhaustion so it can create a recovery card
+      if (options.onExhaustion) {
+        try { options.onExhaustion({ message, iterations: maxIter }); } catch (_) { /* never block */ }
+      }
     }
 
     // 4. Sanitize output

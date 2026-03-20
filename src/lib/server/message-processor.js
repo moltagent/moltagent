@@ -933,7 +933,20 @@ class MessageProcessor {
 
           response = await this.agentLoop.process(pipelineMessage, extracted.token, {
             ...agentOpts,
-            systemSuffix: cloudSuffix || undefined
+            systemSuffix: cloudSuffix || undefined,
+            onExhaustion: ({ message: msg, iterations }) => {
+              if (this.selfRecovery) {
+                this.selfRecovery.createRecoveryCard({
+                  originalRequest: msg.substring(0, 500),
+                  completedPart: 'AgentLoop produced partial tool results before exhaustion.',
+                  failedAction: `AgentLoop exhausted after ${iterations} iterations`,
+                  reason: 'Max iterations reached — tools may have looped or timed out',
+                  recoveryInstructions: `Retry this request for user ${extracted.user}: "${msg.substring(0, 300)}"`,
+                  userId: extracted.user,
+                  sessionId: extracted.token
+                }).catch(() => {});
+              }
+            }
           });
           result = { intent: `smart_mix_cloud:${intent}`, provider: 'agent' };
           response = response || 'Sorry, I encountered an error processing your message.';
