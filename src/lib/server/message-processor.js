@@ -1896,15 +1896,14 @@ Be thoughtful. Be honest. Be yourself.`;
     const ncSearch = searcher?.nc;
 
     // -----------------------------------------------------------------------
-    // Probe 0: Unified wiki search — routes through MemorySearcher for
-    // three-channel fusion (keyword + vector + graph), access tracking (LTP),
-    // co-access expansion, archive fallback, and gap detection.
-    // Replaces three separate NC Unified Search probes with one call that
-    // activates 2,500 lines of search intelligence.
+    // Wiki probe: single call through MemorySearcher for three-channel fusion
+    // (keyword + vector + graph), access tracking (LTP), co-access expansion,
+    // archive fallback, gap detection, and fusion scoring. One path, all
+    // search intelligence activated. No bypass probes needed.
     // -----------------------------------------------------------------------
     if (searcher?.search) {
       probes.push(
-        searcher.search(searchQuery, { maxResults: 10 })
+        searcher.search(searchQuery, { maxResults: 12 })
           .then(async (results) => {
             const items = (results || []).filter(r => r.source === 'Wiki').map(r => ({
               title: r.title || '',
@@ -1922,27 +1921,7 @@ Be thoughtful. Be honest. Be yourself.`;
     }
 
     // -----------------------------------------------------------------------
-    // Probe 1: Direct wiki page lookup — exact entity name matching.
-    // Catches pages that NC Unified Search misses due to ranking or indexing.
-    // Complements the unified search with reliable direct title lookups.
-    // -----------------------------------------------------------------------
-    if (wiki && wiki.findPageByTitle && wiki.readPageContent) {
-      const entityNames = this._extractEntityNames(query);
-      if (entityNames.length > 0) {
-        probes.push(
-          this._directWikiLookup(entityNames, wiki)
-            .then(results => ({
-              source: 'wiki_direct',
-              results,
-              provenance: 'stored_knowledge'
-            }))
-            .catch(() => ({ source: 'wiki_direct', results: [], provenance: 'stored_knowledge' }))
-        );
-      }
-    }
-
-    // -----------------------------------------------------------------------
-    // Probe 2: Deck (cached board state — keyword match on cards)
+    // Deck probe: cached board state — keyword match on cards
     // -----------------------------------------------------------------------
     if (enricher?._searchDeck) {
       probes.push(
@@ -1961,52 +1940,11 @@ Be thoughtful. Be honest. Be yourself.`;
       );
     }
 
-    // -----------------------------------------------------------------------
-    // Probe 4: NC Unified Search — "files" provider.
-    // Catches wiki pages via their underlying file representation (Carlos.md).
-    // Clean titles, reliable. Deep-read top 2 for content.
-    // -----------------------------------------------------------------------
-    if (ncSearch) {
-      probes.push(
-        ncSearch.searchProvider('files', searchQuery, 3)
-          .then(async (results) => {
-            // Only keep Collectives files (wiki pages), skip random files
-            const wikiFiles = (results || []).filter(r =>
-              (r.subline || '').toLowerCase().includes('collectives')
-            );
-            const items = wikiFiles.map(r => ({
-              title: (r.title || '').replace(/\.md$/, ''),
-              snippet: r.subline || '',
-              sourceTag: 'wiki',
-              url: r.resourceUrl || ''
-            }));
-            await this._deepReadWikiResults(items, searcher, 2);
-            return { source: 'files', results: items, provenance: 'stored_knowledge' };
-          })
-          .catch(() => ({ source: 'files', results: [], provenance: 'stored_knowledge' }))
-      );
-    }
-
     const settled = await Promise.allSettled(probes);
 
-    const results = settled
+    return settled
       .filter(r => r.status === 'fulfilled')
       .map(r => r.value);
-
-    // LTP: record access for wiki titles from probes that bypassed MemorySearcher.
-    // Probe 0 (wiki_unified) already tracks via MemorySearcher.search().
-    // Probes 1 (wiki_direct) and 4 (files) miss access tracking — fix that here.
-    if (searcher?.recordAccessForTitles) {
-      const bypassTitles = results
-        .filter(r => r.source !== 'wiki_unified' && r.provenance === 'stored_knowledge')
-        .flatMap(r => (r.results || []).map(item => item.title))
-        .filter(Boolean);
-      if (bypassTitles.length > 0) {
-        searcher.recordAccessForTitles(bypassTitles);
-      }
-    }
-
-    return results;
   }
 
   /**
