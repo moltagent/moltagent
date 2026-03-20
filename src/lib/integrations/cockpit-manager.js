@@ -1439,7 +1439,7 @@ class CockpitManager {
           ? [haiku, localFast, localCapable]
           : [localFast, localCapable],
         decomposition: hasHaiku ? [haiku, localCapable, localFast] : [localCapable, localFast],
-        tools: [localCapable, localFast],
+        tools: hasHaiku ? [haiku, localCapable, localFast] : [localCapable, localFast],
         thinking: [localCapable, hasSonnet ? sonnet : null].filter(Boolean),
         writing: [localCapable, hasSonnet ? sonnet : null].filter(Boolean),
         research: [localCapable, hasSonnet ? sonnet : null].filter(Boolean),
@@ -1454,7 +1454,7 @@ class CockpitManager {
         classification: hasHaiku ? [haiku, localFast, localCapable] : [localFast, localCapable],
         synthesis: [hasSonnet ? sonnet : null, hasHaiku ? haiku : null, localCapable].filter(Boolean),
         decomposition: [hasHaiku ? haiku : null, localCapable, localFast].filter(Boolean),
-        tools: [localCapable, hasHaiku ? haiku : null, localFast].filter(Boolean),
+        tools: hasHaiku ? [haiku, localCapable, localFast] : [localCapable, localFast],
         thinking: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
         writing: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
         research: [hasSonnet ? sonnet : null, hasOpus ? opus : null, localCapable].filter(Boolean),
@@ -1471,7 +1471,7 @@ class CockpitManager {
         ? [haiku, localFast, localCapable]
         : [localFast, localCapable],
       decomposition: hasHaiku ? [haiku, localCapable, localFast] : [localCapable, localFast],
-      tools: [localCapable, hasHaiku ? haiku : null, localFast].filter(Boolean),
+      tools: hasHaiku ? [haiku, localCapable, localFast] : [localCapable, localFast],
       thinking: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
       writing: [hasOpus ? opus : null, hasSonnet ? sonnet : null, localCapable].filter(Boolean),
       research: [hasSonnet ? sonnet : null, localCapable].filter(Boolean),
