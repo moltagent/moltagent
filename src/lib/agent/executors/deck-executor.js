@@ -1043,7 +1043,7 @@ Respond with ONLY the title, nothing else.`;
     // Probe findings replace the LLM's compressed description at creation time.
     // The LLM picks the title. The code writes the content. One API call.
     if (context?.probeFindings && context.probeFindings.length > (params.description?.length || 0)) {
-      toolArgs.description = context.probeFindings.substring(0, 4000);
+      toolArgs.description = context.probeFindings.substring(0, 8000);
     } else if (params.description) {
       toolArgs.description = params.description;
     }

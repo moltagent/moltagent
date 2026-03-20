@@ -2054,7 +2054,16 @@ Be thoughtful. Be honest. Be yourself.`;
     const wiki = searcher?.wiki;
     if (!wiki || !wiki.readPageContent || !wiki.getPage) return;
 
-    const toRead = items.filter(r => r.url && r.sourceTag !== 'graph').slice(0, maxReads);
+    const typeCache = searcher?._typeCache;
+    const INFRA_TYPES = new Set(['meta', 'session_transcript']);
+    const INFRA_PATH = /\/(Meta|Sessions)\//i;
+    const toRead = items.filter(r => {
+      if (!r.url || r.sourceTag === 'graph') return false;
+      const type = typeCache?.get(r.title);
+      if (type && INFRA_TYPES.has(type)) return false;
+      if (INFRA_PATH.test(r.url)) return false;
+      return true;
+    }).slice(0, maxReads);
     console.log(`[DeepRead] ${toRead.length}/${items.length} items to read`);
 
     const seenPages = new Set();
