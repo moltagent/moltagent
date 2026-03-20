@@ -622,8 +622,8 @@ asyncTest('TC-SMIX-004b: Greeting in cloud-ok routes to AgentLoop, not MicroPipe
   assert.ok(result.response.includes('Hi there'), 'Response should come from AgentLoop');
 });
 
-asyncTest('TC-SMIX-005: Complex intent routed to AgentLoop with skipLocal via IntentRouter', async () => {
-  let skipLocalCalled = false;
+asyncTest('TC-SMIX-005: Complex intent routed to AgentLoop via IntentRouter', async () => {
+  let agentLoopCalled = false;
 
   const processor = createProcessor({
     intentRouter: {
@@ -631,15 +631,15 @@ asyncTest('TC-SMIX-005: Complex intent routed to AgentLoop with skipLocal via In
     },
     microPipeline: {
       _classifyFallback: async () => ({ intent: 'complex' }),
+      memoryContextEnricher: null,
       process: async () => { throw new Error('MicroPipeline.process should not be called for complex'); }
     },
     agentLoop: {
       llmProvider: {
         resetConversation: function () {},
-        skipLocalForConversation: function () { skipLocalCalled = true; },
         chatProviders: new Map([['local', {}], ['cloud', {}]])
       },
-      process: async () => 'Complex done'
+      process: async () => { agentLoopCalled = true; return 'Complex done'; }
     }
   });
 
@@ -647,11 +647,11 @@ asyncTest('TC-SMIX-005: Complex intent routed to AgentLoop with skipLocal via In
   const result = await processor.process(data);
 
   assert.ok(result.response.includes('Complex done'), 'Response should contain AgentLoop output');
-  assert.strictEqual(skipLocalCalled, true, 'skipLocalForConversation should be called');
+  assert.strictEqual(agentLoopCalled, true, 'AgentLoop should handle complex intents');
 });
 
 asyncTest('TC-SMIX-006: IntentRouter failure falls through to AgentLoop', async () => {
-  let skipLocalCalled = false;
+  let agentLoopCalled = false;
 
   const processor = createProcessor({
     intentRouter: {
@@ -659,15 +659,15 @@ asyncTest('TC-SMIX-006: IntentRouter failure falls through to AgentLoop', async 
     },
     microPipeline: {
       _classifyFallback: async () => ({ intent: 'chitchat' }),
+      memoryContextEnricher: null,
       process: async () => { throw new Error('MicroPipeline.process should not be called on classify error'); }
     },
     agentLoop: {
       llmProvider: {
         resetConversation: function () {},
-        skipLocalForConversation: function () { skipLocalCalled = true; },
         chatProviders: new Map([['local', {}], ['cloud', {}]])
       },
-      process: async () => 'Fallback response'
+      process: async () => { agentLoopCalled = true; return 'Fallback response'; }
     }
   });
 
@@ -675,7 +675,7 @@ asyncTest('TC-SMIX-006: IntentRouter failure falls through to AgentLoop', async 
   const result = await processor.process(data);
 
   assert.ok(result.response.includes('Fallback response'), 'Response should contain AgentLoop fallback output');
-  assert.strictEqual(skipLocalCalled, true, 'skipLocalForConversation should be called on classification error');
+  assert.strictEqual(agentLoopCalled, true, 'AgentLoop should handle classification errors');
 });
 
 asyncTest('TC-SMIX-008: Confirmation intent routed to cloud (not local)', async () => {

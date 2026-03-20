@@ -895,10 +895,10 @@ class MessageProcessor {
             response = response || 'Sorry, I encountered an error processing your message.';
           }
         } else {
-          // Path 5: Question/task/complex — skip local, go straight to cloud via AgentLoop
-          if (this.agentLoop.llmProvider?.skipLocalForConversation) {
-            this.agentLoop.llmProvider.skipLocalForConversation();
-          }
+          // Path 5: Cloud via AgentLoop — trust boundary handles routing.
+          // Do NOT skipLocalForConversation: the tools job chain includes Haiku
+          // after local providers. Skipping local removes the chain entirely
+          // when Ollama is down, preventing Haiku from handling tool calls.
 
           // Pre-enrich: run MemoryContextEnricher so cloud path sees wiki + deck knowledge
           let cloudSuffix = flushPrompt || '';
