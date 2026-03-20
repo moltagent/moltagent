@@ -89,6 +89,17 @@ function _pageScoreMultiplier(result, typeCache) {
   const type = typeCache?.get(title);
   if (type && TYPE_SCORE[type] !== undefined) return TYPE_SCORE[type];
 
+  // Fallback: infer type from URL path when typeCache has no entry.
+  // Catches pages not yet accessed (no frontmatter read) but in known sections.
+  const link = (result.link || '').toLowerCase();
+  if (link.includes('/people/'))        return TYPE_SCORE.person;
+  if (link.includes('/organizations/')) return TYPE_SCORE.organization;
+  if (link.includes('/projects/'))      return TYPE_SCORE.project;
+  if (link.includes('/procedures/'))    return TYPE_SCORE.procedure;
+  if (link.includes('/decisions/'))     return TYPE_SCORE.decision;
+  if (link.includes('/research/'))      return TYPE_SCORE.research;
+  if (link.includes('/meta/'))          return TYPE_SCORE.meta;
+
   // Ungrounded session content — demote heavily
   const snippet = (result.subline || result.snippet || '');
   if (snippet.includes('[ungrounded]')) return 0.2;
