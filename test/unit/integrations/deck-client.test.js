@@ -29,6 +29,7 @@ const { createMockNCRequestManager } = require('../../helpers/mock-factories');
 
 // Import module under test
 const DeckClient = require('../../../src/lib/integrations/deck-client');
+const DECK = require('../../../src/config/deck-names');
 
 // ============================================================
 // Test Fixtures
@@ -40,7 +41,7 @@ const DeckClient = require('../../../src/lib/integrations/deck-client');
 const SAMPLE_BOARDS = [
   {
     id: 1,
-    title: 'MoltAgent Tasks',
+    title: DECK.boards.tasks,
     owner: { uid: 'testuser' },
     color: '0082c9',
     archived: false
@@ -59,7 +60,7 @@ const SAMPLE_BOARDS = [
  */
 const SAMPLE_FULL_BOARD = {
   id: 1,
-  title: 'MoltAgent Tasks',
+  title: DECK.boards.tasks,
   owner: { uid: 'testuser' },
   color: '0082c9',
   stacks: [
@@ -310,7 +311,7 @@ test('TC-CTOR-002: Initialize with default board name', () => {
 
   const client = new DeckClient(mockNC);
 
-  assert.strictEqual(client.boardName, 'MoltAgent Tasks');
+  assert.strictEqual(client.boardName, DECK.boards.tasks);
 });
 
 test('TC-CTOR-003: Initialize default stack names', () => {
@@ -374,7 +375,7 @@ asyncTest('TC-BOARD-001: List all boards', async () => {
 
   assert.ok(Array.isArray(boards));
   assert.strictEqual(boards.length, 2);
-  assert.strictEqual(boards[0].title, 'MoltAgent Tasks');
+  assert.strictEqual(boards[0].title, DECK.boards.tasks);
 });
 
 asyncTest('TC-BOARD-002: Find board by name', async () => {
@@ -385,7 +386,7 @@ asyncTest('TC-BOARD-002: Find board by name', async () => {
 
   assert.ok(board);
   assert.strictEqual(board.id, 1);
-  assert.strictEqual(board.title, 'MoltAgent Tasks');
+  assert.strictEqual(board.title, DECK.boards.tasks);
 });
 
 asyncTest('TC-BOARD-003: Return null when board not found', async () => {
@@ -459,7 +460,7 @@ asyncTest('TC-BOARD-007: Create board when not found', async () => {
     },
     'POST:/index.php/apps/deck/api/v1.0/boards': () => {
       createCalled = true;
-      return { status: 200, body: { id: 99, title: 'MoltAgent Tasks' }, headers: {} };
+      return { status: 200, body: { id: 99, title: DECK.boards.tasks }, headers: {} };
     },
     'POST:/index.php/apps/deck/api/v1.0/boards/99/stacks': (path, options) => {
       stacksCreated.push(options.body.title);

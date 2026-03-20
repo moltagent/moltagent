@@ -29,32 +29,33 @@
  */
 
 const BaseExecutor = require('./base-executor');
+const DECK = require('../../../config/deck-names');
 
 // Stack name aliases — bridge user language to canonical stack names
 const STACK_ALIASES = {
-  done: 'Done',
-  completed: 'Done',
-  finished: 'Done',
-  closed: 'Done',
-  doing: 'Working',
-  'in progress': 'Working',
-  working: 'Working',
-  active: 'Working',
-  inbox: 'Inbox',
-  new: 'Inbox',
-  backlog: 'Inbox',
-  todo: 'Inbox',
-  'to do': 'Inbox',
-  'to-do': 'Inbox',
-  queued: 'Queued',
-  planned: 'Queued',
-  scheduled: 'Queued',
-  upcoming: 'Queued',
-  review: 'Review',
-  waiting: 'Review',
-  blocked: 'Review',
-  'on hold': 'Review',
-  paused: 'Review'
+  done: DECK.stacks.done,
+  completed: DECK.stacks.done,
+  finished: DECK.stacks.done,
+  closed: DECK.stacks.done,
+  doing: DECK.stacks.working,
+  'in progress': DECK.stacks.working,
+  working: DECK.stacks.working,
+  active: DECK.stacks.working,
+  inbox: DECK.stacks.inbox,
+  new: DECK.stacks.inbox,
+  backlog: DECK.stacks.inbox,
+  todo: DECK.stacks.inbox,
+  'to do': DECK.stacks.inbox,
+  'to-do': DECK.stacks.inbox,
+  queued: DECK.stacks.queued,
+  planned: DECK.stacks.queued,
+  scheduled: DECK.stacks.queued,
+  upcoming: DECK.stacks.queued,
+  review: DECK.stacks.review,
+  waiting: DECK.stacks.review,
+  blocked: DECK.stacks.review,
+  'on hold': DECK.stacks.review,
+  paused: DECK.stacks.review
 };
 
 class DeckExecutor extends BaseExecutor {
@@ -939,7 +940,7 @@ Respond with ONLY the title, nothing else.`;
       return 'New Task';
     }
     if (fieldName === 'stack_name') {
-      return 'Inbox';
+      return DECK.stacks.inbox;
     }
     return null;
   }
@@ -1145,7 +1146,7 @@ Respond with ONLY the title, nothing else.`;
           card: params.card_title,
           cardId,
           board: toolArgs.board || null,
-          stack: toolArgs.stack || 'Inbox'
+          stack: toolArgs.stack || DECK.stacks.inbox
         }
       }
     };
@@ -1424,7 +1425,7 @@ Respond with ONLY the title, nothing else.`;
     if (context?.source === 'commitment_detector' ||
         context?.source === 'proactive_evaluator' ||
         context?.source === 'freshness_checker') {
-      return 'Personal';
+      return DECK.boards.personal;
     }
 
     // User-initiated → default task board (undefined lets toolRegistry use its default)
@@ -1440,7 +1441,7 @@ Respond with ONLY the title, nothing else.`;
    * @private
    */
   _normalizeStackName(name) {
-    if (!name) return 'Inbox';
+    if (!name) return DECK.stacks.inbox;
     const normalized = name.toLowerCase().trim();
     return STACK_ALIASES[normalized] || name;
   }

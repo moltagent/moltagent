@@ -13,6 +13,7 @@
 const assert = require('assert');
 const { asyncTest, test, summary, exitWithCode } = require('../../helpers/test-runner');
 const DeckExecutor = require('../../../src/lib/agent/executors/deck-executor');
+const DECK = require('../../../src/config/deck-names');
 
 const silentLogger = { log() {}, info() {}, warn() {}, error() {} };
 
@@ -61,11 +62,11 @@ function createMockDeckClient(overrides = {}) {
     calls,
     getCalls: (method) => calls.filter(c => c.method === method),
     listBoards: track('listBoards', [
-      { id: 1, title: 'MoltAgent Tasks', archived: false },
+      { id: 1, title: DECK.boards.tasks, archived: false },
       { id: 2, title: 'Content Pipeline', archived: false },
       { id: 3, title: 'Old Board', archived: true }
     ]),
-    getBoard: track('getBoard', { id: 1, title: 'MoltAgent Tasks' }),
+    getBoard: track('getBoard', { id: 1, title: DECK.boards.tasks }),
     createNewBoard: track('createNewBoard', { id: 10, title: 'New Board' }),
     updateBoard: track('updateBoard', { id: 1, title: 'Updated Board' }),
     deleteBoard: track('deleteBoard', undefined),
@@ -118,7 +119,7 @@ asyncTest('list_boards returns formatted list', async () => {
 
   const result = await executor.execute('List my boards', { userName: 'alice' });
   const resp = getResponse(result);
-  assert.ok(resp.includes('MoltAgent Tasks'), `Should list boards, got: ${resp}`);
+  assert.ok(resp.includes(DECK.boards.tasks), `Should list boards, got: ${resp}`);
   assert.ok(resp.includes('Content Pipeline'), `Should list active boards, got: ${resp}`);
   assert.ok(!resp.includes('Old Board'), `Should NOT list archived boards, got: ${resp}`);
 });
@@ -213,7 +214,7 @@ asyncTest('archive_board soft-deletes board', async () => {
 asyncTest('Board resolution: exact match', async () => {
   const dc = createMockDeckClient();
   const executor = new DeckExecutor({
-    router: createMockRouter({ result: JSON.stringify({ action: 'archive_board', board_name: 'MoltAgent Tasks' }) }),
+    router: createMockRouter({ result: JSON.stringify({ action: 'archive_board', board_name: DECK.boards.tasks }) }),
     toolRegistry: createMockToolRegistry(),
     deckClient: dc,
     logger: silentLogger
@@ -258,7 +259,7 @@ asyncTest('Board resolution: unknown name returns helpful message', async () => 
 asyncTest('Stack resolution on board', async () => {
   const dc = createMockDeckClient();
   const executor = new DeckExecutor({
-    router: createMockRouter({ result: JSON.stringify({ action: 'delete_stack', stack_name: 'Inbox', board_name: 'MoltAgent Tasks' }) }),
+    router: createMockRouter({ result: JSON.stringify({ action: 'delete_stack', stack_name: 'Inbox', board_name: DECK.boards.tasks }) }),
     toolRegistry: createMockToolRegistry(),
     deckClient: dc,
     logger: silentLogger
@@ -640,7 +641,7 @@ asyncTest('rename_stack resolves board and stack', async () => {
     updateStack: (boardId, stackId, updates) => Promise.resolve({ id: stackId, title: updates.title })
   });
   const executor = new DeckExecutor({
-    router: createMockRouter({ result: JSON.stringify({ action: 'rename_stack', stack_name: 'Inbox', board_name: 'MoltAgent Tasks', new_title: 'Triage' }) }),
+    router: createMockRouter({ result: JSON.stringify({ action: 'rename_stack', stack_name: 'Inbox', board_name: DECK.boards.tasks, new_title: 'Triage' }) }),
     toolRegistry: createMockToolRegistry(),
     deckClient: dc,
     logger: silentLogger
@@ -655,7 +656,7 @@ asyncTest('rename_stack resolves board and stack', async () => {
 asyncTest('delete_stack includes card count', async () => {
   const dc = createMockDeckClient();
   const executor = new DeckExecutor({
-    router: createMockRouter({ result: JSON.stringify({ action: 'delete_stack', stack_name: 'Inbox', board_name: 'MoltAgent Tasks' }) }),
+    router: createMockRouter({ result: JSON.stringify({ action: 'delete_stack', stack_name: 'Inbox', board_name: DECK.boards.tasks }) }),
     toolRegistry: createMockToolRegistry(),
     deckClient: dc,
     logger: silentLogger
@@ -717,7 +718,7 @@ asyncTest('troubleshoot: unknown board returns suggestions', async () => {
   const result = await executor.execute("I can't access Ghost Board", { userName: 'Funana' });
   const resp = getResponse(result);
   assert.ok(resp.includes("couldn't find"), `Should report not found, got: ${resp}`);
-  assert.ok(resp.includes('MoltAgent Tasks'), `Should list available boards, got: ${resp}`);
+  assert.ok(resp.includes(DECK.boards.tasks), `Should list available boards, got: ${resp}`);
 });
 
 asyncTest('troubleshoot: no board mentioned shares all and lists', async () => {
@@ -734,7 +735,7 @@ asyncTest('troubleshoot: no board mentioned shares all and lists', async () => {
 
   const result = await executor.execute("I can't see my boards", { userName: 'Funana' });
   const resp = getResponse(result);
-  assert.ok(resp.includes('MoltAgent Tasks'), `Should list boards, got: ${resp}`);
+  assert.ok(resp.includes(DECK.boards.tasks), `Should list boards, got: ${resp}`);
   assert.ok(resp.includes('Content Pipeline'), `Should list all active boards, got: ${resp}`);
   assert.ok(shareCount >= 2, `Should share multiple boards, shared: ${shareCount}`);
   assert.ok(resp.includes('sharing'), `Should mention sharing update, got: ${resp}`);

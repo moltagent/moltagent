@@ -12,6 +12,7 @@
 const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 const { createMockNCRequestManager, createMockAuditLog } = require('../../helpers/mock-factories');
+const DECK = require('../../../src/config/deck-names');
 
 // Import module under test
 const CockpitManager = require('../../../src/lib/integrations/cockpit-manager');
@@ -213,7 +214,7 @@ test('constructor uses config overrides', () => {
 test('module exports CockpitManager and constants', () => {
   assert.strictEqual(typeof CockpitManager, 'function');
   assert.strictEqual(typeof CockpitError, 'function');
-  assert.strictEqual(BOARD_TITLE, 'Moltagent Cockpit');
+  assert.strictEqual(BOARD_TITLE, DECK.boards.cockpit);
   assert.ok(Array.isArray(LABEL_DEFS));
   assert.strictEqual(LABEL_DEFS.length, 12);
   assert.ok(Array.isArray(STACK_DEFS));

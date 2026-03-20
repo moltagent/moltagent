@@ -9,6 +9,7 @@ const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 
 const { ToolRegistry } = require('../../../src/lib/agent/tool-registry');
+const DECK = require('../../../src/config/deck-names');
 
 // ============================================================
 // Mock Clients
@@ -32,12 +33,12 @@ function createMockDeckClient(cards = {}) {
     moveCard: async (_cardId, _from, _to) => {},
     ensureBoard: async () => ({ boardId: 1, stacks: {} }),
     listBoards: async () => [
-      { id: 1, title: 'MoltAgent Tasks', owner: { uid: 'moltagent' } },
+      { id: 1, title: DECK.boards.tasks, owner: { uid: 'moltagent' } },
       { id: 2, title: 'Marketing', owner: { uid: 'funana' } }
     ],
     getBoard: async (boardId) => ({
       id: boardId,
-      title: boardId === 1 ? 'MoltAgent Tasks' : 'Marketing',
+      title: boardId === 1 ? DECK.boards.tasks : 'Marketing',
       owner: { uid: boardId === 1 ? 'moltagent' : 'funana' },
       stacks: [
         { id: 301, title: 'Inbox', cards: [{ id: 10 }] },
@@ -235,8 +236,8 @@ asyncTest('deck_list_cards returns empty message when no cards', async () => {
 asyncTest('deck_list_cards with board param queries non-task board', async () => {
   const deck = createMockDeckClient({});
   deck.listBoards = async () => [
-    { id: 1, title: 'MoltAgent Tasks', owner: { uid: 'moltagent' } },
-    { id: 14, title: 'Moltagent Cockpit', owner: { uid: 'moltagent' } }
+    { id: 1, title: DECK.boards.tasks, owner: { uid: 'moltagent' } },
+    { id: 14, title: DECK.boards.cockpit, owner: { uid: 'moltagent' } }
   ];
   deck.getStacks = async (boardId) => {
     if (boardId === 14) {
@@ -266,7 +267,7 @@ asyncTest('deck_list_cards with board param queries non-task board', async () =>
 asyncTest('deck_list_cards with board and stack filters to specific stack', async () => {
   const deck = createMockDeckClient({});
   deck.listBoards = async () => [
-    { id: 14, title: 'Moltagent Cockpit', owner: { uid: 'moltagent' } }
+    { id: 14, title: DECK.boards.cockpit, owner: { uid: 'moltagent' } }
   ];
   deck.getStacks = async () => [
     { id: 100, title: '💡 Styles', cards: [{ id: 50, title: 'Pro', labels: [] }] },
@@ -545,7 +546,7 @@ asyncTest('deck_list_boards lists boards with ownership', async () => {
 
   const result = await registry.execute('deck_list_boards', {});
   assert.ok(result.success);
-  assert.ok(result.result.includes('MoltAgent Tasks'));
+  assert.ok(result.result.includes(DECK.boards.tasks));
   assert.ok(result.result.includes('yours'));
   assert.ok(result.result.includes('Marketing'));
   assert.ok(result.result.includes('shared'));
@@ -569,7 +570,7 @@ asyncTest('deck_get_board resolves by partial title', async () => {
 
   const result = await registry.execute('deck_get_board', { board: 'Molt' });
   assert.ok(result.success);
-  assert.ok(result.result.includes('MoltAgent Tasks'));
+  assert.ok(result.result.includes(DECK.boards.tasks));
   assert.ok(result.result.includes('Stacks'));
   assert.ok(result.result.includes('Labels'));
 });
@@ -582,7 +583,7 @@ asyncTest('deck_get_board resolves by numeric ID', async () => {
 
   const result = await registry.execute('deck_get_board', { board: '1' });
   assert.ok(result.success);
-  assert.ok(result.result.includes('MoltAgent Tasks'));
+  assert.ok(result.result.includes(DECK.boards.tasks));
 });
 
 asyncTest('deck_get_board returns not found for unknown board', async () => {
@@ -952,7 +953,7 @@ asyncTest('deck_overview shows boards with card counts', async () => {
 
   const result = await registry.execute('deck_overview', {});
   assert.ok(result.success);
-  assert.ok(result.result.includes('MoltAgent Tasks'));
+  assert.ok(result.result.includes(DECK.boards.tasks));
   assert.ok(result.result.includes('yours'));
   assert.ok(result.result.includes('Inbox'));
   assert.ok(result.result.includes('overdue'));

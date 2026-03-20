@@ -70,6 +70,7 @@
 
 const appConfig = require('../config');
 const { JOBS } = require('../llm/router');
+const DECK = require('../../config/deck-names');
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -1058,7 +1059,7 @@ Bitte den Empfänger, seinen bevorzugten Termin per Antwort mitzuteilen. Kurz un
     // Move Deck tracking card to Done
     if (meeting.deckCardId) {
       try {
-        await this.deckClient.moveCard(meeting.deckCardId, 'Done');
+        await this.deckClient.moveCard(meeting.deckCardId, DECK.stacks.done);
       } catch (err) {
         this.logger.warn('_finalizeMeeting: failed to move deck card:', err.message);
       }

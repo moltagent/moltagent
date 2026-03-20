@@ -11,6 +11,7 @@
  */
 
 const DeckClient = require('./deck-client');
+const DECK = require('../../config/deck-names');
 const DeckTaskProcessor = require('./deck-task-processor');
 const CalDAVClient = require('./caldav-client');
 const appConfig = require('../config');
@@ -74,7 +75,7 @@ class HeartbeatManager {
 
     if (config.ncRequestManager) {
       this.deckClient = new DeckClient(config.ncRequestManager, {
-        boardName: config.deck?.boardName || 'MoltAgent Tasks',
+        boardName: config.deck?.boardName || DECK.boards.tasks,
         stacks: config.deck?.stacks
       });
     } else {

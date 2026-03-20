@@ -56,6 +56,7 @@
 'use strict';
 
 const DeckClient = require('./deck-client');
+const DECK = require('../../config/deck-names');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -63,14 +64,14 @@ const DeckClient = require('./deck-client');
 
 const LOG_PREFIX = '[PersonalBoard]';
 
-const BOARD_NAME = 'Personal';
+const BOARD_NAME = DECK.boards.personal;
 
 const STACKS = {
-  inbox: 'Inbox',
-  doing: 'Doing',
+  inbox: DECK.stacks.inbox,
+  doing: DECK.stacks.doing,
   waiting: 'Waiting',
   planned: 'Planned',
-  done: 'Done'
+  done: DECK.stacks.done
 };
 
 const LABELS = [

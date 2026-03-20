@@ -13,6 +13,7 @@
 const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 const MemoryContextEnricher = require('../../../src/lib/agent/memory-context-enricher');
+const DECK = require('../../../src/config/deck-names');
 
 const silentLogger = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
 
@@ -197,7 +198,7 @@ asyncTest('enricher output includes source and confidence per result', async () 
 
 function createMockDeckClient(cardsByStack = {}, boards = null) {
   // Default: single board with all stacks
-  const defaultBoards = [{ id: 1, title: 'MoltAgent Tasks', archived: false }];
+  const defaultBoards = [{ id: 1, title: DECK.boards.tasks, archived: false }];
   const boardList = boards || defaultBoards;
 
   // Convert cardsByStack to stacks array for getStacks()
@@ -361,7 +362,7 @@ asyncTest('Deck API failure does not block wiki enrichment', async () => {
 // -- Test 23: Multi-board fetch returns cards from all boards --
 asyncTest('Multi-board: finds card on secondary board', async () => {
   const boards = [
-    { id: 1, title: 'MoltAgent Tasks', archived: false },
+    { id: 1, title: DECK.boards.tasks, archived: false },
     { id: 2, title: 'Client Project', archived: false }
   ];
   const deckClient = {

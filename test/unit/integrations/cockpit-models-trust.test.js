@@ -25,6 +25,7 @@
 const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 const CockpitManager = require('../../../src/lib/integrations/cockpit-manager');
+const DECK = require('../../../src/config/deck-names');
 
 console.log('\n=== Cockpit Models Trust-Based System Tests ===\n');
 
@@ -38,7 +39,7 @@ function createMockDeckClient() {
     _calls: calls,
     nc: { ncUrl: 'https://cloud.example.com', ncUser: 'moltagent', request: async () => ({ status: 200, body: {} }) },
     listBoards: async () => [],
-    getBoard: async (boardId) => ({ id: boardId, title: 'Moltagent Cockpit', labels: [] }),
+    getBoard: async (boardId) => ({ id: boardId, title: DECK.boards.cockpit, labels: [] }),
     getStacks: async () => [],
     createStack: async (boardId, title, order) => ({ id: 100 + order, title, order }),
     shareBoard: async () => ({ id: 1 }),

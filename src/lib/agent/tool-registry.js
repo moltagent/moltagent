@@ -1,5 +1,7 @@
 'use strict';
 
+const DECK = require('../../config/deck-names');
+
 /**
  * ToolRegistry - Agent Tool Definition & Execution Layer
  *
@@ -539,7 +541,7 @@ class ToolRegistry {
           target_stack: {
             type: 'string',
             description: 'Destination stack',
-            enum: ['Inbox', 'Queued', 'Working', 'Done', 'Review']
+            enum: [DECK.stacks.inbox, DECK.stacks.queued, DECK.stacks.working, DECK.stacks.done, DECK.stacks.review]
           }
         },
         required: ['card', 'target_stack']
@@ -583,7 +585,7 @@ class ToolRegistry {
           stack: {
             type: 'string',
             description: 'Stack to create in (default: Inbox)',
-            enum: ['Inbox', 'Queued', 'Working', 'Done']
+            enum: [DECK.stacks.inbox, DECK.stacks.queued, DECK.stacks.working, DECK.stacks.done]
           },
           board: {
             type: 'string',
@@ -602,7 +604,7 @@ class ToolRegistry {
             if (!board) return `No board found matching "${args.board}".`;
 
             const stacks = await deck.getStacks(board.id);
-            const targetStackName = args.stack || 'Inbox';
+            const targetStackName = args.stack || DECK.stacks.inbox;
             const stack = (stacks || []).find(s => s.title.toLowerCase() === targetStackName.toLowerCase());
 
             if (!stack) {
@@ -623,7 +625,7 @@ class ToolRegistry {
           }
 
           // Default board creation
-          const stackKey = this._stackKey(args.stack || 'Inbox');
+          const stackKey = this._stackKey(args.stack || DECK.stacks.inbox);
           const card = await deck.createCard(stackKey, {
             title: args.title,
             description: args.description || ''
@@ -631,7 +633,7 @@ class ToolRegistry {
 
           if (!card || !card.id) return `Failed to create "${args.title}" — no card ID returned. Try again.`;
           return {
-            text: `Created ${deckLink(args.title, deckCardUrl(card.id))} in ${args.stack || 'Inbox'}.`,
+            text: `Created ${deckLink(args.title, deckCardUrl(card.id))} in ${args.stack || DECK.stacks.inbox}.`,
             card: { id: card.id, boardId: card.boardId || null, stackId: card.stackId || null }
           };
         } catch (err) {

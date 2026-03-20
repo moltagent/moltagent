@@ -11,6 +11,7 @@
  */
 
 const appConfig = require('../config');
+const DECK = require('../../config/deck-names');
 
 /**
  * Custom error class for Deck API errors
@@ -139,7 +140,7 @@ class DeckClient {
       this.username = this.nc.ncUser || 'moltagent';
 
       // Board configuration
-      this.boardName = config.boardName || config.deck?.boardName || 'MoltAgent Tasks';
+      this.boardName = config.boardName || config.deck?.boardName || DECK.boards.tasks;
       this.archiveAfterDays = config.archiveAfterDays || config.deck?.archiveAfterDays || appConfig.deck.archiveAfterDays;
     } else {
       // Legacy signature: (config)
@@ -150,17 +151,17 @@ class DeckClient {
       this.username = legacyConfig.nextcloud?.username || 'moltagent';
 
       // Board configuration
-      this.boardName = legacyConfig.deck?.boardName || 'MoltAgent Tasks';
+      this.boardName = legacyConfig.deck?.boardName || DECK.boards.tasks;
       this.archiveAfterDays = legacyConfig.deck?.archiveAfterDays || appConfig.deck.archiveAfterDays;
     }
 
     // Stack names (order matters for creation)
     this.stackNames = config.stacks || config.deck?.stacks || {
-      inbox: 'Inbox',
-      queued: 'Queued',
-      working: 'Working',
-      review: 'Review',
-      done: 'Done',
+      inbox: DECK.stacks.inbox,
+      queued: DECK.stacks.queued,
+      working: DECK.stacks.working,
+      review: DECK.stacks.review,
+      done: DECK.stacks.done,
       reference: 'Reference'
     };
 
@@ -213,13 +214,13 @@ class DeckClient {
     const title = (board.title || '').toLowerCase().trim();
     const cfg = appConfig.deck;
 
-    if (title === (cfg.taskBoardTitle || 'MoltAgent Tasks').toLowerCase().trim()) {
+    if (title === (cfg.taskBoardTitle || DECK.boards.tasks).toLowerCase().trim()) {
       return DeckClient.BOARD_TYPES.MOLTAGENT_TASKS;
     }
-    if (title === (cfg.cockpitBoardTitle || 'Moltagent Cockpit').toLowerCase().trim()) {
+    if (title === (cfg.cockpitBoardTitle || DECK.boards.cockpit).toLowerCase().trim()) {
       return DeckClient.BOARD_TYPES.COCKPIT;
     }
-    if (title === (cfg.personalBoardTitle || 'Personal').toLowerCase().trim()) {
+    if (title === (cfg.personalBoardTitle || DECK.boards.personal).toLowerCase().trim()) {
       return DeckClient.BOARD_TYPES.PERSONAL;
     }
     return DeckClient.BOARD_TYPES.PROJECT;

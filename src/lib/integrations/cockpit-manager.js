@@ -37,6 +37,7 @@
 'use strict';
 
 const appConfig = require('../config');
+const DECK = require('../../config/deck-names');
 
 // ===========================================================================
 // Constants
@@ -46,7 +47,7 @@ const appConfig = require('../config');
  * Board title for the Cockpit board.
  * @type {string}
  */
-const BOARD_TITLE = 'Moltagent Cockpit';
+const BOARD_TITLE = DECK.boards.cockpit;
 
 /**
  * Board color (hex without #).
@@ -2173,7 +2174,7 @@ class CockpitManager {
    * @returns {Promise<void>}
    */
   async _deleteDefaultStacks(boardId, existingStacks) {
-    const defaultStackTitles = ['To do', 'Doing', 'Done'];
+    const defaultStackTitles = ['To do', DECK.stacks.doing, DECK.stacks.done];
 
     for (const stack of existingStacks) {
       if (defaultStackTitles.includes(stack.title)) {

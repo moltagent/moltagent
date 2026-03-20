@@ -12,6 +12,7 @@
  */
 
 const { ToolRegistry } = require('../../src/lib/agent/tool-registry');
+const DECK = require('../../src/config/deck-names');
 
 const logger = { info: () => {}, warn: () => {}, error: () => {} };
 
@@ -27,7 +28,7 @@ function createFailingDeckClient() {
     moveCard: async () => {},
     ensureBoard: async () => ({ boardId: 1, stacks: {} }),
     listBoards: async () => [
-      { id: 1, title: 'MoltAgent Tasks', owner: { uid: 'moltagent' } },
+      { id: 1, title: DECK.boards.tasks, owner: { uid: 'moltagent' } },
       { id: 5, title: 'Test Board', owner: { uid: 'moltagent' } }
     ],
     getBoard: async (boardId) => ({

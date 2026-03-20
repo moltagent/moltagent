@@ -11,6 +11,7 @@
 const assert = require('assert');
 const { asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 const { ToolRegistry } = require('../../../src/lib/agent/tool-registry');
+const DECK = require('../../../src/config/deck-names');
 
 // ============================================================
 // Mock Clients
@@ -41,10 +42,10 @@ function createDeckClient(overrides = {}) {
     moveCard: async () => {},
     ensureBoard: async () => ({ boardId: 1, stacks: {} }),
     listBoards: async () => [
-      { id: 1, title: 'MoltAgent Tasks', owner: { uid: 'moltagent' } }
+      { id: 1, title: DECK.boards.tasks, owner: { uid: 'moltagent' } }
     ],
     getBoard: async () => ({
-      id: 1, title: 'MoltAgent Tasks',
+      id: 1, title: DECK.boards.tasks,
       owner: { uid: 'moltagent' },
       stacks: [{ id: 301, title: 'Inbox', cards: [] }],
       labels: []
@@ -118,7 +119,7 @@ asyncTest('deck_create_card: null response from board-targeted path returns fail
   });
 
   const result = await registry.execute('deck_create_card', {
-    title: 'Test Card', board: 'MoltAgent Tasks'
+    title: 'Test Card', board: DECK.boards.tasks
   });
 
   assert.ok(result.success, 'execute should succeed (handler returns string)');
@@ -135,7 +136,7 @@ asyncTest('deck_create_card: empty body {success:true} from board-targeted path 
   });
 
   const result = await registry.execute('deck_create_card', {
-    title: 'Test Card', board: 'MoltAgent Tasks'
+    title: 'Test Card', board: DECK.boards.tasks
   });
 
   assert.ok(result.result.includes('Failed'), `Should contain "Failed", got: ${result.result}`);
@@ -151,7 +152,7 @@ asyncTest('deck_create_card: valid response with id returns success', async () =
   });
 
   const result = await registry.execute('deck_create_card', {
-    title: 'Research top 5', board: 'MoltAgent Tasks'
+    title: 'Research top 5', board: DECK.boards.tasks
   });
 
   assert.ok(result.result.includes('1348'), `Should contain card ID 1348, got: ${result.result}`);

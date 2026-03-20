@@ -18,6 +18,7 @@ const { createMockNCRequestManager } = require('../../helpers/mock-factories');
 
 const DeckClient = require('../../../src/lib/integrations/deck-client');
 const DeckTaskProcessor = require('../../../src/lib/integrations/deck-task-processor');
+const DECK = require('../../../src/config/deck-names');
 
 // ============================================================
 // Mock Helper
@@ -36,14 +37,14 @@ function mockNC(routes = {}) {
 }
 
 const SAMPLE_BOARDS = [
-  { id: 1, title: 'MoltAgent Tasks', owner: { uid: 'moltagent' } },
+  { id: 1, title: DECK.boards.tasks, owner: { uid: 'moltagent' } },
   { id: 2, title: 'Personal', owner: { uid: 'Funana' } },
   { id: 3, title: 'Podcast Scheduling', owner: { uid: 'Funana' } },
-  { id: 4, title: 'Moltagent Cockpit', owner: { uid: 'moltagent' } }
+  { id: 4, title: DECK.boards.cockpit, owner: { uid: 'moltagent' } }
 ];
 
 const FULL_BOARD = {
-  id: 1, title: 'MoltAgent Tasks',
+  id: 1, title: DECK.boards.tasks,
   stacks: [
     { id: 101, title: 'Inbox', order: 0 },
     { id: 102, title: 'Queued', order: 1 },
@@ -61,31 +62,31 @@ const FULL_BOARD = {
 
 test('classifyBoard: MoltAgent Tasks → moltagent-tasks', () => {
   const nc = createMockNCRequestManager();
-  const client = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
-  assert.strictEqual(client.classifyBoard({ id: 1, title: 'MoltAgent Tasks' }), 'moltagent-tasks');
+  const client = new DeckClient(nc, { boardName: DECK.boards.tasks });
+  assert.strictEqual(client.classifyBoard({ id: 1, title: DECK.boards.tasks }), 'moltagent-tasks');
 });
 
 test('classifyBoard: Moltagent Cockpit → cockpit', () => {
   const nc = createMockNCRequestManager();
-  const client = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
-  assert.strictEqual(client.classifyBoard({ id: 4, title: 'Moltagent Cockpit' }), 'cockpit');
+  const client = new DeckClient(nc, { boardName: DECK.boards.tasks });
+  assert.strictEqual(client.classifyBoard({ id: 4, title: DECK.boards.cockpit }), 'cockpit');
 });
 
 test('classifyBoard: Personal → personal', () => {
   const nc = createMockNCRequestManager();
-  const client = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  const client = new DeckClient(nc, { boardName: DECK.boards.tasks });
   assert.strictEqual(client.classifyBoard({ id: 2, title: 'Personal' }), 'personal');
 });
 
 test('classifyBoard: project board → project', () => {
   const nc = createMockNCRequestManager();
-  const client = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  const client = new DeckClient(nc, { boardName: DECK.boards.tasks });
   assert.strictEqual(client.classifyBoard({ id: 3, title: 'Podcast Scheduling' }), 'project');
 });
 
 test('classifyBoard: case-insensitive matching', () => {
   const nc = createMockNCRequestManager();
-  const client = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  const client = new DeckClient(nc, { boardName: DECK.boards.tasks });
   assert.strictEqual(client.classifyBoard({ id: 1, title: 'moltagent tasks' }), 'moltagent-tasks');
   assert.strictEqual(client.classifyBoard({ id: 2, title: 'PERSONAL' }), 'personal');
   assert.strictEqual(client.classifyBoard({ id: 4, title: 'MOLTAGENT COCKPIT' }), 'cockpit');
@@ -102,7 +103,7 @@ asyncTest('getClassifiedBoards: returns all boards with types', async () => {
   const nc = mockNC({
     'GET:/index.php/apps/deck/api/v1.0/boards': SAMPLE_BOARDS
   });
-  const client = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  const client = new DeckClient(nc, { boardName: DECK.boards.tasks });
   const classified = await client.getClassifiedBoards();
 
   assert.strictEqual(classified.size, 4);
@@ -119,7 +120,7 @@ asyncTest('getClassifiedBoards: caches results', async () => {
   });
   const origRequest = nc.request.bind(nc);
   nc.request = async (...args) => { callCount++; return origRequest(...args); };
-  const client = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  const client = new DeckClient(nc, { boardName: DECK.boards.tasks });
 
   await client.getClassifiedBoards();
   await client.getClassifiedBoards();
@@ -130,7 +131,7 @@ asyncTest('getBoardType: returns type for known board', async () => {
   const nc = mockNC({
     'GET:/index.php/apps/deck/api/v1.0/boards': SAMPLE_BOARDS
   });
-  const client = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  const client = new DeckClient(nc, { boardName: DECK.boards.tasks });
   assert.strictEqual(await client.getBoardType(1), 'moltagent-tasks');
   assert.strictEqual(await client.getBoardType(3), 'project');
 });
@@ -139,7 +140,7 @@ asyncTest('getBoardType: returns project for unknown board', async () => {
   const nc = mockNC({
     'GET:/index.php/apps/deck/api/v1.0/boards': SAMPLE_BOARDS
   });
-  const client = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  const client = new DeckClient(nc, { boardName: DECK.boards.tasks });
   assert.strictEqual(await client.getBoardType(999), 'project');
 });
 
@@ -149,7 +150,7 @@ asyncTest('getBoardType: returns project for unknown board', async () => {
 
 asyncTest('scanInbox: returns assignedUsers in card objects', async () => {
   const nc = mockNC({
-    'GET:/index.php/apps/deck/api/v1.0/boards': [{ id: 1, title: 'MoltAgent Tasks' }],
+    'GET:/index.php/apps/deck/api/v1.0/boards': [{ id: 1, title: DECK.boards.tasks }],
     'GET:/index.php/apps/deck/api/v1.0/boards/1': FULL_BOARD,
     'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/101': {
       id: 101, title: 'Inbox',
@@ -160,7 +161,7 @@ asyncTest('scanInbox: returns assignedUsers in card objects', async () => {
       }]
     }
   });
-  const client = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  const client = new DeckClient(nc, { boardName: DECK.boards.tasks });
   const inbox = await client.scanInbox();
   assert.strictEqual(inbox.length, 1);
   assert.ok(Array.isArray(inbox[0].assignedUsers));
@@ -173,7 +174,7 @@ asyncTest('scanInbox: returns assignedUsers in card objects', async () => {
 
 asyncTest('processInbox: skips cards assigned to other users', async () => {
   const nc = mockNC({
-    'GET:/index.php/apps/deck/api/v1.0/boards': [{ id: 1, title: 'MoltAgent Tasks' }],
+    'GET:/index.php/apps/deck/api/v1.0/boards': [{ id: 1, title: DECK.boards.tasks }],
     'GET:/index.php/apps/deck/api/v1.0/boards/1': FULL_BOARD,
     'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/101': {
       id: 101, title: 'Inbox',
@@ -187,7 +188,7 @@ asyncTest('processInbox: skips cards assigned to other users', async () => {
 
   const mockRouter = { route: async () => ({ result: 'done', provider: 'test' }) };
   const processor = new DeckTaskProcessor({}, mockRouter, async () => {});
-  processor.deck = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  processor.deck = new DeckClient(nc, { boardName: DECK.boards.tasks });
   processor.deck.username = 'moltagent';
 
   const results = await processor.processInbox();
@@ -197,7 +198,7 @@ asyncTest('processInbox: skips cards assigned to other users', async () => {
 
 asyncTest('processInbox: processes unassigned cards', async () => {
   const nc = mockNC({
-    'GET:/index.php/apps/deck/api/v1.0/boards': [{ id: 1, title: 'MoltAgent Tasks' }],
+    'GET:/index.php/apps/deck/api/v1.0/boards': [{ id: 1, title: DECK.boards.tasks }],
     'GET:/index.php/apps/deck/api/v1.0/boards/1': FULL_BOARD,
     'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/101': {
       id: 101, title: 'Inbox',
@@ -215,7 +216,7 @@ asyncTest('processInbox: processes unassigned cards', async () => {
 
   const mockRouter = { route: async () => ({ result: 'Research completed.', provider: 'test' }) };
   const processor = new DeckTaskProcessor({}, mockRouter, async () => {});
-  processor.deck = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  processor.deck = new DeckClient(nc, { boardName: DECK.boards.tasks });
   processor.deck.username = 'moltagent';
 
   const results = await processor.processInbox();
@@ -225,7 +226,7 @@ asyncTest('processInbox: processes unassigned cards', async () => {
 
 asyncTest('processInbox: processes cards assigned to Moltagent', async () => {
   const nc = mockNC({
-    'GET:/index.php/apps/deck/api/v1.0/boards': [{ id: 1, title: 'MoltAgent Tasks' }],
+    'GET:/index.php/apps/deck/api/v1.0/boards': [{ id: 1, title: DECK.boards.tasks }],
     'GET:/index.php/apps/deck/api/v1.0/boards/1': FULL_BOARD,
     'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/101': {
       id: 101, title: 'Inbox',
@@ -243,7 +244,7 @@ asyncTest('processInbox: processes cards assigned to Moltagent', async () => {
 
   const mockRouter = { route: async () => ({ result: 'Done.', provider: 'test' }) };
   const processor = new DeckTaskProcessor({}, mockRouter, async () => {});
-  processor.deck = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  processor.deck = new DeckClient(nc, { boardName: DECK.boards.tasks });
   processor.deck.username = 'moltagent';
 
   const results = await processor.processInbox();
@@ -284,7 +285,7 @@ asyncTest('processMention: detects @mention and routes through messageProcessor'
   };
 
   const processor = new DeckTaskProcessor({}, {}, async () => {});
-  processor.deck = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  processor.deck = new DeckClient(nc, { boardName: DECK.boards.tasks });
   processor.deck.username = 'moltagent';
 
   const result = await processor.processMention(
@@ -305,7 +306,7 @@ asyncTest('processMention: detects @mention and routes through messageProcessor'
 asyncTest('processMention: ignores own comments (self-mention)', async () => {
   const nc = createMockNCRequestManager();
   const processor = new DeckTaskProcessor({}, {}, async () => {});
-  processor.deck = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  processor.deck = new DeckClient(nc, { boardName: DECK.boards.tasks });
   processor.deck.username = 'moltagent';
 
   const result = await processor.processMention({
@@ -330,7 +331,7 @@ asyncTest('processMention: ignores comments without @mention', async () => {
   });
 
   const processor = new DeckTaskProcessor({}, {}, async () => {});
-  processor.deck = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  processor.deck = new DeckClient(nc, { boardName: DECK.boards.tasks });
   processor.deck.username = 'moltagent';
 
   const result = await processor.processMention({
@@ -365,7 +366,7 @@ asyncTest('processMention: ignores already-responded mentions', async () => {
   });
 
   const processor = new DeckTaskProcessor({}, {}, async () => {});
-  processor.deck = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  processor.deck = new DeckClient(nc, { boardName: DECK.boards.tasks });
   processor.deck.username = 'moltagent';
 
   const result = await processor.processMention({
@@ -377,7 +378,7 @@ asyncTest('processMention: ignores already-responded mentions', async () => {
 
 asyncTest('processMention: handles invalid card ID', async () => {
   const processor = new DeckTaskProcessor({}, {}, async () => {});
-  processor.deck = new DeckClient(createMockNCRequestManager(), { boardName: 'MoltAgent Tasks' });
+  processor.deck = new DeckClient(createMockNCRequestManager(), { boardName: DECK.boards.tasks });
 
   const result = await processor.processMention({
     type: 'deck_comment_added', objectId: '', user: 'Funana', data: {}
@@ -391,7 +392,7 @@ asyncTest('processMention: handles API errors gracefully', async () => {
   nc.request = async () => { throw new Error('Network error'); };
 
   const processor = new DeckTaskProcessor({}, {}, async () => {});
-  processor.deck = new DeckClient(nc, { boardName: 'MoltAgent Tasks' });
+  processor.deck = new DeckClient(nc, { boardName: DECK.boards.tasks });
   processor.deck.username = 'moltagent';
 
   const result = await processor.processMention({
@@ -411,7 +412,7 @@ asyncTest('_processFlowEvents: routes deck_comment_added to mention handler', as
   let mentionProcessed = false;
   const hb = new HeartbeatManager({
     nextcloud: { url: 'http://test', username: 'moltagent' },
-    deck: { boardName: 'MoltAgent Tasks' },
+    deck: { boardName: DECK.boards.tasks },
     heartbeat: { intervalMs: 999999 },
     ncRequestManager: createMockNCRequestManager(),
     llmRouter: { route: async () => ({ result: 'test', provider: 'test' }) },
@@ -440,7 +441,7 @@ asyncTest('_processFlowEvents: does not route non-comment events as mentions', a
   let mentionCalled = false;
   const hb = new HeartbeatManager({
     nextcloud: { url: 'http://test', username: 'moltagent' },
-    deck: { boardName: 'MoltAgent Tasks' },
+    deck: { boardName: DECK.boards.tasks },
     heartbeat: { intervalMs: 999999 },
     ncRequestManager: createMockNCRequestManager(),
     llmRouter: { route: async () => ({ result: 'test', provider: 'test' }) },
