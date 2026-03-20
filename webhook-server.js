@@ -1712,6 +1712,7 @@ async function initialize() {
         agentLoop,
         talkSendQueue: talkQueue,
         talkToken: defaultTalkToken,
+        budgetEnforcer: llmRouter?.router?.budget || null,
         config: { botUsername: CONFIG.nc.username, adminUser: appConfig.cockpit?.adminUser || appConfig.knowledge?.adminUser || '' }
       });
       console.log('[INIT] WorkflowEngine ready');
