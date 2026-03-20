@@ -1989,9 +1989,24 @@ Be thoughtful. Be honest. Be yourself.`;
 
     const settled = await Promise.allSettled(probes);
 
-    return settled
+    const results = settled
       .filter(r => r.status === 'fulfilled')
       .map(r => r.value);
+
+    // LTP: record access for wiki titles from probes that bypassed MemorySearcher.
+    // Probe 0 (wiki_unified) already tracks via MemorySearcher.search().
+    // Probes 1 (wiki_direct) and 4 (files) miss access tracking — fix that here.
+    if (searcher?.recordAccessForTitles) {
+      const bypassTitles = results
+        .filter(r => r.source !== 'wiki_unified' && r.provenance === 'stored_knowledge')
+        .flatMap(r => (r.results || []).map(item => item.title))
+        .filter(Boolean);
+      if (bypassTitles.length > 0) {
+        searcher.recordAccessForTitles(bypassTitles);
+      }
+    }
+
+    return results;
   }
 
   /**

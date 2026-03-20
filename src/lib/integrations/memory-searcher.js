@@ -232,6 +232,25 @@ class MemorySearcher {
   }
 
   /**
+   * Record access for wiki page titles from external probe results.
+   * Probes that bypass MemorySearcher (direct wiki lookup, files search)
+   * miss LTP access tracking. Call this with their titles after probes complete.
+   * Fire-and-forget — never throws.
+   * @param {string[]} titles - Wiki page titles to record access for
+   */
+  recordAccessForTitles(titles) {
+    if (!this.wiki || !titles?.length) return;
+    const seen = new Set();
+    for (const title of titles) {
+      if (!title || seen.has(title)) continue;
+      seen.add(title);
+      this._recordAccess(title).catch(err => {
+        this.logger.warn(`[MemorySearcher] External access tracking failed for "${title}": ${err.message}`);
+      });
+    }
+  }
+
+  /**
    * Map a scope name to provider IDs.
    * @param {string} scope
    * @returns {string[]}
