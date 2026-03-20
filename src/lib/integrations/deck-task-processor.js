@@ -1156,10 +1156,12 @@ Please address the user's ${classification.type}. Be concise and helpful.
         return { handled: false, reason: 'no_message_processor' };
       }
 
+      // Input adapter: classifier sees ONLY the user's words (no card prefix).
+      // Card context goes in systemSuffix where synthesis can use it.
       const data = {
         actor: { id: `users/${event.user}`, name: event.user, type: 'users' },
         object: {
-          content: `[Card: "${cardTitle}" #${cardId}]\n\n${mentionComment.message}`,
+          content: mentionComment.message,
           id: `deck-mention-${cardId}-${mentionComment.id}`
         },
         target: { id: null }  // No Talk room — processMessage handles null tokens

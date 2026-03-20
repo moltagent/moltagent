@@ -1650,11 +1650,10 @@ class MessageProcessor {
 
       let { intent, domain, compound } = classification;
 
-      // Greeting/chitchat → always local regardless of word count.
-      // The LLM classifier handles all languages natively — trust its classification.
-      if (intent === 'greeting' || intent === 'chitchat') {
-        return { useLocal: true, useDomainTools: false, intent, compound: false };
-      }
+      // Trust boundary: in smart-mix mode (cloud available), everything goes
+      // through cloud except knowledge (dedicated probe pipeline) and compound
+      // (dedicated decompose pipeline). MicroPipeline only fires in local-only.
+
       // Confirmation/selection → cloud (needs full history)
       if (intent === 'confirmation' || intent === 'selection') {
         return { useLocal: false, useDomainTools: false, intent, compound: false };
@@ -1662,11 +1661,15 @@ class MessageProcessor {
       if (intent === 'confirmation_declined') {
         return { useLocal: true, useDomainTools: false, intent: 'confirmation_declined', compound: false };
       }
-      // Domain → local with focused tools
-      if (DOMAIN_INTENTS.has(intent)) {
+      // Knowledge → dedicated handler (probes, deep reads, web fallback, synthesis)
+      if (intent === 'knowledge') {
         return { useLocal: true, useDomainTools: true, intent, compound: !!compound };
       }
-      // Complex / fallback → cloud
+      // Compound + domain → compound handler (already cloud-powered)
+      if (compound && DOMAIN_INTENTS.has(intent)) {
+        return { useLocal: true, useDomainTools: true, intent, compound: true };
+      }
+      // Everything else → cloud via AgentLoop (Haiku, full tools, web search)
       return { useLocal: false, useDomainTools: false, intent: intent || 'complex', compound: !!compound };
     } catch (err) {
       console.warn(`[Message] Smart-mix classification failed: ${err.message}`);

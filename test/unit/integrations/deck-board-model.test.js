@@ -294,10 +294,10 @@ asyncTest('processMention: detects @mention and routes through messageProcessor'
   assert.strictEqual(result.handled, true);
   assert.strictEqual(result.reason, 'responded');
   assert.strictEqual(result.cardId, 100);
-  // Verify the message was routed through processMessage with card context
+  // Verify the message was routed through processMessage with only user's words
   assert.ok(processedData);
   assert.ok(processedData.object.content.includes('find a time slot'));
-  assert.ok(processedData.object.content.includes('[Card:'));
+  assert.ok(!processedData.object.content.includes('[Card:'), 'card context should NOT be in content');
   assert.strictEqual(processedData.actor.name, 'Funana');
   assert.strictEqual(processedData.target.id, null);
 });

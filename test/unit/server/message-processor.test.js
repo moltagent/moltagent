@@ -555,7 +555,7 @@ test('TC-SMIX-003: _isSmartMixMode() true when RouterChatBridge with >1 provider
   assert.strictEqual(processor._isSmartMixMode(), true);
 });
 
-asyncTest('TC-SMIX-004: Greeting routed to MicroPipeline via IntentRouter LLM, AgentLoop not called', async () => {
+asyncTest('TC-SMIX-004: Greeting routed to AgentLoop in cloud-ok mode (trust boundary)', async () => {
   let agentLoopCalled = false;
 
   const processor = createProcessor({
@@ -564,39 +564,8 @@ asyncTest('TC-SMIX-004: Greeting routed to MicroPipeline via IntentRouter LLM, A
     },
     microPipeline: {
       _classifyFallback: async () => ({ intent: 'chitchat' }),
-      process: async () => 'Hi there! How can I help?'
-    },
-    agentLoop: {
-      llmProvider: {
-        resetConversation: function () {},
-        clearLocalSkip: function () {},
-        chatProviders: new Map([['local', {}], ['cloud', {}]])
-      },
-      process: async () => {
-        agentLoopCalled = true;
-        throw new Error('AgentLoop should not be called for greeting');
-      }
-    }
-  });
-
-  const data = createActivityStreamsData('Hi there');
-  const result = await processor.process(data);
-
-  assert.ok(result.response.includes('Hi there! How can I help?'), 'Response should contain MicroPipeline LLM output');
-  assert.strictEqual(agentLoopCalled, false, 'AgentLoop.process should NOT be called');
-});
-
-asyncTest('TC-SMIX-004b: Greeting classified by IntentRouter always routes local (no word-count gate)', async () => {
-  let agentLoopCalled = false;
-  let microPipelineCalled = false;
-
-  const processor = createProcessor({
-    intentRouter: {
-      classify: async () => ({ intent: 'greeting', domain: null, needsHistory: false, confidence: 0.9 })
-    },
-    microPipeline: {
-      _classifyFallback: async () => ({ intent: 'chitchat' }),
-      process: async () => { microPipelineCalled = true; return 'Hi there! What can I help with?'; }
+      memoryContextEnricher: null,
+      process: async () => { throw new Error('MicroPipeline should NOT be called in cloud-ok mode'); }
     },
     agentLoop: {
       llmProvider: {
@@ -606,7 +575,40 @@ asyncTest('TC-SMIX-004b: Greeting classified by IntentRouter always routes local
       },
       process: async () => {
         agentLoopCalled = true;
-        return 'Cloud response';
+        return 'Hi there! How can I help?';
+      }
+    }
+  });
+
+  const data = createActivityStreamsData('Hi there');
+  const result = await processor.process(data);
+
+  assert.ok(result.response.includes('Hi there! How can I help?'));
+  assert.strictEqual(agentLoopCalled, true, 'AgentLoop should handle greetings in cloud-ok');
+});
+
+asyncTest('TC-SMIX-004b: Greeting in cloud-ok routes to AgentLoop, not MicroPipeline', async () => {
+  let agentLoopCalled = false;
+  let microPipelineCalled = false;
+
+  const processor = createProcessor({
+    intentRouter: {
+      classify: async () => ({ intent: 'greeting', domain: null, needsHistory: false, confidence: 0.9 })
+    },
+    microPipeline: {
+      _classifyFallback: async () => ({ intent: 'chitchat' }),
+      memoryContextEnricher: null,
+      process: async () => { microPipelineCalled = true; return 'Local response'; }
+    },
+    agentLoop: {
+      llmProvider: {
+        resetConversation: function () {},
+        skipLocalForConversation: function () {},
+        chatProviders: new Map([['local', {}], ['cloud', {}]])
+      },
+      process: async () => {
+        agentLoopCalled = true;
+        return 'Hi there! What can I help with?';
       }
     }
   });
@@ -614,11 +616,10 @@ asyncTest('TC-SMIX-004b: Greeting classified by IntentRouter always routes local
   const data = createActivityStreamsData('Hey Molti, what mode are you in?');
   const result = await processor.process(data);
 
-  // LLM classified as greeting → routes local regardless of word count
-  // (word-count gate intentionally removed — classification accuracy handles this)
-  assert.strictEqual(microPipelineCalled, true, 'MicroPipeline SHOULD be called (greeting → local)');
-  assert.strictEqual(agentLoopCalled, false, 'AgentLoop should NOT be called');
-  assert.ok(result.response.includes('Hi there'), 'Response should come from MicroPipeline');
+  // Trust boundary: in cloud-ok, MicroPipeline never fires
+  assert.strictEqual(microPipelineCalled, false, 'MicroPipeline should NOT be called in cloud-ok');
+  assert.strictEqual(agentLoopCalled, true, 'AgentLoop should handle all intents in cloud-ok');
+  assert.ok(result.response.includes('Hi there'), 'Response should come from AgentLoop');
 });
 
 asyncTest('TC-SMIX-005: Complex intent routed to AgentLoop with skipLocal via IntentRouter', async () => {
@@ -739,8 +740,9 @@ asyncTest('TC-SMIX-009: Selection intent routed to cloud (not local)', async () 
   assert.ok(result.response.includes('Selected option 2'));
 });
 
-asyncTest('TC-SMIX-010: Domain intent routed to local with tools via IntentRouter', async () => {
-  let localProcessCalled = false;
+asyncTest('TC-SMIX-010: Domain action routed to AgentLoop in cloud-ok (trust boundary)', async () => {
+  let agentLoopCalled = false;
+  let microPipelineCalled = false;
 
   const processor = createProcessor({
     intentRouter: {
@@ -748,25 +750,30 @@ asyncTest('TC-SMIX-010: Domain intent routed to local with tools via IntentRoute
     },
     microPipeline: {
       _classifyFallback: async () => ({ intent: 'deck' }),
+      memoryContextEnricher: null,
       process: async () => {
-        localProcessCalled = true;
-        return 'Card created!';
+        microPipelineCalled = true;
+        return 'Local response';
       }
     },
     agentLoop: {
       llmProvider: {
         resetConversation: function () {},
-        clearLocalSkip: function () {},
+        skipLocalForConversation: function () {},
         chatProviders: new Map([['local', {}], ['cloud', {}]])
       },
-      process: async () => { throw new Error('AgentLoop should not be called for domain intent'); }
+      process: async () => {
+        agentLoopCalled = true;
+        return 'Card created!';
+      }
     }
   });
 
   const data = createActivityStreamsData('create a task for the feature');
   const result = await processor.process(data);
 
-  assert.strictEqual(localProcessCalled, true, 'MicroPipeline should handle domain intent locally');
+  assert.strictEqual(microPipelineCalled, false, 'MicroPipeline should NOT handle domain actions in cloud-ok');
+  assert.strictEqual(agentLoopCalled, true, 'AgentLoop should handle domain actions in cloud-ok');
   assert.ok(result.response.includes('Card created!'));
 });
 
