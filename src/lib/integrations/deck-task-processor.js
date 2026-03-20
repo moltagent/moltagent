@@ -1136,17 +1136,15 @@ Please address the user's ${classification.type}. Be concise and helpful.
         return { handled: false, reason: 'already_responded' };
       }
 
-      // Get card title for context prefix (from activity event or allCards cache)
-      let cardTitle = event.data?.subject || '';
-      if (!cardTitle) {
-        try {
-          const allCards = await this.deck.getAllCards();
-          for (const cards of Object.values(allCards)) {
-            const match = cards.find(c => c.id === cardId);
-            if (match) { cardTitle = match.title; break; }
-          }
-        } catch (_) { /* best effort */ }
-      }
+      // Get card title for context prefix (allCards cache first, fallback to card ID)
+      let cardTitle = '';
+      try {
+        const allCards = await this.deck.getAllCards();
+        for (const cards of Object.values(allCards)) {
+          const match = cards.find(c => c.id === cardId);
+          if (match) { cardTitle = match.title; break; }
+        }
+      } catch (_) { /* best effort */ }
       cardTitle = cardTitle || `Card #${cardId}`;
 
       console.log(`[DeckProcessor] @mention detected on card #${cardId} "${cardTitle}" by ${event.user}`);

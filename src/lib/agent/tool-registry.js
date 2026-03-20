@@ -146,41 +146,46 @@ class ToolRegistry {
    * @returns {Array<{type: 'function', function: {name: string, description: string, parameters: Object}}>}
    */
   getToolSubset(intent) {
-    // Max 5 tools per subset — fewer tools = faster Qwen reasoning on CPU.
-    // If Qwen needs more tools, the task is complex enough for cloud.
+    // Keep subsets focused — fewer tools = faster LLM reasoning.
+    // web_search is available in all domain subsets.
     const SUBSETS = {
       deck: [
         'deck_create_card',
         'deck_assign_user',
         'deck_list_cards',
         'deck_get_board',
-        'deck_list_stacks'
+        'deck_list_stacks',
+        'web_search'
       ],
       calendar: [
         'calendar_list_events',
         'calendar_create_event',
         'calendar_check_availability',
         'calendar_quick_schedule',
-        'calendar_schedule_meeting'
+        'calendar_schedule_meeting',
+        'web_search'
       ],
       email: [
         'mail_send',
         'contacts_search',
-        'memory_search'
+        'memory_search',
+        'web_search'
       ],
       wiki: [
         'wiki_read',
         'wiki_write',
         'wiki_search',
         'wiki_delete',
-        'memory_search'
+        'memory_search',
+        'web_search'
       ],
       file: [
         'file_read',
         'file_write',
         'file_list',
         'file_move',
-        'file_delete'
+        'file_delete',
+        'web_search'
       ],
       search: [
         'memory_search',
