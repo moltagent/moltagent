@@ -1498,6 +1498,15 @@ async function initialize() {
       });
       console.log(`[INIT] ClaudeToolsProvider ready (${CONFIG.claude.modelStandard})`);
 
+      // Haiku: cheapest cloud provider for tool-calling, classification, synthesis
+      const haikuProvider = new ClaudeToolsProvider({
+        model: 'claude-haiku-4-5-20251001',
+        maxTokens: 2048,
+        timeout: 30000,
+        getApiKey: () => getCredential('claude-api-key')
+      });
+      console.log('[INIT] ClaudeToolsProvider ready (claude-haiku-4-5-20251001)');
+
       // --- CostTracker: per-call audit logging + enriched cost reporting ---
       costTracker = new CostTracker({
         ncFilesClient: ncFilesClient || undefined,
@@ -1528,6 +1537,7 @@ async function initialize() {
           if (ollamaFastProvider) chatProviders.set('ollama-fast', ollamaFastProvider);
           chatProviders.set('anthropic-claude', claudeProvider);
           chatProviders.set('claude-sonnet', sonnetProvider);
+          chatProviders.set('claude-haiku', haikuProvider);
 
           // Register ollama-fast in the router so roster can reference it
           if (ollamaFastProvider) {
