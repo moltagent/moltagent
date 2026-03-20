@@ -1195,9 +1195,12 @@ Please address the user's ${classification.type}. Be concise and helpful.
             owner: card.owner?.uid || card.owner || this.deck.username,
             description: existingDesc + section
           });
+          console.log(`[DeckProcessor] Updated description for card #${cardId} (+${section.length} chars)`);
         } catch (descErr) {
           console.warn(`[DeckProcessor] Could not update description for card #${cardId}: ${descErr.message}`);
         }
+      } else {
+        console.warn(`[DeckProcessor] Could not find stack for card #${cardId} — description not updated`);
       }
 
       // Short notification comment (fits 1000 char limit)
