@@ -131,9 +131,10 @@ class DocumentIngestor {
    * @param {Object} deps.wikiWriter         - ResilientWikiWriter instance
    * @param {Object} [deps.llmRouter]        - LLM router (used to auto-create DocumentClassifier)
    * @param {Object} [deps.classifier]       - DocumentClassifier instance (optional; auto-created if llmRouter given)
+   * @param {Object} [deps.embeddingClient]  - EmbeddingClient instance for embedding-based entity dedup pre-filter
    * @param {Object} [deps.logger]           - Logger (defaults to console)
    */
-  constructor({ ncFilesClient, textExtractor, entityExtractor, knowledgeGraph, wikiWriter, learningLog, llmRouter, classifier, logger } = {}) {
+  constructor({ ncFilesClient, textExtractor, entityExtractor, knowledgeGraph, wikiWriter, learningLog, llmRouter, classifier, embeddingClient, ingestionCache, logger } = {}) {
     if (!ncFilesClient)   throw new Error('DocumentIngestor requires ncFilesClient');
     if (!textExtractor)   throw new Error('DocumentIngestor requires textExtractor');
     if (!entityExtractor) throw new Error('DocumentIngestor requires entityExtractor');
@@ -155,6 +156,9 @@ class DocumentIngestor {
       this.classifier = new DocumentClassifier({ llmRouter, logger: this.logger });
     }
 
+    /** @type {EmbeddingClient|null} Pre-filters entity dedup before LLM call. */
+    this._embeddingClient = embeddingClient || null;
+
     /** @type {Set<string>} Tracks successfully processed file paths. */
     this._processed = new Set();
 
@@ -166,6 +170,9 @@ class DocumentIngestor {
 
     /** @type {Promise} Serial queue — prevents concurrent wiki section creation races. */
     this._queue = Promise.resolve();
+
+    /** @type {IngestionCache|null} Content-hash dedup cache (optional). */
+    this.ingestionCache = ingestionCache || null;
   }
 
   // ===========================================================================
@@ -217,6 +224,15 @@ class DocumentIngestor {
     // Skip near-empty files
     if (rawText.length < MIN_TEXT_LENGTH) {
       return { filePath, skipped: true, reason: `text too short (${rawText.length} chars)` };
+    }
+
+    // Skip unchanged files via content hash (avoids redundant LLM calls)
+    if (this.ingestionCache) {
+      const contentHash = this.ingestionCache.hashContent(rawText);
+      if (this.ingestionCache.isProcessed(contentHash)) {
+        this.logger.info(`[DocumentIngestor] Skipped (unchanged): ${path.basename(filePath)}`);
+        return { skipped: true, reason: 'unchanged', hash: contentHash, filePath };
+      }
     }
 
     // Truncate for entity extraction
@@ -386,6 +402,16 @@ class DocumentIngestor {
 
     // Mark as processed only after successful pipeline run
     this._processed.add(filePath);
+
+    // Persist content hash so the file is skipped on the next poll if unchanged
+    if (this.ingestionCache) {
+      const contentHash = this.ingestionCache.hashContent(rawText);
+      await this.ingestionCache.markProcessed(contentHash, {
+        filename: path.basename(filePath),
+        classification: classification?.type || null,
+        entityCount: entities.length,
+      });
+    }
 
     this.logger.info(
       `[DocumentIngestor] Processed ${filePath} → ${classification.type} (${classification.confidence}), ${entities.length} entities, ` +
@@ -893,6 +919,22 @@ class DocumentIngestor {
    */
   async _findMatchingEntity(entity, existingPageTitles, fidelity) {
     if (!existingPageTitles || existingPageTitles.length === 0) return null;
+
+    // Embedding pre-filter: resolve obvious matches/mismatches without an LLM call.
+    // Only the ambiguous middle band (0.50–0.92 cosine similarity) falls through to the LLM.
+    if (this._embeddingClient) {
+      try {
+        const similarity = await this._checkEmbeddingSimilarity(entity, existingPageTitles);
+        if (similarity.resolved) {
+          return similarity.result;
+        }
+        // Ambiguous range — fall through to LLM dedup
+      } catch (err) {
+        this.logger.warn(`[DocumentIngestor] Embedding pre-filter failed: ${err.message}`);
+        // Fall through to LLM dedup
+      }
+    }
+
     if (!this.classifier?.router) return null; // no LLM available
 
     const prompt = `Determine if this new entity matches any existing entity in the list.
@@ -937,6 +979,102 @@ or
       this.logger.warn(`[DocumentIngestor] Entity dedup check failed: ${err.message}`);
     }
     return null;
+  }
+
+  /**
+   * Embedding-based entity similarity check. Resolves obvious matches/mismatches
+   * without an LLM call. Only the ambiguous middle band falls through to the LLM.
+   *
+   * Uses embedBatch for efficiency (single Ollama round-trip for all candidates).
+   * Falls back to unresolved on any embedding failure — zero regression risk.
+   *
+   * @param {Object} entity - { name, type, description }
+   * @param {string[]} existingPageTitles - Existing wiki page titles to compare against
+   * @returns {Promise<{ resolved: boolean, result?: {title: string, reason: string}|null }>}
+   * @private
+   */
+  async _checkEmbeddingSimilarity(entity, existingPageTitles) {
+    if (!existingPageTitles || existingPageTitles.length === 0) {
+      // No existing entities — clearly new, no LLM needed
+      return { resolved: true, result: null };
+    }
+
+    // Build a query that combines name and description for richer signal
+    const queryText = `${entity.name}: ${(entity.description || '').substring(0, 200)}`;
+    const queryEmbed = await this._embeddingClient.embed(queryText);
+    if (!queryEmbed || queryEmbed.length === 0) {
+      return { resolved: false }; // Can't embed query — fall through to LLM
+    }
+
+    // Batch embed all existing titles in a single Ollama request
+    const batchEmbeddings = await this._embeddingClient.embedBatch(existingPageTitles);
+
+    let bestMatch = null;
+    let bestSimilarity = 0;
+
+    for (let i = 0; i < existingPageTitles.length; i++) {
+      const vec = batchEmbeddings[i];
+      if (!vec || vec.length === 0) continue;
+      const sim = this._cosineSimilarity(queryEmbed, vec);
+      if (sim > bestSimilarity) {
+        bestSimilarity = sim;
+        bestMatch = existingPageTitles[i];
+      }
+    }
+
+    // High similarity: safe to auto-merge without LLM confirmation
+    const AUTO_MERGE_THRESHOLD = 0.92;
+    // Low similarity: clearly distinct entities, skip LLM entirely
+    const AUTO_CREATE_THRESHOLD = 0.50;
+
+    if (bestSimilarity > AUTO_MERGE_THRESHOLD) {
+      this.logger.info(
+        `[EntityDedup] Auto-merge: "${entity.name}" ~ "${bestMatch}" (cosine ${bestSimilarity.toFixed(3)})`
+      );
+      return {
+        resolved: true,
+        result: { title: bestMatch, reason: `embedding similarity ${bestSimilarity.toFixed(3)}` },
+      };
+    }
+
+    if (bestSimilarity < AUTO_CREATE_THRESHOLD) {
+      this.logger.info(
+        `[EntityDedup] Auto-create: "${entity.name}" (best cosine ${bestSimilarity.toFixed(3)} < threshold)`
+      );
+      return {
+        resolved: true,
+        result: null, // null = no match → create new entity page
+      };
+    }
+
+    // Ambiguous band — LLM dedup needed
+    this.logger.info(
+      `[EntityDedup] Ambiguous: "${entity.name}" ~ "${bestMatch}" (cosine ${bestSimilarity.toFixed(3)}) — asking LLM`
+    );
+    return { resolved: false };
+  }
+
+  /**
+   * Cosine similarity between two embedding vectors.
+   * Returns 0 for empty, mismatched-length, or zero-magnitude inputs.
+   *
+   * @param {Float64Array|number[]} a
+   * @param {Float64Array|number[]} b
+   * @returns {number} Similarity score in [0, 1]
+   * @private
+   */
+  _cosineSimilarity(a, b) {
+    if (!a || !b || a.length === 0 || a.length !== b.length) return 0;
+    let dot = 0;
+    let magA = 0;
+    let magB = 0;
+    for (let i = 0; i < a.length; i++) {
+      dot  += a[i] * b[i];
+      magA += a[i] * a[i];
+      magB += b[i] * b[i];
+    }
+    const denom = Math.sqrt(magA) * Math.sqrt(magB);
+    return denom === 0 ? 0 : dot / denom;
   }
 
   /**

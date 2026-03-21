@@ -313,6 +313,14 @@ try {
   DocumentIngestor = null;
 }
 
+let IngestionCache;
+try {
+  IngestionCache = require('./src/lib/memory/ingestion-cache');
+} catch {
+  console.warn('[WARN] IngestionCache not available');
+  IngestionCache = null;
+}
+
 let SkillForgeHandler, TemplateLoader, TemplateEngine, SecurityScanner, SkillActivator, ToolActivator, HttpToolExecutor;
 try {
   ({ SkillForgeHandler } = require('./src/lib/handlers/skill-forge-handler'));
@@ -1296,14 +1304,30 @@ async function initialize() {
   // Document Ingestion pipeline: file events → text → entities → knowledge
   if (DocumentIngestor && textExtractor && entityExtractor && resilientWriter && ncFilesClient) {
     try {
+      // Content-hash dedup cache — load before constructing DocumentIngestor so
+      // the first processFile() call already has the persisted state available.
+      let ingestionCache = null;
+      if (IngestionCache) {
+        try {
+          ingestionCache = new IngestionCache();
+          await ingestionCache.load();
+          console.log('[INIT] IngestionCache ready');
+        } catch (err) {
+          console.warn(`[INIT] IngestionCache failed: ${err.message}`);
+          ingestionCache = null;
+        }
+      }
+
       documentIngestor = new DocumentIngestor({
         ncFilesClient,
         textExtractor,
         entityExtractor,
         knowledgeGraph,
         wikiWriter: resilientWriter,
-        learningLog,  // may be null here; will be wired after init
-        llmRouter,    // enables DocumentClassifier for type-specific extraction
+        learningLog,      // may be null here; will be wired after init
+        llmRouter,        // enables DocumentClassifier for type-specific extraction
+        embeddingClient,  // pre-filters entity dedup before LLM call (may be null)
+        ingestionCache,
         logger: console
       });
       console.log('[INIT] DocumentIngestor ready');
