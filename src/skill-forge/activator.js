@@ -597,6 +597,113 @@ class ToolActivator {
     return results;
   }
 
+  /**
+   * Auto-discover YAML templates from a directory and register them.
+   *
+   * - Parameterless templates: activated immediately as native tools.
+   * - Parameterized templates: registered as `forge_setup_{skillId}` meta-tools
+   *   that guide the LLM to initiate the Talk-based setup conversation.
+   *
+   * Skips templates already activated (via reloadAll or prior conversation).
+   *
+   * @param {string} templatesDir - Absolute path to directory containing YAML templates
+   * @param {Object} [templateEngine] - TemplateEngine instance (for generateToolDefinitions)
+   * @returns {Promise<{ activated: string[], metaTools: string[], skipped: string[], errors: string[] }>}
+   */
+  async autoDiscover(templatesDir, templateEngine) {
+    const fs = require('fs');
+    const path = require('path');
+    let yaml;
+    try { yaml = require('js-yaml'); } catch { return { activated: [], metaTools: [], skipped: [], errors: ['js-yaml not available'] }; }
+
+    const results = { activated: [], metaTools: [], skipped: [], errors: [] };
+
+    let files;
+    try {
+      files = fs.readdirSync(templatesDir).filter(f => f.endsWith('.yaml') || f.endsWith('.yml'));
+    } catch (err) {
+      results.errors.push(`Cannot read templates dir: ${err.message}`);
+      return results;
+    }
+
+    for (const file of files) {
+      try {
+        const raw = fs.readFileSync(path.join(templatesDir, file), 'utf8');
+        const template = yaml.load(raw);
+        if (!template?.skill_id || !Array.isArray(template.operations) || template.operations.length === 0) {
+          continue; // Not a new-format template
+        }
+
+        const skillId = template.skill_id;
+
+        // Skip if already activated (tools already in registry from reloadAll)
+        const firstToolName = `${skillId}_${this._slugify(template.operations[0].name)}`;
+        if (this.toolRegistry.has(firstToolName)) {
+          results.skipped.push(skillId);
+          continue;
+        }
+
+        // Check if template has required user parameters
+        const requiredParams = (template.parameters || []).filter(p => p.required && !p.derived_from);
+
+        if (requiredParams.length === 0) {
+          // Parameterless: activate immediately with empty params
+          // Compute derived params if any (e.g. domain transforms)
+          const resolvedParams = {};
+          for (const paramDef of (template.parameters || [])) {
+            if (paramDef.derived_from && resolvedParams[paramDef.derived_from] !== undefined) {
+              resolvedParams[paramDef.id] = resolvedParams[paramDef.derived_from]; // passthrough for empty
+            }
+          }
+
+          const result = await this.activate(template, resolvedParams);
+          results.activated.push(skillId);
+        } else {
+          // Parameterized: register a setup meta-tool
+          const metaToolName = `forge_setup_${skillId.replace(/-/g, '_')}`;
+          const paramList = requiredParams.map(p => `• ${p.label || p.id}: ${p.ask || p.description || ''}`).join('\n');
+          const credentialList = (template.credentials || []).map(c =>
+            `• NC Passwords entry "${c.nc_password_name}": ${c.help || c.label || ''}`
+          ).join('\n');
+
+          this.toolRegistry.register({
+            name: metaToolName,
+            description: `Set up ${template.display_name || skillId} integration. Call this when you need ${template.description || skillId} but the connection is not configured yet.`,
+            parameters: { type: 'object', properties: {}, required: [] },
+            handler: async () => ({
+              success: true,
+              result: [
+                `The ${template.display_name || skillId} skill needs to be configured first.`,
+                '',
+                'Required setup:',
+                paramList,
+                credentialList ? `\nCredentials needed:\n${credentialList}` : '',
+                '',
+                `Ask the user: "I need to connect to ${template.display_name || skillId} first. Can you tell me:"`,
+                paramList,
+                '',
+                `Once they provide the information, tell them to say "connect to ${skillId}" in our conversation to complete the setup.`,
+              ].filter(Boolean).join('\n'),
+            }),
+            metadata: {
+              source: 'skill-forge',
+              skillId,
+              type: 'setup-meta',
+              templateFile: file,
+              activatedAt: new Date().toISOString(),
+            },
+          });
+
+          results.metaTools.push(metaToolName);
+        }
+      } catch (err) {
+        results.errors.push(`${file}: ${err.message}`);
+      }
+    }
+
+    return results;
+  }
+
   // ---------------------------------------------------------------------------
   // Schema and Config Builders
   // ---------------------------------------------------------------------------
@@ -725,9 +832,14 @@ class ToolActivator {
    * @param {Object} resolvedParams
    */
   async _persistConfig(skillId, template, resolvedParams) {
-    const path = `${this._configBase}/${skillId}.json`;
+    const configPath = `${this._configBase}/${skillId}.json`;
     const payload = JSON.stringify({ skillId, template, resolvedParams, persistedAt: new Date().toISOString() }, null, 2);
-    await this.ncFiles.write(path, payload);
+    try {
+      await this.ncFiles.write(configPath, payload);
+    } catch (err) {
+      // Best-effort: auto-discovered skills will re-discover on next restart
+      console.warn(`[SkillForge] Persistence failed for ${skillId}: ${err.message}`);
+    }
   }
 
   /**

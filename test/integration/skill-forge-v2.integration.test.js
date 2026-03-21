@@ -530,6 +530,100 @@ asyncTest('TC-SFV2-020: WordPress create_post tool has correct schema (title req
 });
 
 // -----------------------------------------------------------------------------
+// SECTION 7: Auto-Discovery (parameterless activation + setup meta-tools)
+// -----------------------------------------------------------------------------
+
+console.log('\n--- Auto-Discovery ---\n');
+
+asyncTest('TC-SFV2-021: autoDiscover activates brave-search (no required params) immediately', async () => {
+  const registry = createToolRegistry();
+  const ncFiles = createNcFiles();
+  const { activator } = buildActivator(ncFiles, registry);
+
+  const result = await activator.autoDiscover(templatesDir);
+
+  assert.ok(result.activated.includes('brave-search'),
+    `brave-search should be auto-activated, got: ${JSON.stringify(result.activated)}`);
+  assert.ok(registry.has('brave-search_web_search'),
+    'brave-search_web_search tool should be registered');
+  assert.ok(registry.has('brave-search_news_search'),
+    'brave-search_news_search tool should be registered');
+});
+
+asyncTest('TC-SFV2-022: autoDiscover registers setup meta-tools for webhook and wordpress', async () => {
+  const registry = createToolRegistry();
+  const ncFiles = createNcFiles();
+  const { activator } = buildActivator(ncFiles, registry);
+
+  const result = await activator.autoDiscover(templatesDir);
+
+  assert.ok(result.metaTools.includes('forge_setup_webhook'),
+    `forge_setup_webhook should be in metaTools, got: ${JSON.stringify(result.metaTools)}`);
+  assert.ok(result.metaTools.includes('forge_setup_wordpress'),
+    `forge_setup_wordpress should be in metaTools, got: ${JSON.stringify(result.metaTools)}`);
+
+  // Meta-tools should be registered in ToolRegistry
+  assert.ok(registry.has('forge_setup_webhook'), 'forge_setup_webhook should be in registry');
+  assert.ok(registry.has('forge_setup_wordpress'), 'forge_setup_wordpress should be in registry');
+
+  // brave-search should NOT have a setup meta-tool (it's parameterless)
+  assert.ok(!result.metaTools.includes('forge_setup_brave_search'),
+    'brave-search should not have a setup meta-tool');
+});
+
+asyncTest('TC-SFV2-023: setup meta-tool handler returns setup instructions', async () => {
+  const registry = createToolRegistry();
+  const ncFiles = createNcFiles();
+  const { activator } = buildActivator(ncFiles, registry);
+
+  await activator.autoDiscover(templatesDir);
+
+  const wpSetup = registry.get('forge_setup_wordpress');
+  assert.ok(wpSetup, 'forge_setup_wordpress should exist');
+
+  const response = await wpSetup.handler({});
+  assert.strictEqual(response.success, true);
+  assert.ok(response.result.includes('WordPress'),
+    'Setup instructions should mention WordPress');
+  assert.ok(response.result.includes('wordpress-api'),
+    'Setup instructions should mention the NC Passwords credential name');
+});
+
+asyncTest('TC-SFV2-024: autoDiscover skips already-activated skills', async () => {
+  const registry = createToolRegistry();
+  const ncFiles = createNcFiles();
+  const { activator } = buildActivator(ncFiles, registry);
+
+  // First: activate brave-search manually
+  await activator.activate(braveTemplate, BRAVE_PARAMS);
+  assert.ok(registry.has('brave-search_web_search'), 'Pre-condition: brave-search already activated');
+
+  const sizeBefore = registry.size;
+
+  // AutoDiscover should skip brave-search (already activated)
+  const result = await activator.autoDiscover(templatesDir);
+
+  assert.ok(result.skipped.includes('brave-search'),
+    `brave-search should be skipped, got: ${JSON.stringify(result.skipped)}`);
+  assert.ok(!result.activated.includes('brave-search'),
+    'brave-search should not be in activated list');
+});
+
+asyncTest('TC-SFV2-025: setup meta-tool has skill-forge source metadata', async () => {
+  const registry = createToolRegistry();
+  const ncFiles = createNcFiles();
+  const { activator } = buildActivator(ncFiles, registry);
+
+  await activator.autoDiscover(templatesDir);
+
+  const tool = registry.get('forge_setup_webhook');
+  assert.ok(tool.metadata, 'Meta-tool should have metadata');
+  assert.strictEqual(tool.metadata.source, 'skill-forge');
+  assert.strictEqual(tool.metadata.type, 'setup-meta');
+  assert.strictEqual(tool.metadata.skillId, 'webhook');
+});
+
+// -----------------------------------------------------------------------------
 // Summary
 // -----------------------------------------------------------------------------
 

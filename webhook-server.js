@@ -1724,6 +1724,25 @@ async function initialize() {
           if (reloadResults.length > 0) {
             console.log(`[INIT] SkillForge: reloaded ${successCount}/${reloadResults.length} forged skills`);
           }
+          // Auto-discover templates from disk:
+          // - Parameterless templates (e.g. Brave Search): activated immediately
+          // - Parameterized templates (e.g. WordPress, Webhook): registered as setup meta-tools
+          const templatesDir = path.join(__dirname, 'config', 'skill-templates');
+          try {
+            const discovery = await toolActivator.autoDiscover(templatesDir);
+            if (discovery.activated.length > 0) {
+              console.log(`[INIT] SkillForge auto-activated: ${discovery.activated.join(', ')}`);
+            }
+            if (discovery.metaTools.length > 0) {
+              console.log(`[INIT] SkillForge setup meta-tools: ${discovery.metaTools.join(', ')}`);
+            }
+            if (discovery.errors.length > 0) {
+              console.warn(`[INIT] SkillForge discovery errors: ${discovery.errors.join('; ')}`);
+            }
+          } catch (discErr) {
+            console.warn(`[INIT] SkillForge auto-discovery failed: ${discErr.message}`);
+          }
+
           console.log(`[INIT] ToolActivator ready (ToolRegistry now has ${toolRegistry.size} tools)`);
 
           // Wire into existing SkillForgeHandler if available
