@@ -1,0 +1,83 @@
+# MoltAgent - Sovereign AI Security Layer
+# Copyright (C) 2026 MoltAgent Contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+skill_id: webhook
+display_name: "Webhook Sender"
+description: "Send messages to any webhook endpoint (Slack, Discord, n8n, Make, Zapier)"
+category: integration
+version: "1.0"
+emoji: "🔗"
+
+api_base: "{{webhook_url}}"
+
+auth:
+  type: none
+
+credentials: []
+
+parameters:
+  - id: webhook_url
+    label: "Webhook URL"
+    ask: "What's the webhook URL? (Slack, Discord, n8n, Make, Zapier, or any custom endpoint)"
+    type: text
+    required: true
+    validation_pattern: "^https://"
+  - id: webhook_name
+    label: "Webhook name"
+    ask: "Give this webhook a short name (e.g. 'slack-general', 'n8n-pipeline')"
+    type: text
+    required: true
+  - id: target_domain
+    derived_from: webhook_url
+    transform: domain
+
+security:
+  allowed_domains: ["{{target_domain}}"]
+  forbidden_patterns: []
+
+operations:
+  - name: send_message
+    method: POST
+    path: ""
+    description: "Send a JSON payload to the webhook endpoint"
+    body_type: json
+    parameters:
+      - name: text
+        type: string
+        required: false
+        description: "Message text (Slack/Discord format)"
+      - name: content
+        type: string
+        required: false
+        description: "Message content (Discord format)"
+      - name: payload
+        type: string
+        required: false
+        description: "Raw JSON payload as string (for custom webhook formats)"
+    response_hint: "Returns the webhook response (varies by service)"
+
+  - name: send_structured
+    method: POST
+    path: ""
+    description: "Send a structured notification with title and fields"
+    body_type: json
+    parameters:
+      - name: text
+        type: string
+        required: true
+        description: "Main notification text"
+      - name: username
+        type: string
+        required: false
+        description: "Override the sender name"
+      - name: icon_emoji
+        type: string
+        required: false
+        description: "Override the sender icon (Slack emoji format, e.g. ':robot_face:')"
+    response_hint: "Returns webhook response"
+
+verify:
+  operation: send_message
+  expect: "2xx response"
+  description: "Sends a test message to verify the webhook URL works"

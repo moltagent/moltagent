@@ -340,7 +340,7 @@ class TemplateEngine {
         tokenParam: template.auth?.token_param || null,
       },
       security: {
-        allowedDomains: template.security?.allowed_domains || [],
+        allowedDomains: (template.security?.allowed_domains || []).map(d => resolve(d)),
       },
       operations: (template.operations || []).map(op => ({
         name: op.name,

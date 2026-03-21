@@ -1,0 +1,130 @@
+# MoltAgent - Sovereign AI Security Layer
+# Copyright (C) 2026 MoltAgent Contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+skill_id: wordpress
+display_name: "WordPress Publisher"
+description: "Create, list, and manage posts on a WordPress site via REST API"
+category: content
+version: "1.0"
+emoji: "📝"
+
+api_base: "{{wp_site_url}}/wp-json/wp/v2"
+
+auth:
+  type: basic
+
+credentials:
+  - id: wp_auth
+    nc_password_name: "wordpress-api"
+    label: "WordPress Application Password"
+    help: "Create an Application Password in WordPress: Users → Your Profile → Application Passwords. Store as username:password in NC Passwords under 'wordpress-api'."
+
+parameters:
+  - id: wp_site_url
+    label: "WordPress site URL"
+    ask: "What's your WordPress site URL? (e.g. https://blog.example.com)"
+    type: text
+    required: true
+    validation_pattern: "^https://"
+  - id: wp_domain
+    derived_from: wp_site_url
+    transform: domain
+
+security:
+  allowed_domains: ["{{wp_domain}}"]
+  forbidden_patterns: []
+
+operations:
+  - name: list_posts
+    method: GET
+    path: /posts
+    description: "List recent posts from the WordPress site"
+    parameters:
+      - name: per_page
+        type: integer
+        required: false
+        description: "Number of posts to return (default 10, max 100)"
+        default: 10
+      - name: status
+        type: string
+        required: false
+        description: "Post status filter"
+        enum: [publish, draft, pending, private, future]
+      - name: search
+        type: string
+        required: false
+        description: "Search posts by keyword"
+    response_hint: "Returns array of post objects with id, title, status, link, date, excerpt"
+
+  - name: create_post
+    method: POST
+    path: /posts
+    description: "Create a new post on the WordPress site"
+    body_type: json
+    parameters:
+      - name: title
+        type: string
+        required: true
+        description: "Post title"
+      - name: content
+        type: string
+        required: true
+        description: "Post content (HTML or plain text)"
+      - name: status
+        type: string
+        required: false
+        description: "Post status"
+        enum: [publish, draft, pending, private, future]
+        default: draft
+      - name: categories
+        type: string
+        required: false
+        description: "Comma-separated category IDs"
+      - name: tags
+        type: string
+        required: false
+        description: "Comma-separated tag IDs"
+    response_hint: "Returns the created post object with id, link, status"
+
+  - name: update_post
+    method: PUT
+    path: "/posts/{{post_id}}"
+    description: "Update an existing post"
+    body_type: json
+    parameters:
+      - name: post_id
+        type: integer
+        required: true
+        description: "Post ID to update"
+      - name: title
+        type: string
+        required: false
+        description: "New post title"
+      - name: content
+        type: string
+        required: false
+        description: "New post content"
+      - name: status
+        type: string
+        required: false
+        description: "New post status"
+        enum: [publish, draft, pending, private, future]
+    response_hint: "Returns the updated post object"
+
+  - name: list_categories
+    method: GET
+    path: /categories
+    description: "List all categories on the WordPress site"
+    parameters:
+      - name: per_page
+        type: integer
+        required: false
+        description: "Number of categories to return"
+        default: 100
+    response_hint: "Returns array of category objects with id, name, slug, count"
+
+verify:
+  operation: list_posts
+  expect: "Non-empty array or empty array (valid JSON response)"
+  description: "Lists posts to verify WordPress API credentials work"

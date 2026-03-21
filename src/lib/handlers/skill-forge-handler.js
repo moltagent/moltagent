@@ -418,6 +418,11 @@ class SkillForgeHandler {
       }
     }
 
+    // New format: structured operations → tool definitions
+    if (this.templateEngine.isNewFormat(template)) {
+      return this._assembleAndPreviewNewFormat(user, state, template, parameters);
+    }
+
     // Assemble the skill
     let assembled;
     try {
@@ -484,12 +489,106 @@ class SkillForgeHandler {
   }
 
   /**
+   * Assemble and preview for new-format templates (structured operations).
+   * Uses generateToolDefinitions() + scanToolDefinitions() instead of SKILL.md assembly.
+   * @private
+   */
+  async _assembleAndPreviewNewFormat(user, state, template, parameters) {
+    let toolDefs;
+    try {
+      toolDefs = this.templateEngine.generateToolDefinitions(template, parameters);
+    } catch (error) {
+      await this.auditLog('skillforge_assembly_failed', { user, template_id: template.skill_id, error: error.message });
+      return {
+        success: false,
+        message: `Failed to generate tool definitions: ${error.message}\n\nReply 'cancel' to start over.`
+      };
+    }
+
+    // Security scan on structured definitions
+    const scanResult = this.securityScanner.scanToolDefinitions(toolDefs);
+
+    if (!scanResult.safe) {
+      await this.auditLog('skillforge_security_violation', {
+        user,
+        template_id: template.skill_id,
+        violations: scanResult.violations
+      });
+      const violationList = scanResult.violations.map(v => `• ${v}`).join('\n');
+      return {
+        success: false,
+        message: `**Security scan failed!**\n\nViolations detected:\n${violationList}\n\nThis skill cannot be created. Please check your parameters and try again.`
+      };
+    }
+
+    // Store for activation
+    state.toolDefs = toolDefs;
+    state.resolvedParams = parameters;
+    state.isNewFormat = true;
+    state.metadata = {
+      template_id: template.skill_id,
+      template_version: template.version,
+      security_scan: { passed: true, scanned_at: new Date().toISOString(), warnings: scanResult.warnings },
+      allowed_domains: toolDefs.security?.allowedDomains || []
+    };
+
+    // Transition to preview
+    state.state = 'preview';
+
+    // Build capability list for preview
+    const toolList = toolDefs.operations.map(op =>
+      `• **${template.skill_id}_${op.name.toLowerCase().replace(/[^a-z0-9]+/g, '_')}** — ${op.description}`
+    ).join('\n');
+
+    const warnings = scanResult.warnings.length > 0
+      ? `\n\n⚠️ Warnings:\n${scanResult.warnings.map(w => `• ${w}`).join('\n')}`
+      : '';
+
+    await this.auditLog('skillforge_preview_generated', { user, template_id: template.skill_id });
+
+    return {
+      success: true,
+      message: `**Skill Preview: ${toolDefs.displayName}**\n\nAfter activation, I'll be able to:\n${toolList}\n\nThese tools connect to ${toolDefs.apiBase} using your stored credentials.${warnings}\n\nReply **yes** to save for activation, or **no** to cancel.`
+    };
+  }
+
+  /**
    * Handle approve action (save to pending)
    * @private
    */
   async _handleApprove(user, state) {
     const content = state.generatedContent;
     const metadata = state.metadata;
+
+    // New format: direct activation via ToolActivator (security scan already passed in preview)
+    if (state.isNewFormat && !this.toolActivator) {
+      return {
+        success: false,
+        message: '**Activation unavailable:** ToolActivator is not configured. Please contact an administrator.'
+      };
+    }
+    if (state.isNewFormat && this.toolActivator) {
+      try {
+        const result = await this.toolActivator.activate(state.template, state.resolvedParams);
+        await this.auditLog('skillforge_skill_activated', {
+          user,
+          template_id: metadata.template_id,
+          tools: result.toolsRegistered
+        });
+        this.resetState(user);
+        const toolList = result.toolsRegistered.map(t => `• **${t}**`).join('\n');
+        return {
+          success: true,
+          message: `**Connected!** I can now:\n${toolList}\n\nThese tools are active and ready to use.`
+        };
+      } catch (error) {
+        await this.auditLog('skillforge_activation_failed', { user, template_id: metadata.template_id, error: error.message });
+        return {
+          success: false,
+          message: `**Activation failed:** ${error.message}\n\nReply 'cancel' to start over.`
+        };
+      }
+    }
 
     // Save to pending folder
     const result = await this.skillActivator.savePending(content, metadata);

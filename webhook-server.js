@@ -313,10 +313,10 @@ try {
   DocumentIngestor = null;
 }
 
-let SkillForgeHandler, TemplateLoader, TemplateEngine, SecurityScanner, SkillActivator;
+let SkillForgeHandler, TemplateLoader, TemplateEngine, SecurityScanner, SkillActivator, ToolActivator, HttpToolExecutor;
 try {
   ({ SkillForgeHandler } = require('./src/lib/handlers/skill-forge-handler'));
-  ({ TemplateLoader, TemplateEngine, SecurityScanner, SkillActivator } = require('./src/skill-forge'));
+  ({ TemplateLoader, TemplateEngine, SecurityScanner, SkillActivator, ToolActivator, HttpToolExecutor } = require('./src/skill-forge'));
 } catch {
   console.warn('[WARN] Skill Forge modules not available');
   SkillForgeHandler = null;
@@ -1422,10 +1422,12 @@ async function initialize() {
       const providersPath = path.join(__dirname, 'config', 'providers.json');
       const providersConfig = JSON.parse(fs.readFileSync(providersPath, 'utf-8'));
       const ollamaConfig = providersConfig.providers?.ollama || {};
-      const claudeConfig = providersConfig.providers?.claude || {};
+      // claudeConfig: first anthropic-adapter provider found, for legacy ProviderChain fallback path
+      const claudeConfig = Object.values(providersConfig.providers || {}).find(p => p.adapter === 'anthropic') || providersConfig.providers?.claude || {};
 
-      // Build both chat providers (needed by both RouterChatBridge and ProviderChain fallback)
+      // Build chat providers (needed by both RouterChatBridge and ProviderChain fallback)
       const { ClaudeToolsProvider } = require('./src/lib/agent/providers/claude-tools');
+      const { OpenAIToolsProvider } = require('./src/lib/agent/providers/openai-tools');
       const getCredential = credentialBroker.createGetter();
 
       let ollamaProvider = null;
@@ -1481,31 +1483,16 @@ async function initialize() {
       }) : null;
       if (intentRouter) console.log(`[INIT] IntentRouter ready (fast: ${appConfig.ollama.classifyModel || 'qwen2.5:3b'}, smart: ${appConfig.ollama.smartModel || 'qwen3:8b'}, timeout: ${appConfig.ollama.classifyTimeout}ms)`);
 
-      const claudeProvider = new ClaudeToolsProvider({
-        model: claudeConfig.model || CONFIG.claude.modelPremium,
-        maxTokens: 4096,
-        timeout: 30000,
-        getApiKey: () => getCredential(claudeConfig.credentialName || 'claude-api-key')
-      });
-      console.log(`[INIT] ClaudeToolsProvider ready (${claudeConfig.model || CONFIG.claude.modelPremium})`);
-
-      // Sonnet: workhorse cloud provider (same API key, cheaper model)
-      const sonnetProvider = new ClaudeToolsProvider({
-        model: CONFIG.claude.modelStandard,
-        maxTokens: 2048,
-        timeout: 30000,
-        getApiKey: () => getCredential('claude-api-key')
-      });
-      console.log(`[INIT] ClaudeToolsProvider ready (${CONFIG.claude.modelStandard})`);
-
-      // Haiku: cheapest cloud provider for tool-calling, classification, synthesis
-      const haikuProvider = new ClaudeToolsProvider({
-        model: 'claude-haiku-4-5-20251001',
-        maxTokens: 2048,
-        timeout: 30000,
-        getApiKey: () => getCredential('claude-api-key')
-      });
-      console.log('[INIT] ClaudeToolsProvider ready (claude-haiku-4-5-20251001)');
+      // claudeProvider: first anthropic provider, kept for ProviderChain fallback path below
+      const claudeProvider = claudeConfig.adapter === 'anthropic' && claudeConfig.credentialName
+        ? new ClaudeToolsProvider({
+            model: claudeConfig.model || CONFIG.claude.modelPremium,
+            maxTokens: 4096,
+            timeout: 30000,
+            getApiKey: () => getCredential(claudeConfig.credentialName)
+          })
+        : null;
+      if (claudeProvider) console.log(`[INIT] ClaudeToolsProvider (legacy fallback) ready (${claudeConfig.model || CONFIG.claude.modelPremium})`);
 
       // --- CostTracker: per-call audit logging + enriched cost reporting ---
       costTracker = new CostTracker({
@@ -1530,17 +1517,68 @@ async function initialize() {
 
       if (RouterChatBridge && llmRouter) {
         try {
-          // Build chatProviders map: routerProviderId → chatProvider
+          // --- Build chatProviders map dynamically from YAML config ---
+          // Anthropic adapter → ClaudeToolsProvider; all others → OpenAIToolsProvider.
           const chatProviders = new Map();
           if (ollamaCredentialProvider) chatProviders.set('ollama-credential', ollamaCredentialProvider);
           if (ollamaProvider) chatProviders.set('ollama-local', ollamaProvider);
           if (ollamaFastProvider) chatProviders.set('ollama-fast', ollamaFastProvider);
-          chatProviders.set('anthropic-claude', claudeProvider);
-          chatProviders.set('claude-sonnet', sonnetProvider);
-          chatProviders.set('claude-haiku', haikuProvider);
 
-          // Register ollama-fast in the router so roster can reference it
-          if (ollamaFastProvider) {
+          // Register cloud providers from YAML config
+          const OPENAI_COMPAT_ENDPOINTS = {
+            openai: 'https://api.openai.com/v1',
+            mistral: 'https://api.mistral.ai/v1',
+            deepseek: 'https://api.deepseek.com/v1',
+            groq: 'https://api.groq.com/openai/v1',
+            together: 'https://api.together.xyz/v1',
+            fireworks: 'https://api.fireworks.ai/inference/v1',
+            perplexity: 'https://api.perplexity.ai',
+            openrouter: 'https://openrouter.ai/api/v1',
+            xai: 'https://api.x.ai/v1',
+            google: 'https://generativelanguage.googleapis.com/v1beta/openai',
+          };
+          const yamlProviders = providersConfig.providers || {};
+          for (const [id, provConfig] of Object.entries(yamlProviders)) {
+            if (!provConfig.adapter) continue;
+            // Skip local providers — already handled above
+            const isLocal = provConfig.adapter === 'ollama' || provConfig.adapter === 'llama-cpp' || provConfig.adapter === 'vllm';
+            if (isLocal) continue;
+            // Skip if no credentialName (can't authenticate)
+            if (!provConfig.credentialName) continue;
+
+            try {
+              if (provConfig.adapter === 'anthropic') {
+                const provider = new ClaudeToolsProvider({
+                  model: provConfig.model || CONFIG.claude.modelPremium,
+                  maxTokens: 4096,
+                  timeout: 30000,
+                  getApiKey: () => getCredential(provConfig.credentialName)
+                });
+                chatProviders.set(id, provider);
+                console.log(`[INIT] ClaudeToolsProvider ready: ${id} (${provConfig.model})`);
+              } else {
+                const endpoint = provConfig.endpoint || OPENAI_COMPAT_ENDPOINTS[provConfig.adapter] || '';
+                if (!endpoint) {
+                  console.warn(`[INIT] Skipping ${id}: no endpoint for adapter '${provConfig.adapter}'`);
+                  continue;
+                }
+                const provider = new OpenAIToolsProvider({
+                  endpoint,
+                  model: provConfig.model,
+                  getApiKey: () => getCredential(provConfig.credentialName),
+                  maxTokens: 4096,
+                  timeout: 30000
+                });
+                chatProviders.set(id, provider);
+                console.log(`[INIT] OpenAIToolsProvider ready: ${id} (${provConfig.adapter}, ${provConfig.model})`);
+              }
+            } catch (provErr) {
+              console.warn(`[INIT] Failed to create tools provider for ${id}: ${provErr.message}`);
+            }
+          }
+
+          // Register ollama-fast in the router if not already there
+          if (ollamaFastProvider && !llmRouter.providers.has('ollama-fast')) {
             llmRouter.registerProvider('ollama-fast', {
               adapter: 'ollama',
               endpoint: ollamaConfig.endpoint || CONFIG.ollama.url,
@@ -1549,17 +1587,20 @@ async function initialize() {
             });
           }
 
-          // Register Haiku in the router so it appears as cheapest cloud provider
-          // in the roster. Haiku is the cost-optimal model for tool-calling,
-          // classification fallback, synthesis, and decomposition.
-          llmRouter.registerProvider('claude-haiku', {
-            adapter: 'anthropic',
-            endpoint: 'https://api.anthropic.com',
-            model: 'claude-haiku-4-5-20251001',
-            credentialName: 'claude-api-key',
-            type: 'cloud',
-            costModel: { type: 'per_token', inputPer1M: 0.80, outputPer1M: 4.00 }
-          });
+          // Register cloud providers in the router for roster building
+          // (only those not already loaded from the YAML bootstrap)
+          for (const [id, provConfig] of Object.entries(yamlProviders)) {
+            if (!provConfig.adapter || provConfig.adapter === 'ollama') continue;
+            if (llmRouter.providers.has(id)) continue;
+            llmRouter.registerProvider(id, {
+              adapter: provConfig.adapter,
+              endpoint: provConfig.endpoint || OPENAI_COMPAT_ENDPOINTS[provConfig.adapter] || '',
+              model: provConfig.model,
+              credentialName: provConfig.credentialName,
+              type: 'cloud',
+              costModel: provConfig.costModel || null
+            });
+          }
 
           // Activate smart-mix preset on LLMRouter v3
           llmRouter.setPreset('smart-mix');
@@ -1647,6 +1688,53 @@ async function initialize() {
         resilientWriter: resilientWriter
       });
       console.log(`[INIT] ToolRegistry ready (${toolRegistry.size} tools)`);
+
+      // Wire ToolActivator for Skill Forge v2 (native tool registration)
+      let toolActivator = null;
+      if (ToolActivator && HttpToolExecutor && ncFilesClient) {
+        try {
+          const httpExecutor = new HttpToolExecutor({
+            credentialBroker: { get: getCredential },
+            egressGuard: null,
+            timeoutMs: 30000,
+          });
+          // NCFilesClient adapter — ToolActivator uses write/read/delete/list
+          // but NCFilesClient has writeFile/readFile/deleteFile/listDirectory
+          const ncFilesAdapter = {
+            write: async (path, content) => ncFilesClient.writeFile(path, content),
+            read: async (path) => ncFilesClient.readFile(path),
+            delete: async (path) => ncFilesClient.deleteFile(path),
+            list: async (dir) => {
+              const entries = await ncFilesClient.listDirectory(dir);
+              return (entries || []).map(e => e.name || e.filename || e).filter(n => typeof n === 'string');
+            },
+          };
+          const auditFn = auditLogger ? auditLogger.log.bind(auditLogger) : consoleAuditLog;
+          toolActivator = new ToolActivator({
+            toolRegistry,
+            httpExecutor,
+            ncFiles: ncFilesAdapter,
+            auditLog: auditFn,
+            egressGuard: null,
+          });
+
+          // Reload previously activated skills from NC persistence
+          const reloadResults = await toolActivator.reloadAll();
+          const successCount = reloadResults.filter(r => r.success).length;
+          if (reloadResults.length > 0) {
+            console.log(`[INIT] SkillForge: reloaded ${successCount}/${reloadResults.length} forged skills`);
+          }
+          console.log(`[INIT] ToolActivator ready (ToolRegistry now has ${toolRegistry.size} tools)`);
+
+          // Wire into existing SkillForgeHandler if available
+          if (skillForgeHandler) {
+            skillForgeHandler.toolActivator = toolActivator;
+            console.log('[INIT] ToolActivator wired into SkillForgeHandler');
+          }
+        } catch (err) {
+          console.warn(`[INIT] ToolActivator failed: ${err.message}`);
+        }
+      }
 
       // Instantiate security guards
       const secretsGuard = SecretsGuard ? new SecretsGuard() : null;

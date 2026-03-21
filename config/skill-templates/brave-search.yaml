@@ -1,0 +1,88 @@
+# MoltAgent - Sovereign AI Security Layer
+# Copyright (C) 2026 MoltAgent Contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+skill_id: brave-search
+display_name: "Brave Search"
+description: "Web search via Brave Search API — privacy-respecting alternative to Google"
+category: search
+version: "1.0"
+emoji: "🔍"
+
+api_base: "https://api.search.brave.com/res/v1"
+
+auth:
+  type: header_key
+  header_name: "X-Subscription-Token"
+
+credentials:
+  - id: brave_api
+    nc_password_name: "brave-search-api"
+    label: "Brave Search API key"
+    help: "Get your API key from https://brave.com/search/api/ — store it in NC Passwords under 'brave-search-api'."
+
+parameters: []
+
+security:
+  allowed_domains: [api.search.brave.com]
+  forbidden_patterns: []
+
+operations:
+  - name: web_search
+    method: GET
+    path: /web/search
+    description: "Search the web using Brave Search"
+    parameters:
+      - name: q
+        type: string
+        required: true
+        description: "Search query"
+      - name: count
+        type: integer
+        required: false
+        description: "Number of results (default 10, max 20)"
+        default: 10
+      - name: country
+        type: string
+        required: false
+        description: "Country code for results (e.g. 'DE', 'US', 'BR')"
+      - name: search_lang
+        type: string
+        required: false
+        description: "Language code (e.g. 'en', 'de', 'pt')"
+      - name: freshness
+        type: string
+        required: false
+        description: "Time filter for results"
+        enum: [pd, pw, pm, py]
+    response_hint: "Returns { web: { results: [{ title, url, description, age }] } }"
+
+  - name: news_search
+    method: GET
+    path: /news/search
+    description: "Search news articles using Brave Search"
+    parameters:
+      - name: q
+        type: string
+        required: true
+        description: "Search query for news"
+      - name: count
+        type: integer
+        required: false
+        description: "Number of results (default 10)"
+        default: 10
+      - name: country
+        type: string
+        required: false
+        description: "Country code for results"
+      - name: freshness
+        type: string
+        required: false
+        description: "Time filter"
+        enum: [pd, pw, pm, py]
+    response_hint: "Returns { results: [{ title, url, description, age, source }] }"
+
+verify:
+  operation: web_search
+  expect: "JSON response with web.results array"
+  description: "Runs a test search to verify the API key works"
