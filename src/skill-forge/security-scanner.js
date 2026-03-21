@@ -363,6 +363,121 @@ class SecurityScanner {
     }
     return false;
   }
+
+  /**
+   * Scan structured tool definitions (new format) for security violations.
+   * Validates domains, HTTPS, SSRF, HTTP methods, path traversal, and credentials.
+   *
+   * @param {Object} toolDefs - Output of TemplateEngine.generateToolDefinitions()
+   * @returns {{ safe: boolean, violations: string[], warnings: string[] }}
+   */
+  scanToolDefinitions(toolDefs) {
+    const violations = [];
+    const warnings = [];
+
+    if (!toolDefs || !Array.isArray(toolDefs.operations)) {
+      violations.push('Invalid tool definitions: missing operations array');
+      return { safe: false, violations, warnings };
+    }
+
+    const allowedDomains = toolDefs.security?.allowedDomains || [];
+
+    // Validate each operation
+    for (const op of toolDefs.operations) {
+      const fullUrl = `${toolDefs.apiBase || ''}${op.path || ''}`;
+
+      try {
+        const parsed = new URL(fullUrl);
+
+        // HTTPS only
+        if (parsed.protocol !== 'https:') {
+          violations.push(`Operation "${op.name}": non-HTTPS URL (${parsed.protocol})`);
+        }
+
+        // Domain allowlist
+        if (allowedDomains.length > 0 && !allowedDomains.includes(parsed.hostname)) {
+          violations.push(`Operation "${op.name}": domain ${parsed.hostname} not in allowlist [${allowedDomains.join(', ')}]`);
+        }
+
+        // SSRF check — private/metadata IPs
+        if (this._isPrivateOrMetadata(parsed.hostname)) {
+          violations.push(`Operation "${op.name}": private/metadata IP blocked (${parsed.hostname})`);
+        }
+
+        // Blocked exfiltration domains
+        if (this._isBlockedDomain(parsed.hostname)) {
+          violations.push(`Operation "${op.name}": blocked exfiltration domain (${parsed.hostname})`);
+        }
+      } catch {
+        if (fullUrl) {
+          violations.push(`Operation "${op.name}": invalid URL "${fullUrl}"`);
+        }
+        // Empty URL is OK for operations that build URL from params at runtime
+      }
+
+      // Path traversal check
+      if (op.path && (op.path.includes('..') || op.path.includes('//'))) {
+        violations.push(`Operation "${op.name}": suspicious path pattern in "${op.path}"`);
+      }
+
+      // HTTP method validation
+      const validMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+      if (op.method && !validMethods.includes(op.method.toUpperCase())) {
+        violations.push(`Operation "${op.name}": invalid HTTP method "${op.method}"`);
+      }
+    }
+
+    // Credential name check — must be a label, not a hardcoded secret
+    if (toolDefs.auth?.credentialName) {
+      for (const { pattern } of CREDENTIAL_PATTERNS) {
+        if (pattern.test(toolDefs.auth.credentialName)) {
+          violations.push('Credential name looks like a hardcoded secret');
+          break;
+        }
+      }
+    }
+
+    // Operation count sanity check
+    if (toolDefs.operations.length > 20) {
+      warnings.push(`High operation count (${toolDefs.operations.length}) — review for necessity`);
+    }
+
+    return {
+      safe: violations.length === 0,
+      violations,
+      warnings,
+    };
+  }
+
+  /**
+   * SSRF protection — reject private IPs and cloud metadata endpoints.
+   * Operates on a single hostname string (complement to _checkPrivateIPs which
+   * operates on an array of full URL strings extracted from SKILL.md content).
+   *
+   * @private
+   * @param {string} hostname
+   * @returns {boolean} True if hostname should be blocked
+   */
+  _isPrivateOrMetadata(hostname) {
+    if (!hostname) return false;
+    // Strip IPv6 brackets — URL.hostname returns [::1] but checks need ::1
+    let h = hostname;
+    if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);
+    if (METADATA_ENDPOINTS.includes(h)) return true;
+    if (['localhost', '127.0.0.1', '0.0.0.0', '::1'].includes(h)) return true;
+
+    const ipMatch = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+    if (ipMatch) {
+      const [, a, b] = ipMatch.map(Number);
+      if (a === 10) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+      if (a === 192 && b === 168) return true;
+      if (a === 127) return true;
+      if (a === 169 && b === 254) return true;
+    }
+
+    return false;
+  }
 }
 
 // -----------------------------------------------------------------------------

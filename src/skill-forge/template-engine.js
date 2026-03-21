@@ -295,6 +295,72 @@ class TemplateEngine {
     map.forge_version = FORGE_VERSION;
     return map;
   }
+
+  /**
+   * Determine which format a template uses.
+   * New format has structured `operations` array; old format has `skill_template` string.
+   *
+   * @param {Object} template - Parsed YAML template
+   * @returns {boolean} True if template uses new structured operations format
+   */
+  isNewFormat(template) {
+    return Array.isArray(template?.operations) && template.operations.length > 0;
+  }
+
+  /**
+   * Generate tool definitions from structured operations (new format).
+   * Replaces SKILL.md assembly for new-format templates.
+   *
+   * @param {Object} template - Parsed YAML template (new format with operations)
+   * @param {Object} resolvedParams - User-provided parameter values
+   * @returns {Object} { skillId, displayName, apiBase, auth, security, operations }
+   */
+  generateToolDefinitions(template, resolvedParams) {
+    if (!this.isNewFormat(template)) {
+      throw new Error('Template does not use new operations format — use assemble() instead');
+    }
+
+    const resolve = (str) => {
+      if (!str) return '';
+      return String(str).replace(/\{\{(\w+)\}\}/g, (_, key) => {
+        const val = resolvedParams[key];
+        return val !== undefined && val !== null ? String(val) : '';
+      });
+    };
+
+    return {
+      skillId: template.skill_id,
+      displayName: template.display_name || template.skill_id,
+      apiBase: resolve(template.api_base),
+      auth: {
+        type: template.auth?.type || 'none',
+        credentialName: resolve(template.credentials?.[0]?.nc_password_name || ''),
+        headerName: template.auth?.header_name || null,
+        keyParam: template.auth?.key_param || null,
+        tokenParam: template.auth?.token_param || null,
+      },
+      security: {
+        allowedDomains: template.security?.allowed_domains || [],
+      },
+      operations: (template.operations || []).map(op => ({
+        name: op.name,
+        method: (op.method || 'GET').toUpperCase(),
+        path: resolve(op.path),
+        description: op.description || op.name,
+        bodyType: op.body_type || null,
+        bodyFields: op.body_fields || [],
+        parameters: (op.parameters || []).map(p => ({
+          name: p.name,
+          type: p.type || 'string',
+          required: !!p.required,
+          description: p.description || p.name,
+          ...(p.enum ? { enum: p.enum } : {}),
+          ...(p.default !== undefined ? { default: p.default } : {}),
+        })),
+        responseHint: op.response_hint || '',
+      })),
+    };
+  }
 }
 
 // -----------------------------------------------------------------------------

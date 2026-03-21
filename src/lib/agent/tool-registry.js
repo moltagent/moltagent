@@ -279,6 +279,28 @@ class ToolRegistry {
     return this.tools.has(name);
   }
 
+  /**
+   * Remove a tool from the registry.
+   * @param {string} name - Tool name to remove
+   * @returns {boolean} True if the tool was removed, false if it didn't exist
+   */
+  unregister(name) {
+    return this.tools.delete(name);
+  }
+
+  /**
+   * List tools registered by a specific source.
+   * @param {string} source - Source identifier (e.g. 'skill-forge')
+   * @returns {Array} Tools whose metadata.source matches
+   */
+  listBySource(source) {
+    const result = [];
+    for (const tool of this.tools.values()) {
+      if (tool.metadata?.source === source) result.push(tool);
+    }
+    return result;
+  }
+
   /** @returns {number} */
   get size() {
     return this.tools.size;

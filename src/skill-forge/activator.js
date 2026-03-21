@@ -21,18 +21,28 @@
  * Problem: Generated SKILL.md files must be deployed from the Nextcloud
  * pending folder to the active skills folder. The deployment must re-scan
  * the content (defense in depth) and move NC files to the active folder.
+ * Phase B1 extends this with ToolActivator, which registers forged skills
+ * directly as native MoltAgent tools in the ToolRegistry.
  *
- * Pattern: Async deployment pipeline with re-scan gate. Uses
- * NCRequestManager (for NC WebDAV operations). The SecurityScanner is
- * injected as a dependency for testability.
+ * Pattern: Two activators, one file.
+ *   - SkillActivator (original): Async deployment pipeline with re-scan gate.
+ *     Uses NCRequestManager (for NC WebDAV operations).
+ *   - ToolActivator (B1): Registers operations from a resolved skill template
+ *     as first-class ToolRegistry entries, backed by HttpToolExecutor. Persists
+ *     configs to NC so tools survive restarts. Optionally wires EgressGuard for
+ *     domain allowlisting.
  *
  * Key Dependencies:
- *   - NCRequestManager (injected): WebDAV GET/PUT/MOVE for NC file operations
+ *   - NCRequestManager (SkillActivator): WebDAV GET/PUT/MOVE for NC file ops
  *     Response: { status, statusText, headers, body, fromCache }
- *   - SecurityScanner (injected): Re-scan on activation
+ *   - SecurityScanner (SkillActivator): Re-scan on activation
  *   - js-yaml (v4.1.1): Parse YAML frontmatter to extract skill name
+ *   - ToolRegistry (ToolActivator): .register() / .unregister() for tools
+ *   - HttpToolExecutor (ToolActivator): Executes HTTP operations for skills
+ *   - ncFiles (ToolActivator): NC file client (.write, .read, .delete, .list)
+ *   - EgressGuard (ToolActivator, optional): Dynamic domain management
  *
- * Data Flow:
+ * Data Flow (SkillActivator):
  *   savePending(content, metadata)
  *     -> PUT SKILL.md to /Outbox/pending-skills/{name}.md via WebDAV
  *     -> PUT metadata to /Outbox/pending-skills/{name}.meta.json
@@ -46,10 +56,37 @@
  *     -> MOVE files to /Memory/ActiveSkills/ in NC
  *     -> Return { activated, skillName, verified }
  *
- * // TODO: B1 redesign — ToolActivator replaces this
+ * Data Flow (ToolActivator):
+ *   activate(template, resolvedParams)
+ *     -> Build tool name + JSON schema per operation
+ *     -> Register handler closures in ToolRegistry
+ *     -> Wire EgressGuard allowed_domains (if guard present)
+ *     -> Persist config to NC /Memory/SkillForge/active/{skillId}.json
+ *     -> Audit log activation
+ *     -> Return { skillId, toolsRegistered, success }
+ *
+ *   deactivate(skillId)
+ *     -> Load config from NC
+ *     -> Unregister tools from ToolRegistry
+ *     -> Remove EgressGuard domains
+ *     -> Delete NC config file
+ *     -> Audit log deactivation
+ *     -> Return { skillId, toolsRemoved, success }
+ *
+ *   reloadAll()
+ *     -> List /Memory/SkillForge/active/ configs
+ *     -> activate() each one from persisted state
+ *     -> Return array of results
+ *
+ * Dependency Map:
+ *   ToolActivator -> ToolRegistry (register/unregister)
+ *   ToolActivator -> HttpToolExecutor (execute HTTP ops)
+ *   ToolActivator -> ncFiles (persist/load/list configs)
+ *   ToolActivator -> auditLog (async audit function)
+ *   ToolActivator -> EgressGuard (optional, domain management)
  *
  * @module skill-forge/activator
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 'use strict';
@@ -69,7 +106,7 @@ const yaml = require('js-yaml');
  * - Move NC files from pending to active folder
  * - Update metadata with activation timestamps
  *
- * // TODO: B1 redesign — ToolActivator replaces this
+ * Legacy path — retained for backward compatibility. New skills use ToolActivator.
  */
 class SkillActivator {
   /**
@@ -378,7 +415,398 @@ class SkillActivator {
 }
 
 // -----------------------------------------------------------------------------
+// ToolActivator Class
+// -----------------------------------------------------------------------------
+
+/**
+ * Registers forged skills as native tools in the ToolRegistry.
+ *
+ * Responsibilities:
+ * - Build JSON schema and handler closures per skill operation
+ * - Register tools in ToolRegistry (backed by HttpToolExecutor)
+ * - Optionally allowlist operation domains in EgressGuard
+ * - Persist active configs to NC for restart recovery
+ * - Audit-log all activation and deactivation events
+ */
+class ToolActivator {
+  /**
+   * Create a new ToolActivator instance.
+   *
+   * @param {Object} options
+   * @param {Object} options.toolRegistry - ToolRegistry with .register() and .unregister()
+   * @param {Object} options.httpExecutor - HttpToolExecutor with .execute(opConfig, params)
+   * @param {Object} options.ncFiles - NC file client: async .write(path, content), .read(path), .delete(path), .list(dir)
+   * @param {Function} options.auditLog - async (entry) => Promise audit log function
+   * @param {Object} [options.egressGuard] - EgressGuard with .addAllowedDomain() and .removeBySource()
+   */
+  constructor({ toolRegistry, httpExecutor, ncFiles, auditLog, egressGuard = null }) {
+    if (!toolRegistry) throw new Error('ToolActivator: toolRegistry is required');
+    if (!httpExecutor) throw new Error('ToolActivator: httpExecutor is required');
+    if (!ncFiles) throw new Error('ToolActivator: ncFiles is required');
+    if (typeof auditLog !== 'function') throw new Error('ToolActivator: auditLog must be a function');
+
+    this.toolRegistry = toolRegistry;
+    this.httpExecutor = httpExecutor;
+    this.ncFiles = ncFiles;
+    this.auditLog = auditLog;
+    this.egressGuard = egressGuard;
+
+    this._configBase = '/Memory/SkillForge/active';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Activate a resolved skill template: register each operation as a native tool.
+   *
+   * @param {Object} template - Resolved skill template with skill_id, operations, security, etc.
+   * @param {Object} resolvedParams - Parameter values that fill {{placeholders}} in the template
+   * @returns {Promise<{ skillId: string, toolsRegistered: string[], success: boolean }>}
+   */
+  async activate(template, resolvedParams) {
+    if (!template || !template.skill_id) {
+      throw new Error('ToolActivator.activate: template must have a skill_id');
+    }
+    if (!Array.isArray(template.operations) || template.operations.length === 0) {
+      throw new Error(`ToolActivator.activate: template "${template.skill_id}" has no operations`);
+    }
+
+    const skillId = template.skill_id;
+    const templateVersion = template.version || '1.0.0';
+    const toolsRegistered = [];
+
+    for (const operation of template.operations) {
+      const toolName = `${skillId}_${this._slugify(operation.name)}`;
+      const schema = this._buildSchema(operation);
+      const opConfig = this._buildOperationConfig(template, operation, resolvedParams);
+
+      // Capture opConfig in closure — each operation gets its own config snapshot
+      const executeFn = async (params) => this.httpExecutor.execute(opConfig, params);
+
+      this.toolRegistry.register({
+        name: toolName,
+        description: operation.description || `${operation.name} operation from skill ${skillId}`,
+        parameters: schema,
+        handler: executeFn,
+        metadata: {
+          source: 'skill-forge',
+          skillId,
+          templateVersion,
+          activatedAt: new Date().toISOString(),
+        },
+      });
+
+      toolsRegistered.push(toolName);
+    }
+
+    // Wire EgressGuard allowed domains if guard is present
+    if (this.egressGuard && template.security && Array.isArray(template.security.allowed_domains)) {
+      for (const domain of template.security.allowed_domains) {
+        if (domain) {
+          this.egressGuard.addAllowedDomain(domain, { source: 'skill-forge', skillId });
+        }
+      }
+    }
+
+    // Persist config to NC for restart recovery
+    await this._persistConfig(skillId, template, resolvedParams);
+
+    // Audit log the activation
+    await this.auditLog({
+      event: 'skill_activated',
+      skillId,
+      templateVersion,
+      toolsRegistered,
+      timestamp: new Date().toISOString(),
+    });
+
+    return { skillId, toolsRegistered, success: true };
+  }
+
+  /**
+   * Deactivate a skill: unregister all its tools from ToolRegistry, remove NC config,
+   * and clean up EgressGuard domain entries.
+   *
+   * @param {string} skillId - The skill ID to deactivate
+   * @returns {Promise<{ skillId: string, toolsRemoved: string[], success: boolean }>}
+   */
+  async deactivate(skillId) {
+    if (!skillId || typeof skillId !== 'string') {
+      throw new Error('ToolActivator.deactivate: skillId must be a non-empty string');
+    }
+
+    const config = await this._loadConfig(skillId);
+    if (!config) {
+      throw new Error(`ToolActivator.deactivate: no active config found for skill "${skillId}"`);
+    }
+
+    const toolsRemoved = [];
+    const template = config.template || {};
+
+    if (Array.isArray(template.operations)) {
+      for (const operation of template.operations) {
+        const toolName = `${skillId}_${this._slugify(operation.name)}`;
+        this.toolRegistry.unregister(toolName);
+        toolsRemoved.push(toolName);
+      }
+    }
+
+    // Remove EgressGuard domains registered by this skill
+    if (this.egressGuard) {
+      this.egressGuard.removeBySource('skill-forge', skillId);
+    }
+
+    // Remove NC config file
+    await this._removeConfig(skillId);
+
+    // Audit log the deactivation
+    await this.auditLog({
+      event: 'skill_deactivated',
+      skillId,
+      toolsRemoved,
+      timestamp: new Date().toISOString(),
+    });
+
+    return { skillId, toolsRemoved, success: true };
+  }
+
+  /**
+   * Reload all persisted skill configs from NC — used on agent restart.
+   *
+   * Reads every JSON file in /Memory/SkillForge/active/ and re-activates
+   * each skill. Individual failures are captured per-result rather than
+   * aborting the whole reload.
+   *
+   * @returns {Promise<Array<{ skillId: string, toolsRegistered: string[], success: boolean }|{ skillId: string, success: boolean, error: string }>>}
+   */
+  async reloadAll() {
+    const configs = await this._listConfigs();
+    const results = [];
+
+    for (const { skillId, template, resolvedParams } of configs) {
+      try {
+        const result = await this.activate(template, resolvedParams);
+        results.push(result);
+      } catch (err) {
+        results.push({ skillId, success: false, error: err.message });
+      }
+    }
+
+    return results;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Schema and Config Builders
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Convert an operation's parameters array to a JSON Schema object.
+   *
+   * @param {Object} operation - Single operation from template.operations
+   * @returns {Object} JSON Schema object with type:'object', properties, required
+   */
+  _buildSchema(operation) {
+    const properties = {};
+    const required = [];
+
+    const params = Array.isArray(operation.parameters) ? operation.parameters : [];
+
+    for (const param of params) {
+      if (!param || !param.name) continue;
+
+      const propDef = {
+        type: param.type || 'string',
+        description: param.description || '',
+      };
+
+      if (param.enum !== undefined && param.enum !== null) {
+        propDef.enum = param.enum;
+      }
+      if (param.default !== undefined && param.default !== null) {
+        propDef.default = param.default;
+      }
+
+      properties[param.name] = propDef;
+
+      if (param.required === true) {
+        required.push(param.name);
+      }
+    }
+
+    return {
+      type: 'object',
+      properties,
+      required,
+    };
+  }
+
+  /**
+   * Build a static operation config used by HttpToolExecutor to execute a request.
+   *
+   * Template-level {{placeholders}} in api_base and path are resolved using resolvedParams.
+   *
+   * @param {Object} template - The full skill template
+   * @param {Object} operation - Single operation from template.operations
+   * @param {Object} resolvedParams - Resolved parameter map for placeholder substitution
+   * @returns {Object} opConfig for HttpToolExecutor.execute()
+   */
+  _buildOperationConfig(template, operation, resolvedParams) {
+    const apiBase = this._resolveString(template.api_base || '', resolvedParams);
+    const path = this._resolveString(operation.path || '', resolvedParams);
+    const resolvedUrl = `${apiBase}${path}`;
+
+    const auth = template.auth || {};
+    const authConfig = {
+      type: auth.type || null,
+      credentialName: auth.credential_name || auth.credentialName || null,
+      headerName: auth.header_name || auth.headerName || null,
+      keyParam: auth.key_param || auth.keyParam || null,
+      tokenParam: auth.token_param || auth.tokenParam || null,
+    };
+
+    const params = Array.isArray(operation.parameters) ? operation.parameters : [];
+    const defaultBodyFields = operation.body_type === 'json'
+      ? params.map(p => p.name).filter(Boolean)
+      : [];
+
+    return {
+      method: operation.method || 'GET',
+      url: resolvedUrl,
+      auth: authConfig,
+      queryParams: operation.query_params || [],
+      bodyType: operation.body_type || null,
+      bodyFields: operation.body_fields || defaultBodyFields,
+    };
+  }
+
+  /**
+   * Replace {{key}} placeholders in a string with values from params.
+   *
+   * @param {string} template - String containing {{key}} placeholders
+   * @param {Object} params - Key/value map of replacements
+   * @returns {string} String with all placeholders resolved
+   */
+  _resolveString(template, params) {
+    if (!template || typeof template !== 'string') return template || '';
+    if (!params || typeof params !== 'object') return template;
+    return template.replace(/\{\{(\w+)\}\}/g, (_, key) => {
+      const val = params[key];
+      return val !== undefined && val !== null ? String(val) : '';
+    });
+  }
+
+  /**
+   * Convert a string to a safe tool-name slug: lowercase, non-alphanumeric to
+   * underscores, leading/trailing underscores trimmed.
+   *
+   * @param {string} str - Input string (e.g. operation name)
+   * @returns {string} Slugified string safe for use as a tool name segment
+   */
+  _slugify(str) {
+    if (!str || typeof str !== 'string') return 'op';
+    return str
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Persistence
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Persist skill config to NC for restart recovery.
+   *
+   * @private
+   * @param {string} skillId
+   * @param {Object} template
+   * @param {Object} resolvedParams
+   */
+  async _persistConfig(skillId, template, resolvedParams) {
+    const path = `${this._configBase}/${skillId}.json`;
+    const payload = JSON.stringify({ skillId, template, resolvedParams, persistedAt: new Date().toISOString() }, null, 2);
+    await this.ncFiles.write(path, payload);
+  }
+
+  /**
+   * Load and parse a persisted skill config from NC.
+   *
+   * @private
+   * @param {string} skillId
+   * @returns {Promise<Object|null>} Parsed config or null if not found/invalid
+   */
+  async _loadConfig(skillId) {
+    const path = `${this._configBase}/${skillId}.json`;
+    try {
+      const content = await this.ncFiles.read(path);
+      if (!content) return null;
+      return typeof content === 'string' ? JSON.parse(content) : content;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Delete a persisted skill config from NC.
+   *
+   * @private
+   * @param {string} skillId
+   */
+  async _removeConfig(skillId) {
+    const path = `${this._configBase}/${skillId}.json`;
+    try {
+      await this.ncFiles.delete(path);
+    } catch {
+      // Best-effort: if the file is already gone, don't throw
+    }
+  }
+
+  /**
+   * List all persisted skill configs from NC.
+   *
+   * @private
+   * @returns {Promise<Array<{ skillId: string, template: Object, resolvedParams: Object }>>}
+   */
+  async _listConfigs() {
+    let files;
+    try {
+      files = await this.ncFiles.list(this._configBase);
+    } catch {
+      // Directory doesn't exist yet or unreadable — return empty
+      return [];
+    }
+
+    if (!Array.isArray(files)) return [];
+
+    const results = [];
+    for (const file of files) {
+      // Accept string filenames or objects with a name/filename property
+      const filename = typeof file === 'string' ? file : (file.name || file.filename || '');
+      if (!filename.endsWith('.json')) continue;
+
+      // Derive skillId from filename: strip path prefix and .json suffix
+      const basename = filename.split('/').pop();
+      const skillId = basename.replace(/\.json$/, '');
+      if (!skillId) continue;
+
+      const config = await this._loadConfig(skillId);
+      if (config && config.template) {
+        results.push({
+          skillId: config.skillId || skillId,
+          template: config.template,
+          resolvedParams: config.resolvedParams || {},
+        });
+      }
+    }
+
+    return results;
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Exports
 // -----------------------------------------------------------------------------
 
-module.exports = { SkillActivator };
+module.exports = { SkillActivator, ToolActivator };

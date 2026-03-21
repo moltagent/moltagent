@@ -202,6 +202,9 @@ class EgressGuard {
       [...ALWAYS_BLOCKED_DOMAINS, ...(options.additionalBlocked || [])]
         .map(d => d.toLowerCase())
     );
+
+    // Track dynamically added domains by source for clean removal
+    this._dynamicDomains = new Map(); // source key → Set of domains
   }
 
   /**
@@ -436,6 +439,52 @@ class EgressGuard {
       return this._isPrivateIP(hostname);
     } catch (e) {
       return false;
+    }
+  }
+
+  /**
+   * Add a domain to the allowlist at runtime (e.g. for Skill Forge skills).
+   * @param {string} domain - Domain to allow
+   * @param {Object} [metadata] - Tracking metadata
+   * @param {string} [metadata.source] - Source identifier (e.g. 'skill-forge')
+   * @param {string} [metadata.skillId] - Skill identifier
+   */
+  addAllowedDomain(domain, metadata = {}) {
+    const normalized = domain.toLowerCase();
+    this.allowedDomains.add(normalized);
+    if (metadata.source) {
+      const key = metadata.skillId ? `${metadata.source}:${metadata.skillId}` : metadata.source;
+      if (!this._dynamicDomains.has(key)) {
+        this._dynamicDomains.set(key, new Set());
+      }
+      this._dynamicDomains.get(key).add(normalized);
+    }
+  }
+
+  /**
+   * Remove all dynamically added domains for a given source.
+   * @param {string} source - Source identifier (e.g. 'skill-forge')
+   * @param {string} [id] - Optional sub-identifier (e.g. skillId)
+   */
+  removeBySource(source, id) {
+    const key = id ? `${source}:${id}` : source;
+    const domains = this._dynamicDomains.get(key);
+    if (domains) {
+      for (const domain of domains) {
+        // Reference-count check: only remove from allowedDomains if no other
+        // dynamic source still needs this domain
+        let stillNeeded = false;
+        for (const [otherKey, otherDomains] of this._dynamicDomains) {
+          if (otherKey !== key && otherDomains.has(domain)) {
+            stillNeeded = true;
+            break;
+          }
+        }
+        if (!stillNeeded) {
+          this.allowedDomains.delete(domain);
+        }
+      }
+      this._dynamicDomains.delete(key);
     }
   }
 
