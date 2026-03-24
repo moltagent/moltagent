@@ -1,0 +1,59 @@
+# Moltagent Skill Template: Bluesky (AT Protocol)
+# Upload to: /Moltagent/SkillTemplates/bluesky.yaml
+#
+# Credential setup in NC Passwords:
+#   Name: bluesky
+#   Username: your-handle.bsky.social
+#   Password: your-app-password
+#   Custom fields: handle = your-handle.bsky.social, appPassword = your-app-password
+
+name: bluesky
+skill_id: bluesky
+version: "1.0"
+display_name: Bluesky
+description: Publish posts to Bluesky via AT Protocol
+
+auth:
+  type: session
+  credential_name: bluesky
+  session_endpoint: https://bsky.social/xrpc/com.atproto.server.createSession
+  session_method: POST
+  session_body:
+    identifier: "{{credential.handle}}"
+    password: "{{credential.appPassword}}"
+  token_path: accessJwt
+  extra_from_session:
+    did: did
+  token_ttl: 7200
+
+security:
+  allowed_domains:
+    - bsky.social
+
+tools:
+  - name: bluesky_create_post
+    description: "Publish a single post to Bluesky. Maximum 300 characters."
+    method: POST
+    url: https://bsky.social/xrpc/com.atproto.repo.createRecord
+    body:
+      repo: "{{session.did}}"
+      collection: "app.bsky.feed.post"
+      record:
+        text: "{{params.text}}"
+        "$type": "app.bsky.feed.post"
+        createdAt: "{{now_iso}}"
+    params:
+      text:
+        type: string
+        required: true
+        description: "Post text, maximum 300 characters"
+
+  - name: bluesky_get_metrics
+    description: "Get engagement metrics for a Bluesky post — likes, reposts, replies."
+    method: GET
+    url: "https://bsky.social/xrpc/app.bsky.feed.getPosts?uris={{params.uri}}"
+    params:
+      uri:
+        type: string
+        required: true
+        description: "Bluesky post URI (at:// format)"

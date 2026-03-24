@@ -615,10 +615,265 @@ asyncTest('TC-HTE-061: falls back to plain text when response is not valid JSON'
 // Cleanup: ensure global.fetch is restored after all async tests complete
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// Session Auth Tests (sequential — share global.fetch, must not race)
+// Delayed start to let previous fire-and-forget async tests settle.
+// -----------------------------------------------------------------------------
+setTimeout(async () => {
+
+/**
+ * Mock fetch that returns different responses for different URLs.
+ * @param {Object} urlResponses - Map of URL substring → mock response
+ */
+function mockFetchByUrl(urlResponses) {
+  const calls = [];
+  global.fetch = async (url, opts) => {
+    calls.push({ url, opts });
+    for (const [pattern, resp] of Object.entries(urlResponses)) {
+      if (url.includes(pattern)) {
+        const headerMap = new Map(Object.entries(resp.headers || {}));
+        return {
+          ok: resp.ok !== undefined ? resp.ok : true,
+          status: resp.status || 200,
+          headers: { get: (name) => headerMap.get(name) ?? null },
+          text: async () => (typeof resp.body === 'string' ? resp.body : JSON.stringify(resp.body)),
+        };
+      }
+    }
+    return { ok: false, status: 404, headers: { get: () => null }, text: async () => 'Not found' };
+  };
+  return calls;
+}
+
+const SESSION_AUTH = {
+  type: 'session',
+  credential_name: 'bluesky',
+  session_endpoint: 'https://bsky.social/xrpc/com.atproto.server.createSession',
+  session_method: 'POST',
+  session_body: {
+    identifier: '{{credential.handle}}',
+    password: '{{credential.appPassword}}',
+  },
+  token_path: 'accessJwt',
+  extra_from_session: { did: 'did' },
+  token_ttl: 7200,
+};
+
+await asyncTest('Session auth: creates session and uses token for API call', async () => {
+  const calls = mockFetchByUrl({
+    'createSession': {
+      body: { accessJwt: 'test-jwt-token', did: 'did:plc:test123' },
+    },
+    'createRecord': {
+      body: { uri: 'at://did:plc:test123/app.bsky.feed.post/abc', cid: 'baf123' },
+    },
+  });
+
+  try {
+    const executor = new HttpToolExecutor({
+      credentialBroker: mockCredentialBroker({
+        bluesky: { handle: 'test.bsky.social', appPassword: 'secret-app-pw' },
+      }),
+    });
+
+    const result = await executor.execute({
+      method: 'POST',
+      url: 'https://bsky.social/xrpc/com.atproto.repo.createRecord',
+      auth: SESSION_AUTH,
+      bodyType: 'json',
+      bodyTemplate: {
+        repo: '{{session.did}}',
+        collection: 'app.bsky.feed.post',
+        record: {
+          text: '{{params.text}}',
+          '$type': 'app.bsky.feed.post',
+          createdAt: '{{now_iso}}',
+        },
+      },
+    }, { text: 'Hello Bluesky!' });
+
+    assert.strictEqual(result.success, true, `request should succeed, error: ${result.error}`);
+    assert.strictEqual(calls.length, 2, 'should make 2 fetch calls (session + API)');
+
+    // Verify session call
+    const sessionCall = calls[0];
+    assert.ok(sessionCall.url.includes('createSession'), 'first call is session');
+    const sessionBody = JSON.parse(sessionCall.opts.body);
+    assert.strictEqual(sessionBody.identifier, 'test.bsky.social');
+    assert.strictEqual(sessionBody.password, 'secret-app-pw');
+
+    // Verify API call uses Bearer token
+    const apiCall = calls[1];
+    assert.strictEqual(apiCall.opts.headers['Authorization'], 'Bearer test-jwt-token');
+
+    // Verify body template resolution
+    const apiBody = JSON.parse(apiCall.opts.body);
+    assert.strictEqual(apiBody.repo, 'did:plc:test123', 'session.did resolved');
+    assert.strictEqual(apiBody.record.text, 'Hello Bluesky!', 'params.text resolved');
+    assert.ok(apiBody.record.createdAt.includes('T'), 'now_iso resolved to ISO timestamp');
+    assert.strictEqual(apiBody.collection, 'app.bsky.feed.post', 'literal value preserved');
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest('Session auth: caches token across calls', async () => {
+  let sessionCallCount = 0;
+  mockFetchByUrl({
+    'createSession': {
+      body: { accessJwt: 'cached-jwt', did: 'did:plc:cached' },
+    },
+    'createRecord': { body: { uri: 'at://x', cid: 'c' } },
+    'getPosts': { body: { posts: [] } },
+  });
+  // Override to count session calls
+  const origFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    if (url.includes('createSession')) sessionCallCount++;
+    return origFetch(url, opts);
+  };
+
+  try {
+    const executor = new HttpToolExecutor({
+      credentialBroker: mockCredentialBroker({
+        bluesky: { handle: 'test.bsky.social', appPassword: 'pw' },
+      }),
+    });
+
+    // First call: creates session
+    await executor.execute({
+      method: 'POST', url: 'https://bsky.social/xrpc/com.atproto.repo.createRecord',
+      auth: SESSION_AUTH, bodyType: 'json', bodyTemplate: { repo: '{{session.did}}' },
+    }, {});
+
+    // Second call: should reuse cached token
+    await executor.execute({
+      method: 'GET', url: 'https://bsky.social/xrpc/app.bsky.feed.getPosts?uris=at://x',
+      auth: SESSION_AUTH,
+    }, {});
+
+    assert.strictEqual(sessionCallCount, 1, 'session endpoint called only once (cached)');
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest('Session auth: re-authenticates on 401', async () => {
+  let callCount = 0;
+  global.fetch = async (url, opts) => {
+    callCount++;
+    const headerMap = new Map();
+    if (url.includes('createSession')) {
+      return {
+        ok: true, status: 200, headers: { get: () => null },
+        text: async () => JSON.stringify({ accessJwt: `jwt-${callCount}`, did: 'did:plc:x' }),
+      };
+    }
+    // First API call returns 401, retry succeeds
+    if (callCount <= 3) {
+      return { ok: false, status: 401, headers: { get: () => null }, text: async () => '{"error":"ExpiredToken"}' };
+    }
+    return { ok: true, status: 200, headers: { get: () => null }, text: async () => '{"success":true}' };
+  };
+
+  try {
+    const executor = new HttpToolExecutor({
+      credentialBroker: mockCredentialBroker({
+        bluesky: { handle: 'h', appPassword: 'p' },
+      }),
+    });
+
+    const result = await executor.execute({
+      method: 'POST', url: 'https://bsky.social/xrpc/com.atproto.repo.createRecord',
+      auth: SESSION_AUTH, bodyType: 'json', bodyTemplate: { repo: '{{session.did}}' },
+    }, {});
+
+    assert.strictEqual(result.success, true, 'should succeed after re-auth');
+    assert.ok(callCount >= 4, 'should have made session + api + re-session + retry calls');
+  } finally {
+    restoreFetch();
+  }
+});
+
+await asyncTest('Session auth: SSRF blocks private session_endpoint', async () => {
+  const executor = new HttpToolExecutor({
+    credentialBroker: mockCredentialBroker({ bluesky: { handle: 'h', appPassword: 'p' } }),
+  });
+
+  const result = await executor.execute({
+    method: 'GET', url: 'https://bsky.social/xrpc/test',
+    auth: { ...SESSION_AUTH, session_endpoint: 'http://192.168.1.1/session' },
+  }, {});
+
+  assert.strictEqual(result.success, false);
+  assert.ok(result.error.includes('SSRF'), 'should mention SSRF');
+});
+
+await asyncTest('Session auth: errors on missing credential', async () => {
+  mockFetch({ body: {} });
+  try {
+    const executor = new HttpToolExecutor({
+      credentialBroker: mockCredentialBroker({}), // no bluesky credential
+    });
+
+    const result = await executor.execute({
+      method: 'GET', url: 'https://bsky.social/xrpc/test',
+      auth: SESSION_AUTH,
+    }, {});
+
+    assert.strictEqual(result.success, false);
+    assert.ok(result.error.includes('not found'), 'error mentions credential not found');
+  } finally {
+    restoreFetch();
+  }
+});
+
+// Sync tests follow (no fetch dependency)
+}, 200); // end session auth delayed block
+
+// ─── _resolveTemplate tests ──────────────────────────────────────────
+
+test('_resolveTemplate: resolves {{params.x}}, {{session.x}}, {{now_iso}}', () => {
+  const executor = new HttpToolExecutor({ credentialBroker: mockCredentialBroker() });
+  const result = executor._resolveTemplate(
+    { text: '{{params.text}}', did: '{{session.did}}', ts: '{{now_iso}}', literal: 'unchanged' },
+    { params: { text: 'hello' }, session: { did: 'did:plc:123' }, credential: {} }
+  );
+  assert.strictEqual(result.text, 'hello');
+  assert.strictEqual(result.did, 'did:plc:123');
+  assert.ok(result.ts.includes('T'), 'now_iso is ISO timestamp');
+  assert.strictEqual(result.literal, 'unchanged');
+});
+
+test('_resolveTemplate: handles nested objects and arrays', () => {
+  const executor = new HttpToolExecutor({ credentialBroker: mockCredentialBroker() });
+  const result = executor._resolveTemplate(
+    { record: { text: '{{params.text}}', tags: ['{{params.tag}}', 'fixed'] } },
+    { params: { text: 'hi', tag: 'test' }, session: {}, credential: {} }
+  );
+  assert.strictEqual(result.record.text, 'hi');
+  assert.strictEqual(result.record.tags[0], 'test');
+  assert.strictEqual(result.record.tags[1], 'fixed');
+});
+
+test('_resolveTemplate: unknown placeholders left as-is', () => {
+  const executor = new HttpToolExecutor({ credentialBroker: mockCredentialBroker() });
+  const result = executor._resolveTemplate('{{unknown.key}}', { params: {}, session: {}, credential: {} });
+  assert.strictEqual(result, '{{unknown.key}}');
+});
+
+test('_getNestedValue: extracts dot-notation paths', () => {
+  const executor = new HttpToolExecutor({ credentialBroker: mockCredentialBroker() });
+  assert.strictEqual(executor._getNestedValue({ a: { b: { c: 42 } } }, 'a.b.c'), 42);
+  assert.strictEqual(executor._getNestedValue({ accessJwt: 'tok' }, 'accessJwt'), 'tok');
+  assert.strictEqual(executor._getNestedValue({}, 'missing'), undefined);
+  assert.strictEqual(executor._getNestedValue(null, 'x'), undefined);
+});
+
 setTimeout(() => {
   // Final safety restore — guards against any test that failed inside try/finally
   global.fetch = originalFetch;
   console.log('\n=== HttpToolExecutor Tests Complete ===\n');
   summary();
   exitWithCode();
-}, 500);
+}, 3000);

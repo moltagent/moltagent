@@ -466,18 +466,20 @@ class ToolActivator {
    * @returns {Promise<{ skillId: string, toolsRegistered: string[], success: boolean }>}
    */
   async activate(template, resolvedParams) {
-    if (!template || !template.skill_id) {
-      throw new Error('ToolActivator.activate: template must have a skill_id');
+    if (!template || !(template.skill_id || template.name)) {
+      throw new Error('ToolActivator.activate: template must have a skill_id or name');
     }
-    if (!Array.isArray(template.operations) || template.operations.length === 0) {
-      throw new Error(`ToolActivator.activate: template "${template.skill_id}" has no operations`);
+    // Support both 'operations' (legacy) and 'tools' (new) arrays
+    const operations = template.operations || template.tools || [];
+    if (!Array.isArray(operations) || operations.length === 0) {
+      throw new Error(`ToolActivator.activate: template "${template.skill_id || template.name}" has no operations`);
     }
 
-    const skillId = template.skill_id;
+    const skillId = template.skill_id || template.name;
     const templateVersion = template.version || '1.0.0';
     const toolsRegistered = [];
 
-    for (const operation of template.operations) {
+    for (const operation of operations) {
       const toolName = `${skillId}_${this._slugify(operation.name)}`;
       const schema = this._buildSchema(operation);
       const opConfig = this._buildOperationConfig(template, operation, resolvedParams);
@@ -718,27 +720,40 @@ class ToolActivator {
     const properties = {};
     const required = [];
 
-    const params = Array.isArray(operation.parameters) ? operation.parameters : [];
-
-    for (const param of params) {
-      if (!param || !param.name) continue;
-
-      const propDef = {
-        type: param.type || 'string',
-        description: param.description || '',
-      };
-
-      if (param.enum !== undefined && param.enum !== null) {
-        propDef.enum = param.enum;
+    // Support both array format (legacy) and object map format (new YAML templates)
+    if (operation.params && typeof operation.params === 'object' && !Array.isArray(operation.params)) {
+      for (const [name, def] of Object.entries(operation.params)) {
+        const propDef = {
+          type: (def && def.type) || 'string',
+          description: (def && def.description) || '',
+        };
+        if (def && def.enum != null) propDef.enum = def.enum;
+        if (def && def.default != null) propDef.default = def.default;
+        properties[name] = propDef;
+        if (def && def.required === true) required.push(name);
       }
-      if (param.default !== undefined && param.default !== null) {
-        propDef.default = param.default;
-      }
+    } else {
+      const params = Array.isArray(operation.parameters) ? operation.parameters : [];
+      for (const param of params) {
+        if (!param || !param.name) continue;
 
-      properties[param.name] = propDef;
+        const propDef = {
+          type: param.type || 'string',
+          description: param.description || '',
+        };
 
-      if (param.required === true) {
-        required.push(param.name);
+        if (param.enum !== undefined && param.enum !== null) {
+          propDef.enum = param.enum;
+        }
+        if (param.default !== undefined && param.default !== null) {
+          propDef.default = param.default;
+        }
+
+        properties[param.name] = propDef;
+
+        if (param.required === true) {
+          required.push(param.name);
+        }
       }
     }
 
@@ -760,32 +775,59 @@ class ToolActivator {
    * @returns {Object} opConfig for HttpToolExecutor.execute()
    */
   _buildOperationConfig(template, operation, resolvedParams) {
-    const apiBase = this._resolveString(template.api_base || '', resolvedParams);
-    const path = this._resolveString(operation.path || '', resolvedParams);
-    const resolvedUrl = `${apiBase}${path}`;
+    // URL: prefer operation.url (full URL) over api_base + path
+    let resolvedUrl;
+    if (operation.url) {
+      resolvedUrl = this._resolveString(operation.url, resolvedParams);
+    } else {
+      const apiBase = this._resolveString(template.api_base || '', resolvedParams);
+      const path = this._resolveString(operation.path || '', resolvedParams);
+      resolvedUrl = `${apiBase}${path}`;
+    }
 
+    // Auth: pass through all fields (session auth adds extra fields)
     const auth = template.auth || {};
     const authConfig = {
       type: auth.type || null,
+      credential_name: auth.credential_name || auth.credentialName || null,
+      // Legacy camelCase aliases
       credentialName: auth.credential_name || auth.credentialName || null,
       headerName: auth.header_name || auth.headerName || null,
       keyParam: auth.key_param || auth.keyParam || null,
       tokenParam: auth.token_param || auth.tokenParam || null,
     };
 
+    // Session auth: pass through session-specific fields
+    if (auth.type === 'session') {
+      authConfig.session_endpoint = auth.session_endpoint;
+      authConfig.session_method = auth.session_method;
+      authConfig.session_body = auth.session_body;
+      authConfig.token_path = auth.token_path;
+      authConfig.extra_from_session = auth.extra_from_session;
+      authConfig.token_ttl = auth.token_ttl;
+    }
+
     const params = Array.isArray(operation.parameters) ? operation.parameters : [];
     const defaultBodyFields = operation.body_type === 'json'
       ? params.map(p => p.name).filter(Boolean)
       : [];
 
-    return {
+    const config = {
       method: operation.method || 'GET',
       url: resolvedUrl,
       auth: authConfig,
       queryParams: operation.query_params || [],
-      bodyType: operation.body_type || null,
+      bodyType: operation.body_type || (operation.body ? 'json' : null),
       bodyFields: operation.body_fields || defaultBodyFields,
     };
+
+    // Body template: operation.body is an object template with {{placeholders}}
+    if (operation.body && typeof operation.body === 'object') {
+      config.bodyTemplate = operation.body;
+      config.bodyType = 'json';
+    }
+
+    return config;
   }
 
   /**
