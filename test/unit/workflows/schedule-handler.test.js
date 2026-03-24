@@ -15,7 +15,8 @@ const {
   parseInterval,
   findConfigCard,
   stripHtml,
-  _extractLlmDirective
+  _extractLlmDirective,
+  _parsePhases
 } = require('../../../src/lib/workflows/schedule-handler');
 
 // ─── parseInterval tests ──────────────────────────────────────────────
@@ -444,6 +445,128 @@ asyncTest('processSchedules: defaults allowCloud to false', async () => {
   await handler.processSchedules(wb);
   assert.ok(taskOpts, 'agentLoop was called');
   assert.strictEqual(taskOpts.allowCloud, false, 'allowCloud defaults to false');
+});
+
+// ─── cloud-fast directive tests ──────────────────────────────────────
+
+test('_extractLlmDirective: extracts LLM: cloud-fast', () => {
+  const result = _extractLlmDirective('Scan feeds. LLM: cloud-fast');
+  assert.strictEqual(result.action, 'Scan feeds.');
+  assert.strictEqual(result.allowCloud, true);
+  assert.strictEqual(result.cloudTier, 'fast');
+});
+
+test('_extractLlmDirective: cloud has null cloudTier', () => {
+  const result = _extractLlmDirective('Scan feeds. LLM: cloud');
+  assert.strictEqual(result.allowCloud, true);
+  assert.strictEqual(result.cloudTier, null);
+});
+
+test('_extractLlmDirective: local has null cloudTier', () => {
+  const result = _extractLlmDirective('Archive cards. LLM: local');
+  assert.strictEqual(result.allowCloud, false);
+  assert.strictEqual(result.cloudTier, null);
+});
+
+test('parseScheduleBlock: cloud-fast schedule line', () => {
+  const desc = 'SCHEDULE:\n- Every 24h: Evaluate articles. LLM: cloud-fast';
+  const schedules = parseScheduleBlock(desc);
+  assert.strictEqual(schedules.length, 1);
+  assert.strictEqual(schedules[0].allowCloud, true);
+  assert.strictEqual(schedules[0].cloudTier, 'fast');
+});
+
+// ─── _parsePhases tests ─────────────────────────────────────────────
+
+test('_parsePhases: parses two-phase schedule', () => {
+  const raw = 'Phase 1: Scan and evaluate feeds. LLM: cloud-fast | Phase 2: Write drafts for PICK items. LLM: cloud';
+  const phases = _parsePhases(raw);
+  assert.ok(phases, 'should return phases array');
+  assert.strictEqual(phases.length, 2);
+  assert.strictEqual(phases[0].action, 'Scan and evaluate feeds.');
+  assert.strictEqual(phases[0].cloudTier, 'fast');
+  assert.strictEqual(phases[0].allowCloud, true);
+  assert.strictEqual(phases[1].action, 'Write drafts for PICK items.');
+  assert.strictEqual(phases[1].cloudTier, null);
+  assert.strictEqual(phases[1].allowCloud, true);
+});
+
+test('_parsePhases: returns null for non-phased action', () => {
+  assert.strictEqual(_parsePhases('Scan NC News feeds. LLM: cloud'), null);
+  assert.strictEqual(_parsePhases('Just a plain action'), null);
+  assert.strictEqual(_parsePhases(null), null);
+});
+
+test('_parsePhases: returns null for single phase', () => {
+  assert.strictEqual(_parsePhases('Phase 1: Only one phase. LLM: cloud'), null);
+});
+
+test('parseScheduleBlock: multi-phase schedule stores phases array', () => {
+  const desc = 'SCHEDULE:\n- Every 24h: Phase 1: Evaluate. LLM: cloud-fast | Phase 2: Write. LLM: cloud';
+  const schedules = parseScheduleBlock(desc);
+  assert.strictEqual(schedules.length, 1);
+  assert.ok(schedules[0].phases, 'should have phases');
+  assert.strictEqual(schedules[0].phases.length, 2);
+  assert.strictEqual(schedules[0].phases[0].cloudTier, 'fast');
+  assert.strictEqual(schedules[0].phases[1].cloudTier, null);
+  // Top-level action/routing comes from phase 1
+  assert.strictEqual(schedules[0].allowCloud, true);
+  assert.strictEqual(schedules[0].cloudTier, 'fast');
+});
+
+test('parseScheduleBlock: non-phased schedule has null phases', () => {
+  const desc = 'SCHEDULE:\n- Every 24h: Scan feeds. LLM: cloud';
+  const schedules = parseScheduleBlock(desc);
+  assert.strictEqual(schedules[0].phases, null);
+});
+
+// ─── multi-phase execution tests ────────────────────────────────────
+
+asyncTest('processSchedules: multi-phase executes both phases', async () => {
+  const calls = [];
+  const mockAgent = {
+    processWorkflowTask: async (opts) => { calls.push(opts); return 'PICK: Article A — relevant\nSKIP: Article B — off-topic'; }
+  };
+  const handler = new ScheduleHandler({ agentLoop: mockAgent });
+
+  const wb = {
+    board: { id: 1, title: 'Pipeline' },
+    description: 'SCHEDULE:\n- Every 1h: Phase 1: Evaluate. LLM: cloud-fast | Phase 2: Write drafts. LLM: cloud',
+    stacks: [],
+    workflowType: 'pipeline'
+  };
+
+  const result = await handler.processSchedules(wb);
+  assert.strictEqual(result.executed, 1);
+  assert.strictEqual(calls.length, 2, 'should call agentLoop twice (2 phases)');
+  // Phase 1: cloud-fast
+  assert.strictEqual(calls[0].allowCloud, true);
+  assert.strictEqual(calls[0].cloudTier, 'fast');
+  // Phase 2: cloud (full smart-mix)
+  assert.strictEqual(calls[1].allowCloud, true);
+  assert.strictEqual(calls[1].cloudTier, null);
+  // Phase 2 should include phase 1 output in context
+  assert.ok(calls[1].systemAddition.includes('Output from Phase 1'), 'phase 2 includes phase 1 output');
+});
+
+asyncTest('processSchedules: single-action schedule still works with cloudTier', async () => {
+  let taskOpts = null;
+  const mockAgent = {
+    processWorkflowTask: async (opts) => { taskOpts = opts; return 'done'; }
+  };
+  const handler = new ScheduleHandler({ agentLoop: mockAgent });
+
+  const wb = {
+    board: { id: 1, title: 'Pipeline' },
+    description: 'SCHEDULE:\nEvery 1h: Evaluate articles. LLM: cloud-fast',
+    stacks: [],
+    workflowType: 'pipeline'
+  };
+
+  await handler.processSchedules(wb);
+  assert.ok(taskOpts);
+  assert.strictEqual(taskOpts.cloudTier, 'fast');
+  assert.strictEqual(taskOpts.allowCloud, true);
 });
 
 setTimeout(() => {

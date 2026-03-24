@@ -678,6 +678,34 @@ class LLMRouter {
   }
 
   /**
+   * Build a flat cloud-fast roster: cheapest + mid-tier cloud, no heavy (Opus).
+   * Every job gets the same chain — no escalation.
+   * @private
+   * @returns {Object} Roster map (job → provider IDs)
+   */
+  _buildCloudFastRoster() {
+    const localIds = [];
+    const cloudIds = [];
+    for (const [id, p] of this.providers) {
+      if (p.type === 'local') localIds.push(id);
+      else cloudIds.push(id);
+    }
+
+    const { heavy, workhorse, rest } = this._classifyCloudProviders(cloudIds);
+    // Exclude heavy (Opus) — use only workhorse (Sonnet) and cheapest (Haiku)
+    const cheapest = [...rest].reverse()[0] || workhorse || heavy;
+    const midTier = rest.length > 0 ? workhorse : (workhorse !== heavy ? workhorse : null);
+    // Build flat chain: cheapest first, mid-tier fallback, local last
+    const chain = [...new Set([cheapest, midTier, ...localIds].filter(Boolean))];
+
+    const roster = {};
+    for (const job of VALID_JOBS) {
+      roster[job] = [...chain];
+    }
+    return roster;
+  }
+
+  /**
    * Map legacy task+role to a job name.
    * @private
    * @param {string} task
@@ -1078,6 +1106,7 @@ class LLMRouter {
    * @param {Object} [context={}]
    * @param {boolean} [context.forceLocal=false] - Restrict to local providers
    * @param {boolean} [context.allowCloud=false] - Per-call cloud override (uses smart-mix roster, overrides forceLocal)
+   * @param {string} [context.cloudTier] - Cloud tier: 'fast' (Haiku/Sonnet only) or undefined (smart-mix with Opus)
    * @param {string} [context.opType] - Operation type for budget checks
    * @returns {{ chain: Array<{id: string, provider: Object}>, skipped: Array<{id: string, reason: string}> }}
    */
@@ -1086,6 +1115,7 @@ class LLMRouter {
     const opType = context.opType || 'reactive';
     let forceLocal = !!context.forceLocal;
     const allowCloud = !!context.allowCloud;
+    const cloudTier = context.cloudTier || null;
     if (opType === 'proactive' && this.budget.isProactiveBudgetExhausted()) {
       forceLocal = true;
     }
@@ -1096,10 +1126,14 @@ class LLMRouter {
     // Build raw chain from roster or legacy
     let rawChain;
     if (this._roster) {
-      // Per-call cloud override: use smart-mix roster for this call only
+      // Per-call cloud override: use alternate roster for this call only
       const rosterOpts = { forceLocal };
       if (allowCloud) {
-        rosterOpts._rosterOverride = this._resolvePreset('smart-mix');
+        if (cloudTier === 'fast') {
+          rosterOpts._rosterOverride = this._buildCloudFastRoster();
+        } else {
+          rosterOpts._rosterOverride = this._resolvePreset('smart-mix');
+        }
       }
       rawChain = this._buildRosterChain(job, rosterOpts);
 

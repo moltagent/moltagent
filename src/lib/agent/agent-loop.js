@@ -357,10 +357,11 @@ class AgentLoop {
    * @param {number} params.stackId - For logging/tracking
    * @param {boolean} [params.forceLocal] - Force local LLM provider
    * @param {boolean} [params.allowCloud] - Per-call cloud override (overrides forceLocal)
+   * @param {string} [params.cloudTier] - Cloud tier: 'fast' (Haiku/Sonnet only) or null (smart-mix)
    * @param {number} [params.maxIterations] - Override max iterations (default: this.maxIterations)
    * @returns {Promise<string>} The agent's final text response
    */
-  async processWorkflowTask({ systemAddition, task, boardId, cardId, stackId, forceLocal, allowCloud, maxIterations }) {
+  async processWorkflowTask({ systemAddition, task, boardId, cardId, stackId, forceLocal, allowCloud, cloudTier, maxIterations }) {
     const startTime = Date.now();
     const iterLimit = maxIterations || this.maxIterations;
     this.logger.info(`[AgentLoop] Workflow task: board=${boardId} card=${cardId} maxIter=${iterLimit}`);
@@ -411,6 +412,7 @@ class AgentLoop {
           tools,
           forceLocal: forceLocal && !allowCloud,
           allowCloud,
+          cloudTier,
           job: this._classifyJob(messages, tools)
         });
       } catch (llmErr) {

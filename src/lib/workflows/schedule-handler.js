@@ -121,17 +121,43 @@ function parseInterval(intervalStr) {
  */
 /**
  * Extract trailing LLM routing directive from an action string.
- * "Scan NC News feeds. LLM: cloud" → { action: "Scan NC News feeds.", allowCloud: true }
- * @param {string} raw - Action text, possibly with trailing "LLM: cloud" or "LLM: local"
- * @returns {{ action: string, allowCloud: boolean }}
+ * "Scan feeds. LLM: cloud"      → { action: "Scan feeds.", allowCloud: true, cloudTier: null }
+ * "Scan feeds. LLM: cloud-fast" → { action: "Scan feeds.", allowCloud: true, cloudTier: 'fast' }
+ * "Scan feeds. LLM: local"      → { action: "Scan feeds.", allowCloud: false, cloudTier: null }
+ * @param {string} raw - Action text, possibly with trailing "LLM: cloud[-fast]" or "LLM: local"
+ * @returns {{ action: string, allowCloud: boolean, cloudTier: string|null }}
  */
 function _extractLlmDirective(raw) {
-  const match = raw.match(/^(.*?)\.\s*LLM:\s*(cloud|local)\s*$/i);
-  if (!match) return { action: raw, allowCloud: false };
+  const match = raw.match(/^(.*?)\.\s*LLM:\s*(cloud-fast|cloud|local)\s*$/i);
+  if (!match) return { action: raw, allowCloud: false, cloudTier: null };
+  const directive = match[2].toLowerCase();
   return {
     action: match[1].trim() + '.',
-    allowCloud: match[2].toLowerCase() === 'cloud'
+    allowCloud: directive.startsWith('cloud'),
+    cloudTier: directive === 'cloud-fast' ? 'fast' : null
   };
+}
+
+/**
+ * Parse multi-phase schedule action.
+ * "Phase 1: Scan feeds. LLM: cloud-fast | Phase 2: Write drafts. LLM: cloud"
+ * → [{ action, allowCloud, cloudTier }, ...]
+ * Returns null if no phases detected (single-action schedule).
+ * @param {string} raw - Full action text after interval
+ * @returns {Array|null} Array of phase objects, or null for single-action
+ */
+function _parsePhases(raw) {
+  if (!raw || !raw.includes('Phase 1:')) return null;
+  const parts = raw.split(/\s*\|\s*/);
+  if (parts.length < 2) return null;
+
+  const phases = [];
+  for (const part of parts) {
+    const phaseMatch = part.match(/^Phase\s+\d+:\s*(.+)$/i);
+    if (!phaseMatch) continue;
+    phases.push(_extractLlmDirective(phaseMatch[1].trim()));
+  }
+  return phases.length >= 2 ? phases : null;
 }
 
 function parseScheduleBlock(description) {
@@ -156,12 +182,16 @@ function parseScheduleBlock(description) {
     if (inlineMatch) {
       const intervalMs = parseInterval(inlineMatch[1]);
       if (intervalMs) {
-        const { action, allowCloud } = _extractLlmDirective(inlineMatch[2].trim());
+        const rawAction = inlineMatch[2].trim();
+        const phases = _parsePhases(rawAction);
+        const { action, allowCloud, cloudTier } = phases ? phases[0] : _extractLlmDirective(rawAction);
         schedules.push({
           interval: intervalMs,
           action,
           allowCloud,
-          hash: _hashScheduleLine(inlineMatch[1], action),
+          cloudTier,
+          phases: phases || null,
+          hash: _hashScheduleLine(inlineMatch[1], rawAction),
           raw: trimmed
         });
       }
@@ -184,12 +214,16 @@ function parseScheduleBlock(description) {
       if (schedMatch) {
         const intervalMs = parseInterval(schedMatch[1]);
         if (intervalMs) {
-          const { action, allowCloud } = _extractLlmDirective(schedMatch[2].trim());
+          const rawAction = schedMatch[2].trim();
+          const phases = _parsePhases(rawAction);
+          const { action, allowCloud, cloudTier } = phases ? phases[0] : _extractLlmDirective(rawAction);
           schedules.push({
             interval: intervalMs,
             action,
             allowCloud,
-            hash: _hashScheduleLine(schedMatch[1], action),
+            cloudTier,
+            phases: phases || null,
+            hash: _hashScheduleLine(schedMatch[1], rawAction),
             raw: trimmed
           });
         }
@@ -321,14 +355,11 @@ class ScheduleHandler {
   }
 
   /**
-   * Execute a single schedule action via AgentLoop.
-   * Builds context from board rules + CONFIG: cards from all stacks.
+   * Build board context (rules + CONFIG cards) for schedule system prompts.
    * @private
    */
-  async _executeSchedule(wb, schedule, options = {}) {
+  _buildBoardContext(wb) {
     const { board, description, stacks } = wb;
-
-    // Collect CONFIG: cards from all stacks as additional context
     const configContextParts = [];
     for (const stack of stacks) {
       const configCard = findConfigCard(stack);
@@ -340,26 +371,54 @@ class ScheduleHandler {
         );
       }
     }
+    return {
+      boardHeader: [
+        `**Board:** ${board.title} (ID: ${board.id})`,
+        `**Board Rules:**`,
+        stripHtml(description),
+      ],
+      configContext: configContextParts.length > 0 ? [
+        '## Configuration Context', '', ...configContextParts,
+      ] : [],
+      stackList: [
+        `**All Stacks:**`,
+        stacks.map(s => `  - "${s.title}" (ID: ${s.id}, ${(s.cards || []).length} cards)`).join('\n'),
+      ]
+    };
+  }
+
+  /**
+   * Execute a schedule action via AgentLoop.
+   * Supports single-action and multi-phase schedules.
+   * @private
+   */
+  async _executeSchedule(wb, schedule, options = {}) {
+    if (schedule.phases) {
+      await this._executeMultiPhase(wb, schedule, options);
+    } else {
+      await this._executeSingleAction(wb, schedule, options);
+    }
+  }
+
+  /**
+   * Execute a single-action schedule (no phases).
+   * @private
+   */
+  async _executeSingleAction(wb, schedule, options = {}) {
+    const ctx = this._buildBoardContext(wb);
 
     const systemAddition = [
       '## Scheduled Workflow Action',
       '',
-      `You are executing a scheduled action for a workflow board.`,
+      'You are executing a scheduled action for a workflow board.',
       '',
-      `**Board:** ${board.title} (ID: ${board.id})`,
-      `**Board Rules:**`,
-      stripHtml(description),
+      ...ctx.boardHeader,
       '',
-      ...(configContextParts.length > 0 ? [
-        '## Configuration Context',
-        '',
-        ...configContextParts,
-      ] : []),
-      `**All Stacks:**`,
-      stacks.map(s => `  - "${s.title}" (ID: ${s.id}, ${(s.cards || []).length} cards)`).join('\n'),
+      ...ctx.configContext,
+      ...ctx.stackList,
       '',
       '**Scheduled Action:**',
-      `${schedule.action}`,
+      schedule.action,
       '',
       '**Instructions:**',
       'Execute the scheduled action described above using the available tools.',
@@ -372,13 +431,89 @@ class ScheduleHandler {
     await this.agent.processWorkflowTask({
       systemAddition,
       task: `Execute scheduled action: "${schedule.action}"`,
-      boardId: board.id,
+      boardId: wb.board.id,
       cardId: 0,
       stackId: 0,
       forceLocal: options.forceLocal || false,
       allowCloud: schedule.allowCloud || false,
+      cloudTier: schedule.cloudTier || null,
       maxIterations: 8
     });
+  }
+
+  /**
+   * Execute a multi-phase schedule. Each phase runs as a separate workflow task.
+   * Phase 1 output feeds into Phase 2 context. Only PICK items proceed.
+   * @private
+   */
+  async _executeMultiPhase(wb, schedule, options = {}) {
+    const ctx = this._buildBoardContext(wb);
+    let previousOutput = null;
+
+    for (let i = 0; i < schedule.phases.length; i++) {
+      const phase = schedule.phases[i];
+      const phaseNum = i + 1;
+
+      console.log(`[Schedule] Phase ${phaseNum}/${schedule.phases.length}: "${phase.action}" (${phase.allowCloud ? (phase.cloudTier === 'fast' ? 'cloud-fast' : 'cloud') : 'local'})`);
+
+      const systemParts = [
+        `## Scheduled Workflow Action — Phase ${phaseNum}/${schedule.phases.length}`,
+        '',
+        'You are executing a scheduled action for a workflow board.',
+        '',
+        ...ctx.boardHeader,
+        '',
+        ...ctx.configContext,
+        ...ctx.stackList,
+        '',
+        `**Phase ${phaseNum} Action:**`,
+        phase.action,
+      ];
+
+      if (previousOutput) {
+        systemParts.push(
+          '',
+          `**Output from Phase ${phaseNum - 1}:**`,
+          previousOutput,
+          '',
+          'Only process items marked PICK from the previous phase. Skip items marked SKIP.'
+        );
+      }
+
+      systemParts.push(
+        '',
+        '**Instructions:**',
+        'Execute the phase action using the available tools.',
+        'Follow the board rules and any CONFIG context.',
+        'Use workflow_deck_* tools with numeric IDs for card operations.',
+        'Use news_* tools for RSS feed operations.',
+      );
+
+      if (phaseNum < schedule.phases.length) {
+        systemParts.push(
+          '',
+          '**Output format:** For each item, output PICK or SKIP with a one-line reason.',
+          'Example: PICK: "Article title" — relevant to criteria',
+          'Example: SKIP: "Article title" — off-topic'
+        );
+      }
+
+      const systemAddition = systemParts.join('\n');
+
+      const result = await this.agent.processWorkflowTask({
+        systemAddition,
+        task: `Execute phase ${phaseNum}: "${phase.action}"`,
+        boardId: wb.board.id,
+        cardId: 0,
+        stackId: 0,
+        forceLocal: options.forceLocal || false,
+        allowCloud: phase.allowCloud || false,
+        cloudTier: phase.cloudTier || null,
+        maxIterations: phaseNum < schedule.phases.length ? 3 : 8
+      });
+
+      previousOutput = typeof result === 'string' ? result : null;
+    }
   }
 
   /**
@@ -389,4 +524,4 @@ class ScheduleHandler {
   }
 }
 
-module.exports = { ScheduleHandler, parseScheduleBlock, parseInterval, findConfigCard, stripHtml, _extractLlmDirective };
+module.exports = { ScheduleHandler, parseScheduleBlock, parseInterval, findConfigCard, stripHtml, _extractLlmDirective, _parsePhases };

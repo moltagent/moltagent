@@ -172,17 +172,21 @@ class WorkflowEngine {
 
   /**
    * Extract LLM routing directive from a CONFIG: card's description.
-   * Looks for a line starting with "LLM:" followed by "cloud" or "local".
+   * Looks for a line starting with "LLM:" followed by "cloud[-fast]" or "local".
    * @private
    * @param {Object|null} configCard - CONFIG card object with .description
-   * @returns {{ allowCloud: boolean }}
+   * @returns {{ allowCloud: boolean, cloudTier: string|null }}
    */
   _extractStackLlmRouting(configCard) {
-    if (!configCard?.description) return { allowCloud: false };
+    if (!configCard?.description) return { allowCloud: false, cloudTier: null };
     const plain = stripHtml(configCard.description);
-    const match = plain.match(/^LLM:\s*(cloud|local)\b/im);
-    if (!match) return { allowCloud: false };
-    return { allowCloud: match[1].toLowerCase() === 'cloud' };
+    const match = plain.match(/^LLM:\s*(cloud-fast|cloud|local)\b/im);
+    if (!match) return { allowCloud: false, cloudTier: null };
+    const directive = match[1].toLowerCase();
+    return {
+      allowCloud: directive.startsWith('cloud'),
+      cloudTier: directive === 'cloud-fast' ? 'fast' : null
+    };
   }
 
   /**
@@ -209,7 +213,7 @@ class WorkflowEngine {
 
     // Read CONFIG: card from the current stack (if present)
     const configCard = findConfigCard(stack);
-    const { allowCloud } = this._extractStackLlmRouting(configCard);
+    const { allowCloud, cloudTier } = this._extractStackLlmRouting(configCard);
     const configContext = configCard
       ? `\n**Stack Config (from "${configCard.title}"):**\n${stripHtml(configCard.description) || '(empty)'}\n`
       : '';
@@ -254,6 +258,7 @@ class WorkflowEngine {
       stackId: stack.id,
       forceLocal,
       allowCloud,
+      cloudTier,
       maxIterations
     });
   }
@@ -276,7 +281,7 @@ class WorkflowEngine {
 
       let { forceLocal } = this._getRoleForCard(wb, card);
       const configCard = findConfigCard(stack);
-      const { allowCloud } = this._extractStackLlmRouting(configCard);
+      const { allowCloud, cloudTier } = this._extractStackLlmRouting(configCard);
 
       // Budget check before cloud processing
       if (!forceLocal && this.budgetEnforcer) {
@@ -315,7 +320,8 @@ class WorkflowEngine {
         cardId: card.id,
         stackId: stack.id,
         forceLocal,
-        allowCloud
+        allowCloud,
+        cloudTier
       });
 
       return true;

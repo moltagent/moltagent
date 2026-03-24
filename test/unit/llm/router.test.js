@@ -1323,6 +1323,56 @@ if (LegacyLLMRouter) {
     const ids = chain.map(e => e.id);
     assert.ok(!ids.includes('claude-haiku'), 'credentials job: cloud blocked even with allowCloud');
   });
+  // cloud-fast tier tests
+  const opusProvider = createMockProvider({ id: 'anthropic-claude', type: 'remote' });
+  // Set cost models — opus is expensive, sonnet mid, haiku cheap
+  opusProvider.costModel = { inputPer1M: 15, outputPer1M: 75 };
+  cloudProvider.costModel = { inputPer1M: 0.8, outputPer1M: 4 }; // haiku
+  const sonnetProvider = createMockProvider({ id: 'claude-sonnet', type: 'remote' });
+  sonnetProvider.costModel = { inputPer1M: 3, outputPer1M: 15 };
+
+  test('buildProviderChain: cloudTier fast excludes Opus', () => {
+    const router = new LLMRouter({ auditLog: createMockAuditLog(), notifyUser: createMockNotifyUser() });
+    router.providers.set('anthropic-claude', opusProvider);
+    router.providers.set('claude-sonnet', sonnetProvider);
+    router.providers.set('claude-haiku', cloudProvider);
+    router.providers.set('ollama-fast', localProvider);
+    router.setPreset('all-local');
+
+    const { chain } = router.buildProviderChain('writing', { allowCloud: true, cloudTier: 'fast' });
+    const ids = chain.map(e => e.id);
+    assert.ok(!ids.includes('anthropic-claude'), 'cloud-fast: Opus excluded');
+    assert.ok(ids.includes('claude-haiku'), 'cloud-fast: Haiku included');
+  });
+
+  test('buildProviderChain: cloudTier fast uses flat roster (no job escalation)', () => {
+    const router = new LLMRouter({ auditLog: createMockAuditLog(), notifyUser: createMockNotifyUser() });
+    router.providers.set('anthropic-claude', opusProvider);
+    router.providers.set('claude-sonnet', sonnetProvider);
+    router.providers.set('claude-haiku', cloudProvider);
+    router.providers.set('ollama-fast', localProvider);
+    router.setPreset('all-local');
+
+    // tools and writing should get the same chain with cloud-fast
+    const { chain: toolsChain } = router.buildProviderChain('tools', { allowCloud: true, cloudTier: 'fast' });
+    const { chain: writingChain } = router.buildProviderChain('writing', { allowCloud: true, cloudTier: 'fast' });
+    const toolsIds = toolsChain.map(e => e.id);
+    const writingIds = writingChain.map(e => e.id);
+    assert.deepStrictEqual(toolsIds, writingIds, 'cloud-fast: same chain for tools and writing');
+  });
+
+  test('buildProviderChain: cloudTier null with allowCloud uses smart-mix (Opus for writing)', () => {
+    const router = new LLMRouter({ auditLog: createMockAuditLog(), notifyUser: createMockNotifyUser() });
+    router.providers.set('anthropic-claude', opusProvider);
+    router.providers.set('claude-sonnet', sonnetProvider);
+    router.providers.set('claude-haiku', cloudProvider);
+    router.providers.set('ollama-fast', localProvider);
+    router.setPreset('all-local');
+
+    const { chain } = router.buildProviderChain('writing', { allowCloud: true });
+    const ids = chain.map(e => e.id);
+    assert.ok(ids.includes('anthropic-claude'), 'smart-mix writing: Opus included');
+  });
 }
 
 // Summary

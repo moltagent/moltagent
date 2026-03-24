@@ -134,6 +134,7 @@ class RouterChatBridge {
    * @param {Array} [params.tools] - Tool definitions
    * @param {boolean} [params.forceLocal] - Restrict to local providers
    * @param {boolean} [params.allowCloud] - Per-call cloud override (overrides forceLocal and local-only roster)
+   * @param {string} [params.cloudTier] - Cloud tier: 'fast' (Haiku/Sonnet only) or null (smart-mix)
    * @param {string} [params.job] - Job hint (quick, tools, thinking, etc.)
    * @returns {Promise<{content: string|null, toolCalls: Array|null, _routing: Object}>}
    */
@@ -141,9 +142,10 @@ class RouterChatBridge {
     const job = params.job || this.defaultJob;
     const forceLocal = !!params.forceLocal;
     const allowCloud = !!params.allowCloud;
+    const cloudTier = params.cloudTier || null;
 
     // 1. Get chain from router
-    const { chain, skipped } = this.router.buildProviderChain(job, { forceLocal, allowCloud });
+    const { chain, skipped } = this.router.buildProviderChain(job, { forceLocal, allowCloud, cloudTier });
 
     // 2. Filter to providers with registered chat implementations,
     //    and skip providers that already timed out in this conversation.
