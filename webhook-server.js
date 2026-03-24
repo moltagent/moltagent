@@ -84,6 +84,14 @@ try {
   DeckClient = null;
 }
 
+let NewsClient;
+try {
+  ({ NewsClient } = require('./src/lib/integrations/news-client'));
+} catch {
+  console.warn('[WARN] NewsClient not available');
+  NewsClient = null;
+}
+
 let NCFilesClient, NCSearchClient, TextExtractor;
 try {
   ({ NCFilesClient } = require('./src/lib/integrations/nc-files-client'));
@@ -825,6 +833,17 @@ async function initialize() {
       console.log('[INIT] DeckClient (message routing) ready');
     } catch (err) {
       console.warn(`[INIT] DeckClient failed: ${err.message}`);
+    }
+  }
+
+  // 7b1. Initialize NewsClient for NC News RSS feeds
+  let newsClient = null;
+  if (NewsClient && ncRequestManager) {
+    try {
+      newsClient = new NewsClient(ncRequestManager);
+      console.log('[INIT] NewsClient ready');
+    } catch (err) {
+      console.warn(`[INIT] NewsClient failed: ${err.message}`);
     }
   }
 
@@ -1758,7 +1777,8 @@ async function initialize() {
         emailHandler: emailHandler,
         resilientWriter: resilientWriter,
         meetingComposer: meetingComposer,
-        rsvpTracker: rsvpTracker
+        rsvpTracker: rsvpTracker,
+        newsClient: newsClient
       });
       console.log(`[INIT] ToolRegistry ready (${toolRegistry.size} tools)`);
 

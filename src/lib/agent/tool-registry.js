@@ -29,10 +29,11 @@ class ToolRegistry {
    * @param {import('../integrations/contacts-client')} [options.contactsClient]
    * @param {import('../integrations/memory-searcher')} [options.memorySearcher]
    * @param {Object} [options.searchAdapters] - Map of commercial search adapters { brave, perplexity, exa }
+   * @param {import('../integrations/news-client').NewsClient} [options.newsClient]
    * @param {Object} [options.logger]
    */
-  constructor({ deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter, logger }) {
-    this.clients = { deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter };
+  constructor({ deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter, newsClient, logger }) {
+    this.clients = { deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter, newsClient };
     this.logger = logger || console;
 
     /** @type {Map<string, {name: string, description: string, parameters: Object, handler: Function}>} */
@@ -157,6 +158,7 @@ class ToolRegistry {
         'deck_list_cards',
         'deck_get_board',
         'deck_list_stacks',
+        'deck_create_label',
         'web_search'
       ],
       calendar: [
@@ -165,6 +167,8 @@ class ToolRegistry {
         'calendar_check_availability',
         'calendar_quick_schedule',
         'calendar_schedule_meeting',
+        'meeting_compose',
+        'meeting_check_rsvp',
         'web_search'
       ],
       email: [
@@ -195,6 +199,13 @@ class ToolRegistry {
         'contacts_search',
         'web_search',
         'web_read'
+      ],
+      news: [
+        'news_get_items',
+        'news_list_feeds',
+        'news_mark_read',
+        'deck_create_card',
+        'web_search'
       ]
     };
 
@@ -314,6 +325,7 @@ class ToolRegistry {
   _registerDefaultTools() {
     this._registerDeckTools();
     this._registerCalendarTools();
+    this._registerMeetingTools();
     this._registerFileTools();
     this._registerSearchTools();
     this._registerTagTools();
@@ -1065,6 +1077,29 @@ class ToolRegistry {
         } catch (err) {
           this.logger.error(`[deck_remove_label] ${err.message}`);
           return `Failed to remove label: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'deck_create_label',
+      description: 'Create a new label on a board. Use this when the board needs a label that doesn\'t exist yet.',
+      parameters: {
+        type: 'object',
+        properties: {
+          board_id: { type: 'number', description: 'Board ID to create the label on' },
+          title: { type: 'string', description: 'Label name (e.g. urgent, research, client-A)' },
+          color: { type: 'string', description: 'Hex color without # (e.g. "ff0000" for red, "00ff00" for green, "0800fd" for blue)' }
+        },
+        required: ['board_id', 'title', 'color']
+      },
+      handler: async (args) => {
+        try {
+          const label = await deck.createLabel(args.board_id, args.title, args.color);
+          return `Created label "${args.title}" (color: #${args.color}) on board ${args.board_id}. Label ID: ${label.id}`;
+        } catch (err) {
+          this.logger.error(`[deck_create_label] ${err.message}`);
+          return `Failed to create label: ${err.message}`;
         }
       }
     });
@@ -1828,6 +1863,94 @@ class ToolRegistry {
         } catch (err) {
           this.logger.error(`[calendar_cancel_meeting] ${err.message}`);
           return `Failed to cancel meeting: ${err.message}`;
+        }
+      }
+    });
+  }
+
+  // ---- MEETING TOOLS --------------------------------------------------------
+
+  /** @private */
+  _registerMeetingTools() {
+    const composer = this.clients.meetingComposer;
+    if (!composer) return;
+
+    this.register({
+      name: 'meeting_compose',
+      description: 'Start or continue a smart meeting scheduling flow. Resolves participant names from Nextcloud Contacts, checks calendar conflicts, asks for confirmation, creates the event, sends invitations, and tracks RSVPs on Deck. Works in multiple languages (EN/DE/PT). Use this for natural language meeting requests like "Schedule a meeting with João and Maria next Tuesday at 2pm".',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: {
+            type: 'string',
+            description: 'Natural language meeting request or follow-up response (disambiguation, confirmation)'
+          },
+          user_id: {
+            type: 'string',
+            description: 'User ID of the person requesting the meeting'
+          },
+          conversation_token: {
+            type: 'string',
+            description: 'Talk conversation token for responses'
+          }
+        },
+        required: ['message', 'user_id']
+      },
+      handler: async (args) => {
+        try {
+          const result = await composer.process(
+            args.message,
+            args.user_id,
+            args.conversation_token || null
+          );
+          return result;
+        } catch (err) {
+          this.logger.error(`[meeting_compose] ${err.message}`);
+          return `Failed to process meeting request: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'meeting_check_rsvp',
+      description: 'Check RSVP status for a scheduled meeting. Shows who accepted, declined, or hasn\'t responded yet.',
+      parameters: {
+        type: 'object',
+        properties: {
+          meeting_title: {
+            type: 'string',
+            description: 'Title or part of the meeting name to check RSVPs for'
+          }
+        },
+        required: ['meeting_title']
+      },
+      handler: async (args) => {
+        try {
+          const rsvpTracker = this.clients.rsvpTracker;
+          if (!rsvpTracker) return 'RSVP tracking is not available.';
+
+          const status = rsvpTracker.getStatus();
+          if (!status || status.length === 0) return 'No meetings are currently being tracked for RSVPs.';
+
+          // Find matching tracked event
+          const lower = args.meeting_title.toLowerCase();
+          const match = status.find(e =>
+            e.summary && e.summary.toLowerCase().includes(lower)
+          );
+
+          if (!match) return `No tracked meeting found matching "${args.meeting_title}".`;
+
+          const lines = match.attendees.map(a => {
+            const icon = a.lastStatus === 'ACCEPTED' ? '✅' :
+                         a.lastStatus === 'DECLINED' ? '❌' :
+                         a.lastStatus === 'TENTATIVE' ? '🟡' : '⬜';
+            return `${icon} ${a.name} (${a.email}) — ${a.lastStatus}`;
+          });
+
+          return `RSVP status for "${match.summary}":\n${lines.join('\n')}`;
+        } catch (err) {
+          this.logger.error(`[meeting_check_rsvp] ${err.message}`);
+          return `Failed to check RSVPs: ${err.message}`;
         }
       }
     });
@@ -3252,6 +3375,101 @@ class ToolRegistry {
           } catch (err) {
             this.logger.error(`[mail_send] ${err.message}`);
             return `Failed to send email: ${err.message}`;
+          }
+        }
+      });
+    }
+
+    // ============================================================
+    // NC NEWS TOOLS
+    // ============================================================
+
+    const newsClient = this.clients.newsClient;
+    if (newsClient) {
+      this.register({
+        name: 'news_get_items',
+        description: 'Get recent unread articles from NC News RSS feeds. Returns title, URL, body summary, and feed source for each item.',
+        parameters: {
+          type: 'object',
+          properties: {
+            batchSize: {
+              type: 'integer',
+              description: 'Number of items to return (default 20, max 100)'
+            }
+          },
+          required: []
+        },
+        handler: async (args) => {
+          try {
+            const batchSize = Math.max(1, Math.min(Number.isFinite(args.batchSize) ? args.batchSize : 20, 100));
+            const items = await newsClient.getItems({ batchSize, getRead: false });
+            if (!items || items.length === 0) return 'No unread news items.';
+            return JSON.stringify(items.map(item => ({
+              id: item.id,
+              title: item.title,
+              url: item.url,
+              author: item.author,
+              feedTitle: item.feedTitle,
+              pubDate: item.pubDate,
+              body: (item.body || '').substring(0, 500),
+              unread: item.unread,
+              starred: item.starred
+            })));
+          } catch (err) {
+            this.logger.error(`[news_get_items] ${err.message}`);
+            return `Failed to get news items: ${err.message}`;
+          }
+        }
+      });
+
+      this.register({
+        name: 'news_list_feeds',
+        description: 'List all RSS feeds subscribed in NC News with their unread counts.',
+        parameters: {
+          type: 'object',
+          properties: {},
+          required: []
+        },
+        handler: async () => {
+          try {
+            const feeds = await newsClient.getFeeds();
+            if (!feeds || feeds.length === 0) return 'No feeds subscribed in NC News.';
+            return JSON.stringify(feeds.map(feed => ({
+              id: feed.id,
+              title: feed.title,
+              url: feed.url,
+              link: feed.link,
+              unreadCount: feed.unreadCount,
+              folderId: feed.folderId
+            })));
+          } catch (err) {
+            this.logger.error(`[news_list_feeds] ${err.message}`);
+            return `Failed to list feeds: ${err.message}`;
+          }
+        }
+      });
+
+      this.register({
+        name: 'news_mark_read',
+        description: 'Mark a news item as read after it has been evaluated or turned into a Deck card.',
+        parameters: {
+          type: 'object',
+          properties: {
+            itemId: {
+              type: 'integer',
+              description: 'The ID of the news item to mark as read'
+            }
+          },
+          required: ['itemId']
+        },
+        handler: async (args) => {
+          try {
+            if (args.itemId == null) return 'itemId is required.';
+            await newsClient.markItemRead(args.itemId);
+            return `Item ${args.itemId} marked as read.`;
+          } catch (err) {
+            this.logger.error(`[news_mark_read] ${err.message}`);
+            return `Failed to mark item as read: ${err.message}`;
           }
         }
       });
