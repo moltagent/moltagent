@@ -1,0 +1,185 @@
+# MoltAgent - Sovereign AI Security Layer
+# Copyright (C) 2026 MoltAgent Contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+skill_id: google-calendar
+display_name: "Google Calendar"
+description: "Manage Google Calendar events — list, create, update, delete"
+category: productivity
+version: "1.0"
+
+api_base: "https://www.googleapis.com/calendar/v3"
+
+auth:
+  type: oauth2
+  grant_type: authorization_code
+  pkce: true
+  scope: "https://www.googleapis.com/auth/calendar"
+  authorize_endpoint: "https://accounts.google.com/o/oauth2/v2/auth"
+
+credentials:
+  - id: google_oauth
+    nc_password_name: "oauth-google-calendar-google"
+    label: "Google OAuth credentials"
+    help: >
+      1. Create OAuth 2.0 credentials in Google Cloud Console (Web application type).
+      2. Set redirect URI to your agent's /oauth/callback URL.
+      3. In NC Passwords, create entry 'oauth-google-calendar-google':
+         - Username: your client_id
+         - Password: your client_secret
+         - URL: https://oauth2.googleapis.com/token
+
+parameters:
+  - id: calendar_id
+    label: "Calendar ID"
+    ask: "Which calendar? Use 'primary' for your main calendar, or paste a specific calendar ID."
+    type: text
+    required: false
+    default: "primary"
+
+security:
+  allowed_domains:
+    - www.googleapis.com
+    - accounts.google.com
+    - oauth2.googleapis.com
+  forbidden_patterns: []
+
+operations:
+  - name: list_events
+    method: GET
+    path: "/calendars/{{calendar_id}}/events"
+    description: "List upcoming calendar events"
+    parameters:
+      - name: calendar_id
+        type: string
+        required: false
+        description: "Calendar ID (default: primary)"
+        default: "primary"
+      - name: timeMin
+        type: string
+        required: false
+        description: "Start time in RFC3339 format (e.g. 2026-03-24T00:00:00Z)"
+      - name: timeMax
+        type: string
+        required: false
+        description: "End time in RFC3339 format"
+      - name: maxResults
+        type: integer
+        required: false
+        description: "Maximum number of events to return (default 10)"
+        default: 10
+      - name: q
+        type: string
+        required: false
+        description: "Free text search terms"
+    query_params: [timeMin, timeMax, maxResults, q, singleEvents, orderBy]
+    response_hint: "Returns { items: [{ summary, start, end, location, description, attendees }] }"
+
+  - name: create_event
+    method: POST
+    path: "/calendars/{{calendar_id}}/events"
+    description: "Create a new calendar event"
+    body_type: json
+    body_fields: [summary, location, description, start, end, attendees, reminders]
+    parameters:
+      - name: calendar_id
+        type: string
+        required: false
+        description: "Calendar ID (default: primary)"
+        default: "primary"
+      - name: summary
+        type: string
+        required: true
+        description: "Event title"
+      - name: location
+        type: string
+        required: false
+        description: "Event location"
+      - name: description
+        type: string
+        required: false
+        description: "Event description"
+      - name: start
+        type: object
+        required: true
+        description: "Start time object: { dateTime: '2026-03-25T10:00:00+01:00', timeZone: 'Europe/Berlin' }"
+      - name: end
+        type: object
+        required: true
+        description: "End time object: { dateTime: '2026-03-25T11:00:00+01:00', timeZone: 'Europe/Berlin' }"
+      - name: attendees
+        type: array
+        required: false
+        description: "Array of attendees: [{ email: 'user@example.com' }]"
+      - name: reminders
+        type: object
+        required: false
+        description: "Reminders override: { useDefault: false, overrides: [{ method: 'popup', minutes: 10 }] }"
+    response_hint: "Returns the created event object with id, htmlLink, etc."
+
+  - name: update_event
+    method: PUT
+    path: "/calendars/{{calendar_id}}/events/{{event_id}}"
+    description: "Update an existing calendar event"
+    body_type: json
+    body_fields: [summary, location, description, start, end, attendees, reminders]
+    parameters:
+      - name: calendar_id
+        type: string
+        required: false
+        description: "Calendar ID (default: primary)"
+        default: "primary"
+      - name: event_id
+        type: string
+        required: true
+        description: "Event ID to update"
+      - name: summary
+        type: string
+        required: false
+        description: "Updated event title"
+      - name: location
+        type: string
+        required: false
+        description: "Updated event location"
+      - name: description
+        type: string
+        required: false
+        description: "Updated event description"
+      - name: start
+        type: object
+        required: false
+        description: "Updated start time"
+      - name: end
+        type: object
+        required: false
+        description: "Updated end time"
+      - name: attendees
+        type: array
+        required: false
+        description: "Updated attendees list"
+      - name: reminders
+        type: object
+        required: false
+        description: "Updated reminders"
+    response_hint: "Returns the updated event object"
+
+  - name: delete_event
+    method: DELETE
+    path: "/calendars/{{calendar_id}}/events/{{event_id}}"
+    description: "Delete a calendar event"
+    parameters:
+      - name: calendar_id
+        type: string
+        required: false
+        description: "Calendar ID (default: primary)"
+        default: "primary"
+      - name: event_id
+        type: string
+        required: true
+        description: "Event ID to delete"
+    response_hint: "Returns empty response on success (HTTP 204)"
+
+verify:
+  operation: list_events
+  expect: "items"
+  description: "Lists events from the primary calendar to verify OAuth tokens work"

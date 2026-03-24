@@ -48,6 +48,7 @@
  * Dependency Map:
  *   HttpToolExecutor
  *     <- CredentialBroker  (required)
+ *     <- OAuthBroker       (optional – for oauth2 auth type)
  *     <- EgressGuard       (optional)
  *     <- Node fetch        (runtime)
  *
@@ -103,15 +104,17 @@ class HttpToolExecutor {
    *
    * @param {Object} options
    * @param {Object} options.credentialBroker - CredentialBroker with .get(name) method
+   * @param {Object} [options.oauthBroker]    - OAuthBroker with .getAccessToken(name, opts) method (optional)
    * @param {Object} [options.egressGuard]    - EgressGuard with .evaluate(url) method (optional)
    * @param {number} [options.timeoutMs=30000]            - Fetch timeout in milliseconds
    * @param {number} [options.maxResponseBytes=1048576]   - Maximum accepted response size in bytes
    */
-  constructor({ credentialBroker, egressGuard = null, timeoutMs = DEFAULT_TIMEOUT_MS, maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES }) {
+  constructor({ credentialBroker, oauthBroker = null, egressGuard = null, timeoutMs = DEFAULT_TIMEOUT_MS, maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES }) {
     if (!credentialBroker || typeof credentialBroker.get !== 'function') {
       throw new Error('HttpToolExecutor: credentialBroker must have a .get(name) method');
     }
     this.credentialBroker = credentialBroker;
+    this.oauthBroker = oauthBroker;
     this.egressGuard = egressGuard;
     this.timeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS;
     this.maxResponseBytes = Number.isFinite(maxResponseBytes) && maxResponseBytes > 0
@@ -204,9 +207,18 @@ class HttpToolExecutor {
       };
     }
 
-    // Step 4: Fetch credentials
+    // Step 4: Fetch credentials (OAuth2 resolved via OAuthBroker)
     let credential = null;
-    if (auth && auth.type !== 'none' && auth.credentialName) {
+    if (auth && auth.type === 'oauth2' && auth.credentialName) {
+      if (!this.oauthBroker) {
+        return { success: false, status: 0, data: null, error: 'OAuth2 auth requires an OAuthBroker but none is configured' };
+      }
+      try {
+        credential = await this.oauthBroker.getAccessToken(auth.credentialName);
+      } catch (err) {
+        return { success: false, status: 0, data: null, error: `OAuth token error for "${auth.credentialName}": ${err.message}` };
+      }
+    } else if (auth && auth.type !== 'none' && auth.credentialName) {
       try {
         credential = await this.credentialBroker.get(auth.credentialName);
       } catch (err) {
@@ -311,6 +323,55 @@ class HttpToolExecutor {
       data = rawText;
     }
 
+    // Step 11: OAuth2 401 retry — stale token, force refresh and retry once
+    if (response.status === 401 && auth && auth.type === 'oauth2' && this.oauthBroker) {
+      try {
+        this.credentialBroker.clearCache && this.credentialBroker.clearCache(auth.credentialName);
+        const freshToken = await this.oauthBroker.getAccessToken(auth.credentialName, { forceRefresh: true });
+        const retryHeaders = { ...headers, Authorization: `Bearer ${freshToken}` };
+        const retryController = new AbortController();
+        const retryTimeout = setTimeout(() => retryController.abort(), this.timeoutMs);
+        try {
+          const retryResponse = await fetch(finalUrl, {
+            method: method.toUpperCase(),
+            headers: retryHeaders,
+            body,
+            signal: retryController.signal,
+          });
+          clearTimeout(retryTimeout);
+
+          let retryText;
+          try { retryText = await retryResponse.text(); } catch { retryText = ''; }
+          if (retryText.length > this.maxResponseBytes) retryText = retryText.slice(0, this.maxResponseBytes);
+          let retryData;
+          try { retryData = JSON.parse(retryText); } catch { retryData = retryText; }
+
+          if (retryResponse.status === 401) {
+            return {
+              success: false,
+              status: 401,
+              data: retryData,
+              error: `OAuth token rejected after refresh for "${auth.credentialName}". Reauthorization likely required.`,
+            };
+          }
+          const retrySuccess = retryResponse.status >= 200 && retryResponse.status < 300;
+          return retrySuccess
+            ? { success: true, status: retryResponse.status, data: retryData }
+            : { success: false, status: retryResponse.status, data: retryData, error: `HTTP ${retryResponse.status}` };
+        } catch (retryErr) {
+          clearTimeout(retryTimeout);
+          return { success: false, status: 0, data: null, error: `OAuth retry fetch failed: ${retryErr.message}` };
+        }
+      } catch (refreshErr) {
+        return {
+          success: false,
+          status: 401,
+          data,
+          error: `OAuth 401 retry failed — refresh error: ${refreshErr.message}`,
+        };
+      }
+    }
+
     const success = response.status >= 200 && response.status < 300;
     return success
       ? { success: true, status: response.status, data }
@@ -387,6 +448,7 @@ class HttpToolExecutor {
     }
 
     switch (auth.type) {
+      case 'oauth2':
       case 'bearer':
         return { Authorization: `Bearer ${credential}` };
 

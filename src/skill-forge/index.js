@@ -36,6 +36,7 @@ const { TemplateEngine } = require('./template-engine');
 const { SecurityScanner } = require('./security-scanner');
 const { SkillActivator, ToolActivator } = require('./activator');
 const { HttpToolExecutor } = require('./http-tool-executor');
+const { OAuthBroker } = require('./oauth-broker');
 const constants = require('./constants');
 
 module.exports = {
@@ -45,5 +46,6 @@ module.exports = {
   SkillActivator,
   ToolActivator,
   HttpToolExecutor,
+  OAuthBroker,
   constants,
 };

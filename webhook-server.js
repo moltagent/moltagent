@@ -164,6 +164,22 @@ try {
   RSVPTracker = null;
 }
 
+let MeetingComposer;
+try {
+  MeetingComposer = require('./src/lib/calendar/meeting-composer');
+} catch {
+  console.warn('[WARN] MeetingComposer not available');
+  MeetingComposer = null;
+}
+
+let ensureMeetingsBoard;
+try {
+  ensureMeetingsBoard = require('./src/lib/calendar/ensure-meetings-board');
+} catch {
+  console.warn('[WARN] ensureMeetingsBoard not available');
+  ensureMeetingsBoard = null;
+}
+
 let BotEnroller;
 try {
   BotEnroller = require('./src/lib/integrations/bot-enroller');
@@ -321,10 +337,10 @@ try {
   IngestionCache = null;
 }
 
-let SkillForgeHandler, TemplateLoader, TemplateEngine, SecurityScanner, SkillActivator, ToolActivator, HttpToolExecutor;
+let SkillForgeHandler, TemplateLoader, TemplateEngine, SecurityScanner, SkillActivator, ToolActivator, HttpToolExecutor, OAuthBroker;
 try {
   ({ SkillForgeHandler } = require('./src/lib/handlers/skill-forge-handler'));
-  ({ TemplateLoader, TemplateEngine, SecurityScanner, SkillActivator, ToolActivator, HttpToolExecutor } = require('./src/skill-forge'));
+  ({ TemplateLoader, TemplateEngine, SecurityScanner, SkillActivator, ToolActivator, HttpToolExecutor, OAuthBroker } = require('./src/skill-forge'));
 } catch {
   console.warn('[WARN] Skill Forge modules not available');
   SkillForgeHandler = null;
@@ -469,6 +485,7 @@ let collectivesClient = null;
 let resilientWriter = null;
 let contactsClient = null;
 let rsvpTracker = null;   // Initialized here; consumed by HeartbeatManager in bot.js
+let meetingComposer = null;
 let skillForgeHandler = null;
 let talkQueue = null;
 let defaultTalkToken = appConfig.talk.primaryRoom || null; // Primary room for proactive notifications
@@ -489,6 +506,7 @@ let sessionCleanupTimer = null; // Periodic SessionManager cleanup
 let webhookErrorHandler = null;
 let serverComponents = null; // Decomposed server components (webhook, command, health, message processor)
 let heartbeatManager = null; // HeartbeatManager instance (proactive operations)
+let oauthBroker = null; // OAuth 2.0 broker for SkillForge token lifecycle
 let knowledgeBoard = null; // KnowledgeBoard for verification tracking
 let ncFlowActivityPoller = null; // NC Flow activity poller for heartbeat events
 let ncFlowWebhookReceiver = null; // NC Flow webhook receiver for heartbeat events
@@ -1028,6 +1046,35 @@ async function initialize() {
     } catch (err) {
       console.warn(`[INIT] RSVPTracker failed: ${err.message}`);
     }
+  }
+
+  // 7b6a. Initialize MeetingComposer (Smart Meetings state machine)
+  if (MeetingComposer && contactsClient && caldavClient && llmRouter) {
+    try {
+      meetingComposer = new MeetingComposer({
+        contactsClient,
+        caldavClient,
+        deckClient: deckClient2,
+        emailHandler,
+        rsvpTracker,
+        llmRouter,
+        auditLog: auditLogger ? auditLogger.log.bind(auditLogger) : consoleAuditLog
+      });
+      console.log('[INIT] MeetingComposer ready');
+    } catch (err) {
+      console.warn(`[INIT] MeetingComposer failed: ${err.message}`);
+    }
+  }
+
+  // 7b6b. Ensure Pending Meetings workflow board exists
+  if (ensureMeetingsBoard && deckClient2) {
+    ensureMeetingsBoard(deckClient2).then(result => {
+      if (result && !result.existed) {
+        console.log('[INIT] Pending Meetings board created');
+      }
+    }).catch(err => {
+      console.warn(`[INIT] Pending Meetings board setup failed: ${err.message}`);
+    });
   }
 
   // 7b7. Initialize BotEnroller (auto-enable Talk bot in rooms)
@@ -1709,7 +1756,9 @@ async function initialize() {
         contactsClient: contactsClient,
         memorySearcher: memorySearcher,
         emailHandler: emailHandler,
-        resilientWriter: resilientWriter
+        resilientWriter: resilientWriter,
+        meetingComposer: meetingComposer,
+        rsvpTracker: rsvpTracker
       });
       console.log(`[INIT] ToolRegistry ready (${toolRegistry.size} tools)`);
 
@@ -1717,8 +1766,19 @@ async function initialize() {
       let toolActivator = null;
       if (ToolActivator && HttpToolExecutor && ncFilesClient) {
         try {
+          // OAuth 2.0 broker for token lifecycle (consent, refresh, client_credentials)
+          if (OAuthBroker && ncRequestManager) {
+            oauthBroker = new OAuthBroker({
+              credentialBroker,
+              ncRequestManager,
+              redirectUri: `${process.env.AGENT_PUBLIC_URL || CONFIG.nc.url}/oauth/callback`,
+              auditLog: auditLogger ? auditLogger.log.bind(auditLogger) : consoleAuditLog,
+            });
+          }
+
           const httpExecutor = new HttpToolExecutor({
-            credentialBroker: { get: getCredential },
+            credentialBroker: { get: getCredential, clearCache: (name) => credentialBroker.clearCache(name) },
+            oauthBroker,
             egressGuard: null,
             timeoutMs: 30000,
           });
@@ -2252,6 +2312,7 @@ async function initialize() {
       if (rhythmTracker) heartbeatManager.rhythmTracker = rhythmTracker;
       if (coAccessGraph) heartbeatManager.coAccessGraph = coAccessGraph;
       if (entityExtractor) heartbeatManager.entityExtractor = entityExtractor;
+      if (oauthBroker) heartbeatManager.oauthBroker = oauthBroker;
 
       if (HeartbeatIntelligence && heartbeatManager.caldavClient) {
         try {
@@ -2405,6 +2466,64 @@ async function handleRequest(req, res) {
       };
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(stats, null, 2));
+    }
+    return;
+  }
+
+  // OAuth 2.0 callback endpoint
+  if (req.method === 'GET' && req.url?.startsWith('/oauth/callback')) {
+    const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+    // Rate limit by IP: 10 requests per minute (map pruned on window expiry)
+    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+    const now = Date.now();
+    if (!global._oauthCallbackRateLimit) global._oauthCallbackRateLimit = new Map();
+    const rl = global._oauthCallbackRateLimit;
+    const entry = rl.get(clientIp) || { count: 0, windowStart: now };
+    if (now - entry.windowStart > 60000) { entry.count = 0; entry.windowStart = now; }
+    entry.count++;
+    rl.set(clientIp, entry);
+    // Prune stale IPs to prevent unbounded growth
+    if (rl.size > 1000) {
+      for (const [ip, e] of rl) { if (now - e.windowStart > 60000) rl.delete(ip); }
+    }
+    if (entry.count > 10) {
+      res.writeHead(429, { 'Content-Type': 'text/plain' });
+      res.end('Too many requests');
+      return;
+    }
+
+    const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const code = urlObj.searchParams.get('code');
+    const state = urlObj.searchParams.get('state');
+    const error = urlObj.searchParams.get('error');
+
+    if (error) {
+      res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<html><body><h2>Authorization failed</h2><p>${escHtml(error)}</p><p>You can close this window.</p></body></html>`);
+      return;
+    }
+
+    if (!code || !state) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Missing code or state parameter');
+      return;
+    }
+
+    if (!oauthBroker) {
+      res.writeHead(503, { 'Content-Type': 'text/plain' });
+      res.end('OAuth not configured');
+      return;
+    }
+
+    try {
+      await oauthBroker.handleCallback(code, state);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<html><body><h2>Authorization successful</h2><p>You can close this window and return to the chat.</p></body></html>');
+    } catch (err) {
+      console.error('[OAuth] Callback error:', err.message);
+      res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<html><body><h2>Authorization failed</h2><p>${escHtml(err.message)}</p><p>Please try again from the chat.</p></body></html>`);
     }
     return;
   }

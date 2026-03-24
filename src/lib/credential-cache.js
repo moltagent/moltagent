@@ -172,7 +172,7 @@ class CredentialCache {
    */
   _processCredential(name, entry) {
     // Complex credentials need full object
-    const complexCredentials = ['email-imap', 'email-smtp', 'caldav'];
+    const complexCredentials = ['email-imap', 'email-smtp', 'caldav', 'oauth'];
 
     if (complexCredentials.some(c => name.toLowerCase().includes(c.toLowerCase()))) {
       return {

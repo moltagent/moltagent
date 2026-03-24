@@ -908,6 +908,17 @@ class HeartbeatManager {
         }
       }
 
+      // OAuth: clean expired pending authorizations
+      if (this.oauthBroker) {
+        try {
+          const cleanup = await this.oauthBroker.cleanExpiredPending();
+          if (cleanup.deleted > 0) results.oauthPendingCleaned = cleanup.deleted;
+        } catch (err) {
+          console.warn('[Heartbeat] OAuth pending cleanup failed:', err.message);
+          results.errors.push({ component: 'oauthPendingCleanup', error: err.message });
+        }
+      }
+
       // Level >= 3: Meeting prep
       if (level >= 3 && this.meetingPreparer && !this._isModeGated('meetingPrep')) {
         try {
