@@ -50,6 +50,35 @@
 
 const crypto = require('crypto');
 
+// ─── HTML normalisation ──────────────────────────────────────────────
+
+/**
+ * Strip HTML tags from Deck rich-text descriptions and normalise to plain text.
+ * Deck's rich editor stores content as HTML — block elements become newlines,
+ * inline tags are removed, and HTML entities are decoded.
+ * @param {string} html - Raw card description (may be HTML or plain text)
+ * @returns {string} Plain text with one line per block element
+ */
+function stripHtml(html) {
+  if (!html) return '';
+
+  let text = html;
+  // Block-level elements → newline before content
+  text = text.replace(/<\/?(p|div|br|li|ul|ol|h[1-6]|tr|blockquote|pre|hr)\b[^>]*\/?>/gi, '\n');
+  // Strip all remaining tags
+  text = text.replace(/<[^>]+>/g, '');
+  // Decode common HTML entities
+  text = text.replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+  // Collapse runs of whitespace-only lines into single newlines, trim
+  text = text.replace(/\n[ \t]*\n/g, '\n').trim();
+  return text;
+}
+
 // ─── Schedule line parsing ────────────────────────────────────────────
 
 /**
@@ -87,11 +116,27 @@ function parseInterval(intervalStr) {
  * @param {string} description - Full card description text
  * @returns {Array<{ interval: number, action: string, hash: string, raw: string }>}
  */
+/**
+ * Extract trailing LLM routing directive from an action string.
+ * "Scan NC News feeds. LLM: cloud" → { action: "Scan NC News feeds.", allowCloud: true }
+ * @param {string} raw - Action text, possibly with trailing "LLM: cloud" or "LLM: local"
+ * @returns {{ action: string, allowCloud: boolean }}
+ */
+function _extractLlmDirective(raw) {
+  const match = raw.match(/^(.*?)\.\s*LLM:\s*(cloud|local)\s*$/i);
+  if (!match) return { action: raw, allowCloud: false };
+  return {
+    action: match[1].trim() + '.',
+    allowCloud: match[2].toLowerCase() === 'cloud'
+  };
+}
+
 function parseScheduleBlock(description) {
   if (!description) return [];
 
+  const plain = stripHtml(description);
   const schedules = [];
-  const lines = description.split('\n');
+  const lines = plain.split('\n');
   let inScheduleBlock = false;
 
   for (const line of lines) {
@@ -108,10 +153,11 @@ function parseScheduleBlock(description) {
     if (inlineMatch) {
       const intervalMs = parseInterval(inlineMatch[1]);
       if (intervalMs) {
-        const action = inlineMatch[2].trim();
+        const { action, allowCloud } = _extractLlmDirective(inlineMatch[2].trim());
         schedules.push({
           interval: intervalMs,
           action,
+          allowCloud,
           hash: _hashScheduleLine(inlineMatch[1], action),
           raw: trimmed
         });
@@ -121,8 +167,10 @@ function parseScheduleBlock(description) {
 
     // Inside a SCHEDULE block — parse "Every Xh/Xd: action" lines
     if (inScheduleBlock) {
-      // Empty line or new section header ends the block
-      if (!trimmed || (/^[A-Z][A-Z _-]+:/.test(trimmed) && !trimmed.startsWith('Every'))) {
+      // Skip blank lines (HTML stripping can leave gaps between entries)
+      if (!trimmed) continue;
+      // New section header ends the block
+      if (/^[A-Z][A-Z _-]+:/.test(trimmed) && !trimmed.startsWith('Every')) {
         inScheduleBlock = false;
         continue;
       }
@@ -131,10 +179,11 @@ function parseScheduleBlock(description) {
       if (schedMatch) {
         const intervalMs = parseInterval(schedMatch[1]);
         if (intervalMs) {
-          const action = schedMatch[2].trim();
+          const { action, allowCloud } = _extractLlmDirective(schedMatch[2].trim());
           schedules.push({
             interval: intervalMs,
             action,
+            allowCloud,
             hash: _hashScheduleLine(schedMatch[1], action),
             raw: trimmed
           });
@@ -280,7 +329,7 @@ class ScheduleHandler {
       if (configCard) {
         configContextParts.push(
           `**Config for stack "${stack.title}":**`,
-          configCard.description || '(empty)',
+          stripHtml(configCard.description) || '(empty)',
           ''
         );
       }
@@ -293,7 +342,7 @@ class ScheduleHandler {
       '',
       `**Board:** ${board.title} (ID: ${board.id})`,
       `**Board Rules:**`,
-      description,
+      stripHtml(description),
       '',
       ...(configContextParts.length > 0 ? [
         '## Configuration Context',
@@ -321,6 +370,7 @@ class ScheduleHandler {
       cardId: 0,
       stackId: 0,
       forceLocal: options.forceLocal || false,
+      allowCloud: schedule.allowCloud || false,
       maxIterations: 8
     });
   }
@@ -333,4 +383,4 @@ class ScheduleHandler {
   }
 }
 
-module.exports = { ScheduleHandler, parseScheduleBlock, parseInterval, findConfigCard };
+module.exports = { ScheduleHandler, parseScheduleBlock, parseInterval, findConfigCard, stripHtml, _extractLlmDirective };

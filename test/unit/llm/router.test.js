@@ -1265,6 +1265,66 @@ if (LegacyLLMRouter) {
   });
 }
 
+// ─── allowCloud override tests ────────────────────────────────────────
+
+{
+  const cloudProvider = createMockProvider({ id: 'claude-haiku', type: 'remote' });
+  const localProvider = createMockProvider({ id: 'ollama-fast', type: 'local' });
+  const localProvider2 = createMockProvider({ id: 'ollama-local', type: 'local' });
+
+  test('buildProviderChain: allowCloud uses smart-mix roster on all-local preset', () => {
+    const router = new LLMRouter({ auditLog: createMockAuditLog(), notifyUser: createMockNotifyUser() });
+    router.providers.set('claude-haiku', cloudProvider);
+    router.providers.set('ollama-fast', localProvider);
+    router.providers.set('ollama-local', localProvider2);
+    router.setPreset('all-local');
+
+    // Without allowCloud — only local
+    const { chain: localChain } = router.buildProviderChain('tools', {});
+    const localIds = localChain.map(e => e.id);
+    assert.ok(localIds.every(id => id.startsWith('ollama')), 'all-local: only local providers');
+
+    // With allowCloud — should include cloud
+    const { chain: cloudChain } = router.buildProviderChain('tools', { allowCloud: true });
+    const cloudIds = cloudChain.map(e => e.id);
+    assert.ok(cloudIds.some(id => id === 'claude-haiku'), 'allowCloud: cloud provider in chain');
+  });
+
+  test('buildProviderChain: allowCloud overrides forceLocal', () => {
+    const router = new LLMRouter({ auditLog: createMockAuditLog(), notifyUser: createMockNotifyUser() });
+    router.providers.set('claude-haiku', cloudProvider);
+    router.providers.set('ollama-fast', localProvider);
+    router.setPreset('all-local');
+
+    // forceLocal + allowCloud → allowCloud wins
+    const { chain } = router.buildProviderChain('tools', { forceLocal: true, allowCloud: true });
+    const ids = chain.map(e => e.id);
+    assert.ok(ids.some(id => id === 'claude-haiku'), 'allowCloud overrides forceLocal');
+  });
+
+  test('buildProviderChain: allowCloud false keeps all-local roster', () => {
+    const router = new LLMRouter({ auditLog: createMockAuditLog(), notifyUser: createMockNotifyUser() });
+    router.providers.set('claude-haiku', cloudProvider);
+    router.providers.set('ollama-fast', localProvider);
+    router.setPreset('all-local');
+
+    const { chain } = router.buildProviderChain('tools', { allowCloud: false });
+    const ids = chain.map(e => e.id);
+    assert.ok(!ids.includes('claude-haiku'), 'allowCloud false: no cloud providers');
+  });
+
+  test('buildProviderChain: allowCloud still blocks credentials job from cloud', () => {
+    const router = new LLMRouter({ auditLog: createMockAuditLog(), notifyUser: createMockNotifyUser() });
+    router.providers.set('claude-haiku', cloudProvider);
+    router.providers.set('ollama-fast', localProvider);
+    router.setPreset('all-local');
+
+    const { chain } = router.buildProviderChain('credentials', { allowCloud: true });
+    const ids = chain.map(e => e.id);
+    assert.ok(!ids.includes('claude-haiku'), 'credentials job: cloud blocked even with allowCloud');
+  });
+}
+
 // Summary
 setTimeout(() => {
   summary();

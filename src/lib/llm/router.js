@@ -717,16 +717,18 @@ class LLMRouter {
    * @returns {string[]}
    */
   _buildRosterChain(job, options = {}) {
+    const roster = options._rosterOverride || this._roster;
+
     // credentials job → only local providers (enforced)
     if (job === JOBS.CREDENTIALS) {
-      const chain = (this._roster[JOBS.CREDENTIALS] || []).filter(id => {
+      const chain = (roster[JOBS.CREDENTIALS] || []).filter(id => {
         const p = this.providers.get(id);
         return p && p.type === 'local';
       });
       return [...new Set(chain)];
     }
 
-    let chain = [...(this._roster[job] || this._roster[JOBS.QUICK] || [])];
+    let chain = [...(roster[job] || roster[JOBS.QUICK] || [])];
 
     if (options.forceLocal) {
       chain = chain.filter(id => {
@@ -1075,6 +1077,7 @@ class LLMRouter {
    * @param {string} job - Job classification (quick, tools, thinking, etc.)
    * @param {Object} [context={}]
    * @param {boolean} [context.forceLocal=false] - Restrict to local providers
+   * @param {boolean} [context.allowCloud=false] - Per-call cloud override (uses smart-mix roster, overrides forceLocal)
    * @param {string} [context.opType] - Operation type for budget checks
    * @returns {{ chain: Array<{id: string, provider: Object}>, skipped: Array<{id: string, reason: string}> }}
    */
@@ -1082,14 +1085,23 @@ class LLMRouter {
     // Check proactive budget → forceLocal
     const opType = context.opType || 'reactive';
     let forceLocal = !!context.forceLocal;
+    const allowCloud = !!context.allowCloud;
     if (opType === 'proactive' && this.budget.isProactiveBudgetExhausted()) {
       forceLocal = true;
     }
 
+    // allowCloud overrides forceLocal — explicit per-call cloud authorisation
+    if (allowCloud) forceLocal = false;
+
     // Build raw chain from roster or legacy
     let rawChain;
     if (this._roster) {
-      rawChain = this._buildRosterChain(job, { forceLocal });
+      // Per-call cloud override: use smart-mix roster for this call only
+      const rosterOpts = { forceLocal };
+      if (allowCloud) {
+        rosterOpts._rosterOverride = this._resolvePreset('smart-mix');
+      }
+      rawChain = this._buildRosterChain(job, rosterOpts);
 
       // Unknown job with no roster entry — fall back to local providers
       if (!rawChain || rawChain.length === 0) {

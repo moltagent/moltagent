@@ -44,10 +44,14 @@ class WorkflowBoardDetector {
       const rulesCard = this._findRulesCard(stacks);
       if (!rulesCard) continue;
 
+      const rawDesc = rulesCard.card.description || '';
+      const isHtml = /<[a-z/][\s\S]*>/i.test(rawDesc);
+      console.log(`[WorkflowDetector] Rules card "${rulesCard.card.title}" description: ${rawDesc.length} chars, format=${isHtml ? 'html' : 'plain'}`);
+
       workflowBoards.push({
         board,
         stacks,
-        description: rulesCard.card.description || '',
+        description: rawDesc,
         workflowType: this._extractWorkflowType(rulesCard.card.title),
         boardId: board.id,
         rulesCardId: rulesCard.card.id

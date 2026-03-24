@@ -13,7 +13,9 @@ const {
   ScheduleHandler,
   parseScheduleBlock,
   parseInterval,
-  findConfigCard
+  findConfigCard,
+  stripHtml,
+  _extractLlmDirective
 } = require('../../../src/lib/workflows/schedule-handler');
 
 // ─── parseInterval tests ──────────────────────────────────────────────
@@ -95,6 +97,65 @@ test('parseScheduleBlock: hashes are stable across calls', () => {
   const s1 = parseScheduleBlock(desc);
   const s2 = parseScheduleBlock(desc);
   assert.strictEqual(s1[0].hash, s2[0].hash);
+});
+
+// ─── stripHtml tests ──────────────────────────────────────────────────
+
+test('stripHtml: returns plain text unchanged', () => {
+  const plain = 'SCHEDULE:\nEvery 24h: Scan feeds';
+  assert.strictEqual(stripHtml(plain), plain);
+});
+
+test('stripHtml: converts block elements to newlines', () => {
+  const html = '<p>SCHEDULE:</p><p>Every 24h: Scan NC News feeds</p>';
+  const result = stripHtml(html);
+  assert.ok(result.includes('SCHEDULE:'), 'contains SCHEDULE');
+  assert.ok(result.includes('Every 24h: Scan NC News feeds'), 'contains schedule line');
+  assert.ok(!result.includes('<p>'), 'no HTML tags remain');
+});
+
+test('stripHtml: handles list items', () => {
+  const html = '<p>SCHEDULE:</p><ul><li>Every 24h: Scan feeds</li><li>Every 7d: Archive old</li></ul>';
+  const result = stripHtml(html);
+  assert.ok(result.includes('Every 24h: Scan feeds'));
+  assert.ok(result.includes('Every 7d: Archive old'));
+});
+
+test('stripHtml: decodes HTML entities', () => {
+  assert.ok(stripHtml('A &amp; B').includes('A & B'));
+  assert.ok(stripHtml('a &lt; b &gt; c').includes('a < b > c'));
+});
+
+test('stripHtml: handles null/empty', () => {
+  assert.strictEqual(stripHtml(null), '');
+  assert.strictEqual(stripHtml(''), '');
+  assert.strictEqual(stripHtml(undefined), '');
+});
+
+// ─── parseScheduleBlock with HTML input ──────────────────────────────
+
+test('parseScheduleBlock: parses HTML-wrapped SCHEDULE block', () => {
+  const html = '<p>WORKFLOW: pipeline</p><p>Some description.</p><p>SCHEDULE:</p><p>Every 24h: Scan NC News feeds</p><p>Every 7d: Archive stale cards</p><p>STAGES:</p><p>Inbox → Done</p>';
+  const schedules = parseScheduleBlock(html);
+  assert.strictEqual(schedules.length, 2, `expected 2 schedules, got ${schedules.length}`);
+  assert.strictEqual(schedules[0].action, 'Scan NC News feeds');
+  assert.strictEqual(schedules[0].interval, 86400000);
+  assert.strictEqual(schedules[1].action, 'Archive stale cards');
+});
+
+test('parseScheduleBlock: parses HTML list-based SCHEDULE', () => {
+  const html = '<p>SCHEDULE:</p><ul><li>Every 12h: Check inbox</li></ul>';
+  const schedules = parseScheduleBlock(html);
+  assert.strictEqual(schedules.length, 1);
+  assert.strictEqual(schedules[0].action, 'Check inbox');
+  assert.strictEqual(schedules[0].interval, 43200000);
+});
+
+test('parseScheduleBlock: parses inline SCHEDULE in HTML', () => {
+  const html = '<p>SCHEDULE: Every 24h: Scan feeds</p>';
+  const schedules = parseScheduleBlock(html);
+  assert.strictEqual(schedules.length, 1);
+  assert.strictEqual(schedules[0].action, 'Scan feeds');
 });
 
 // ─── findConfigCard tests ─────────────────────────────────────────────
@@ -257,6 +318,98 @@ asyncTest('processSchedules: marks run even on error (prevents retry storm)', as
   // Second run should skip (marked as run despite error)
   const result2 = await handler.processSchedules(wb);
   assert.strictEqual(result2.skipped, 1);
+});
+
+// ─── _extractLlmDirective tests ──────────────────────────────────────
+
+test('_extractLlmDirective: extracts LLM: cloud from action', () => {
+  const result = _extractLlmDirective('Scan NC News feeds. LLM: cloud');
+  assert.strictEqual(result.action, 'Scan NC News feeds.');
+  assert.strictEqual(result.allowCloud, true);
+});
+
+test('_extractLlmDirective: extracts LLM: local from action', () => {
+  const result = _extractLlmDirective('Archive stale cards. LLM: local');
+  assert.strictEqual(result.action, 'Archive stale cards.');
+  assert.strictEqual(result.allowCloud, false);
+});
+
+test('_extractLlmDirective: case insensitive', () => {
+  const result = _extractLlmDirective('Do work. LLM: CLOUD');
+  assert.strictEqual(result.allowCloud, true);
+});
+
+test('_extractLlmDirective: no directive returns original', () => {
+  const result = _extractLlmDirective('Scan NC News feeds');
+  assert.strictEqual(result.action, 'Scan NC News feeds');
+  assert.strictEqual(result.allowCloud, false);
+});
+
+// ─── parseScheduleBlock LLM routing tests ────────────────────────────
+
+test('parseScheduleBlock: extracts allowCloud from schedule lines', () => {
+  const desc = 'SCHEDULE:\nEvery 24h: Scan NC News feeds. LLM: cloud\nEvery 7d: Archive old cards';
+  const schedules = parseScheduleBlock(desc);
+  assert.strictEqual(schedules.length, 2);
+  assert.strictEqual(schedules[0].action, 'Scan NC News feeds.');
+  assert.strictEqual(schedules[0].allowCloud, true);
+  assert.strictEqual(schedules[1].action, 'Archive old cards');
+  assert.strictEqual(schedules[1].allowCloud, false);
+});
+
+test('parseScheduleBlock: inline SCHEDULE with LLM: cloud', () => {
+  const desc = 'SCHEDULE: Every 12h: Check items. LLM: cloud';
+  const schedules = parseScheduleBlock(desc);
+  assert.strictEqual(schedules.length, 1);
+  assert.strictEqual(schedules[0].allowCloud, true);
+  assert.strictEqual(schedules[0].action, 'Check items.');
+});
+
+test('parseScheduleBlock: HTML SCHEDULE with LLM: cloud', () => {
+  const html = '<p>SCHEDULE:</p><p>Every 24h: Scan feeds. LLM: cloud</p>';
+  const schedules = parseScheduleBlock(html);
+  assert.strictEqual(schedules.length, 1);
+  assert.strictEqual(schedules[0].allowCloud, true);
+});
+
+// ─── processSchedules passes allowCloud to agentLoop ─────────────────
+
+asyncTest('processSchedules: passes allowCloud to agentLoop', async () => {
+  let taskOpts = null;
+  const mockAgent = {
+    processWorkflowTask: async (opts) => { taskOpts = opts; return 'done'; }
+  };
+  const handler = new ScheduleHandler({ agentLoop: mockAgent });
+
+  const wb = {
+    board: { id: 1, title: 'Pipeline' },
+    description: 'SCHEDULE:\nEvery 1h: Scan feeds. LLM: cloud',
+    stacks: [],
+    workflowType: 'pipeline'
+  };
+
+  await handler.processSchedules(wb);
+  assert.ok(taskOpts, 'agentLoop was called');
+  assert.strictEqual(taskOpts.allowCloud, true, 'allowCloud propagated');
+});
+
+asyncTest('processSchedules: defaults allowCloud to false', async () => {
+  let taskOpts = null;
+  const mockAgent = {
+    processWorkflowTask: async (opts) => { taskOpts = opts; return 'done'; }
+  };
+  const handler = new ScheduleHandler({ agentLoop: mockAgent });
+
+  const wb = {
+    board: { id: 1, title: 'Pipeline' },
+    description: 'SCHEDULE:\nEvery 1h: Local task',
+    stacks: [],
+    workflowType: 'pipeline'
+  };
+
+  await handler.processSchedules(wb);
+  assert.ok(taskOpts, 'agentLoop was called');
+  assert.strictEqual(taskOpts.allowCloud, false, 'allowCloud defaults to false');
 });
 
 setTimeout(() => {

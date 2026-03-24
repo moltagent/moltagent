@@ -725,6 +725,120 @@ function createMockTalkQueue() {
     assert.strictEqual(engine2._getHumanUser(), 'admin');
   });
 
+  // ─── _extractStackLlmRouting tests ────────────────────────────────────
+
+  await asyncTest('_extractStackLlmRouting: extracts LLM: cloud from CONFIG card', async () => {
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([]),
+      deckClient: createMockDeck(),
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const configCard = { description: 'Criteria: only tech articles\nLLM: cloud\nMax: 5 items' };
+    const result = engine._extractStackLlmRouting(configCard);
+    assert.strictEqual(result.allowCloud, true);
+  });
+
+  await asyncTest('_extractStackLlmRouting: LLM: local returns allowCloud false', async () => {
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([]),
+      deckClient: createMockDeck(),
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const configCard = { description: 'Criteria: sensitive data\nLLM: local' };
+    const result = engine._extractStackLlmRouting(configCard);
+    assert.strictEqual(result.allowCloud, false);
+  });
+
+  await asyncTest('_extractStackLlmRouting: no LLM line defaults to false', async () => {
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([]),
+      deckClient: createMockDeck(),
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    assert.strictEqual(engine._extractStackLlmRouting({ description: 'Just criteria' }).allowCloud, false);
+    assert.strictEqual(engine._extractStackLlmRouting(null).allowCloud, false);
+    assert.strictEqual(engine._extractStackLlmRouting({}).allowCloud, false);
+  });
+
+  await asyncTest('_extractStackLlmRouting: handles HTML CONFIG card', async () => {
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([]),
+      deckClient: createMockDeck(),
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const configCard = { description: '<p>Criteria: tech only</p><p>LLM: cloud</p>' };
+    const result = engine._extractStackLlmRouting(configCard);
+    assert.strictEqual(result.allowCloud, true);
+  });
+
+  // ─── allowCloud propagation to AgentLoop ─────────────────────────────
+
+  await asyncTest('_processCard passes allowCloud from CONFIG card to AgentLoop', async () => {
+    const agentLoop = createMockAgentLoop();
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([{
+        board: { id: 1, title: 'Content Pipeline' },
+        stacks: [{
+          id: 10, title: 'Intelligence',
+          cards: [
+            { id: 99, title: 'CONFIG: Intelligence settings', description: 'Criteria: AI news only\nLLM: cloud', archived: false, deletedAt: null },
+            { id: 100, title: 'Test Article', description: 'Some content', labels: [], lastModified: new Date().toISOString() }
+          ]
+        }],
+        description: 'WORKFLOW: pipeline\nRULES: Process.',
+        workflowType: 'pipeline',
+        boardId: 1
+      }]),
+      deckClient: createMockDeck(),
+      agentLoop,
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    await engine.processAll();
+    assert.ok(agentLoop._calls.length >= 1, 'AgentLoop should be called');
+    const call = agentLoop._calls[0];
+    assert.strictEqual(call.allowCloud, true, 'allowCloud should be true from CONFIG card');
+  });
+
+  await asyncTest('_processCard defaults allowCloud to false without LLM: line', async () => {
+    const agentLoop = createMockAgentLoop();
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([{
+        board: { id: 1, title: 'Pipeline' },
+        stacks: [{
+          id: 10, title: 'Inbox',
+          cards: [
+            { id: 100, title: 'Test Card', description: 'content', labels: [], lastModified: new Date().toISOString() }
+          ]
+        }],
+        description: 'WORKFLOW: pipeline\nRULES: Process.',
+        workflowType: 'pipeline',
+        boardId: 1
+      }]),
+      deckClient: createMockDeck(),
+      agentLoop,
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    await engine.processAll();
+    assert.ok(agentLoop._calls.length >= 1);
+    assert.strictEqual(agentLoop._calls[0].allowCloud, false, 'allowCloud defaults false');
+  });
+
   summary();
   exitWithCode();
 })();

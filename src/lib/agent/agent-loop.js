@@ -356,10 +356,11 @@ class AgentLoop {
    * @param {number} params.cardId - For logging/tracking
    * @param {number} params.stackId - For logging/tracking
    * @param {boolean} [params.forceLocal] - Force local LLM provider
+   * @param {boolean} [params.allowCloud] - Per-call cloud override (overrides forceLocal)
    * @param {number} [params.maxIterations] - Override max iterations (default: this.maxIterations)
    * @returns {Promise<string>} The agent's final text response
    */
-  async processWorkflowTask({ systemAddition, task, boardId, cardId, stackId, forceLocal, maxIterations }) {
+  async processWorkflowTask({ systemAddition, task, boardId, cardId, stackId, forceLocal, allowCloud, maxIterations }) {
     const startTime = Date.now();
     const iterLimit = maxIterations || this.maxIterations;
     this.logger.info(`[AgentLoop] Workflow task: board=${boardId} card=${cardId} maxIter=${iterLimit}`);
@@ -380,7 +381,7 @@ class AgentLoop {
     const systemPrompt = `Today is ${dateStr}.\nYou are a workflow agent. Follow the board rules exactly. Be concise. One comment per action. Do not call tools you don't need.\n\n${systemAddition}`;
 
     let tools;
-    if (forceLocal) {
+    if (forceLocal && !allowCloud) {
       tools = this.toolRegistry.getWorkflowToolDefinitions();
     } else {
       tools = this.toolRegistry.getCloudWorkflowToolDefinitions(systemAddition);
@@ -408,7 +409,8 @@ class AgentLoop {
           system: systemPrompt,
           messages,
           tools,
-          forceLocal,
+          forceLocal: forceLocal && !allowCloud,
+          allowCloud,
           job: this._classifyJob(messages, tools)
         });
       } catch (llmErr) {

@@ -1,7 +1,7 @@
 'use strict';
 
 const GateDetector = require('./gate-detector');
-const { ScheduleHandler, parseScheduleBlock, findConfigCard } = require('./schedule-handler');
+const { ScheduleHandler, parseScheduleBlock, findConfigCard, stripHtml } = require('./schedule-handler');
 
 /**
  * WorkflowEngine
@@ -105,6 +105,8 @@ class WorkflowEngine {
    */
   async _processBoard(wb) {
     const { board, stacks } = wb;
+    // Strip HTML once per board — all downstream methods use this
+    wb._plainDescription = wb._plainDescription || stripHtml(wb.description);
     const result = { cardsProcessed: 0, gatesFound: 0, gatesResolved: 0, escalations: 0, schedulesExecuted: 0 };
 
     for (const stack of stacks) {
@@ -166,6 +168,21 @@ class WorkflowEngine {
   }
 
   /**
+   * Extract LLM routing directive from a CONFIG: card's description.
+   * Looks for a line starting with "LLM:" followed by "cloud" or "local".
+   * @private
+   * @param {Object|null} configCard - CONFIG card object with .description
+   * @returns {{ allowCloud: boolean }}
+   */
+  _extractStackLlmRouting(configCard) {
+    if (!configCard?.description) return { allowCloud: false };
+    const plain = stripHtml(configCard.description);
+    const match = plain.match(/^LLM:\s*(cloud|local)\b/im);
+    if (!match) return { allowCloud: false };
+    return { allowCloud: match[1].toLowerCase() === 'cloud' };
+  }
+
+  /**
    * Process a single non-GATE card through the AgentLoop.
    * @private
    */
@@ -189,8 +206,9 @@ class WorkflowEngine {
 
     // Read CONFIG: card from the current stack (if present)
     const configCard = findConfigCard(stack);
+    const { allowCloud } = this._extractStackLlmRouting(configCard);
     const configContext = configCard
-      ? `\n**Stack Config (from "${configCard.title}"):**\n${configCard.description || '(empty)'}\n`
+      ? `\n**Stack Config (from "${configCard.title}"):**\n${stripHtml(configCard.description) || '(empty)'}\n`
       : '';
 
     const systemAddition = [
@@ -200,12 +218,12 @@ class WorkflowEngine {
       '',
       `**Board:** ${board.title} (ID: ${board.id})`,
       `**Board Rules:**`,
-      description,
+      wb._plainDescription,
       '',
       `**Current Stack:** ${stack.title} (ID: ${stack.id})`,
       configContext,
       `**Card:** ${card.title} (ID: ${card.id})`,
-      card.description ? `**Card Description:** ${card.description}` : '',
+      card.description ? `**Card Description:** ${stripHtml(card.description)}` : '',
       '',
       `**Card Labels:** ${(card.labels || []).map(l => `${l.color}: ${l.title}`).join(', ') || 'none'}`,
       `**Card Due:** ${card.duedate || 'none'}`,
@@ -232,6 +250,7 @@ class WorkflowEngine {
       cardId: card.id,
       stackId: stack.id,
       forceLocal,
+      allowCloud,
       maxIterations
     });
   }
@@ -253,6 +272,8 @@ class WorkflowEngine {
       console.log(`[Workflow] GATE resolved: "${card.title}" -> ${resolution.decision}`);
 
       let { forceLocal } = this._getRoleForCard(wb, card);
+      const configCard = findConfigCard(stack);
+      const { allowCloud } = this._extractStackLlmRouting(configCard);
 
       // Budget check before cloud processing
       if (!forceLocal && this.budgetEnforcer) {
@@ -277,7 +298,7 @@ class WorkflowEngine {
         wb.stacks.map(s => `  - "${s.title}" (ID: ${s.id})`).join('\n'),
         '',
         'Board Rules:',
-        wb.description,
+        wb._plainDescription,
         '',
         `Follow the board rules for what happens after ${resolution.decision}.`,
         'This may involve moving the card, creating new cards, sending notifications, etc.',
@@ -290,7 +311,8 @@ class WorkflowEngine {
         boardId: board.id,
         cardId: card.id,
         stackId: stack.id,
-        forceLocal
+        forceLocal,
+        allowCloud
       });
 
       return true;
@@ -403,7 +425,7 @@ class WorkflowEngine {
    * @private
    */
   _getBoardForceLocal(wb) {
-    const boardDesc = wb.description || '';
+    const boardDesc = wb._plainDescription || stripHtml(wb.description || '');
     const boardModel = boardDesc.match(/^MODEL:\s*(sovereign|local|auto)\b/im);
     if (!boardModel) return false;
     const directive = this._resolveDirective(boardModel[1]);
@@ -412,12 +434,12 @@ class WorkflowEngine {
 
   _getRoleForCard(wb, card) {
     // Board-level directive
-    const boardDesc = wb.description || '';
+    const boardDesc = wb._plainDescription || stripHtml(wb.description || '');
     const boardModel = boardDesc.match(/^MODEL:\s*(sovereign|local|auto)\b/im);
     const boardDirective = boardModel ? this._resolveDirective(boardModel[1]) : null;
 
     // Card-level directive
-    const cardDesc = card.description || '';
+    const cardDesc = stripHtml(card.description || '');
     const cardModel = cardDesc.match(/\bMODEL:\s*(sovereign|local|auto)\b/i);
     const cardDirective = cardModel ? this._resolveDirective(cardModel[1]) : null;
 
@@ -467,7 +489,7 @@ class WorkflowEngine {
       daysFromNow = 2; // 48h SLA for human review
     } else {
       // Check board rules for SLA override: "SLA: 3 days" or "SLA: 24h"
-      const slaMatch = wb.description.match(/\bSLA:\s*(\d+)\s*(days?|hours?|h|d)\b/i);
+      const slaMatch = (wb._plainDescription || stripHtml(wb.description)).match(/\bSLA:\s*(\d+)\s*(days?|hours?|h|d)\b/i);
       if (slaMatch) {
         const val = parseInt(slaMatch[1], 10);
         const unit = slaMatch[2].toLowerCase();
