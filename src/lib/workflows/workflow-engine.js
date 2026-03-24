@@ -118,6 +118,9 @@ class WorkflowEngine {
           // Skip the rules card itself
           if (wb.rulesCardId && card.id === wb.rulesCardId) continue;
 
+          // Skip infrastructure cards — these inform but don't flow
+          if (/^(CONFIG|WORKFLOW|SERIES|FORMAT):\s/i.test((card.title || '').trim())) continue;
+
           // Card hygiene: ensure due date and assignment
           await this._ensureDueDate(wb, stack, card);
           await this._ensureAssignment(wb, stack, card);

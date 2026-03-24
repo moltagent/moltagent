@@ -74,6 +74,9 @@ function stripHtml(html) {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&nbsp;/g, ' ');
+  // Strip Markdown bold/italic markers: **text**, __text__, *text*, _text_
+  text = text.replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1');
+  text = text.replace(/_{1,2}([^_]+)_{1,2}/g, '$1');
   // Collapse runs of whitespace-only lines into single newlines, trim
   text = text.replace(/\n[ \t]*\n/g, '\n').trim();
   return text;
@@ -254,6 +257,7 @@ class ScheduleHandler {
     const result = { executed: 0, skipped: 0, errors: 0 };
     const schedules = parseScheduleBlock(wb.description);
 
+    console.log(`[Schedule] Parsed ${schedules.length} schedule(s) from "${wb.board.title}"`);
     if (schedules.length === 0) return result;
 
     for (const schedule of schedules) {

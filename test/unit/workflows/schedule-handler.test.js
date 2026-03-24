@@ -126,6 +126,21 @@ test('stripHtml: decodes HTML entities', () => {
   assert.ok(stripHtml('a &lt; b &gt; c').includes('a < b > c'));
 });
 
+test('stripHtml: strips Markdown bold/italic markers', () => {
+  assert.strictEqual(stripHtml('**SCHEDULE:**'), 'SCHEDULE:');
+  assert.strictEqual(stripHtml('__SCHEDULE:__'), 'SCHEDULE:');
+  assert.strictEqual(stripHtml('*emphasis*'), 'emphasis');
+  assert.strictEqual(stripHtml('**bold** and *italic*'), 'bold and italic');
+});
+
+test('parseScheduleBlock: parses Markdown bold SCHEDULE header', () => {
+  const desc = 'WORKFLOW: pipeline\n\n**SCHEDULE:**\nEvery 24h: Scan NC News feeds\nEvery 7d: Archive stale cards\n\n**STAGES:**\nInbox → Done';
+  const schedules = parseScheduleBlock(desc);
+  assert.strictEqual(schedules.length, 2, `expected 2, got ${schedules.length}`);
+  assert.strictEqual(schedules[0].action, 'Scan NC News feeds');
+  assert.strictEqual(schedules[1].action, 'Archive stale cards');
+});
+
 test('stripHtml: handles null/empty', () => {
   assert.strictEqual(stripHtml(null), '');
   assert.strictEqual(stripHtml(''), '');
