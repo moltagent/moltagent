@@ -1,6 +1,7 @@
 'use strict';
 
 const GateDetector = require('./gate-detector');
+const { ScheduleHandler, parseScheduleBlock, findConfigCard } = require('./schedule-handler');
 
 /**
  * WorkflowEngine
@@ -45,6 +46,12 @@ class WorkflowEngine {
 
     // Track GATE notifications to avoid re-notifying
     this._notifiedGates = new Set();
+
+    // Schedule handler for timed actions in WORKFLOW: card descriptions
+    this._scheduleHandler = new ScheduleHandler({
+      agentLoop,
+      budgetEnforcer: this.budgetEnforcer
+    });
   }
 
   /**
@@ -58,6 +65,7 @@ class WorkflowEngine {
       gatesFound: 0,
       gatesResolved: 0,
       escalations: 0,
+      schedulesExecuted: 0,
       errors: []
     };
 
@@ -72,6 +80,7 @@ class WorkflowEngine {
           results.gatesFound += boardResult.gatesFound;
           results.gatesResolved += boardResult.gatesResolved;
           results.escalations += boardResult.escalations;
+          results.schedulesExecuted += boardResult.schedulesExecuted || 0;
         } catch (err) {
           console.error(`[Workflow] Error processing board "${wb.board.title}":`, err.message);
           results.errors.push({ board: wb.board.title, error: err.message });
@@ -96,7 +105,7 @@ class WorkflowEngine {
    */
   async _processBoard(wb) {
     const { board, stacks } = wb;
-    const result = { cardsProcessed: 0, gatesFound: 0, gatesResolved: 0, escalations: 0 };
+    const result = { cardsProcessed: 0, gatesFound: 0, gatesResolved: 0, escalations: 0, schedulesExecuted: 0 };
 
     for (const stack of stacks) {
       for (const card of (stack.cards || [])) {
@@ -137,6 +146,19 @@ class WorkflowEngine {
       }
     }
 
+    // Process SCHEDULE block from board rules (timed actions)
+    try {
+      // Respect board-level MODEL directive for schedule actions
+      const boardForceLocal = this._getBoardForceLocal(wb);
+      const schedResult = await this._scheduleHandler.processSchedules(wb, { forceLocal: boardForceLocal });
+      result.schedulesExecuted = schedResult.executed;
+      if (schedResult.executed > 0) {
+        console.log(`[Workflow] Schedules on "${board.title}": ${schedResult.executed} executed, ${schedResult.skipped} skipped`);
+      }
+    } catch (err) {
+      console.warn(`[Workflow] Schedule processing failed on "${board.title}":`, err.message);
+    }
+
     // Lifecycle: archive stale Done cards
     await this._archiveStaleDoneCards(wb);
 
@@ -165,6 +187,12 @@ class WorkflowEngine {
 
     console.log(`[Workflow] Processing card "${card.title}" in "${board.title}" / "${stack.title}" (maxIter=${maxIterations})`);
 
+    // Read CONFIG: card from the current stack (if present)
+    const configCard = findConfigCard(stack);
+    const configContext = configCard
+      ? `\n**Stack Config (from "${configCard.title}"):**\n${configCard.description || '(empty)'}\n`
+      : '';
+
     const systemAddition = [
       '## Active Workflow Context',
       '',
@@ -175,6 +203,7 @@ class WorkflowEngine {
       description,
       '',
       `**Current Stack:** ${stack.title} (ID: ${stack.id})`,
+      configContext,
       `**Card:** ${card.title} (ID: ${card.id})`,
       card.description ? `**Card Description:** ${card.description}` : '',
       '',
@@ -368,6 +397,19 @@ class WorkflowEngine {
    * @private
    * @returns {{role: string, forceLocal: boolean}}
    */
+  /**
+   * Extract board-level forceLocal from MODEL directive.
+   * Used for schedule actions (no card context).
+   * @private
+   */
+  _getBoardForceLocal(wb) {
+    const boardDesc = wb.description || '';
+    const boardModel = boardDesc.match(/^MODEL:\s*(sovereign|local|auto)\b/im);
+    if (!boardModel) return false;
+    const directive = this._resolveDirective(boardModel[1]);
+    return directive?.forceLocal || false;
+  }
+
   _getRoleForCard(wb, card) {
     // Board-level directive
     const boardDesc = wb.description || '';
@@ -552,6 +594,7 @@ class WorkflowEngine {
   resetState() {
     this._processedCards.clear();
     this._notifiedGates.clear();
+    this._scheduleHandler.resetState();
     this.detector.invalidateCache();
   }
 }

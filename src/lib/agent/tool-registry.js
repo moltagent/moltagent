@@ -130,6 +130,8 @@ class ToolRegistry {
       ['file_mkdir', 'file_write'].forEach(t => allowed.add(t));
     if (ctx.includes('email') || ctx.includes('mail'))
       allowed.add('mail_send');
+    if (ctx.includes('news') || ctx.includes('feed') || ctx.includes('rss'))
+      ['news_get_items', 'news_list_feeds', 'news_mark_read'].forEach(t => allowed.add(t));
     // talk_send: not yet implemented — add here when wired
 
     return Array.from(this.tools.values())
