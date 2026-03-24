@@ -172,13 +172,15 @@ function parseScheduleBlock(description) {
     if (inScheduleBlock) {
       // Skip blank lines (HTML stripping can leave gaps between entries)
       if (!trimmed) continue;
+      // Strip leading list markers: "- ", "* ", "1. ", "• "
+      const stripped = trimmed.replace(/^[-*•]\s+|^\d+\.\s+/, '');
       // New section header ends the block
-      if (/^[A-Z][A-Z _-]+:/.test(trimmed) && !trimmed.startsWith('Every')) {
+      if (/^[A-Z][A-Z _-]+:/.test(stripped) && !stripped.startsWith('Every')) {
         inScheduleBlock = false;
         continue;
       }
 
-      const schedMatch = trimmed.match(/^(every\s+\d+\s*[hd]):\s*(.+)$/i);
+      const schedMatch = stripped.match(/^(every\s+\d+\s*[hd]):\s*(.+)$/i);
       if (schedMatch) {
         const intervalMs = parseInterval(schedMatch[1]);
         if (intervalMs) {

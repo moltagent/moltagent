@@ -73,6 +73,25 @@ Inbox → Review → Done
   assert.ok(schedules[0].hash !== schedules[1].hash, 'different hashes');
 });
 
+test('parseScheduleBlock: parses Markdown list-prefixed schedule lines', () => {
+  const desc = 'SCHEDULE:\n- Every 24h: Scan NC News feeds. LLM: cloud\n- Every 7d: Check old cards. LLM: local\n- Every 30d: Run analysis. LLM: local';
+  const schedules = parseScheduleBlock(desc);
+  assert.strictEqual(schedules.length, 3, `expected 3, got ${schedules.length}`);
+  assert.strictEqual(schedules[0].action, 'Scan NC News feeds.');
+  assert.strictEqual(schedules[0].allowCloud, true);
+  assert.strictEqual(schedules[1].action, 'Check old cards.');
+  assert.strictEqual(schedules[1].allowCloud, false);
+  assert.strictEqual(schedules[2].interval, 30 * 24 * 60 * 60 * 1000);
+});
+
+test('parseScheduleBlock: handles * and numbered list prefixes', () => {
+  const desc = 'SCHEDULE:\n* Every 12h: Task A\n1. Every 24h: Task B';
+  const schedules = parseScheduleBlock(desc);
+  assert.strictEqual(schedules.length, 2);
+  assert.strictEqual(schedules[0].action, 'Task A');
+  assert.strictEqual(schedules[1].action, 'Task B');
+});
+
 test('parseScheduleBlock: parses inline SCHEDULE format', () => {
   const desc = 'SCHEDULE: Every 12h: Check for new items';
   const schedules = parseScheduleBlock(desc);
