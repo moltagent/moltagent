@@ -1496,7 +1496,7 @@ async function initialize() {
   if (SkillForgeHandler && TemplateLoader && ncRequestManager) {
     try {
       const auditFn = auditLogger ? auditLogger.log.bind(auditLogger) : consoleAuditLog;
-      const templateLoader = new TemplateLoader({ ncRequestManager, username: CONFIG.nc.username });
+      const templateLoader = new TemplateLoader({ ncRequestManager, username: CONFIG.nc.username, templateBasePath: '/Moltagent/SkillTemplates' });
       const templateEngine = new TemplateEngine({ ncUrl: CONFIG.nc.url, ncUser: CONFIG.nc.username });
       const securityScanner = new SecurityScanner();
       const skillActivator = new SkillActivator({ ncRequestManager, securityScanner, username: CONFIG.nc.username, ncUrl: CONFIG.nc.url });
