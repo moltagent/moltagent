@@ -480,6 +480,7 @@ let credentialCache = null;
 let credentialBroker = null;
 let signatureVerifier = null;
 let llmRouter = null;
+let llmProviderConfigs = {}; // YAML provider definitions (adapter, credentialName, model)
 let auditLogger = null;
 let caldavClient = null;
 let calendarHandler = null;
@@ -781,6 +782,7 @@ async function initialize() {
     }
     llmConfig.auditLog = auditLogger ? auditLogger.log.bind(auditLogger) : consoleAuditLog;
     llmConfig.proactiveDailyBudget = appConfig.proactive.dailyCloudBudget;
+    llmProviderConfigs = llmConfig.providers || {};
     llmRouter = new LLMRouter(llmConfig);
 
     const results = await llmRouter.testConnections();
@@ -1627,7 +1629,7 @@ async function initialize() {
             xai: 'https://api.x.ai/v1',
             google: 'https://generativelanguage.googleapis.com/v1beta/openai',
           };
-          const yamlProviders = providersConfig.providers || {};
+          const yamlProviders = llmProviderConfigs;
           for (const [id, provConfig] of Object.entries(yamlProviders)) {
             if (!provConfig.adapter) continue;
             // Skip local providers — already handled above
