@@ -2,6 +2,7 @@
 
 const GateDetector = require('./gate-detector');
 const { ScheduleHandler, parseScheduleBlock, findConfigCard, stripHtml } = require('./schedule-handler');
+const { isStructuralCard } = require('../integrations/deck-card-classifier');
 
 /**
  * WorkflowEngine
@@ -119,7 +120,7 @@ class WorkflowEngine {
           if (wb.rulesCardId && card.id === wb.rulesCardId) continue;
 
           // Skip infrastructure cards — these inform but don't flow
-          if (/^(CONFIG|WORKFLOW|SERIES|FORMAT):\s/i.test((card.title || '').trim())) continue;
+          if (isStructuralCard(card)) continue;
 
           // Card hygiene: ensure due date and assignment
           await this._ensureDueDate(wb, stack, card);

@@ -1,6 +1,7 @@
 'use strict';
 
 const DECK = require('../../config/deck-names');
+const { isStructuralCard } = require('../integrations/deck-card-classifier');
 
 /**
  * ToolRegistry - Agent Tool Definition & Execution Layer
@@ -947,6 +948,9 @@ class ToolRegistry {
         if (!resolved) return `No card found matching "${args.card}".`;
 
         const { card: found, stackKey } = resolved;
+        if (isStructuralCard(found)) {
+          return `Card #${found.id} "${found.title}" is a structural/config card, not a work item. Structural cards should not be assigned to users. If you need to modify this card, do so explicitly.`;
+        }
         const assignResult = await deck.assignUser(found.id, stackKey, args.user);
         if (assignResult === undefined || assignResult === null) {
           // assignUser returns undefined when user is not a board member
@@ -1009,6 +1013,9 @@ class ToolRegistry {
           if (!resolved) return `No card found matching "${args.card}".`;
 
           const { card: found, stackKey } = resolved;
+          if (isStructuralCard(found)) {
+            return `Card #${found.id} "${found.title}" is a structural/config card, not a work item. Structural cards should not have due dates. If you need to modify this card, do so explicitly.`;
+          }
           const current = await deck.getCard(found.id, stackKey);
 
           const duedate = args.duedate.toLowerCase() === 'none' ? null : args.duedate;

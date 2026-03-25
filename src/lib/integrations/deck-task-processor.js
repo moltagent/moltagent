@@ -11,6 +11,7 @@
 const DeckClient = require('./deck-client');
 const { isAwaitingHumanResponse } = require('./deck-client');
 const { JOBS } = require('../llm/router');
+const { isStructuralCard } = require('./deck-card-classifier');
 
 /**
  * Task Processor for NC Deck integration
@@ -141,6 +142,12 @@ class DeckTaskProcessor {
         if (card.labels.includes('blocked')) {
           console.log(`[DeckProcessor] Skipping blocked card: ${card.title}`);
           results.blocked++;
+          continue;
+        }
+
+        // Skip structural/config cards — not work items
+        if (isStructuralCard(card)) {
+          console.log(`[DeckProcessor] Skipping structural card: "${card.title}"`);
           continue;
         }
 
