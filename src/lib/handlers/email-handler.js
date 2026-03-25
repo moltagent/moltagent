@@ -870,6 +870,83 @@ Write only the reply body. Be concise and appropriate.`;
     };
   }
 
+  /**
+   * Send an email with iCalendar attachment for meeting invitations.
+   * @param {Object} opts
+   * @param {string} opts.to - Recipient email
+   * @param {string} opts.subject - Email subject
+   * @param {string} opts.body - Plain text body
+   * @param {string} opts.icalData - Raw iCalendar string (VCALENDAR/VEVENT)
+   * @param {string} [opts.method='REQUEST'] - iCal method (REQUEST, CANCEL, REPLY)
+   * @param {string} [opts.user] - User who initiated the send (for audit)
+   * @returns {Promise<{success: boolean, message: string, messageId?: string}>}
+   */
+  async sendWithIcal(opts) {
+    if (!opts || typeof opts !== 'object') {
+      throw new Error('sendWithIcal: opts must be an object');
+    }
+
+    const { to, subject, body, icalData, method = 'REQUEST', user } = opts;
+
+    if (!to || !subject) {
+      throw new Error('sendWithIcal: to and subject are required');
+    }
+
+    // Get SMTP credentials
+    const cred = await this.credentials.get('email-smtp');
+    if (!cred) {
+      throw new Error("Email sending not configured. Please add 'email-smtp' credential to NC Passwords.");
+    }
+
+    const port = parseInt(cred.port) || appConfig.ports.smtpDefault;
+    const transporter = nodemailer.createTransport({
+      host: cred.host,
+      port: port,
+      secure: port === appConfig.ports.smtpTls,  // true for 465 (SSL), false for 587 (STARTTLS)
+      auth: {
+        user: cred.username || cred.user,
+        pass: cred.password
+      },
+      connectionTimeout: appConfig.timeouts.smtpConnection
+    });
+
+    const mailOptions = {
+      from: cred.from || cred.username || cred.user,
+      to,
+      subject,
+      text: body || ''
+    };
+
+    // Attach iCalendar data if provided; fall back to plain text email if absent
+    if (icalData) {
+      mailOptions.icalEvent = {
+        method,
+        content: icalData
+      };
+      mailOptions.alternatives = [{
+        contentType: 'text/calendar; method=' + method,
+        content: Buffer.from(icalData, 'utf-8')
+      }];
+    }
+
+    const result = await transporter.sendMail(mailOptions);
+
+    await this.auditLog('email_ical_sent', {
+      user,
+      to,
+      subject,
+      method,
+      messageId: result.messageId,
+      hasIcal: Boolean(icalData)
+    });
+
+    return {
+      success: true,
+      message: `✅ Calendar email sent to ${to}!`,
+      messageId: result.messageId
+    };
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Email Footer
   // ─────────────────────────────────────────────────────────────────────────

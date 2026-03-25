@@ -49,6 +49,7 @@ Thumbs.db
 # But ignore ephemeral Claude state
 .claude/agent-memory/
 .claude/*.jsonl
+.claude/settings.local.json
 
 # --- Test & Coverage ---
 coverage/
