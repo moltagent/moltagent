@@ -38,6 +38,8 @@
 
 const appConfig = require('../config');
 const DECK = require('../../config/deck-names');
+const boardRegistry = require('./deck-board-registry');
+const { ROLES } = require('./deck-board-registry');
 
 // ===========================================================================
 // Constants
@@ -300,9 +302,21 @@ class CockpitManager {
    */
   async initialize() {
     try {
-      // Find existing board by title
-      const boards = await this.deck.listBoards();
-      let board = boards.find(b => b.title === this.boardTitle);
+      // Find existing board by role (survives renames)
+      const boardId = await boardRegistry.resolveBoard(this.deck, ROLES.cockpit, this.boardTitle);
+      let board = null;
+
+      if (boardId) {
+        try {
+          board = await this.deck.getBoard(boardId);
+        } catch (err) {
+          if (err.statusCode === 404 || err.statusCode === 403) {
+            boardRegistry.invalidateBoard(ROLES.cockpit);
+          } else {
+            throw err;
+          }
+        }
+      }
 
       if (!board) {
         // Board doesn't exist, create it
@@ -314,8 +328,8 @@ class CockpitManager {
         // Board exists, resolve IDs
         this.boardId = board.id;
 
-        // Get board details for labels
-        const boardDetails = await this.deck.getBoard(this.boardId);
+        // board already has full details from getBoard() above
+        const boardDetails = board;
 
         // Get stacks with cards
         const stacks = await this.deck.getStacks(this.boardId);
@@ -380,6 +394,7 @@ class CockpitManager {
         color: BOARD_COLOR
       });
       const boardId = board.id;
+      boardRegistry.registerBoard(ROLES.cockpit, boardId);
 
       // 2. Share with admin user (if configured)
       if (this.adminUser) {

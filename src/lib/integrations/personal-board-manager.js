@@ -103,6 +103,7 @@ class PersonalBoardManager {
 
     this.deck = new DeckClient(ncRequestManager, {
       boardName: BOARD_NAME,
+      role: 'personal',
       stacks: STACKS,
       labels: LABELS
     });

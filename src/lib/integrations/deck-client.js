@@ -12,6 +12,8 @@
 
 const appConfig = require('../config');
 const DECK = require('../../config/deck-names');
+const boardRegistry = require('./deck-board-registry');
+const { ROLES } = require('./deck-board-registry');
 
 /**
  * Custom error class for Deck API errors
@@ -142,6 +144,7 @@ class DeckClient {
       // Board configuration
       this.boardName = config.boardName || config.deck?.boardName || DECK.boards.tasks;
       this.archiveAfterDays = config.archiveAfterDays || config.deck?.archiveAfterDays || appConfig.deck.archiveAfterDays;
+      this.role = config.role || null;
     } else {
       // Legacy signature: (config)
       const legacyConfig = ncRequestManagerOrConfig || {};
@@ -153,6 +156,7 @@ class DeckClient {
       // Board configuration
       this.boardName = legacyConfig.deck?.boardName || DECK.boards.tasks;
       this.archiveAfterDays = legacyConfig.deck?.archiveAfterDays || appConfig.deck.archiveAfterDays;
+      this.role = null; // legacy clients don't use registry
     }
 
     // Stack names (order matters for creation)
@@ -211,6 +215,17 @@ class DeckClient {
    * @returns {string} Board type: 'moltagent-tasks' | 'cockpit' | 'personal' | 'project'
    */
   classifyBoard(board) {
+    // Check registry first (survives renames)
+    const all = boardRegistry.getAll();
+    for (const [role, entry] of Object.entries(all)) {
+      if (entry.boardId === board.id) {
+        if (role === ROLES.tasks)    return DeckClient.BOARD_TYPES.MOLTAGENT_TASKS;
+        if (role === ROLES.cockpit)  return DeckClient.BOARD_TYPES.COCKPIT;
+        if (role === ROLES.personal) return DeckClient.BOARD_TYPES.PERSONAL;
+      }
+    }
+
+    // Fallback: title-based classification
     const title = (board.title || '').toLowerCase().trim();
     const cfg = appConfig.deck;
 
@@ -313,8 +328,29 @@ class DeckClient {
    * @returns {Promise<Object|null>} Board object or null
    */
   async findBoard() {
+    // Registry-based resolution when role is set
+    if (this.role) {
+      const boardId = await boardRegistry.resolveBoard(this, this.role, this.boardName);
+      if (boardId) {
+        try {
+          return await this.getBoard(boardId);
+        } catch (err) {
+          // Board was deleted — invalidate and fall through to name scan
+          if (err.statusCode === 404) {
+            boardRegistry.invalidateBoard(this.role);
+          } else {
+            throw err;
+          }
+        }
+      }
+    }
+    // Fallback: name-based scan
     const boards = await this.listBoards();
-    return boards.find(b => b.title === this.boardName) || null;
+    const board = boards.find(b => b.title === this.boardName) || null;
+    if (board && this.role) {
+      boardRegistry.registerBoard(this.role, board.id);
+    }
+    return board;
   }
 
   /**
@@ -338,6 +374,10 @@ class DeckClient {
       title: this.boardName,
       color: '0082c9' // Nextcloud blue
     });
+
+    if (this.role) {
+      boardRegistry.registerBoard(this.role, board.id);
+    }
 
     const boardId = board.id;
     console.log(`[Deck] Board created with ID: ${boardId}`);
@@ -952,6 +992,23 @@ class DeckClient {
       'PUT',
       `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/removeLabel`,
       { labelId }
+    );
+  }
+
+  /**
+   * Create a new label on a board.
+   * @param {number} boardId - Board ID
+   * @param {string} title - Label title
+   * @param {string} [color='0800fd'] - Hex color without # (e.g. 'ff0000')
+   * @returns {Promise<Object>} Created label object with id, title, color
+   */
+  async createLabel(boardId, title, color = '0800fd') {
+    if (!boardId) throw new DeckApiError('boardId is required');
+    if (!title || typeof title !== 'string') throw new DeckApiError('Label title is required');
+    return await this._request(
+      'POST',
+      `/index.php/apps/deck/api/v1.0/boards/${boardId}/labels`,
+      { title, color }
     );
   }
 

@@ -830,7 +830,8 @@ async function initialize() {
   if (DeckClient && ncRequestManager) {
     try {
       deckClient2 = new DeckClient(ncRequestManager, {
-        boardName: 'MoltAgent Tasks'
+        boardName: 'MoltAgent Tasks',
+        role: 'tasks'
       });
       console.log('[INIT] DeckClient (message routing) ready');
     } catch (err) {
@@ -2153,6 +2154,7 @@ async function initialize() {
         try {
           const knowledgeDeckClient = new DeckClient(ncRequestManager, {
             boardName: 'MoltAgent Knowledge',
+            role: 'knowledge',
             stacks: {
               verified: 'Verified',
               uncertain: 'Uncertain',
