@@ -82,7 +82,7 @@ console.log('\n--- TemplateLoader Mocked-NC Tests ---\n');
 
 asyncTest('TC-LOADER-NC-001: load() fetches template from NC WebDAV and parses YAML', async () => {
   const nc = createMockNCRequestManager({
-    'GET:/remote.php/dav/files/moltagent/SkillTemplates/test.yaml': {
+    'GET:/remote.php/dav/files/moltagent/Moltagent/SkillTemplates/test.yaml': {
       status: 200,
       body: TEMPLATE_YAML,
       headers: { 'content-type': 'text/yaml' }
@@ -101,7 +101,7 @@ asyncTest('TC-LOADER-NC-001: load() fetches template from NC WebDAV and parses Y
 
 asyncTest('TC-LOADER-NC-002: load() throws on 404', async () => {
   const nc = createMockNCRequestManager({
-    'GET:/remote.php/dav/files/moltagent/SkillTemplates/missing.yaml': {
+    'GET:/remote.php/dav/files/moltagent/Moltagent/SkillTemplates/missing.yaml': {
       status: 404,
       body: 'Not Found',
       headers: {}
@@ -121,7 +121,7 @@ asyncTest('TC-LOADER-NC-002: load() throws on 404', async () => {
 asyncTest('TC-LOADER-NC-003: load() uses cache on second call', async () => {
   let callCount = 0;
   const nc = createMockNCRequestManager({
-    'GET:/remote.php/dav/files/moltagent/SkillTemplates/cached.yaml': () => {
+    'GET:/remote.php/dav/files/moltagent/Moltagent/SkillTemplates/cached.yaml': () => {
       callCount++;
       return {
         status: 200,
@@ -145,7 +145,7 @@ asyncTest('TC-LOADER-NC-003: load() uses cache on second call', async () => {
 
 asyncTest('TC-LOADER-NC-004: loadCatalog() fetches and parses JSON', async () => {
   const nc = createMockNCRequestManager({
-    'GET:/remote.php/dav/files/moltagent/SkillTemplates/_catalog.json': {
+    'GET:/remote.php/dav/files/moltagent/Moltagent/SkillTemplates/_catalog.json': {
       status: 200,
       body: CATALOG_JSON,
       headers: { 'content-type': 'application/json' }

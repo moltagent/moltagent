@@ -69,11 +69,11 @@ class TemplateLoader {
    *
    * @param {Object} options
    * @param {import('../lib/nc-request-manager')} options.ncRequestManager - NCRequestManager instance
-   * @param {string} [options.templateBasePath='/SkillTemplates'] - NC folder containing templates
+   * @param {string} [options.templateBasePath='/Moltagent/SkillTemplates'] - NC folder containing templates
    * @param {string} [options.username='moltagent'] - Nextcloud username for WebDAV path construction
    * @param {number} [options.cacheTTLMs=300000] - Template cache TTL in milliseconds (default: 5 min)
    */
-  constructor({ ncRequestManager, templateBasePath = '/SkillTemplates', username = 'moltagent', cacheTTLMs = 300000 }) {
+  constructor({ ncRequestManager, templateBasePath = '/Moltagent/SkillTemplates', username = 'moltagent', cacheTTLMs = 300000 }) {
     this.nc = ncRequestManager;
     this.templateBasePath = templateBasePath.replace(/\/$/, '');
     this.username = username;
@@ -251,7 +251,7 @@ class TemplateLoader {
    *
    * @private
    * @param {string} relativePath - Path relative to template base folder
-   * @returns {string} Full WebDAV path, e.g. '/remote.php/dav/files/moltagent/SkillTemplates/productivity/trello.yaml'
+   * @returns {string} Full WebDAV path, e.g. '/remote.php/dav/files/moltagent/Moltagent/SkillTemplates/monitoring/uptime-check.yaml'
    */
   _webdavPath(relativePath) {
     return `/remote.php/dav/files/${this.username}${this.templateBasePath}/${relativePath}`;

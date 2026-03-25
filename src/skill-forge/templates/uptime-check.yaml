@@ -1,0 +1,74 @@
+skill_id: uptime-check
+display_name: Uptime Check
+description: Monitor a URL and alert when it goes down.
+version: "1.0"
+category: monitoring
+
+requires:
+  - curl
+
+security:
+  allowed_domains:
+    - "{{target_domain}}"
+  forbidden_patterns: []
+
+parameters:
+  - id: target_url
+    label: Target URL
+    type: string
+    ask: "What URL should be monitored?"
+    example: "https://example.com/health"
+    required: true
+
+  - id: target_domain
+    label: Target Domain
+    type: string
+    derived_from: target_url
+    transform: domain
+    required: true
+
+  - id: check_interval
+    label: Check Interval
+    type: select
+    ask: "How often should the check run?"
+    options:
+      - { label: "Every 5 minutes", value: "*/5 * * * *" }
+      - { label: "Every 15 minutes", value: "*/15 * * * *" }
+      - { label: "Every hour", value: "0 * * * *" }
+    default: "*/5 * * * *"
+    required: true
+
+  - id: alert_threshold
+    label: Alert Threshold
+    type: select
+    ask: "After how many consecutive failures should an alert be sent?"
+    options:
+      - { label: "1 failure", value: "1" }
+      - { label: "3 failures", value: "3" }
+      - { label: "5 failures", value: "5" }
+    default: "3"
+    required: true
+
+skill_template: |
+  ---
+  name: uptime-{{target_domain_slug}}
+  description: "Monitor {{target_url}} for availability"
+  ---
+  # Uptime Check: {{target_url}}
+  
+  ## Overview
+  Monitor {{target_url}} (domain: {{target_domain}}) for availability.
+  Check interval: {{check_interval}}
+  Alert after {{alert_threshold}} consecutive failure(s).
+  
+  ## Check Command
+  ```bash
+  curl -sf --max-time 10 "{{target_url}}" > /dev/null
+  ```
+  
+  ## Configuration
+  - **URL**: {{target_url}}
+  - **Domain**: {{target_domain}}
+  - **Schedule**: {{check_interval}}
+  - **Threshold**: {{alert_threshold}} failures
+  - **Generated**: {{date}} by Skill Forge v{{forge_version}}

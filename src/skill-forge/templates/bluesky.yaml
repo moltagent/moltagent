@@ -2,7 +2,7 @@
 # Upload to: /Moltagent/SkillTemplates/bluesky.yaml
 #
 # Credential setup in NC Passwords:
-#   Name: bluesky
+#   Name: bluesky-api
 #   Username: your-handle.bsky.social
 #   Password: your-app-password
 #   Custom fields: handle = your-handle.bsky.social, appPassword = your-app-password
@@ -15,7 +15,7 @@ description: Publish posts to Bluesky via AT Protocol
 
 auth:
   type: session
-  credential_name: bluesky
+  credential_name: bluesky-api
   session_endpoint: https://bsky.social/xrpc/com.atproto.server.createSession
   session_method: POST
   session_body:
