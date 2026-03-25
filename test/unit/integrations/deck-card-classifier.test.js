@@ -132,4 +132,28 @@ test('TC-CLASS-012: handles missing description property gracefully', () => {
   assert.strictEqual(isStructuralCard(card), false);
 });
 
+// ---------------------------------------------------------------------------
+// TC-CLASS-013: detects "System" label as structural (fast path)
+// ---------------------------------------------------------------------------
+test('TC-CLASS-013: detects "System" label as structural (fast path)', () => {
+  const card = { title: 'Random title', description: '', labels: [{ title: 'System', color: '0000ff' }] };
+  assert.strictEqual(isStructuralCard(card), true);
+});
+
+// ---------------------------------------------------------------------------
+// TC-CLASS-014: "System" label detection is case-insensitive
+// ---------------------------------------------------------------------------
+test('TC-CLASS-014: "System" label detection is case-insensitive', () => {
+  const card = { title: 'Another card', description: '', labels: [{ title: 'system', color: '000' }] };
+  assert.strictEqual(isStructuralCard(card), true);
+});
+
+// ---------------------------------------------------------------------------
+// TC-CLASS-015: non-System labels do not trigger structural detection
+// ---------------------------------------------------------------------------
+test('TC-CLASS-015: non-System labels do not trigger structural detection', () => {
+  const card = { title: 'Work item', description: 'Do stuff', labels: [{ title: 'Urgent', color: 'ff0000' }] };
+  assert.strictEqual(isStructuralCard(card), false);
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

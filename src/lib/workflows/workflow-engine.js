@@ -119,8 +119,11 @@ class WorkflowEngine {
           // Skip the rules card itself
           if (wb.rulesCardId && card.id === wb.rulesCardId) continue;
 
-          // Skip infrastructure cards — these inform but don't flow
-          if (isStructuralCard(card)) continue;
+          // Structural cards: clean stale due dates / assignees, then skip
+          if (isStructuralCard(card)) {
+            await this._cleanStructuralCard(wb, stack, card);
+            continue;
+          }
 
           // Card hygiene: ensure due date and assignment
           await this._ensureDueDate(wb, stack, card);
@@ -569,6 +572,36 @@ class WorkflowEngine {
       if (!err.message?.includes('already assigned')) {
         console.warn(`[Workflow] Could not assign ${userId} to card ${card.id}: ${err.message}`);
       }
+    }
+  }
+
+  /**
+   * Remove stale due dates and assignees from structural/config cards.
+   * Self-healing: runs every heartbeat so legacy metadata is cleaned automatically.
+   * @private
+   */
+  async _cleanStructuralCard(wb, stack, card) {
+    const hasDueDate = !!card.duedate;
+    const hasAssignees = card.assignedUsers && card.assignedUsers.length > 0;
+    if (!hasDueDate && !hasAssignees) return;
+
+    const label = card.title?.slice(0, 40);
+    try {
+      if (hasDueDate) {
+        await this._updateCardDueDate(wb.board.id, stack.id, card.id, null);
+        console.log(`[Workflow] Cleaned due date from structural card "${label}"`);
+      }
+      if (hasAssignees) {
+        for (const au of card.assignedUsers) {
+          const uid = au.participant?.uid || au.uid;
+          if (!uid) continue;
+          const path = `/index.php/apps/deck/api/v1.0/boards/${wb.board.id}/stacks/${stack.id}/cards/${card.id}/unassignUser`;
+          await this.deck._request('PUT', path, { userId: uid });
+          console.log(`[Workflow] Unassigned ${uid} from structural card "${label}"`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[Workflow] Could not clean structural card "${label}": ${err.message}`);
     }
   }
 

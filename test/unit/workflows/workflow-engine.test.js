@@ -839,6 +839,92 @@ function createMockTalkQueue() {
     assert.strictEqual(agentLoop._calls[0].allowCloud, false, 'allowCloud defaults false');
   });
 
+  // --- Structural Card Cleanup: _cleanStructuralCard ---
+
+  await asyncTest('_cleanStructuralCard() removes due date from CONFIG card', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      if (method === 'GET') return { title: 'CONFIG: Ideas', type: 'plain', owner: '', description: '' };
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const wb = { board: { id: 1 }, stacks: [], description: 'WORKFLOW: pipeline' };
+    const stack = { id: 10, title: 'Ideas' };
+    const card = { id: 100, title: 'CONFIG: Ideas', duedate: '2026-03-26T00:00:00Z', assignedUsers: [] };
+
+    await engine._cleanStructuralCard(wb, stack, card);
+
+    const putCall = requestCalls.find(c => c.method === 'PUT' && !c.path.includes('unassign'));
+    assert.ok(putCall, 'Should PUT to clear due date');
+    assert.strictEqual(putCall.body.duedate, null, 'Due date should be set to null');
+  });
+
+  await asyncTest('_cleanStructuralCard() unassigns users from WORKFLOW card', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const wb = { board: { id: 1 }, stacks: [], description: 'WORKFLOW: pipeline' };
+    const stack = { id: 10, title: 'Ideas' };
+    const card = {
+      id: 200, title: 'WORKFLOW: pipeline', duedate: null,
+      assignedUsers: [{ participant: { uid: 'moltagent' } }, { participant: { uid: 'funana' } }]
+    };
+
+    await engine._cleanStructuralCard(wb, stack, card);
+
+    const unassignCalls = requestCalls.filter(c => c.path.includes('unassignUser'));
+    assert.strictEqual(unassignCalls.length, 2, 'Should unassign both users');
+    assert.strictEqual(unassignCalls[0].body.userId, 'moltagent');
+    assert.strictEqual(unassignCalls[1].body.userId, 'funana');
+  });
+
+  await asyncTest('_cleanStructuralCard() does nothing on clean structural card', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const wb = { board: { id: 1 }, stacks: [], description: 'WORKFLOW: pipeline' };
+    const stack = { id: 10, title: 'Ideas' };
+    const card = { id: 300, title: 'CONFIG: Ideas', duedate: null, assignedUsers: [] };
+
+    await engine._cleanStructuralCard(wb, stack, card);
+
+    assert.strictEqual(requestCalls.length, 0, 'Should make no API calls for clean card');
+  });
+
   summary();
   exitWithCode();
 })();
