@@ -191,7 +191,8 @@ class LLMRouter {
 
     // Check proactive budget before attempting cloud providers
     const opType = this.budget.classifyOperation(context);
-    const forceLocal = opType === 'proactive' && this.budget.isProactiveBudgetExhausted();
+    const forceLocal = !!context.forceLocal ||
+      (opType === 'proactive' && this.budget.isProactiveBudgetExhausted());
 
     // Build provider chain — roster mode or legacy mode
     let job = null;

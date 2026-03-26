@@ -992,6 +992,7 @@ or
         job: 'classification',
         task: 'entity_dedup',
         content: prompt,
+        context: { forceLocal: true }, // Entity names may be client data — never send to cloud
         requirements: { maxTokens: 100, temperature: 0.0 },
       });
 
