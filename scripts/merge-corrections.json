@@ -1,0 +1,40 @@
+{
+  "removeGroups": [
+    {
+      "section": "Projects",
+      "canonical": "Phase 1: Internal alignment"
+    }
+  ],
+  "removeTitles": [
+    {
+      "section": "Projects",
+      "titles": ["AgriFood sector", "agri-food sector"]
+    }
+  ],
+  "addGroups": [
+    {
+      "section": "Organizations",
+      "canonical": "CEN Technical Committee TC 391",
+      "titles": [
+        "CEN TC 391",
+        "CEN TC 391 Societal and Citizen Security",
+        "CEN TC 391: Societal and Citizen Security",
+        "CEN Technical Committee TC 391",
+        "CEN Technical Committee TC 391 Societal and Citizen Security",
+        "CEN Technical Committee TC 391: Societal and Citizen Security"
+      ]
+    },
+    {
+      "section": "Organizations",
+      "canonical": "DIEM",
+      "titles": [
+        "DIEM",
+        "DIEM Fellows",
+        "DIEM network",
+        "DM Fellowship",
+        "DM (Fellowship)",
+        "Daily Impact Emergency Management (DIEM)"
+      ]
+    }
+  ]
+}

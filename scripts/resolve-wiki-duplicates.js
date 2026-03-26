@@ -687,16 +687,115 @@ ${page.content || ''}`;
 // Main
 // ============================================================
 
+/**
+ * Apply corrections to scan results:
+ * - removeGroups: remove entire groups by canonical name
+ * - removeTitles: remove specific titles from groups (by section)
+ * - addGroups: add manual groups (by section)
+ *
+ * @param {Array} allResults - Scan results
+ * @param {Object} corrections - Corrections object
+ * @param {Array} allPages - All wiki pages (for resolving page metadata)
+ */
+function applyCorrections(allResults, corrections, allPages) {
+  if (!corrections) return;
+
+  // Remove groups by canonical name
+  for (const remove of (corrections.removeGroups || [])) {
+    for (const result of allResults) {
+      if (remove.section && result.section !== remove.section) continue;
+      const before = result.groups.length;
+      result.groups = result.groups.filter(g => g.canonical !== remove.canonical);
+      if (result.groups.length < before) {
+        console.log(`  CORRECTION: Removed group "${remove.canonical}" from ${result.section}`);
+      }
+    }
+  }
+
+  // Remove specific titles from groups
+  for (const split of (corrections.removeTitles || [])) {
+    for (const result of allResults) {
+      if (split.section && result.section !== split.section) continue;
+      for (const group of result.groups) {
+        const before = group.titles.length;
+        group.titles = group.titles.filter(t => !split.titles.includes(t));
+        group.pages = (group.pages || []).filter(p => !split.titles.includes(p.title));
+        if (group.titles.length < before) {
+          console.log(`  CORRECTION: Removed [${split.titles.join(', ')}] from group "${group.canonical}"`);
+        }
+      }
+      // Drop groups that fell to < 2 titles
+      result.groups = result.groups.filter(g => g.titles.length >= 2);
+    }
+  }
+
+  // Add manual groups
+  for (const add of (corrections.addGroups || [])) {
+    let result = allResults.find(r => r.section === add.section);
+    if (!result) continue;
+
+    // Resolve page metadata for each title
+    const sectionPages = allPages.filter(p => {
+      const parent = allPages.find(pp => pp.id === p.parentId);
+      return parent && parent.title === add.section;
+    });
+
+    const pages = add.titles.map(t => {
+      const page = sectionPages.find(sp => sp.title === t);
+      return page || { title: t, id: null };
+    }).filter(p => p.id !== null);
+
+    if (pages.length < 2) {
+      console.log(`  CORRECTION: Skipped manual group "${add.canonical}" — fewer than 2 pages found in wiki`);
+      continue;
+    }
+
+    // Check if any of these titles are already in an existing group — merge into it
+    let existingGroup = null;
+    for (const g of result.groups) {
+      if (add.titles.some(t => g.titles.includes(t))) {
+        existingGroup = g;
+        break;
+      }
+    }
+
+    if (existingGroup) {
+      // Merge new titles into existing group
+      for (const t of add.titles) {
+        if (!existingGroup.titles.includes(t)) {
+          existingGroup.titles.push(t);
+          const page = pages.find(p => p.title === t);
+          if (page) existingGroup.pages.push(page);
+        }
+      }
+      existingGroup.canonical = add.canonical;
+      console.log(`  CORRECTION: Extended group "${add.canonical}" ← [${existingGroup.titles.join(', ')}]`);
+    } else {
+      // Create new group
+      result.groups.push({
+        canonical: add.canonical,
+        titles: pages.map(p => p.title),
+        pages,
+      });
+      console.log(`  CORRECTION: Added group "${add.canonical}" ← [${pages.map(p => p.title).join(', ')}]`);
+    }
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const doMerge = args.includes('--merge');
   const sectionFilter = args.includes('--section')
     ? args[args.indexOf('--section') + 1]
     : null;
+  const correctionsPath = args.includes('--corrections')
+    ? args[args.indexOf('--corrections') + 1]
+    : null;
 
   console.log(`=== Wiki Duplicate Resolution ===`);
   console.log(`Mode: ${doMerge ? 'MERGE (will modify wiki)' : 'SCAN (read-only)'}`);
   if (sectionFilter) console.log(`Section filter: ${sectionFilter}`);
+  if (correctionsPath) console.log(`Corrections: ${correctionsPath}`);
   console.log('');
 
   // Load credentials
@@ -732,6 +831,18 @@ async function main() {
   for (const section of targetSections) {
     const result = await scanSection(wiki, allPages, section.title, section);
     allResults.push(result);
+  }
+
+  // Apply corrections if provided
+  if (correctionsPath) {
+    console.log(`\n=== Applying Corrections ===`);
+    try {
+      const corrections = JSON.parse(fs.readFileSync(correctionsPath, 'utf8'));
+      applyCorrections(allResults, corrections, allPages);
+    } catch (err) {
+      console.error(`ERROR loading corrections: ${err.message}`);
+      process.exit(1);
+    }
   }
 
   // Summary
