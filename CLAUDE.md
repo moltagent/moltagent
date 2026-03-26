@@ -308,6 +308,7 @@ agent-loop.js, router.js. When orienting, start there.
 │   │   │   └── webhook-handler.js    # Talk webhook listener (port 3000)
 │   │   ├── agent/
 │   │   │   ├── agent-loop.js         # Central dispatcher
+│   │   │   ├── artifact-extractor.js # Tool result → artifact focus extraction
 │   │   │   ├── micro-pipeline.js     # Execution context
 │   │   │   ├── intent-router.js      # Intent routing
 │   │   │   ├── guardrail-enforcer.js # Security gate
