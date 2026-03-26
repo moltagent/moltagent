@@ -116,9 +116,9 @@ asyncTest('processFile extracts text and runs entity extraction', async () => {
         return {
           summary: 'This document discusses Project Phoenix led by Sarah Chen at TheCatalyne.',
           entities: [
-            { name: 'Sarah Chen',      type: 'person',       significance: 'high', description: 'Leads Project Phoenix' },
-            { name: 'Project Phoenix', type: 'project',      significance: 'high', description: 'Main project at TheCatalyne' },
-            { name: 'TheCatalyne',     type: 'organization', significance: 'high', description: 'Parent company for all projects' },
+            { name: 'Sarah Chen',      type: 'person',       significance: 'high', description: 'Leads Project Phoenix at TheCatalyne as principal engineer and project director.' },
+            { name: 'Project Phoenix', type: 'project',      significance: 'high', description: 'Main project at TheCatalyne focused on cloud infrastructure modernization.' },
+            { name: 'TheCatalyne',     type: 'organization', significance: 'high', description: 'Parent company for all projects in the enterprise solutions division.' },
           ],
         };
       },
@@ -512,10 +512,10 @@ asyncTest('processFile only creates wiki pages for high-significance entities', 
       extractEntitiesFromDocument: async () => ({
         summary: 'Pipeline uses DeepSeek and Claude, managed by Carlos.',
         entities: [
-          { name: 'Carlos',     type: 'person',  significance: 'high',   description: 'Pipeline manager at the team' },
-          { name: 'DeepSeek',   type: 'tool',    significance: 'medium', description: 'LLM model' },
-          { name: 'Claude',     type: 'tool',    significance: 'medium', description: 'LLM model' },
-          { name: 'Zero Trust', type: 'concept', significance: 'low',    description: 'Security concept' },
+          { name: 'Carlos',     type: 'person',  significance: 'high',   description: 'Pipeline manager at the team responsible for coordinating LLM model deployments.' },
+          { name: 'DeepSeek',   type: 'tool',    significance: 'medium', description: 'LLM model used in the pipeline for inference tasks and classification.' },
+          { name: 'Claude',     type: 'tool',    significance: 'medium', description: 'LLM model developed by Anthropic used for reasoning and analysis tasks.' },
+          { name: 'Zero Trust', type: 'concept', significance: 'low',    description: 'Security concept that requires verification of every request to the system.' },
         ],
       }),
     }),
@@ -677,26 +677,26 @@ test('_shouldCreateWikiPage blocks null/empty descriptions', () => {
     false, '"null" string description should block page creation'
   );
   assert.strictEqual(
-    ingestor._shouldCreateWikiPage({ name: 'Acme Corp', type: 'organization', significance: 'high', description: 'A real established company' }),
-    true, 'Valid description (>= 20 chars) should allow page creation'
+    ingestor._shouldCreateWikiPage({ name: 'Acme Corp', type: 'organization', significance: 'high', description: 'A real established company that provides enterprise solutions globally.' }),
+    true, 'Valid description (>= 50 chars) should allow page creation'
   );
 });
 
 // 22. _shouldCreateWikiPage rejects thin descriptions (< 20 chars)
-test('_shouldCreateWikiPage rejects thin descriptions under 20 chars', () => {
+test('_shouldCreateWikiPage rejects thin descriptions under 50 chars', () => {
   const ingestor = makeIngestor();
 
   assert.strictEqual(
     ingestor._shouldCreateWikiPage({ name: 'Acme Corp', type: 'organization', significance: 'high', description: 'Short desc' }),
-    false, 'Description under 20 chars should be rejected'
+    false, 'Description under 50 chars should be rejected'
   );
   assert.strictEqual(
-    ingestor._shouldCreateWikiPage({ name: 'Acme Corp', type: 'organization', significance: 'high', description: 'Exactly 20 chars!!!!', }),
-    true, 'Description of exactly 20 chars should be accepted'
+    ingestor._shouldCreateWikiPage({ name: 'Acme Corp', type: 'organization', significance: 'high', description: 'A company providing enterprise solutions and tools.' }),
+    true, 'Description of 51 chars should be accepted'
   );
   assert.strictEqual(
-    ingestor._shouldCreateWikiPage({ name: 'Bob Smith', type: 'person', significance: 'high', description: 'A person here.' }),
-    false, 'Person with 14-char description should be rejected'
+    ingestor._shouldCreateWikiPage({ name: 'Bob Smith', type: 'person', significance: 'high', description: 'A person mentioned here briefly.' }),
+    false, 'Person with 31-char description should be rejected'
   );
 });
 
@@ -718,7 +718,7 @@ test('_shouldCreateWikiPage rejects academic citation names containing "et al"',
   );
   // Regular name containing no "et al" should still pass
   assert.strictEqual(
-    ingestor._shouldCreateWikiPage({ name: 'Ethan Alvarez', type: 'person', significance: 'high', description: 'Lead engineer at the infrastructure team here' }),
+    ingestor._shouldCreateWikiPage({ name: 'Ethan Alvarez', type: 'person', significance: 'high', description: 'Lead engineer at the infrastructure team responsible for cloud deployments.' }),
     true, 'Name starting with "Et" but not "et al" should not be rejected'
   );
 });

@@ -119,7 +119,8 @@ Respond ONLY with JSON:
       "name": "exact name as written in the document",
       "type": "person|agent|project|organization|tool|concept",
       "significance": "high|medium|low",
-      "description": "one sentence paraphrasing what the SOURCE DOCUMENT says about this entity, or null"
+      "description": "one sentence paraphrasing what the SOURCE DOCUMENT says about this entity, or null",
+      "context": "1-3 sentences summarizing what the document says about this entity, or null if only mentioned in passing"
     }
   ],
   "relationships": [{"from": "...", "predicate": "...", "to": "..."}]

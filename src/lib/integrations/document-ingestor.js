@@ -324,10 +324,16 @@ class DocumentIngestor {
 
     // 1. ALL entities are already in the knowledge graph (done by extractEntitiesFromDocument)
 
-    // 2. Create reference stub with summary (always)
+    // 2. Pre-compute which entities will be skipped (for "Also mentioned" section)
+    const alsoMentioned = entities.filter(e =>
+      e && e.name && e.name.length > 2 && e.description &&
+      !this._shouldCreateWikiPage(e, classification?.fidelity)
+    );
+
+    // 3. Create reference stub with summary (always)
     const sectionPath = this._sectionForFile(filePath);
     const pageName    = filenameNoExt;
-    const stubContent = this._buildReferenceStub(filePath, extraction, summary, entities);
+    const stubContent = this._buildReferenceStub(filePath, extraction, summary, entities, alsoMentioned);
 
     let wikiResult;
     try {
@@ -359,7 +365,7 @@ class DocumentIngestor {
 
     let entityPagesCreated = 0;
     for (const entity of entities) {
-      if (!this._shouldCreateWikiPage(entity)) continue;
+      if (!this._shouldCreateWikiPage(entity, classification?.fidelity)) continue;
 
       // Strip uncertainty flags from entity names → frontmatter field instead
       const uncertaintyMatch = entity.name.match(/\s*\((ocr-uncertain|transcription-uncertain)\)\s*$/);
@@ -745,7 +751,7 @@ class DocumentIngestor {
    * @param {Array}  entities  - Entity objects [{name, type, significance, description}]
    * @returns {string} Markdown page content
    */
-  _buildReferenceStub(filePath, extraction, summary = '', entities = []) {
+  _buildReferenceStub(filePath, extraction, summary = '', entities = [], alsoMentioned = []) {
     const filename = path.basename(filePath);
     const ext      = filename.split('.').pop().toLowerCase();
     const now      = new Date().toISOString().split('T')[0];
@@ -795,6 +801,17 @@ class DocumentIngestor {
       lines.push('');
     }
 
+    // "Also mentioned" section for entities that didn't pass the page-creation threshold
+    if (alsoMentioned.length > 0) {
+      lines.push('## Also Mentioned', '');
+      lines.push('*Not enough context for standalone pages:*', '');
+      for (const entity of alsoMentioned) {
+        const desc = entity.description ? ` — ${entity.description}` : '';
+        lines.push(`- ${entity.name} (${entity.type}, ${entity.significance || 'low'} significance)${desc}`);
+      }
+      lines.push('');
+    }
+
     return lines.join('\n');
   }
 
@@ -815,7 +832,7 @@ class DocumentIngestor {
       `created: ${now}`,
       `decay_days: 180`,
       `access_count: 0`,
-      `confidence: medium`,
+      `confidence: ${entity.significance || 'medium'}`,
     ];
     if (entity.name_confidence) {
       lines.push(`name_confidence: ${entity.name_confidence}`);
@@ -840,13 +857,15 @@ class DocumentIngestor {
 
   /**
    * Determine if an entity should get its own wiki page.
-   * Organizations always qualify (partner companies, vendors, clients).
-   * Person and project require high significance.
+   * Applies confidence threshold, minimum substance, and fidelity-adjusted
+   * filtering. OCR sources require HIGH significance — lower-fidelity sources
+   * must earn a page with stronger signal.
    *
-   * @param {Object} entity - { name, type, significance }
+   * @param {Object} entity - { name, type, significance, description, context }
+   * @param {string} [fidelity='authored'] - Source fidelity (authored|transcribed|ocr)
    * @returns {boolean}
    */
-  _shouldCreateWikiPage(entity) {
+  _shouldCreateWikiPage(entity, fidelity = 'authored') {
     if (!entity || !entity.name || entity.name.length <= 2) return false;
 
     // Block protected system pages
@@ -855,11 +874,15 @@ class DocumentIngestor {
     // Block null/empty descriptions — graph-only entities
     if (!entity.description || entity.description === 'null') return false;
 
-    // Block thin descriptions that carry no real knowledge (< 20 chars)
-    if (entity.description.length < 20) return false;
+    // Minimum substance: description must carry real knowledge (>= 50 chars)
+    if (entity.description.length < 50) return false;
 
     // Academic citations are not people (e.g. "Zhang et al")
     if (/\bet\s+al\.?\b/i.test(entity.name)) return false;
+
+    // Fidelity-adjusted confidence threshold:
+    // OCR sources are unreliable — only HIGH significance entities pass
+    if (fidelity === 'ocr' && entity.significance !== 'high') return false;
 
     const type = entity.type;
     // Organizations and agents always get wiki pages — workspace knowledge
