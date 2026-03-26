@@ -120,7 +120,7 @@ class AgentLoop {
     }
 
     // 2. Build initial messages array
-    const systemPrompt = this._buildSystemPrompt(memoryContext, briefingContext, options, warmMemoryContext);
+    const systemPrompt = this._buildSystemPrompt(memoryContext, briefingContext, options, warmMemoryContext, history);
     const tools = this.toolRegistry.getToolDefinitions();
 
     const messages = [
@@ -620,8 +620,40 @@ class AgentLoop {
     return cleanCut + `\n\n[... truncated, showing ~${Math.ceil(cleanCut.length / 4)} of ${originalTokens} tokens]`;
   }
 
+  /**
+   * Infer conversational mode from recent message patterns.
+   * Short rapid exchanges → focused. Long exploratory questions → exploratory.
+   * Returns 'focused', 'exploratory', or 'balanced'.
+   *
+   * @param {Array} history - Recent conversation messages [{role, content}]
+   * @returns {string} 'focused' | 'exploratory' | 'balanced'
+   * @private
+   */
+  _inferConversationalMode(history) {
+    if (!history || history.length === 0) return 'balanced';
+
+    const recentMessages = history.slice(-6);
+    const userMessages = recentMessages.filter(m => m.role === 'user');
+    if (userMessages.length === 0) return 'balanced';
+
+    const avgLength = userMessages.reduce((sum, m) =>
+      sum + (m.content || '').length, 0) / userMessages.length;
+
+    const hasQuestionMarks = userMessages.some(m => (m.content || '').includes('?'));
+    const hasExploratoryWords = userMessages.some(m =>
+      /\b(what if|could we|brainstorm|ideas|explore|think about|imagine)\b/i.test(m.content || '')
+    );
+
+    if (avgLength < 50 && !hasExploratoryWords) {
+      return 'focused';
+    } else if (hasExploratoryWords || (avgLength > 200 && hasQuestionMarks)) {
+      return 'exploratory';
+    }
+    return 'balanced';
+  }
+
   /** @private */
-  _buildSystemPrompt(memoryContext, briefingContext, options = {}, warmMemoryContext = '') {
+  _buildSystemPrompt(memoryContext, briefingContext, options = {}, warmMemoryContext = '', history = []) {
     // Inject current date/time in the configured timezone so the LLM knows today's date (P1-1)
     const now = new Date();
     const tz = this.timezone;
@@ -701,6 +733,18 @@ class AgentLoop {
           + 'Keep it concise: aim for 2-3 sentences.\n'
           + 'Avoid markdown, URLs, code blocks, and special formatting.\n'
           + 'Write naturally as if speaking aloud.';
+      }
+    }
+
+    // Conversational mode inference — adjust response style based on message patterns.
+    // Cockpit mode (if active) overrides inference.
+    const cockpitMode = this.cockpitManager?.getActiveMode?.();
+    if (!cockpitMode) {
+      const mode = this._inferConversationalMode(history);
+      if (mode === 'focused') {
+        prompt += '\n\nCONVERSATIONAL MODE: Focused\nThe user is working fast. Keep responses concise and action-oriented. Surface only the most directly relevant knowledge. Suppress tangential connections.';
+      } else if (mode === 'exploratory') {
+        prompt += '\n\nCONVERSATIONAL MODE: Exploratory\nThe user is thinking broadly. Make connections across domains. Surface related knowledge even if the link is loose. Suggest angles they might not have considered.';
       }
     }
 

@@ -517,7 +517,82 @@ class MemorySearcher {
 
     results.sort((a, b) => b._fusionScore - a._fusionScore);
 
-    return results.slice(0, max).map(({ _fusionScore, ...rest }) => rest);
+    // Competitive suppression: winners suppress closely related losers
+    const filtered = this._suppressRelatedResults(results, max);
+    return filtered.map(({ _fusionScore, ...rest }) => rest);
+  }
+
+  /**
+   * Competitive suppression: when a result wins, it suppresses closely
+   * related results (same normalized title or high co-access weight).
+   * Prevents 3-of-5 results being about the same entity.
+   *
+   * @param {Array} rankedResults - Results sorted by fusion score
+   * @param {number} maxResults - Maximum results to return
+   * @returns {Array} Filtered results with suppressed duplicates removed
+   * @private
+   */
+  _suppressRelatedResults(rankedResults, maxResults = 5) {
+    if (!rankedResults || rankedResults.length <= 1) return rankedResults;
+
+    const selected = [];
+    const suppressed = new Set();
+
+    for (const result of rankedResults) {
+      const id = result.title?.toLowerCase() || '';
+      if (suppressed.has(id)) continue;
+
+      selected.push(result);
+      if (selected.length >= maxResults) break;
+
+      // Suppress closely related results
+      for (const other of rankedResults) {
+        if (other === result) continue;
+        const otherId = other.title?.toLowerCase() || '';
+        if (suppressed.has(otherId)) continue;
+
+        // Same normalized title = definitely suppress
+        const normResult = this._normalizeForSuppress(result.title);
+        const normOther = this._normalizeForSuppress(other.title);
+        if (normResult && normOther && normResult === normOther) {
+          suppressed.add(otherId);
+          continue;
+        }
+
+        // High co-access + much lower score = suppress
+        if (this.coAccessGraph) {
+          try {
+            const related = this.coAccessGraph._graph?.edges || {};
+            const key1 = `${result.title}::${other.title}`;
+            const key2 = `${other.title}::${result.title}`;
+            const weight = related[key1] || related[key2] || 0;
+            if (weight > 3 && (other._fusionScore || 0) < (result._fusionScore || 0) * 0.7) {
+              suppressed.add(otherId);
+            }
+          } catch { /* co-access not available */ }
+        }
+      }
+    }
+
+    return selected;
+  }
+
+  /**
+   * Normalize a title for suppression comparison.
+   * Strips case, articles, prepositions, collision suffixes, diacritics.
+   * @param {string} title
+   * @returns {string}
+   * @private
+   */
+  _normalizeForSuppress(title) {
+    if (!title) return '';
+    let n = title.toLowerCase().trim()
+      .replace(/\s+/g, ' ')
+      .replace(/\s*\(\d+\)$/, '')
+      .replace(/^(?:the|an?|from|about)\s+/i, '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[.,;:!?]+$/, '');
+    return n;
   }
 
   /**

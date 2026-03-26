@@ -157,7 +157,7 @@ class DocumentIngestor {
    * @param {Object} [deps.embeddingClient]  - EmbeddingClient instance for embedding-based entity dedup pre-filter
    * @param {Object} [deps.logger]           - Logger (defaults to console)
    */
-  constructor({ ncFilesClient, textExtractor, entityExtractor, knowledgeGraph, wikiWriter, learningLog, llmRouter, classifier, embeddingClient, ingestionCache, logger } = {}) {
+  constructor({ ncFilesClient, textExtractor, entityExtractor, knowledgeGraph, wikiWriter, learningLog, llmRouter, classifier, embeddingClient, ingestionCache, memorySearcher, logger } = {}) {
     if (!ncFilesClient)   throw new Error('DocumentIngestor requires ncFilesClient');
     if (!textExtractor)   throw new Error('DocumentIngestor requires textExtractor');
     if (!entityExtractor) throw new Error('DocumentIngestor requires entityExtractor');
@@ -196,6 +196,9 @@ class DocumentIngestor {
 
     /** @type {IngestionCache|null} Content-hash dedup cache (optional). */
     this.ingestionCache = ingestionCache || null;
+
+    /** @type {MemorySearcher|null} Used for prediction-error extraction context. */
+    this.memorySearcher = memorySearcher || null;
   }
 
   // ===========================================================================
@@ -305,6 +308,23 @@ class DocumentIngestor {
       classification.fidelity = 'ocr';
     }
 
+    // Prediction-error context: query existing knowledge so the extraction
+    // prompt can focus on what's NEW rather than re-extracting known entities.
+    let existingKnowledgeSummary = '';
+    if (this.memorySearcher) {
+      try {
+        const preview = truncatedText.substring(0, 500);
+        const existing = await this.memorySearcher.search(preview, { maxResults: 8, source: 'ingestion-context' });
+        if (existing && existing.length > 0) {
+          existingKnowledgeSummary = existing
+            .map(r => `- ${r.title}: ${(r.excerpt || r.snippet || '').substring(0, 150)}`)
+            .join('\n');
+        }
+      } catch (err) {
+        this.logger.warn(`[DocumentIngestor] Knowledge context query failed: ${err.message}`);
+      }
+    }
+
     // Run LLM extraction — returns summary + typed entities, populates graph
     let extractionResult = { summary: '', entities: [] };
     try {
@@ -312,9 +332,12 @@ class DocumentIngestor {
       // so the LLM can apply appropriate tolerance for OCR/transcribed sources.
       const typePrompt = this.classifier?.getExtractionPrompt(classification.type, truncatedText, filename, classification.fidelity || 'authored');
       if (typePrompt) {
-        extractionResult = await this.entityExtractor.extractWithPrompt(typePrompt) || { summary: '', entities: [] };
+        const contextualPrompt = existingKnowledgeSummary
+          ? `Here is what we ALREADY KNOW:\n${existingKnowledgeSummary}\n\nExtract ONLY new information not covered above.\n\n${typePrompt}`
+          : typePrompt;
+        extractionResult = await this.entityExtractor.extractWithPrompt(contextualPrompt) || { summary: '', entities: [] };
       } else {
-        extractionResult = await this.entityExtractor.extractEntitiesFromDocument(filenameNoExt, truncatedText) || { summary: '', entities: [] };
+        extractionResult = await this.entityExtractor.extractEntitiesFromDocument(filenameNoExt, truncatedText, existingKnowledgeSummary) || { summary: '', entities: [] };
       }
     } catch (err) {
       this.logger.warn(`[DocumentIngestor] Entity extraction error for ${filePath}: ${err.message}`);

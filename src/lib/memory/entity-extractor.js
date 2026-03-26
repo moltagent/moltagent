@@ -92,7 +92,7 @@ class EntityExtractor {
    * @param {string} content - Extracted document text (pre-truncated by caller)
    * @returns {Promise<{ summary: string, entities: Array<{name,type,significance,description}> }>}
    */
-  async extractEntitiesFromDocument(title, content) {
+  async extractEntitiesFromDocument(title, content, existingKnowledge = '') {
     if (!title || typeof title !== 'string') return { summary: '', entities: [] };
 
     const safeContent = content || '';
@@ -105,7 +105,11 @@ class EntityExtractor {
 
     const truncated = safeContent.slice(0, MAX_CONTENT_FOR_LLM);
 
-    const prompt = `Extract a summary and named entities from this document.
+    const knowledgeContext = existingKnowledge
+      ? `Here is what we ALREADY KNOW from previous documents:\n\nEXISTING KNOWLEDGE:\n${existingKnowledge}\n\nExtract ONLY what this document adds to our existing knowledge. If an entity already exists and this document adds NEW information (new role, relationship, or context), include it with significance "high" — otherwise skip it entirely.\n\n`
+      : '';
+
+    const prompt = `${knowledgeContext}Extract a summary and named entities from this document.
 Document title: ${title}
 
 Content:
