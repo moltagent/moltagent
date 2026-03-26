@@ -318,8 +318,30 @@ class CockpitManager {
         }
       }
 
-      if (!board) {
-        // Board doesn't exist, create it
+      if (!board && boardId) {
+        // Registry had an ID but getBoard returned 404/403 — board was deleted.
+        // Do NOT auto-create a replacement. The operator needs to decide.
+        throw new CockpitError(
+          `Cockpit board ${boardId} not found (deleted?). ` +
+          `Remove stale registry entry or create a new board manually.`,
+          'initialize'
+        );
+      }
+
+      if (!board && !boardId) {
+        // No registry entry AND no name match — true first boot OR renamed board.
+        // Only bootstrap if no boards exist at all (prevents duplicates).
+        const allBoards = await this.deck.listBoards();
+        const hasCockpitLike = allBoards.some(b =>
+          (b.title || '').toLowerCase().includes('cockpit')
+        );
+        if (hasCockpitLike) {
+          throw new CockpitError(
+            `No cockpit board in registry, but a board with "cockpit" in the title exists. ` +
+            `Register it manually: node -e "require('./src/lib/integrations/deck-board-registry').registerBoard('cockpit', BOARD_ID)"`,
+            'initialize'
+          );
+        }
         const bootstrapResult = await this.bootstrap();
         this.boardId = bootstrapResult.boardId;
         this.stacks = bootstrapResult.stacks;

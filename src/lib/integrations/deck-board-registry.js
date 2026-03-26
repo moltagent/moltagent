@@ -103,22 +103,31 @@ class DeckBoardRegistry {
       return this._cache[role].boardId;
     }
 
-    // 3. Live name scan via deckClient
+    // 3. First-boot migration: scan boards by name (runs once, then never again)
     if (!deckClient || typeof deckClient.listBoards !== 'function') {
       return null;
     }
 
     const boards = await deckClient.listBoards();
-
     if (!Array.isArray(boards)) return null;
 
     const needle = (fallbackTitle || '').trim().toLowerCase();
     const match  = boards.find(b => (b.title || '').trim().toLowerCase() === needle);
 
-    if (!match) return null;
+    if (match) {
+      this.registerBoard(role, match.id);
+      return match.id;
+    }
 
-    this.registerBoard(role, match.id);
-    return match.id;
+    // No exact match — log what exists so the operator can resolve manually
+    const existing = boards.map(b => `  ${b.id}: "${b.title}"`).join('\n');
+    console.warn(
+      `[DeckBoardRegistry] No board matching "${fallbackTitle}" for role "${role}".\n` +
+      `Existing boards:\n${existing}\n` +
+      `If the board was renamed, register it manually:\n` +
+      `  node -e "require('./src/lib/integrations/deck-board-registry').registerBoard('${role}', BOARD_ID)"`
+    );
+    return null;
   }
 
   /**
@@ -167,9 +176,11 @@ class DeckBoardRegistry {
    * Reset internal state.  Intended for use in tests only.
    * Sets cache to an empty object (not null) so the disk file is not
    * re-read on the next resolveBoard call, giving tests a clean slate.
+   * Enables test mode to prevent disk writes from clobbering production data.
    */
   _reset() {
     this._cache = {};
+    this._testMode = true;
   }
 
   // ---------------------------------------------------------------------------
@@ -200,6 +211,7 @@ class DeckBoardRegistry {
    * REGISTRY_FILE.  Creates DATA_DIR if it does not exist yet.
    */
   _saveToDisk() {
+    if (this._testMode) return; // Tests must not clobber production registry
     try {
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
