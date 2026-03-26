@@ -565,6 +565,101 @@ test('normalizeEntityName handles edge cases', () => {
   );
 });
 
+// 17b. normalizeEntityName: articles, diacritics, trailing punctuation, prepositions
+asyncTest('normalizeEntityName strips articles, diacritics, prepositions, and trailing punctuation', async () => {
+  // We exercise the function indirectly via _pageExists, which normalizes both
+  // the stored page title and the lookup name before comparing.
+
+  // Helper: ingestor whose wiki has exactly one page in Organizations
+  function makeIngestorWithPage(storedTitle) {
+    return new DocumentIngestor({
+      ncFilesClient: makeNcFilesClient(),
+      textExtractor: makeTextExtractor(),
+      entityExtractor: makeEntityExtractor(),
+      knowledgeGraph: makeKnowledgeGraph(),
+      wikiWriter: makeWikiWriter({
+        listPages: async (section) => {
+          if (section === 'Organizations') {
+            return { pages: [{ title: storedTitle }], method: 'ocs' };
+          }
+          return { pages: [], method: 'ocs' };
+        },
+      }),
+      logger: makeSilentLogger(),
+    });
+  }
+
+  // Leading article EN: "The DIEM Foundation" ↔ "DIEM Foundation"
+  let ingestor = makeIngestorWithPage('The DIEM Foundation');
+  assert.strictEqual(
+    await ingestor._pageExists('Organizations', 'DIEM Foundation'),
+    true, '"DIEM Foundation" should match stored "The DIEM Foundation"'
+  );
+
+  // Leading article PT: "A Associação" ↔ "Associação"
+  ingestor = makeIngestorWithPage('A Associação');
+  assert.strictEqual(
+    await ingestor._pageExists('Organizations', 'Associação'),
+    true, '"Associação" should match stored "A Associação"'
+  );
+
+  // Leading article DE: "Die Bundesbank" ↔ "Bundesbank"
+  ingestor = makeIngestorWithPage('Die Bundesbank');
+  assert.strictEqual(
+    await ingestor._pageExists('Organizations', 'Bundesbank'),
+    true, '"Bundesbank" should match stored "Die Bundesbank"'
+  );
+
+  // Leading preposition: "From Risk to Resilience Movement" ↔ "Risk to Resilience Movement"
+  ingestor = makeIngestorWithPage('Risk to Resilience Movement');
+  assert.strictEqual(
+    await ingestor._pageExists('Organizations', 'From Risk to Resilience Movement'),
+    true, '"From Risk to Resilience Movement" should match stored "Risk to Resilience Movement"'
+  );
+
+  // Leading preposition: "Re: Budget Draft" ↔ "Budget Draft"
+  ingestor = makeIngestorWithPage('Budget Draft');
+  assert.strictEqual(
+    await ingestor._pageExists('Organizations', 'Re: Budget Draft'),
+    true, '"Re: Budget Draft" should match stored "Budget Draft"'
+  );
+
+  // Diacritics: "Associação" ↔ "Associacao"
+  ingestor = makeIngestorWithPage('Associacao');
+  assert.strictEqual(
+    await ingestor._pageExists('Organizations', 'Associação'),
+    true, '"Associação" should match stored "Associacao" after diacritic normalization'
+  );
+
+  // Trailing period: "DIEM Foundation." ↔ "DIEM Foundation"
+  ingestor = makeIngestorWithPage('DIEM Foundation');
+  assert.strictEqual(
+    await ingestor._pageExists('Organizations', 'DIEM Foundation.'),
+    true, '"DIEM Foundation." (trailing period) should match stored "DIEM Foundation"'
+  );
+
+  // Combined: article + diacritics + trailing punctuation
+  ingestor = makeIngestorWithPage('Associacao');
+  assert.strictEqual(
+    await ingestor._pageExists('Organizations', 'A Associação.'),
+    true, '"A Associação." should match stored "Associacao" after all normalizations'
+  );
+
+  // Collectives (N) suffix + article (existing behaviour preserved)
+  ingestor = makeIngestorWithPage('The DIEM Foundation (2)');
+  assert.strictEqual(
+    await ingestor._pageExists('Organizations', 'DIEM Foundation'),
+    true, '"DIEM Foundation" should match "(N)"-suffixed stored "The DIEM Foundation (2)"'
+  );
+
+  // Negative: genuinely different names must NOT match
+  ingestor = makeIngestorWithPage('DIEM Foundation');
+  assert.strictEqual(
+    await ingestor._pageExists('Organizations', 'Something Else'),
+    false, 'Different entity names must not collide after normalization'
+  );
+});
+
 // 18. _shouldCreateWikiPage blocks entities with null descriptions
 test('_shouldCreateWikiPage blocks null/empty descriptions', () => {
   const ingestor = makeIngestor();

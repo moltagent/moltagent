@@ -108,17 +108,40 @@ const PROTECTED_PAGES = new Set([
 
 /**
  * Normalize an entity name for dedup comparison.
- * Lowercases, collapses whitespace, and strips trailing "(N)" suffixes
- * that Nextcloud Collectives appends on title collision.
+ * Used for comparison only — stored titles are never modified.
+ *
+ * Normalizations applied in order:
+ *  1. Lowercase + trim
+ *  2. Collapse internal whitespace
+ *  3. Strip Nextcloud Collectives trailing "(N)" collision suffixes
+ *  4. Strip leading articles (EN/DE/PT): the, a, an, die, der, das, ein, eine, o, os, as, um, uma
+ *  5. Strip leading prepositions that don't change identity: from, about, regarding, re:
+ *  6. Normalize Unicode diacritics (NFD decomposition + remove combining marks)
+ *  7. Strip trailing punctuation: . , ; : ! ?
  *
  * @param {string} name
  * @returns {string}
  */
 function normalizeEntityName(name) {
   if (!name) return '';
-  return name.toLowerCase().trim()
+
+  let n = name.toLowerCase().trim()
     .replace(/\s+/g, ' ')
     .replace(/\s*\(\d+\)$/, '');
+
+  // Strip leading articles (EN/DE/PT)
+  n = n.replace(/^(?:the|an?|die|de[rs]|das|eine?|os?|as?|uma?)\s+/i, '');
+
+  // Strip leading prepositions that don't change identity
+  n = n.replace(/^(?:from|about|regarding|re:)\s+/i, '');
+
+  // Normalize Unicode diacritics: decompose (NFD) then remove combining marks
+  n = n.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  // Strip trailing punctuation
+  n = n.replace(/[.,;:!?]+$/, '');
+
+  return n;
 }
 
 class DocumentIngestor {
@@ -503,6 +526,10 @@ class DocumentIngestor {
    */
   async scanOnStartup(directories) {
     if (!Array.isArray(directories) || directories.length === 0) return;
+    if (!require('../config').ingestion?.enabled) {
+      this.logger.info('[DocumentIngestor] Ingestion disabled (INGEST_ENABLED=false), skipping startup scan');
+      return;
+    }
 
     // Pre-populate entity page cache from existing wiki sections
     // so we never re-create pages that already exist
@@ -546,6 +573,7 @@ class DocumentIngestor {
    */
   async onFileEvent(event) {
     if (!event) return;
+    if (!require('../config').ingestion?.enabled) return;
 
     // ── Share events: someone shared a file or folder with Moltagent ──
     if (event.type === 'share_created' || event.type === 'file_shared') {

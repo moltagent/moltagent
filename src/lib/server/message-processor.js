@@ -2374,40 +2374,6 @@ RULES:
   }
 
   /**
-   * Direct wiki page lookup: try findPageByTitle for each entity name.
-   * Returns full page content (800 chars) with clickable URLs.
-   * Bypasses search ranking — if a page named "Carlos" exists, we find it directly.
-   * @private
-   */
-  async _directWikiLookup(entityNames, wiki) {
-    const results = [];
-    const reads = entityNames.slice(0, 3).map(async (name) => {
-      try {
-        const found = await wiki.findPageByTitle(name);
-        if (!found) return;
-
-        const content = await wiki.readPageContent(found.path);
-        if (!content) return;
-
-        const url = (found.page?.id && wiki.buildPageUrl)
-          ? wiki.buildPageUrl(found.page.title || name, found.page.id)
-          : '';
-
-        results.push({
-          title: found.page?.title || name,
-          snippet: content.substring(0, 800),
-          sourceTag: 'wiki',
-          url
-        });
-      } catch {
-        // Skip on error
-      }
-    });
-    await Promise.allSettled(reads);
-    return results;
-  }
-
-  /**
    * Extract 1-4 search keywords from a message using the fast LLM model.
    * Language-agnostic — no stop word lists, no hardcoded patterns.
    * Falls back to enricher entity extraction if LLM is unavailable.
@@ -2595,17 +2561,20 @@ JSON array:`,
       },
 
       probeSessions: async (terms) => {
-        if (!searcher?.nc) return [];
+        if (!searcher?.search) return [];
         try {
-          const results = await searcher.nc.searchProvider('collectives-page-content', terms.join(' '), 3);
+          const results = await searcher.search(terms.join(' '), { maxResults: 3 });
+          // Filter to session-related pages client-side
           const sessionResults = (results || []).filter(r =>
-            (r.subline || r.title || '').toLowerCase().includes('session')
+            (r.title || '').toLowerCase().includes('session') ||
+            (r.excerpt || '').toLowerCase().includes('session') ||
+            (r.link || '').toLowerCase().includes('session')
           );
           const items = sessionResults.map(r => ({
             title: r.title || '',
-            snippet: r.subline || '',
+            snippet: r.excerpt || '',
             sourceTag: 'conversation_history',
-            url: r.resourceUrl || ''
+            url: r.link || ''
           }));
           await self._deepReadWikiResults(items, searcher, 2);
           return items;

@@ -409,6 +409,7 @@ const config = {
   // Document Ingestion
   // -------------------------------------------------------------------------
   ingestion: {
+    enabled: envBool('INGEST_ENABLED', true),
     watchDirectories: envList('INGEST_WATCH_DIRS', ['Projects']),
     startupScan: envBool('INGEST_STARTUP_SCAN', true),
   },

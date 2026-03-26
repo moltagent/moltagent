@@ -2357,7 +2357,27 @@ class ToolRegistry {
             ? args.providers.split(',').map(s => s.trim()).filter(Boolean)
             : undefined;
           const limit = args.limit || 5;
+          const memorySearcher = this.clients.memorySearcher;
 
+          // Wiki/knowledge queries: route through MemorySearcher for 3-channel fusion
+          // (keyword + vector + graph) with LTP access tracking.
+          // Non-wiki provider requests fall back to direct NC search.
+          const isWikiQuery = !providerIds ||
+            providerIds.every(p => p.startsWith('collectives'));
+
+          if (memorySearcher && isWikiQuery) {
+            const scope = providerIds ? 'wiki' : 'all';
+            const fused = await memorySearcher.search(args.query, { maxResults: limit, scope });
+            if (fused.length === 0) {
+              return `No results found for "${args.query}".`;
+            }
+            return fused.map(r => {
+              const label = r.source || 'Result';
+              return `[${label}] ${r.title}${r.excerpt ? ' — ' + r.excerpt : ''}`;
+            }).join('\n');
+          }
+
+          // Fallback: direct NC search (non-wiki providers or no memorySearcher)
           const results = await search.search(args.query, providerIds, limit);
 
           if (results.length === 0) {
@@ -2665,10 +2685,29 @@ class ToolRegistry {
         required: ['query']
       },
       handler: async (args) => {
+        const memorySearcher = this.clients.memorySearcher;
         const ncSearch = this.clients.ncSearchClient;
-        let results = [];
 
-        // Primary: NC Unified Search (collectives-page-content + collectives-pages)
+        // Primary: MemorySearcher 3-channel fusion (keyword + vector + graph)
+        // with LTP access tracking — richer ranking than raw NC search.
+        if (memorySearcher) {
+          try {
+            const fused = await memorySearcher.search(args.query, { scope: 'wiki', maxResults: 10 });
+            if (fused.length > 0) {
+              return fused.map(r => {
+                let line = `- "${r.title}"`;
+                if (r.excerpt) line += ` — ${r.excerpt.substring(0, 100)}`;
+                if (r.link) line += ` [View](${r.link})`;
+                return line;
+              }).join('\n');
+            }
+          } catch (err) {
+            this.logger.warn(`[wiki_search] MemorySearcher failed, falling back: ${err.message}`);
+          }
+        }
+
+        // Fallback: direct NC Unified Search (collectives-page-content + collectives-pages)
+        let results = [];
         if (ncSearch) {
           try {
             const [contentHits, titleHits] = await Promise.allSettled([
@@ -2692,7 +2731,7 @@ class ToolRegistry {
           }
         }
 
-        // Fallback: listPages + client-side filter
+        // Last resort: listPages + client-side filter
         if (results.length === 0) {
           try {
             const collectiveId = await wiki.resolveCollective();
