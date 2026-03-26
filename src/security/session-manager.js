@@ -138,6 +138,7 @@ class SessionManager extends EventEmitter {
       pendingApprovals: new Map(),
       grantedApprovals: new Map(),
       pendingClarification: null,
+      artifactFocus: null,
       actionLedger: [],
     };
 
@@ -462,6 +463,62 @@ class SessionManager extends EventEmitter {
   clearPendingClarification(session) {
     if (!session) return;
     session.pendingClarification = null;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Artifact Focus
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Set the active artifact focus for this session.
+   * When the user is discussing a specific card, wiki page, file, or event,
+   * this records that artifact so subsequent messages are grounded to it.
+   *
+   * @param {Object} session
+   * @param {Object} focus - { type, id, boardId?, stackId?, title, description?, source }
+   */
+  setArtifactFocus(session, focus) {
+    if (!session || !focus || !focus.type || focus.id == null) return;
+    session.artifactFocus = {
+      type: focus.type,
+      id: focus.id,
+      boardId: focus.boardId || null,
+      stackId: focus.stackId || null,
+      title: focus.title || '',
+      description: typeof focus.description === 'string' ? focus.description.substring(0, 500) : null,
+      source: focus.source || 'tool_result',
+      setAt: Date.now(),
+    };
+  }
+
+  /**
+   * Get the current artifact focus, or null if expired.
+   * Focus expires after maxAgeMs of inactivity (no messages in the session).
+   * If the user is still actively messaging, focus stays valid regardless of age.
+   *
+   * @param {Object} session
+   * @param {number} [maxAgeMs=600000] - 10 minutes default
+   * @returns {Object|null}
+   */
+  getArtifactFocus(session, maxAgeMs = 600000) {
+    if (!session || !session.artifactFocus) return null;
+
+    const lastActivity = session.lastActivityAt || session.artifactFocus.setAt;
+    const age = Date.now() - Math.max(session.artifactFocus.setAt, lastActivity);
+    if (age > maxAgeMs) {
+      session.artifactFocus = null;
+      return null;
+    }
+
+    return session.artifactFocus;
+  }
+
+  /**
+   * Clear the active artifact focus.
+   * @param {Object} session
+   */
+  clearArtifactFocus(session) {
+    if (session) session.artifactFocus = null;
   }
 
   // ---------------------------------------------------------------------------

@@ -188,7 +188,8 @@ function buildLiveContext(session, currentMessage) {
     lastUserIntent: lastUser?.content?.substring(0, 200) || null,
     recentEntityRefs: entityRefs,
     turnCount: Math.floor(session.context.length / 2),
-    summary: exchangeLines.join('\n')
+    summary: exchangeLines.join('\n'),
+    artifactFocus: session ? (session.artifactFocus || null) : null
   };
 }
 
@@ -495,6 +496,13 @@ class MessageProcessor {
       }
     }
 
+    // Active Artifact Focus: callback for agent loop / micro-pipeline to register
+    // the artifact they touched, and a context block for prompt injection.
+    const onArtifact = (artifact) => {
+      if (session) this.sessionManager.setArtifactFocus(session, artifact);
+    };
+    const focusContext = this._buildFocusContext(session);
+
     // ──── Layer 1: Pending Clarification Check ────
     if (this.clarificationManager && session) {
       const clarCheck = this.clarificationManager.check(session, extracted.content);
@@ -613,7 +621,8 @@ class MessageProcessor {
         response = await this.microPipeline.process(pipelineMessage, {
           userName: extracted.user,
           roomToken: extracted.token,
-          warmMemory: '',
+          warmMemory: focusContext || '',
+          onArtifact,
           // Layer 3: Action ledger accessors
           getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
           getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
@@ -653,7 +662,8 @@ class MessageProcessor {
             messageId: extracted.messageId,
             inputType: extracted._isVoice ? 'voice' : 'text',
             user: extracted.user,
-            systemSuffix: flushPrompt
+            systemSuffix: focusContext ? (flushPrompt ? flushPrompt + '\n' + focusContext : focusContext) : flushPrompt,
+            onArtifact
           });
           result = { intent: `smart_mix_flush:${intent}`, provider: 'agent' };
           response = response || 'Sorry, I encountered an error processing your message.';
@@ -716,7 +726,9 @@ class MessageProcessor {
               response = await this.agentLoop.process(pipelineMessage, extracted.token, {
                 messageId: extracted.messageId,
                 inputType: extracted._isVoice ? 'voice' : 'text',
-                user: extracted.user
+                user: extracted.user,
+                systemSuffix: focusContext || undefined,
+                onArtifact
               });
               result = { intent: 'smart_mix_escalated:compound', provider: 'agent' };
               response = response || 'Sorry, I encountered an error processing your message.';
@@ -734,7 +746,8 @@ class MessageProcessor {
             response = await this.microPipeline.process(actionMessage, {
               userName: extracted.user,
               roomToken: extracted.token,
-              warmMemory: '',
+              warmMemory: focusContext || '',
+              onArtifact,
               getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
               getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
               getRecentContext: session ? () => session.context.slice(-4) : undefined,
@@ -756,7 +769,9 @@ class MessageProcessor {
             response = await this.agentLoop.process(pipelineMessage, extracted.token, {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
-              user: extracted.user
+              user: extracted.user,
+              systemSuffix: focusContext || undefined,
+              onArtifact
             });
             result = { intent: 'smart_mix_escalated:confirmation', provider: 'agent' };
             response = response || 'Sorry, I encountered an error processing your message.';
@@ -785,7 +800,9 @@ class MessageProcessor {
             response = await this.agentLoop.process(pipelineMessage, extracted.token, {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
-              user: extracted.user
+              user: extracted.user,
+              systemSuffix: focusContext || undefined,
+              onArtifact
             });
             result = { intent: 'smart_mix_escalated:knowledge', provider: 'agent' };
             response = response || 'Sorry, I encountered an error processing your message.';
@@ -799,8 +816,9 @@ class MessageProcessor {
             response = await this.microPipeline.process(pipelineMessage, {
               userName: extracted.user,
               roomToken: extracted.token,
-              warmMemory: '',
+              warmMemory: focusContext || '',
               intent,  // Skip re-classification inside MicroPipeline
+              onArtifact,
               // Layer 3: Action ledger accessors
               getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
               getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
@@ -825,7 +843,10 @@ class MessageProcessor {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
               user: extracted.user,
-              systemSuffix: flushPrompt
+              systemSuffix: focusContext
+                ? (flushPrompt ? flushPrompt + '\n' + focusContext : focusContext)
+                : flushPrompt,
+              onArtifact
             });
             result = { intent: `smart_mix_escalated:${intent}`, provider: 'agent' };
             response = response || 'Sorry, I encountered an error processing your message.';
@@ -839,8 +860,9 @@ class MessageProcessor {
             response = await this.microPipeline.process(pipelineMessage, {
               userName: extracted.user,
               roomToken: extracted.token,
-              warmMemory: '',
+              warmMemory: focusContext || '',
               intent,  // Skip re-classification inside MicroPipeline
+              onArtifact,
               // Layer 3: Action ledger accessors
               getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
               getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
@@ -863,7 +885,9 @@ class MessageProcessor {
             response = await this.agentLoop.process(pipelineMessage, extracted.token, {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
-              user: extracted.user
+              user: extracted.user,
+              systemSuffix: focusContext || undefined,
+              onArtifact
             });
             result = { intent: `smart_mix_escalated:${intent}`, provider: 'agent' };
             response = response || 'Sorry, I encountered an error processing your message.';
@@ -889,7 +913,9 @@ class MessageProcessor {
             response = await this.agentLoop.process(pipelineMessage, extracted.token, {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
-              user: extracted.user
+              user: extracted.user,
+              systemSuffix: focusContext || undefined,
+              onArtifact
             });
             result = { intent: 'smart_mix_escalated:thinking', provider: 'agent' };
             response = response || 'Sorry, I encountered an error processing your message.';
@@ -901,7 +927,9 @@ class MessageProcessor {
           // when Ollama is down, preventing Haiku from handling tool calls.
 
           // Pre-enrich: run MemoryContextEnricher so cloud path sees wiki + deck knowledge
-          let cloudSuffix = flushPrompt || '';
+          let cloudSuffix = focusContext
+            ? (flushPrompt ? flushPrompt + '\n' + focusContext : focusContext)
+            : (flushPrompt || '');
           const enricher = this.microPipeline && this.microPipeline.memoryContextEnricher;
           if (enricher) {
             try {
@@ -934,6 +962,7 @@ class MessageProcessor {
           response = await this.agentLoop.process(pipelineMessage, extracted.token, {
             ...agentOpts,
             systemSuffix: cloudSuffix || undefined,
+            onArtifact,
             onExhaustion: ({ message: msg, iterations }) => {
               if (this.selfRecovery) {
                 this.selfRecovery.createRecoveryCard({
@@ -974,7 +1003,10 @@ class MessageProcessor {
 
         response = await this.agentLoop.process(pipelineMessage, extracted.token, {
           ...agentOpts,
-          systemSuffix: flushPrompt
+          systemSuffix: focusContext
+            ? (flushPrompt ? flushPrompt + '\n' + focusContext : focusContext)
+            : flushPrompt,
+          onArtifact
         });
         result = { intent: 'agent_loop', provider: 'agent' };
         response = response || 'Sorry, I encountered an error processing your message.';
@@ -1588,6 +1620,47 @@ class MessageProcessor {
     } else {
       this.sessionManager.recordAction(session, actionRecord);
     }
+  }
+
+  /**
+   * Build a focus context block for LLM prompt injection.
+   * Returns an empty string if there is no active focus or the session is null.
+   *
+   * @param {Object} session - SessionManager session, or null
+   * @returns {string} Focus context block, or empty string
+   * @private
+   */
+  _buildFocusContext(session) {
+    if (!session || !this.sessionManager) return '';
+    const focus = this.sessionManager.getArtifactFocus(session);
+    if (!focus) return '';
+
+    const typeLabels = {
+      deck_card: 'deck card',
+      wiki_page: 'wiki page',
+      calendar_event: 'calendar event',
+      file: 'file',
+    };
+
+    let ctx = '\nACTIVE FOCUS:\n';
+    ctx += `You are currently discussing a ${typeLabels[focus.type] || focus.type}:\n`;
+    ctx += `  Title: "${focus.title}"`;
+
+    if (focus.type === 'deck_card' && focus.id) {
+      ctx += ` (card ID: ${focus.id})`;
+      if (focus.boardId) ctx += ` on board ${focus.boardId}`;
+    }
+
+    if (focus.description) {
+      ctx += `\n  Content: ${focus.description}`;
+    }
+
+    ctx += `\n\nWhen the user says "it", "this", "the article", "the card", `;
+    ctx += `"the title", "the description", etc., they are referring to this `;
+    ctx += `${typeLabels[focus.type] || 'artifact'}. `;
+    ctx += `Modify the existing artifact rather than creating a new one.\n`;
+
+    return ctx;
   }
 
   /**

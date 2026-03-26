@@ -14,6 +14,7 @@
 'use strict';
 
 const { buildMicroContext } = require('./micro-pipeline-context');
+const { extractArtifact } = require('./artifact-extractor');
 
 const INTENTS = Object.freeze({
   QUESTION: 'question',
@@ -749,6 +750,17 @@ Sub-questions:`;
             continue;
           }
           const toolResult = await this._executeWithGuards(toolCall, context.roomToken || null);
+
+          // Capture artifact focus from structured tool results
+          if (toolResult.success && context.onArtifact) {
+            try {
+              const artifact = extractArtifact(toolCall.name, toolResult);
+              if (artifact) context.onArtifact(artifact);
+            } catch (e) {
+              console.warn('[MicroPipeline] Artifact focus capture failed:', e.message);
+            }
+          }
+
           messages.push({
             role: 'tool',
             content: toolResult.success
@@ -822,6 +834,7 @@ Sub-questions:`;
 
     return this.toolRegistry.execute(toolCall.name, toolCall.arguments);
   }
+
 
   /**
    * Check if a message should be escalated to cloud for complex reasoning.

@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { extractArtifact } = require('./artifact-extractor');
 
 /**
  * AgentLoop - The Nervous System
@@ -244,6 +245,16 @@ class AgentLoop {
                 user: options?.user,
                 room: roomToken
               });
+            }
+
+            // Capture artifact focus from structured tool results
+            if (options.onArtifact) {
+              try {
+                const artifact = extractArtifact(toolCall.name, toolResult);
+                if (artifact) options.onArtifact(artifact);
+              } catch (e) {
+                this.logger.warn('[AgentLoop] Artifact focus capture failed:', e.message);
+              }
             }
           }
 
