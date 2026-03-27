@@ -280,7 +280,7 @@ class IntentDecomposer {
       case 'deck':
         return {
           source: 'deck',
-          results: await (probeExecutor.probeDeck || probeExecutor._probeDeck || (() => []))(terms),
+          results: await (probeExecutor.probeDeck || probeExecutor._probeDeck || (() => []))(terms, step.query),
           provenance: 'task_state'
         };
 

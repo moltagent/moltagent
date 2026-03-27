@@ -157,20 +157,40 @@ class ToolRegistry {
     const SUBSETS = {
       deck: [
         'deck_list_boards',
+        'deck_create_board',
         'deck_create_card',
         'deck_assign_user',
+        'deck_unassign_user',
         'deck_list_cards',
         'deck_get_board',
+        'deck_get_card',
         'deck_list_stacks',
+        'deck_create_stack',
         'deck_create_label',
+        'deck_remove_label',
+        'deck_move_card',
+        'deck_mark_done',
+        'deck_complete_task',
+        'deck_complete_review',
+        'deck_update_card',
+        'deck_delete_card',
+        'deck_set_due_date',
+        'deck_add_comment',
+        'deck_list_comments',
+        'deck_my_assigned_cards',
+        'deck_overdue_cards',
+        'deck_overview',
         'web_search'
       ],
       calendar: [
         'calendar_list_events',
         'calendar_create_event',
         'calendar_check_availability',
+        'calendar_check_conflicts',
         'calendar_quick_schedule',
         'calendar_schedule_meeting',
+        'calendar_update_event',
+        'calendar_delete_event',
         'meeting_compose',
         'meeting_check_rsvp',
         'web_search'
@@ -178,6 +198,8 @@ class ToolRegistry {
       email: [
         'mail_send',
         'contacts_search',
+        'contacts_get',
+        'contacts_resolve',
         'memory_search',
         'web_search'
       ],
@@ -185,6 +207,7 @@ class ToolRegistry {
         'wiki_read',
         'wiki_write',
         'wiki_search',
+        'wiki_list',
         'wiki_delete',
         'memory_search',
         'web_search'
@@ -194,13 +217,20 @@ class ToolRegistry {
         'file_write',
         'file_list',
         'file_move',
+        'file_copy',
         'file_delete',
+        'file_info',
+        'file_extract',
+        'file_share',
         'web_search'
       ],
       search: [
         'memory_search',
+        'memory_recall',
         'unified_search',
         'contacts_search',
+        'web_read',
+        'wiki_list',
         'web_search',
         'web_read'
       ],

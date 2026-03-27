@@ -2517,7 +2517,25 @@ JSON array:`,
         } catch (err) { console.warn(`[probeWiki] Error: ${err.message}`); return []; }
       },
 
-      probeDeck: async (terms) => {
+      probeDeck: async (terms, fullQuery) => {
+        // Primary path: delegate to DeckExecutor — it uses the LLM to extract
+        // board_name, stack_name, action from natural language (any language).
+        const deckExec = self.microPipeline?.executors?.deck;
+        if (deckExec && fullQuery) {
+          try {
+            const result = await deckExec.execute(fullQuery, {});
+            if (result?.response) {
+              return [{
+                title: 'Deck query result',
+                snippet: result.response,
+                content: result.response,
+                sourceTag: 'deck'
+              }];
+            }
+          } catch (err) { console.log(`[probeDeck] Executor path failed: ${err.message}`); }
+        }
+
+        // Fallback: enricher keyword search (ambient context, no specific board)
         if (!enricher?._searchDeck) return [];
         try {
           const results = await enricher._searchDeck(terms);
