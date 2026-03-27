@@ -2523,7 +2523,8 @@ JSON array:`,
           const results = await enricher._searchDeck(terms);
           return (results || []).map(r => ({
             title: r.title || '',
-            snippet: r.stack ? `[${r.stack}] ${r.title}` : r.title,
+            snippet: r.snippet || (r.stackName ? `[${r.stackName}] ${r.title}` : r.title),
+            content: r.snippet || '',
             sourceTag: 'deck',
             url: r.cardId ? `/apps/deck/card/${r.cardId}` : ''
           }));

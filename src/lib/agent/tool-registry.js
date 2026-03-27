@@ -156,6 +156,7 @@ class ToolRegistry {
     // web_search is available in all domain subsets.
     const SUBSETS = {
       deck: [
+        'deck_list_boards',
         'deck_create_card',
         'deck_assign_user',
         'deck_list_cards',
