@@ -23,10 +23,12 @@
  * without a separate setup step.
  */
 const WORKFLOW_LABELS = [
-  { title: 'GATE',     color: 'E9967A' },
-  { title: 'APPROVED', color: '4CAF50' },
-  { title: 'REJECTED', color: 'F44336' },
-  { title: 'PAUSED',   color: '90A4AE' }
+  { title: 'GATE',      color: 'E9967A' },
+  { title: 'APPROVED',  color: '4CAF50' },
+  { title: 'REJECTED',  color: 'F44336' },
+  { title: 'PAUSED',    color: '90A4AE' },
+  { title: 'SCHEDULED', color: '0097A7' },
+  { title: 'ERROR',     color: 'B71C1C' }
 ];
 
 class WorkflowBoardDetector {

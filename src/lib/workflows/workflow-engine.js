@@ -66,6 +66,12 @@ class WorkflowEngine {
     // Persisted to disk so restarts don't trigger re-evaluation of every card.
     this._processedCards = this._loadProcessedCards();
 
+    // Track error state for cards that have failed processing.
+    // Key: `${boardId}:${cardId}`
+    // Value: { retryCount: number, lastError: string, lastAttempt: number, permanent: boolean }
+    // Loaded from and persisted to the same JSON file as _processedCards (under '_errors' key).
+    this._errorState = this._loadErrorState();
+
     // Track GATE notifications to avoid re-notifying
     this._notifiedGates = new Set();
 
@@ -168,6 +174,35 @@ class WorkflowEngine {
             continue;
           }
 
+          // SCHEDULED check: if card has SCHEDULED label, handle activation or skip
+          if (hasLabel(card, 'SCHEDULED')) {
+            const activated = await this._handleScheduledCard(wb, stack, card);
+            if (!activated) continue;
+            // Activated: fall through to normal processing this pulse
+          }
+
+          // ERROR check: handle retry backoff and permanent failures
+          {
+            const errorState = this._getErrorState(board.id, card.id);
+            if (errorState && !hasLabel(card, 'ERROR')) {
+              // Human removed the ERROR label — clear state and fall through to processing
+              this._clearErrorState(board.id, card.id);
+            } else if (hasLabel(card, 'ERROR')) {
+              if (!errorState) {
+                // No error state but ERROR label present — human may have re-added it
+                // manually; treat as fresh start: clear any stale state and fall through
+                this._clearErrorState(board.id, card.id);
+              } else if (errorState.permanent) {
+                // Permanent failure — do not retry
+                continue;
+              } else if (!this._isRetryReady(board.id, card.id)) {
+                // Back-off period not yet elapsed — skip this pulse
+                continue;
+              }
+              // Retry-ready: fall through to normal processing
+            }
+          }
+
           // Card hygiene: ensure due date and assignment
           await this._ensureDueDate(wb, stack, card);
           await this._ensureAssignment(wb, stack, card);
@@ -191,16 +226,31 @@ class WorkflowEngine {
 
           // Should we process this card?
           if (this._shouldProcess(board.id, card, stack)) {
-            await this._processCard(wb, stack, card);
-            result.cardsProcessed++;
-            this._markProcessed(board.id, card, stack);
+            try {
+              await this._processCard(wb, stack, card);
+              result.cardsProcessed++;
+              // Successful processing — clear error state and remove ERROR label
+              if (this._getErrorState(board.id, card.id) || hasLabel(card, 'ERROR')) {
+                this._clearErrorState(board.id, card.id);
+                await this._removeLabelFromCard(board.id, stack.id, card.id, 'ERROR');
+              }
+            } catch (processingErr) {
+              await this._handleProcessingError(wb, stack, card, processingErr);
+            }
           }
 
-          // Check for due date escalation
+          // Check for due date escalation (suppressed for PAUSED and SCHEDULED cards)
           if (card.duedate && this._isPastDue(card.duedate)) {
             const escalated = await this._handleEscalation(wb, stack, card);
             if (escalated) result.escalations++;
           }
+
+          // Stamp the SOURCE stack as processed AFTER all card operations
+          // (including escalation). Read back lastModified from the server
+          // so both _shouldProcess and _markProcessed use the same clock.
+          // Only stamp this stack — if processing moved the card to another
+          // stack, the destination must NOT be pre-stamped.
+          await this._markProcessed(board.id, card, stack);
         } catch (err) {
           console.warn(`[Workflow] Error on card "${card.title}" in "${board.title}":`, err.message);
         }
@@ -456,6 +506,10 @@ class WorkflowEngine {
    * @private
    */
   async _handleEscalation(wb, stack, card) {
+    // PAUSED and SCHEDULED cards must not generate escalation noise
+    if (hasLabel(card, 'PAUSED')) return false;
+    if (hasLabel(card, 'SCHEDULED')) return false;
+
     const gateKey = `escalation:${wb.board.id}:${card.id}`;
     if (this._notifiedGates.has(gateKey)) return false;
 
@@ -500,13 +554,28 @@ class WorkflowEngine {
     return cardModified > lastProcessed;
   }
 
-  /** @private */
-  _markProcessed(boardId, card, stack) {
+  /**
+   * Stamp a card+stack as processed using the server's lastModified timestamp.
+   * Reading back from the API ensures both _shouldProcess and _markProcessed
+   * use the same clock (no local/server skew). Only stamps the source stack —
+   * if processing moved the card, the destination stack is not pre-stamped.
+   * @private
+   */
+  async _markProcessed(boardId, card, stack) {
     const key = `${boardId}:${card.id}:${stack.id}`;
-    // Store as Unix seconds (matching card.lastModified from Deck API).
-    // Use current time so that the agent's own modifications (comments, moves)
-    // which bump card.lastModified don't trigger reprocessing.
-    this._processedCards.set(key, Math.floor(Date.now() / 1000));
+    let serverTs = Math.floor(Date.now() / 1000); // fallback
+    try {
+      const path = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stack.id}/cards/${card.id}`;
+      const fresh = await this.deck._request('GET', path);
+      const data = fresh.body || fresh;
+      const raw = data.lastModified || 0;
+      serverTs = typeof raw === 'string'
+        ? Math.floor(new Date(raw).getTime() / 1000)
+        : raw;
+    } catch (_err) {
+      // Card may have been moved/deleted during processing — use fallback
+    }
+    this._processedCards.set(key, serverTs);
     this._saveProcessedCards();
   }
 
@@ -517,7 +586,9 @@ class WorkflowEngine {
       const raw = fs.readFileSync(this._processedFile, 'utf8');
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return new Map(Object.entries(parsed));
+        // Exclude the _errors sub-key — it holds error state, not processed-card timestamps
+        const entries = Object.entries(parsed).filter(([k]) => k !== '_errors');
+        return new Map(entries);
       }
     } catch (_err) {
       // Missing file or corrupt JSON — start fresh
@@ -532,7 +603,9 @@ class WorkflowEngine {
       if (!fs.existsSync(this._dataDir)) {
         fs.mkdirSync(this._dataDir, { recursive: true });
       }
+      // Persist processed cards flat (for backward compatibility) plus _errors sub-key
       const obj = Object.fromEntries(this._processedCards);
+      obj._errors = Object.fromEntries(this._errorState);
       const tmp = this._processedFile + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8');
       fs.renameSync(tmp, this._processedFile);
@@ -778,11 +851,236 @@ class WorkflowEngine {
     }
   }
 
+  // ===========================================================================
+  // Label Helpers
+  // ===========================================================================
+
+  /**
+   * Add a workflow label to a card by title.
+   * Looks up the label ID from the full board then calls assignLabel.
+   * @private
+   */
+  async _addLabelToCard(boardId, stackId, cardId, labelTitle) {
+    try {
+      const fullBoard = await this.deck.getBoard(boardId);
+      const label = (fullBoard.labels || []).find(
+        l => (l.title || '').toUpperCase() === labelTitle.toUpperCase()
+      );
+      if (!label) {
+        console.warn(`[Workflow] Label "${labelTitle}" not found on board ${boardId} — run ensureWorkflowLabels first`);
+        return;
+      }
+      const apiPath = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/assignLabel`;
+      await this.deck._request('PUT', apiPath, { labelId: label.id });
+      console.log(`[Workflow] Added label "${labelTitle}" to card ${cardId}`);
+    } catch (err) {
+      console.warn(`[Workflow] Could not add label "${labelTitle}" to card ${cardId}: ${err.message}`);
+    }
+  }
+
+  /**
+   * Remove a workflow label from a card by title.
+   * Looks up the label ID from the full board then calls the DELETE API.
+   * @private
+   */
+  async _removeLabelFromCard(boardId, stackId, cardId, labelTitle) {
+    try {
+      const fullBoard = await this.deck.getBoard(boardId);
+      const label = (fullBoard.labels || []).find(
+        l => (l.title || '').toUpperCase() === labelTitle.toUpperCase()
+      );
+      if (!label) {
+        console.warn(`[Workflow] Label "${labelTitle}" not found on board ${boardId} — nothing to remove`);
+        return;
+      }
+      const apiPath = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/assignLabel`;
+      await this.deck._request('DELETE', apiPath, { labelId: label.id });
+      console.log(`[Workflow] Removed label "${labelTitle}" from card ${cardId}`);
+    } catch (err) {
+      console.warn(`[Workflow] Could not remove label "${labelTitle}" from card ${cardId}: ${err.message}`);
+    }
+  }
+
+  // ===========================================================================
+  // SCHEDULED Card Handling
+  // ===========================================================================
+
+  /**
+   * Handle a card that carries the SCHEDULED label.
+   * - If PAUSED wins (already checked above, but guard here defensively).
+   * - If no due date: warn and skip.
+   * - If due date is in the future: skip.
+   * - If due date is now or past: remove SCHEDULED label; returns true (activate).
+   * @returns {boolean} true if the card should be processed this pulse
+   * @private
+   */
+  async _handleScheduledCard(wb, stack, card) {
+    // Defensive: PAUSED wins
+    if (hasLabel(card, 'PAUSED')) return false;
+
+    if (!card.duedate) {
+      console.warn(`[Workflow] SCHEDULED card "${card.title}" has no due date — skipping`);
+      return false;
+    }
+
+    const dueDate = new Date(card.duedate);
+    if (isNaN(dueDate.getTime())) {
+      console.warn(`[Workflow] SCHEDULED card "${card.title}" has unparseable due date "${card.duedate}" — skipping`);
+      return false;
+    }
+
+    if (dueDate > new Date()) {
+      // Not yet time — skip silently
+      return false;
+    }
+
+    // Due date has arrived — remove SCHEDULED label to activate the card
+    await this._removeLabelFromCard(wb.board.id, stack.id, card.id, 'SCHEDULED');
+    console.log(`[Workflow] SCHEDULED card "${card.title}" activated (due: ${card.duedate})`);
+    return true;
+  }
+
+  /**
+   * Schedule a card for future activation.
+   * Adds the SCHEDULED label and sets the card's due date.
+   * @param {Object} wb - Workflow board descriptor
+   * @param {Object} stack - Stack containing the card
+   * @param {Object} card - Card to schedule
+   * @param {string|Date|number} activateAt - When to activate (ISO string, Date, or ms timestamp)
+   * @returns {Promise<void>}
+   */
+  async scheduleCard(wb, stack, card, activateAt) {
+    const date = new Date(activateAt);
+    if (isNaN(date.getTime())) throw new Error('scheduleCard requires a valid date');
+
+    await this._addLabelToCard(wb.board.id, stack.id, card.id, 'SCHEDULED');
+    await this._updateCardDueDate(wb.board.id, stack.id, card.id, date.toISOString());
+    console.log(`[Workflow] Card "${card.title}" scheduled for ${date.toISOString()}`);
+  }
+
+  // ===========================================================================
+  // ERROR State Management
+  // ===========================================================================
+
+  /**
+   * Get the error state for a card, or null if none exists.
+   * @private
+   */
+  _getErrorState(boardId, cardId) {
+    const key = `${boardId}:${cardId}`;
+    return this._errorState.get(key) || null;
+  }
+
+  /**
+   * Set (upsert) error state for a card and persist.
+   * @private
+   */
+  _setErrorState(boardId, cardId, state) {
+    const key = `${boardId}:${cardId}`;
+    this._errorState.set(key, state);
+    this._saveProcessedCards(); // persists both _processedCards and _errorState
+  }
+
+  /**
+   * Clear error state for a card (called when human removes ERROR label).
+   * @private
+   */
+  _clearErrorState(boardId, cardId) {
+    const key = `${boardId}:${cardId}`;
+    if (this._errorState.has(key)) {
+      this._errorState.delete(key);
+      this._saveProcessedCards();
+    }
+  }
+
+  /**
+   * Determine if a card in error state is ready to retry.
+   * Retry schedule: 1st retry → immediate (1 pulse), 2nd retry → 2 pulses wait.
+   * lastAttempt is a Unix ms timestamp; pulseIntervalMs defaults to 5 minutes.
+   * @private
+   */
+  _isRetryReady(boardId, cardId) {
+    const state = this._getErrorState(boardId, cardId);
+    if (!state) return true; // No error state — card is processable
+    if (state.permanent) return false;
+
+    const pulseMs = (this.config.pulseIntervalMs) || (5 * 60 * 1000);
+    const waitPulses = state.retryCount; // 1 pulse wait after 1st fail, 2 after 2nd
+    const waitMs = waitPulses * pulseMs;
+    return (Date.now() - (state.lastAttempt || 0)) >= waitMs;
+  }
+
+  /**
+   * Handle a processing error: add ERROR label, comment, track retries,
+   * notify Talk on permanent failure.
+   * @private
+   */
+  async _handleProcessingError(wb, stack, card, error) {
+    const { board } = wb;
+    const currentState = this._getErrorState(board.id, card.id) || { retryCount: 0, lastError: null, lastAttempt: 0, permanent: false };
+    const attemptNumber = currentState.retryCount + 1;
+
+    console.warn(`[Workflow] Processing error on card "${card.title}" (attempt ${attemptNumber}/3):`, error.message);
+
+    // Add ERROR label on first failure (or if not already present)
+    if (currentState.retryCount === 0) {
+      await this._addLabelToCard(board.id, stack.id, card.id, 'ERROR');
+    }
+
+    // Post comment on card
+    if (this.deck.addComment) {
+      try {
+        await this.deck.addComment(card.id,
+          `\u26A0\uFE0F Processing error (attempt ${attemptNumber}/3): ${error.message}`
+        );
+      } catch (_err) {
+        // Non-fatal
+      }
+    }
+
+    const permanent = attemptNumber >= 3;
+    this._setErrorState(board.id, card.id, {
+      retryCount: attemptNumber,
+      lastError: error.message,
+      lastAttempt: Date.now(),
+      permanent
+    });
+
+    if (permanent && this.talkQueue && this.talkToken) {
+      await this.talkQueue.enqueue(this.talkToken,
+        `\u274C Workflow card permanently failed in "${board.title}":\n` +
+        `**${card.title}** \u2014 ${error.message}\n` +
+        'Manual intervention required. Remove the ERROR label after resolving.'
+      );
+      console.error(`[Workflow] Permanent failure on card "${card.title}" — Talk notification sent`);
+    }
+  }
+
+  // ===========================================================================
+  // Error State Persistence
+  // ===========================================================================
+
+  /** @private */
+  _loadErrorState() {
+    if (!this._processedFile) return new Map(); // no disk persistence
+    try {
+      const raw = fs.readFileSync(this._processedFile, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed._errors) {
+        return new Map(Object.entries(parsed._errors));
+      }
+    } catch (_err) {
+      // Missing file or corrupt JSON — start fresh
+    }
+    return new Map();
+  }
+
   /**
    * Reset session state. Call on service restart or daily reset.
    */
   resetState() {
     this._processedCards.clear();
+    this._errorState.clear();
     this._saveProcessedCards();
     this._notifiedGates.clear();
     this._scheduleHandler.resetState();
