@@ -1,8 +1,13 @@
 'use strict';
 
+const fs   = require('fs');
+const path = require('path');
 const GateDetector = require('./gate-detector');
 const { ScheduleHandler, parseScheduleBlock, findConfigCard, stripHtml } = require('./schedule-handler');
 const { isStructuralCard } = require('../integrations/deck-card-classifier');
+
+const DATA_DIR = path.resolve(process.cwd(), 'data');
+const PROCESSED_FILE = path.join(DATA_DIR, 'workflow-processed-cards.json');
 
 /**
  * WorkflowEngine
@@ -41,9 +46,10 @@ class WorkflowEngine {
     this.budgetEnforcer = budgetEnforcer || null;
     this.botUsername = this.config.botUsername || 'moltagent';
 
-    // Track which cards we've already processed this session
-    // Key: `${boardId}:${cardId}:${stackId}` -> last processed timestamp
-    this._processedCards = new Map();
+    // Track which cards we've already processed.
+    // Key: `${boardId}:${cardId}:${stackId}` -> last processed timestamp (seconds)
+    // Persisted to disk so restarts don't trigger re-evaluation of every card.
+    this._processedCards = this._loadProcessedCards();
 
     // Track GATE notifications to avoid re-notifying
     this._notifiedGates = new Set();
@@ -394,7 +400,8 @@ class WorkflowEngine {
 
   /**
    * Determine if a card should be processed.
-   * Avoids re-processing cards that haven't changed.
+   * Avoids re-processing cards that haven't changed since the agent last touched them.
+   * Both timestamps are in Unix seconds for consistent comparison.
    * @param {number} boardId
    * @param {Object} card
    * @param {Object} stack
@@ -406,14 +413,48 @@ class WorkflowEngine {
 
     if (!lastProcessed) return true;
 
-    const cardModified = new Date(card.lastModified || 0).getTime();
+    // card.lastModified from Deck API is Unix seconds
+    const cardModified = card.lastModified || 0;
     return cardModified > lastProcessed;
   }
 
   /** @private */
   _markProcessed(boardId, card, stack) {
     const key = `${boardId}:${card.id}:${stack.id}`;
-    this._processedCards.set(key, Date.now());
+    // Store as Unix seconds (matching card.lastModified from Deck API).
+    // Use current time so that the agent's own modifications (comments, moves)
+    // which bump card.lastModified don't trigger reprocessing.
+    this._processedCards.set(key, Math.floor(Date.now() / 1000));
+    this._saveProcessedCards();
+  }
+
+  /** @private */
+  _loadProcessedCards() {
+    try {
+      const raw = fs.readFileSync(PROCESSED_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return new Map(Object.entries(parsed));
+      }
+    } catch (_err) {
+      // Missing file or corrupt JSON — start fresh
+    }
+    return new Map();
+  }
+
+  /** @private */
+  _saveProcessedCards() {
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      const obj = Object.fromEntries(this._processedCards);
+      const tmp = PROCESSED_FILE + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8');
+      fs.renameSync(tmp, PROCESSED_FILE);
+    } catch (err) {
+      console.error('[Workflow] Failed to persist processed cards:', err.message);
+    }
   }
 
   /** @private */
@@ -658,6 +699,7 @@ class WorkflowEngine {
    */
   resetState() {
     this._processedCards.clear();
+    this._saveProcessedCards();
     this._notifiedGates.clear();
     this._scheduleHandler.resetState();
     this.detector.invalidateCache();
