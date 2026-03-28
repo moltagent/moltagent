@@ -225,16 +225,19 @@ class WorkflowEngine {
           }
 
           // Should we process this card?
+          let cardWasTouched = false;
           if (this._shouldProcess(board.id, card, stack)) {
             try {
               await this._processCard(wb, stack, card);
               result.cardsProcessed++;
+              cardWasTouched = true;
               // Successful processing — clear error state and remove ERROR label
               if (this._getErrorState(board.id, card.id) || hasLabel(card, 'ERROR')) {
                 this._clearErrorState(board.id, card.id);
                 await this._removeLabelFromCard(board.id, stack.id, card.id, 'ERROR');
               }
             } catch (processingErr) {
+              cardWasTouched = true;
               await this._handleProcessingError(wb, stack, card, processingErr);
             }
           }
@@ -242,15 +245,19 @@ class WorkflowEngine {
           // Check for due date escalation (suppressed for PAUSED and SCHEDULED cards)
           if (card.duedate && this._isPastDue(card.duedate)) {
             const escalated = await this._handleEscalation(wb, stack, card);
-            if (escalated) result.escalations++;
+            if (escalated) {
+              result.escalations++;
+              cardWasTouched = true;
+            }
           }
 
-          // Stamp the SOURCE stack as processed AFTER all card operations
-          // (including escalation). Read back lastModified from the server
-          // so both _shouldProcess and _markProcessed use the same clock.
-          // Only stamp this stack — if processing moved the card to another
-          // stack, the destination must NOT be pre-stamped.
-          await this._markProcessed(board.id, card, stack);
+          // Stamp the SOURCE stack ONLY when the card was actually touched.
+          // Uses the server's lastModified so both sides of the comparison
+          // use the same clock. Only stamps this stack — if processing moved
+          // the card to another stack, the destination is not pre-stamped.
+          if (cardWasTouched) {
+            this._markProcessed(board.id, card, stack);
+          }
         } catch (err) {
           console.warn(`[Workflow] Error on card "${card.title}" in "${board.title}":`, err.message);
         }
@@ -555,27 +562,17 @@ class WorkflowEngine {
   }
 
   /**
-   * Stamp a card+stack as processed using the server's lastModified timestamp.
-   * Reading back from the API ensures both _shouldProcess and _markProcessed
-   * use the same clock (no local/server skew). Only stamps the source stack —
-   * if processing moved the card, the destination stack is not pre-stamped.
+   * Stamp a card+stack as processed. Only stamps the source stack — if
+   * processing moved the card to another stack, the destination is not
+   * pre-stamped and will be picked up on the next heartbeat with its
+   * own CONFIG rules.
+   *
+   * Uses Unix seconds to match card.lastModified from the Deck API.
    * @private
    */
-  async _markProcessed(boardId, card, stack) {
+  _markProcessed(boardId, card, stack) {
     const key = `${boardId}:${card.id}:${stack.id}`;
-    let serverTs = Math.floor(Date.now() / 1000); // fallback
-    try {
-      const path = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stack.id}/cards/${card.id}`;
-      const fresh = await this.deck._request('GET', path);
-      const data = fresh.body || fresh;
-      const raw = data.lastModified || 0;
-      serverTs = typeof raw === 'string'
-        ? Math.floor(new Date(raw).getTime() / 1000)
-        : raw;
-    } catch (_err) {
-      // Card may have been moved/deleted during processing — use fallback
-    }
-    this._processedCards.set(key, serverTs);
+    this._processedCards.set(key, Math.floor(Date.now() / 1000));
     this._saveProcessedCards();
   }
 
