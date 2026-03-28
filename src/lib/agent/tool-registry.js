@@ -88,7 +88,6 @@ class ToolRegistry {
       'workflow_deck_move_card',
       'workflow_deck_add_comment',
       'workflow_deck_create_card',
-      'workflow_deck_update_card',
       'deck_add_label'
     ]);
     return Array.from(this.tools.values())
@@ -113,11 +112,12 @@ class ToolRegistry {
    */
   getCloudWorkflowToolDefinitions(boardContext = '') {
     // Base tools every workflow needs
+    // workflow_deck_update_card intentionally excluded — schedules create,
+    // per-card processing updates. Clean separation.
     const allowed = new Set([
       'workflow_deck_move_card',
       'workflow_deck_add_comment',
       'workflow_deck_create_card',
-      'workflow_deck_update_card',
       'deck_add_label',
     ]);
 
@@ -3351,6 +3351,15 @@ class ToolRegistry {
         } else {
           // Default to first stack (usually "Inbox")
           targetStack = stacks[0];
+        }
+
+        // Check if target stack is PAUSED (CONFIG card has PAUSED label)
+        const configCard = (targetStack.cards || []).find(c =>
+          (c.labels || []).some(l => l.title === 'System')
+        );
+        if (configCard && (configCard.labels || []).some(l => l.title === 'PAUSED')) {
+          this.logger.info(`[workflow_deck_create_card] Stack "${targetStack.title}" is PAUSED — skipping card creation`);
+          return `Stack "${targetStack.title}" is PAUSED — card "${args.title}" not created.`;
         }
 
         const createFn = deck
