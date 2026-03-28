@@ -24,6 +24,8 @@
  *   deck-card-classifier  <──  workflow-engine
  *                         <──  tool-registry
  *                         <──  deck-task-processor
+ *                         <──  gate-detector
+ *                         <──  workflow-board-detector
  */
 
 'use strict';
@@ -130,4 +132,4 @@ function isStructuralCard(card) {
   return false;
 }
 
-module.exports = { isStructuralCard };
+module.exports = { isStructuralCard, hasLabel };

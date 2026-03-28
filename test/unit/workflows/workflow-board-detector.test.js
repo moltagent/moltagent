@@ -8,8 +8,12 @@ const WorkflowBoardDetector = require('../../../src/lib/workflows/workflow-board
 function createMockDeck(boards, boardDetails = {}, stacksByBoard = {}) {
   return {
     listBoards: async () => boards,
-    getBoard: async (id) => boardDetails[id] || { id, title: `Board ${id}` },
-    getStacks: async (id) => stacksByBoard[id] || []
+    // getBoard returns board with empty labels array so ensureWorkflowLabels
+    // will attempt to create all four workflow labels (no-op in tests).
+    getBoard: async (id) => ({ ...(boardDetails[id] || { id, title: `Board ${id}` }), labels: [] }),
+    getStacks: async (id) => stacksByBoard[id] || [],
+    // ensureWorkflowLabels calls createLabel for any missing reserved labels
+    createLabel: async () => ({ id: Math.floor(Math.random() * 1000) })
   };
 }
 
@@ -153,8 +157,9 @@ function createMockDeck(boards, boardDetails = {}, stacksByBoard = {}) {
     let callCount = 0;
     const mockDeck = {
       listBoards: async () => { callCount++; return []; },
-      getBoard: async () => ({}),
-      getStacks: async () => []
+      getBoard: async () => ({ labels: [] }),
+      getStacks: async () => [],
+      createLabel: async () => ({})
     };
 
     const detector = new WorkflowBoardDetector({ deckClient: mockDeck });

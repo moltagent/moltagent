@@ -4,10 +4,9 @@ const fs   = require('fs');
 const path = require('path');
 const GateDetector = require('./gate-detector');
 const { ScheduleHandler, parseScheduleBlock, findConfigCard, stripHtml } = require('./schedule-handler');
-const { isStructuralCard } = require('../integrations/deck-card-classifier');
+const { isStructuralCard, hasLabel } = require('../integrations/deck-card-classifier');
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
-const PROCESSED_FILE = path.join(DATA_DIR, 'workflow-processed-cards.json');
+const DEFAULT_DATA_DIR = path.resolve(process.cwd(), 'data');
 
 /**
  * WorkflowEngine
@@ -45,6 +44,22 @@ class WorkflowEngine {
     this.config = config || {};
     this.budgetEnforcer = budgetEnforcer || null;
     this.botUsername = this.config.botUsername || 'moltagent';
+
+    // Resolve data directory. Disk persistence is only enabled when config.dataDir
+    // is explicitly provided (or config.dataDir === true to use the default).
+    // Unit tests that do not pass config.dataDir get an in-memory-only store.
+    let dataDir;
+    if (this.config.dataDir === true) {
+      dataDir = DEFAULT_DATA_DIR;
+    } else if (this.config.dataDir) {
+      dataDir = this.config.dataDir;
+    } else {
+      dataDir = null; // no disk persistence
+    }
+    this._dataDir = dataDir;
+    this._processedFile = this._dataDir
+      ? path.join(this._dataDir, 'workflow-processed-cards.json')
+      : null;
 
     // Track which cards we've already processed.
     // Key: `${boardId}:${cardId}:${stackId}` -> last processed timestamp (seconds)
@@ -116,7 +131,23 @@ class WorkflowEngine {
     wb._plainDescription = wb._plainDescription || stripHtml(wb.description);
     const result = { cardsProcessed: 0, gatesFound: 0, gatesResolved: 0, escalations: 0, schedulesExecuted: 0 };
 
+    // Board-level PAUSED check: find the WORKFLOW rules card; if it has the
+    // PAUSED label, skip the entire board for this pulse.
+    const rulesCard = stacks.flatMap(s => s.cards || []).find(c => wb.rulesCardId && c.id === wb.rulesCardId);
+    if (rulesCard && hasLabel(rulesCard, 'PAUSED')) {
+      console.log(`[Workflow] Board "${board.title}" is PAUSED — skipping`);
+      return result;
+    }
+
     for (const stack of stacks) {
+      // Stack-level PAUSED check: if the CONFIG card in this stack has the
+      // PAUSED label, skip all cards in this stack.
+      const stackConfigCard = findConfigCard(stack);
+      if (stackConfigCard && hasLabel(stackConfigCard, 'PAUSED')) {
+        console.log(`[Workflow] Stack "${stack.title}" in "${board.title}" is PAUSED — skipping stack`);
+        continue;
+      }
+
       for (const card of (stack.cards || [])) {
         try {
           // Skip archived/deleted cards
@@ -131,6 +162,12 @@ class WorkflowEngine {
             continue;
           }
 
+          // Card-level PAUSED check: skip individual paused work items
+          if (hasLabel(card, 'PAUSED')) {
+            console.log(`[Workflow] Card "${card.title}" is PAUSED — skipping`);
+            continue;
+          }
+
           // Card hygiene: ensure due date and assignment
           await this._ensureDueDate(wb, stack, card);
           await this._ensureAssignment(wb, stack, card);
@@ -141,6 +178,15 @@ class WorkflowEngine {
             const gateResolved = await this._handleGate(wb, stack, card);
             if (gateResolved) result.gatesResolved++;
             continue;
+          }
+
+          // If this card is in a GATE stack (CONFIG card mentions GATE) and has
+          // no workflow label yet, stamp it with the GATE label so the engine
+          // tracks it correctly on the next pulse.
+          if (GateDetector.isGateStack(stack.cards || [])) {
+            await this._ensureGateLabel(wb, stack, card);
+            // Re-check — the label may have just been added (local object is stale,
+            // but re-reading on next pulse is sufficient; don't block this pulse).
           }
 
           // Should we process this card?
@@ -281,12 +327,11 @@ class WorkflowEngine {
   async _handleGate(wb, stack, card) {
     const { board } = wb;
 
-    // Check if human has responded
-    const resolution = await GateDetector.checkGateResolution(
-      this.deck, card.id, this.botUsername
-    );
+    // Label-based resolution check — synchronous, no comment scanning
+    const resolution = GateDetector.checkGateResolution(card);
 
-    if (resolution.resolved) {
+    if (resolution.resolved && resolution.decision) {
+      // Human has applied APPROVED or REJECTED label
       console.log(`[Workflow] GATE resolved: "${card.title}" -> ${resolution.decision}`);
 
       let { forceLocal } = this._getRoleForCard(wb, card);
@@ -310,7 +355,6 @@ class WorkflowEngine {
         `Card: ${card.title} (ID: ${card.id})`,
         `Stack: ${stack.title} (ID: ${stack.id})`,
         `Decision: ${resolution.decision}`,
-        `Human comment: "${resolution.comment?.message || ''}"`,
         '',
         `**All Stacks:**`,
         wb.stacks.map(s => `  - "${s.title}" (ID: ${s.id})`).join('\n'),
@@ -337,36 +381,70 @@ class WorkflowEngine {
       return true;
     }
 
-    // Not resolved — notify human if we haven't yet
+    // Not resolved (has GATE label, no APPROVED/REJECTED) — notify human once
     const gateKey = `${board.id}:${card.id}`;
     if (!this._notifiedGates.has(gateKey)) {
-      const needsNotify = await GateDetector.needsNotification(
-        this.deck, card.id, this.botUsername
-      );
-
-      if (needsNotify) {
-        // Comment on the card
-        await this.deck.addComment(card.id,
-          '\u23F8\uFE0F GATE \u2014 This card requires human review. ' +
-          'Please comment with \u2705 to approve or \u274C to reject.',
-          'STATUS', { prefix: false }
+      // Label presence IS the notification state — no comment scan needed.
+      // Notify in Talk once per process lifecycle (in-memory dedup via _notifiedGates).
+      if (this.talkQueue && this.talkToken) {
+        await this.talkQueue.enqueue(this.talkToken,
+          `\u23F8\uFE0F Workflow "${wb.board.title}" is waiting for your review.\n` +
+          `Card: **${card.title}**\n` +
+          'Apply the \u2705 APPROVED or \u274C REJECTED label on the card to continue.'
         );
-
-        // Notify in Talk
-        if (this.talkQueue && this.talkToken) {
-          await this.talkQueue.enqueue(this.talkToken,
-            `\u23F8\uFE0F Workflow "${wb.board.title}" is waiting for your review.\n` +
-            `Card: **${card.title}**\n` +
-            'Please add a comment (\u2705 or \u274C) on the card to continue.'
-          );
-        }
-
-        this._notifiedGates.add(gateKey);
-        console.log(`[Workflow] GATE notification sent for "${card.title}"`);
       }
+
+      // Also comment on the card so the GATE state is visible in the Deck UI.
+      // This is informational only — state is tracked by label, not comment content.
+      if (this.deck.addComment) {
+        try {
+          await this.deck.addComment(card.id,
+            `\u23F8\uFE0F **GATE**: Waiting for human review.\n` +
+            'Apply the APPROVED or REJECTED label to continue the workflow.'
+          );
+        } catch (_err) {
+          // Non-fatal — Talk notification is the primary channel
+        }
+      }
+
+      this._notifiedGates.add(gateKey);
+      console.log(`[Workflow] GATE notification sent for "${card.title}"`);
     }
 
     return false;
+  }
+
+  /**
+   * Stamp a card with the GATE label when it is in a GATE stack but does not
+   * yet carry any workflow label (GATE/APPROVED/REJECTED).
+   * Idempotent — skips if the card already has any workflow label.
+   * @private
+   */
+  async _ensureGateLabel(wb, stack, card) {
+    const hasWorkflowLabel =
+      hasLabel(card, 'GATE') ||
+      hasLabel(card, 'APPROVED') ||
+      hasLabel(card, 'REJECTED');
+
+    if (hasWorkflowLabel) return;
+
+    // Find the GATE label ID on this board so we can assign it
+    try {
+      const fullBoard = await this.deck.getBoard(wb.board.id);
+      const gateLabel = (fullBoard.labels || []).find(
+        l => (l.title || '').toUpperCase() === 'GATE'
+      );
+      if (!gateLabel) {
+        console.warn(`[Workflow] GATE label not found on board "${wb.board.title}" — run ensureWorkflowLabels first`);
+        return;
+      }
+
+      const path = `/index.php/apps/deck/api/v1.0/boards/${wb.board.id}/stacks/${stack.id}/cards/${card.id}/assignLabel`;
+      await this.deck._request('PUT', path, { labelId: gateLabel.id });
+      console.log(`[Workflow] Stamped GATE label on card "${card.title}"`);
+    } catch (err) {
+      console.warn(`[Workflow] Could not stamp GATE label on card "${card.title}": ${err.message}`);
+    }
   }
 
   /**
@@ -413,8 +491,12 @@ class WorkflowEngine {
 
     if (!lastProcessed) return true;
 
-    // card.lastModified from Deck API is Unix seconds
-    const cardModified = card.lastModified || 0;
+    // card.lastModified may be Unix seconds (number) or ISO 8601 string.
+    // Normalize to Unix seconds before comparing so both forms work correctly.
+    const raw = card.lastModified || 0;
+    const cardModified = typeof raw === 'string'
+      ? Math.floor(new Date(raw).getTime() / 1000)
+      : raw;
     return cardModified > lastProcessed;
   }
 
@@ -430,8 +512,9 @@ class WorkflowEngine {
 
   /** @private */
   _loadProcessedCards() {
+    if (!this._processedFile) return new Map(); // no disk persistence
     try {
-      const raw = fs.readFileSync(PROCESSED_FILE, 'utf8');
+      const raw = fs.readFileSync(this._processedFile, 'utf8');
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         return new Map(Object.entries(parsed));
@@ -444,14 +527,15 @@ class WorkflowEngine {
 
   /** @private */
   _saveProcessedCards() {
+    if (!this._processedFile) return; // no disk persistence
     try {
-      if (!fs.existsSync(DATA_DIR)) {
-        fs.mkdirSync(DATA_DIR, { recursive: true });
+      if (!fs.existsSync(this._dataDir)) {
+        fs.mkdirSync(this._dataDir, { recursive: true });
       }
       const obj = Object.fromEntries(this._processedCards);
-      const tmp = PROCESSED_FILE + '.tmp';
+      const tmp = this._processedFile + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8');
-      fs.renameSync(tmp, PROCESSED_FILE);
+      fs.renameSync(tmp, this._processedFile);
     } catch (err) {
       console.error('[Workflow] Failed to persist processed cards:', err.message);
     }

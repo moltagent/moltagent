@@ -1,98 +1,127 @@
+/**
+ * AGPL-3.0 License
+ * Copyright (C) 2024 Moltagent Contributors
+ *
+ * gate-detector.js
+ *
+ * Architecture Brief
+ * ------------------
+ * Problem:   The old GateDetector used regex patterns to detect GATE cards from
+ *            natural-language title/description content — a violation of the
+ *            "no regex for intelligence" principle. It also scanned comments to
+ *            determine approval/rejection, making comment content load-bearing.
+ *
+ * Pattern:   Label-based detection. A card IS a gate if it carries the "GATE"
+ *            label. A gate IS resolved when the human replaces the GATE label with
+ *            APPROVED or REJECTED. This makes the state machine explicit and
+ *            auditable in the Deck UI with no comment scanning required.
+ *
+ *            Regex is still used on CONFIG card text in isGateStack() — that is
+ *            human-authored structured config (not LLM output), so pattern
+ *            matching there is plumbing, not intelligence.
+ *
+ * Key Dependencies: deck-card-classifier (hasLabel)
+ *
+ * Data Flow:
+ *   card { labels } → isGate() → boolean
+ *   cards[]         → isGateStack() → boolean (scans CONFIG card title/desc)
+ *   card { labels } → checkGateResolution() → { resolved, decision }
+ *
+ * Dependency Map:
+ *   gate-detector  <──  workflow-engine
+ */
+
 'use strict';
 
+const { hasLabel } = require('../integrations/deck-card-classifier');
+
 /**
- * GateDetector
- *
- * GATE cards are human checkpoints in a workflow. Any card containing
- * "GATE", "wait for human", "wait for approval", or "approval required"
- * in its title or description is treated as a gate.
- *
- * The agent stops processing at gates and notifies the human.
- * When the human comments with approved/rejected,
- * the gate is considered resolved.
- *
- * @module workflows/gate-detector
+ * Reserved workflow labels. Title matches are case-insensitive via hasLabel().
  */
+const LABEL_GATE     = 'GATE';
+const LABEL_APPROVED = 'APPROVED';
+const LABEL_REJECTED = 'REJECTED';
+
 class GateDetector {
-
-  static GATE_PATTERNS = [
-    /\bGATE\b/i,
-    /wait\s+for\s+(human|approval|review|sign-?off)/i,
-    /approval\s+required/i,
-    /human\s+(review|check|confirm)/i
-  ];
-
-  static APPROVE_PATTERNS = [
-    /\u2705/,           // checkmark emoji
-    /\bapproved?\b/i,
-    /\blgtm\b/i,
-    /\bgood\s+to\s+go\b/i,
-    /\bconfirmed?\b/i
-  ];
-
-  static REJECT_PATTERNS = [
-    /\u274C/,           // cross mark emoji
-    /\breject(ed)?\b/i,
-    /\bdenied?\b/i,
-    /\bnot\s+approved?\b/i,
-    /\bchanges?\s+requested?\b/i
-  ];
 
   /**
    * Check if a card is a GATE card.
-   * @param {Object} card - Deck card object with title and description
+   *
+   * Primary signal: the card carries the "GATE" label (explicit, auditable).
+   * Fallback signal: the card title starts with the "GATE:" structural prefix.
+   * This supports the transition from title-based to label-based GATE marking —
+   * cards are stamped with the GATE label by _ensureGateLabel() once detected,
+   * but _ensureDueDate() / _ensureAssignment() call isGate() before that stamp.
+   *
+   * Title-prefix detection is structural plumbing (like CONFIG: or WORKFLOW:),
+   * not natural-language intelligence — no regex for intelligence violation.
+   *
+   * @param {Object} card - Deck card object with labels array and title
    * @returns {boolean}
    */
   static isGate(card) {
-    const text = `${card.title || ''} ${card.description || ''}`;
-    return GateDetector.GATE_PATTERNS.some(p => p.test(text));
+    if (!card || typeof card !== 'object') return false;
+    if (hasLabel(card, LABEL_GATE)) return true;
+    // Title-prefix fallback for cards not yet stamped with the GATE label
+    const title = typeof card.title === 'string' ? card.title.trimStart() : '';
+    return title.toUpperCase().startsWith('GATE:');
   }
 
   /**
-   * Check if a GATE card has been resolved by a human comment.
-   * Scans comments in reverse chronological order, skipping bot comments.
+   * Check if a stack is configured as a GATE stack.
    *
-   * @param {import('../integrations/deck-client')} deckClient
-   * @param {number} cardId
-   * @param {string} botUsername - Bot's username to skip its own comments
-   * @returns {Promise<{resolved: boolean, decision: string|null, comment: Object|null}>}
+   * A stack is a GATE stack when its CONFIG card (identified by the "System"
+   * label) has the word "GATE" in its title or description. This is a regex
+   * on human-authored config text — not LLM output — so pattern matching is
+   * appropriate here.
+   *
+   * @param {Array<Object>} cards - All cards in a stack
+   * @returns {boolean}
    */
-  static async checkGateResolution(deckClient, cardId, botUsername = 'moltagent') {
-    const comments = await deckClient.getComments(cardId);
+  static isGateStack(cards) {
+    if (!Array.isArray(cards)) return false;
 
-    // Reverse chronological — most recent first
-    for (const comment of [...comments].reverse()) {
-      const author = comment.actorId || comment.author || '';
-      if (author.toLowerCase() === botUsername.toLowerCase()) continue;
+    // Find the CONFIG card — it has the "System" label
+    const configCard = cards.find(c => hasLabel(c, 'System'));
+    if (!configCard) return false;
 
-      const text = comment.message || '';
+    const text = `${configCard.title || ''} ${configCard.description || ''}`;
+    // Regex on controlled config text is OK (plumbing, not intelligence)
+    return /\bGATE\b/i.test(text);
+  }
 
-      if (GateDetector.APPROVE_PATTERNS.some(p => p.test(text))) {
-        return { resolved: true, decision: 'approved', comment };
-      }
-      if (GateDetector.REJECT_PATTERNS.some(p => p.test(text))) {
-        return { resolved: true, decision: 'rejected', comment };
-      }
+  /**
+   * Check whether a GATE card has been resolved by inspecting its labels.
+   *
+   * State machine:
+   *   APPROVED label  → resolved, decision = 'approved'
+   *   REJECTED label  → resolved, decision = 'rejected'
+   *   GATE label only → not resolved
+   *   No workflow label → pass-through (resolved with no decision)
+   *
+   * @param {Object} card - Deck card object with labels array
+   * @returns {{ resolved: boolean, decision: string|null }}
+   */
+  static checkGateResolution(card) {
+    if (!card || typeof card !== 'object') {
+      return { resolved: false, decision: null };
     }
 
-    return { resolved: false, decision: null, comment: null };
-  }
+    if (hasLabel(card, LABEL_APPROVED)) {
+      return { resolved: true, decision: 'approved' };
+    }
 
-  /**
-   * Check if a GATE card needs notification (hasn't been notified yet).
-   * Uses a comment marker to avoid re-notifying.
-   *
-   * @param {import('../integrations/deck-client')} deckClient
-   * @param {number} cardId
-   * @param {string} botUsername
-   * @returns {Promise<boolean>}
-   */
-  static async needsNotification(deckClient, cardId, botUsername = 'moltagent') {
-    const comments = await deckClient.getComments(cardId);
-    return !comments.some(c =>
-      (c.actorId || '').toLowerCase() === botUsername.toLowerCase() &&
-      (c.message || '').includes('\u23F8\uFE0F GATE')
-    );
+    if (hasLabel(card, LABEL_REJECTED)) {
+      return { resolved: true, decision: 'rejected' };
+    }
+
+    if (hasLabel(card, LABEL_GATE)) {
+      // Gate exists and is unresolved
+      return { resolved: false, decision: null };
+    }
+
+    // Card has no workflow label — treat as pass-through
+    return { resolved: true, decision: null };
   }
 }
 

@@ -7,11 +7,28 @@
  * A workflow board has a card (typically the first card in the first stack) whose
  * title starts with "WORKFLOW:" — the card's description contains the full rules.
  *
+ * Also ensures that every detected workflow board carries the reserved workflow
+ * labels (GATE, APPROVED, REJECTED, PAUSED). This is idempotent — safe to call
+ * every heartbeat.
+ *
  * This is intentionally simple — the "detection" is a card title prefix check.
  * The LLM does all the hard work of interpreting the rules.
  *
  * @module workflows/workflow-board-detector
  */
+
+/**
+ * Reserved workflow labels and their display colors (hex, no leading #).
+ * These are created on every workflow board so the engine can apply them
+ * without a separate setup step.
+ */
+const WORKFLOW_LABELS = [
+  { title: 'GATE',     color: 'E9967A' },
+  { title: 'APPROVED', color: '4CAF50' },
+  { title: 'REJECTED', color: 'F44336' },
+  { title: 'PAUSED',   color: '90A4AE' }
+];
+
 class WorkflowBoardDetector {
   /**
    * @param {Object} options
@@ -26,6 +43,8 @@ class WorkflowBoardDetector {
 
   /**
    * Get all workflow boards with their full context.
+   * Calls ensureWorkflowLabels() on each detected board so the reserved
+   * label set is always present.
    * @returns {Promise<Array<{board: Object, stacks: Array, description: string, workflowType: string, boardId: number, rulesCardId: number}>>}
    */
   async getWorkflowBoards() {
@@ -48,6 +67,9 @@ class WorkflowBoardDetector {
       const isHtml = /<[a-z/][\s\S]*>/i.test(rawDesc);
       console.log(`[WorkflowDetector] Rules card "${rulesCard.card.title}" description: ${rawDesc.length} chars, format=${isHtml ? 'html' : 'plain'}`);
 
+      // Ensure this workflow board has all reserved labels
+      await this.ensureWorkflowLabels(board.id);
+
       workflowBoards.push({
         board,
         stacks,
@@ -63,6 +85,44 @@ class WorkflowBoardDetector {
 
     console.log(`[WorkflowDetector] Found ${workflowBoards.length} workflow board(s)`);
     return workflowBoards;
+  }
+
+  /**
+   * Ensure that a workflow board has all reserved workflow labels.
+   * Creates any missing labels; skips labels that already exist.
+   * Safe to call on every heartbeat — idempotent.
+   *
+   * @param {number} boardId
+   * @returns {Promise<void>}
+   */
+  async ensureWorkflowLabels(boardId) {
+    if (!boardId) return;
+
+    let fullBoard;
+    try {
+      fullBoard = await this.deck.getBoard(boardId);
+    } catch (err) {
+      console.warn(`[WorkflowDetector] Could not fetch board ${boardId} for label check: ${err.message}`);
+      return;
+    }
+
+    // Build a set of existing label titles (upper-cased for case-insensitive comparison)
+    const existing = new Set(
+      (fullBoard.labels || []).map(l => (l.title || '').toUpperCase())
+    );
+
+    for (const labelDef of WORKFLOW_LABELS) {
+      if (existing.has(labelDef.title.toUpperCase())) continue;
+
+      try {
+        await this.deck.createLabel(boardId, labelDef.title, labelDef.color);
+        console.log(`[WorkflowDetector] Created label "${labelDef.title}" on board ${boardId}`);
+      } catch (err) {
+        // Non-fatal — log and continue. A duplicate-label error from a race
+        // condition is expected and harmless.
+        console.warn(`[WorkflowDetector] Could not create label "${labelDef.title}" on board ${boardId}: ${err.message}`);
+      }
+    }
   }
 
   /**

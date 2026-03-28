@@ -1927,7 +1927,7 @@ async function initialize() {
         talkSendQueue: talkQueue,
         talkToken: defaultTalkToken,
         budgetEnforcer: llmRouter?.router?.budget || null,
-        config: { botUsername: CONFIG.nc.username, adminUser: appConfig.cockpit?.adminUser || appConfig.knowledge?.adminUser || '' }
+        config: { botUsername: CONFIG.nc.username, adminUser: appConfig.cockpit?.adminUser || appConfig.knowledge?.adminUser || '', dataDir: true }
       });
       console.log('[INIT] WorkflowEngine ready');
     } catch (err) {

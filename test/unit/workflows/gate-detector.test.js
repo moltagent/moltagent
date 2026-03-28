@@ -1,77 +1,112 @@
 'use strict';
 
 const assert = require('assert');
-const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
+const { test, summary, exitWithCode } = require('../../helpers/test-runner');
 const GateDetector = require('../../../src/lib/workflows/gate-detector');
 
 (async () => {
   console.log('\n=== GateDetector Tests ===\n');
 
-  // Test 1: isGate detects "GATE" in card title
-  test('isGate() detects GATE in card title', () => {
-    const card = { title: 'GATE: Approval needed', description: '' };
+  // ── isGate ──────────────────────────────────────────────────────────────────
+
+  test('isGate() returns true for card with GATE label', () => {
+    const card = { title: 'Approval needed', description: '', labels: [{ title: 'GATE' }] };
     assert.strictEqual(GateDetector.isGate(card), true);
   });
 
-  // Test 2: isGate detects "wait for approval" in description
-  test('isGate() detects "wait for approval" in description', () => {
-    const card = { title: 'Review step', description: 'Wait for approval before proceeding.' };
+  test('isGate() is case-insensitive on label title', () => {
+    const card = { title: 'Step', description: '', labels: [{ title: 'gate' }] };
     assert.strictEqual(GateDetector.isGate(card), true);
   });
 
-  // Test 3: isGate returns false for normal cards
-  test('isGate() returns false for normal cards', () => {
-    const card = { title: 'Fix the bug', description: 'The login page has a CSS issue.' };
+  test('isGate() returns false when no GATE label present', () => {
+    const card = { title: 'Fix the bug', description: 'The login page has a CSS issue.', labels: [] };
     assert.strictEqual(GateDetector.isGate(card), false);
   });
 
-  // Test 4: isGate detects "approval required" pattern
-  test('isGate() detects "approval required" pattern', () => {
-    const card = { title: 'Final check', description: 'Approval required from manager.' };
-    assert.strictEqual(GateDetector.isGate(card), true);
+  test('isGate() returns false for card with no labels field', () => {
+    const card = { title: 'Fix the bug', description: 'Some task' };
+    assert.strictEqual(GateDetector.isGate(card), false);
   });
 
-  // Test 5: checkGateResolution finds approval comment
-  await asyncTest('checkGateResolution() finds approval comment', async () => {
-    const mockDeck = {
-      getComments: async () => [
-        { actorId: 'moltagent', message: '\u23F8\uFE0F GATE - Waiting for review' },
-        { actorId: 'funana', message: 'Looks good! \u2705 approved' }
-      ]
-    };
+  test('isGate() returns false for null input', () => {
+    assert.strictEqual(GateDetector.isGate(null), false);
+  });
 
-    const result = await GateDetector.checkGateResolution(mockDeck, 123, 'moltagent');
+  // ── isGateStack ─────────────────────────────────────────────────────────────
+
+  test('isGateStack() returns true when CONFIG card mentions GATE', () => {
+    const cards = [
+      { title: 'CONFIG: GATE review step', description: 'Requires human GATE', labels: [{ title: 'System' }] },
+      { title: 'Task A', description: '', labels: [] }
+    ];
+    assert.strictEqual(GateDetector.isGateStack(cards), true);
+  });
+
+  test('isGateStack() returns false when CONFIG card does not mention GATE', () => {
+    const cards = [
+      { title: 'CONFIG: Normal step', description: 'Process normally', labels: [{ title: 'System' }] },
+      { title: 'Task A', description: '', labels: [] }
+    ];
+    assert.strictEqual(GateDetector.isGateStack(cards), false);
+  });
+
+  test('isGateStack() returns false when no CONFIG card exists', () => {
+    const cards = [
+      { title: 'Task A', description: 'No system label here', labels: [] }
+    ];
+    assert.strictEqual(GateDetector.isGateStack(cards), false);
+  });
+
+  test('isGateStack() returns false for empty array', () => {
+    assert.strictEqual(GateDetector.isGateStack([]), false);
+  });
+
+  test('isGateStack() returns false for non-array input', () => {
+    assert.strictEqual(GateDetector.isGateStack(null), false);
+  });
+
+  // ── checkGateResolution ──────────────────────────────────────────────────────
+
+  test('checkGateResolution() returns approved when APPROVED label present', () => {
+    const card = { labels: [{ title: 'GATE' }, { title: 'APPROVED' }] };
+    const result = GateDetector.checkGateResolution(card);
     assert.strictEqual(result.resolved, true);
     assert.strictEqual(result.decision, 'approved');
-    assert.strictEqual(result.comment.actorId, 'funana');
   });
 
-  // Test 6: checkGateResolution finds rejection comment
-  await asyncTest('checkGateResolution() finds rejection comment', async () => {
-    const mockDeck = {
-      getComments: async () => [
-        { actorId: 'moltagent', message: '\u23F8\uFE0F GATE - Waiting for review' },
-        { actorId: 'funana', message: '\u274C rejected - needs more work' }
-      ]
-    };
-
-    const result = await GateDetector.checkGateResolution(mockDeck, 123, 'moltagent');
+  test('checkGateResolution() returns rejected when REJECTED label present', () => {
+    const card = { labels: [{ title: 'GATE' }, { title: 'REJECTED' }] };
+    const result = GateDetector.checkGateResolution(card);
     assert.strictEqual(result.resolved, true);
     assert.strictEqual(result.decision, 'rejected');
   });
 
-  // Test 7: checkGateResolution skips bot's own comments
-  await asyncTest('checkGateResolution() skips bot own comments', async () => {
-    const mockDeck = {
-      getComments: async () => [
-        { actorId: 'moltagent', message: '\u23F8\uFE0F GATE - Waiting for review' },
-        { actorId: 'moltagent', message: '\u2705 Auto-approved by bot' }
-      ]
-    };
-
-    const result = await GateDetector.checkGateResolution(mockDeck, 123, 'moltagent');
-    assert.strictEqual(result.resolved, false, 'Bot comments should be skipped');
+  test('checkGateResolution() returns unresolved when only GATE label present', () => {
+    const card = { labels: [{ title: 'GATE' }] };
+    const result = GateDetector.checkGateResolution(card);
+    assert.strictEqual(result.resolved, false);
     assert.strictEqual(result.decision, null);
+  });
+
+  test('checkGateResolution() returns pass-through for card with no workflow labels', () => {
+    const card = { labels: [] };
+    const result = GateDetector.checkGateResolution(card);
+    assert.strictEqual(result.resolved, true);
+    assert.strictEqual(result.decision, null);
+  });
+
+  test('checkGateResolution() handles null card gracefully', () => {
+    const result = GateDetector.checkGateResolution(null);
+    assert.strictEqual(result.resolved, false);
+    assert.strictEqual(result.decision, null);
+  });
+
+  test('checkGateResolution() is case-insensitive on label titles', () => {
+    const card = { labels: [{ title: 'approved' }] };
+    const result = GateDetector.checkGateResolution(card);
+    assert.strictEqual(result.resolved, true);
+    assert.strictEqual(result.decision, 'approved');
   });
 
   summary();
