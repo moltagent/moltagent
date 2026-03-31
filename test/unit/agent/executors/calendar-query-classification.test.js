@@ -22,6 +22,7 @@
 const assert = require('assert');
 const { asyncTest, summary, exitWithCode } = require('../../../helpers/test-runner');
 const CalendarExecutor = require('../../../../src/lib/agent/executors/calendar-executor');
+const IntentRouter = require('../../../../src/lib/agent/intent-router');
 
 console.log('\n=== Calendar Query Classification Tests ===\n');
 
@@ -126,6 +127,53 @@ asyncTest('"Any meetings this week?" classifies as list with this_week', async (
   const response = getResponse(result);
   assert.ok(response.includes('week') || response.includes('No events'),
     `Should report week's events, got: ${response}`);
+});
+
+// === Intent Router classification tests ===
+// These verify that calendar read-queries classify as action+calendar at the
+// routing layer, not as knowledge — preventing them from being swallowed by
+// the knowledge pipeline before they reach CalendarExecutor.queryEvents().
+
+function createIntentRouter(providerResponse) {
+  return new IntentRouter({
+    provider: { chat: async () => ({ content: providerResponse, toolCalls: null }) },
+    config: { classifyTimeout: 5000 }
+  });
+}
+
+asyncTest('intent router: "Do I have events today?" classifies as action+calendar', async () => {
+  const router = createIntentRouter('{"gate":"action","domain":"calendar","confidence":0.9}');
+  const result = await router.classify('Do I have events today?');
+  assert.strictEqual(result.gate, 'action');
+  assert.strictEqual(result.domain, 'calendar');
+});
+
+asyncTest('intent router: "What\'s on my calendar this week?" classifies as action+calendar', async () => {
+  const router = createIntentRouter('{"gate":"action","domain":"calendar","confidence":0.9}');
+  const result = await router.classify("What's on my calendar this week?");
+  assert.strictEqual(result.gate, 'action');
+  assert.strictEqual(result.domain, 'calendar');
+});
+
+asyncTest('intent router: "Am I free at 3pm?" classifies as action+calendar', async () => {
+  const router = createIntentRouter('{"gate":"action","domain":"calendar","confidence":0.9}');
+  const result = await router.classify('Am I free at 3pm?');
+  assert.strictEqual(result.gate, 'action');
+  assert.strictEqual(result.domain, 'calendar');
+});
+
+asyncTest('intent router: "When is my next meeting?" classifies as action+calendar', async () => {
+  const router = createIntentRouter('{"gate":"action","domain":"calendar","confidence":0.9}');
+  const result = await router.classify('When is my next meeting?');
+  assert.strictEqual(result.gate, 'action');
+  assert.strictEqual(result.domain, 'calendar');
+});
+
+asyncTest('intent router: "What\'s on my schedule?" classifies as action+calendar', async () => {
+  const router = createIntentRouter('{"gate":"action","domain":"calendar","confidence":0.9}');
+  const result = await router.classify("What's on my schedule?");
+  assert.strictEqual(result.gate, 'action');
+  assert.strictEqual(result.domain, 'calendar');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);

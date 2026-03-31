@@ -57,6 +57,10 @@ const CLASSIFICATION_EXAMPLES = {
   "Create a board for content planning" → action, domain: deck
   "Send an email to Carlos" → action, domain: email
   "Book a meeting for Tuesday at 3pm" → action, domain: calendar
+  "Do I have events today?" → action, domain: calendar
+  "What's on my calendar this week?" → action, domain: calendar
+  "Am I free at 3pm?" → action, domain: calendar
+  "When is my next meeting?" → action, domain: calendar
   "Move the onboarding card to Done" → action, domain: deck
   "Give it the due date tomorrow" → action, domain: deck
   "Set the deadline to Friday" → action, domain: deck
@@ -99,6 +103,10 @@ const CLASSIFICATION_EXAMPLES = {
   "Erstelle ein Board für Content-Planung" → action, domain: deck
   "Schicke Carlos eine E-Mail" → action, domain: email
   "Buche ein Meeting für Dienstag um 15 Uhr" → action, domain: calendar
+  "Habe ich heute Termine?" → action, domain: calendar
+  "Was steht diese Woche im Kalender?" → action, domain: calendar
+  "Bin ich um 15 Uhr frei?" → action, domain: calendar
+  "Wann ist mein nächstes Meeting?" → action, domain: calendar
   "Verschiebe die Onboarding-Karte nach Erledigt" → action, domain: deck
   "Setze die Frist auf Freitag" → action, domain: deck
   "Gib ihr das Fälligkeitsdatum morgen" → action, domain: deck
@@ -136,6 +144,10 @@ const CLASSIFICATION_EXAMPLES = {
   "Cria um board para planeamento de conteúdo" → action, domain: deck
   "Envia um email ao Carlos" → action, domain: email
   "Marca uma reunião para terça às 15h" → action, domain: calendar
+  "Tenho eventos hoje?" → action, domain: calendar
+  "O que tenho no calendário esta semana?" → action, domain: calendar
+  "Estou livre às 15h?" → action, domain: calendar
+  "Quando é a minha próxima reunião?" → action, domain: calendar
   "Move o cartão de onboarding para Concluído" → action, domain: deck
   "Define o prazo para sexta-feira" → action, domain: deck
   "Guarda isto no wiki" → action, domain: wiki
@@ -277,6 +289,8 @@ THE CRITICAL TEST:
   2. Asks for personal opinion/reflection with signal words? → thinking
   3. Everything else → knowledge (DEFAULT)
   "What is X?" "Who is X?" "How does X work?" → ALWAYS knowledge, NEVER thinking.
+  4. Calendar questions (events today? free at X? next meeting? what's on my schedule?) → action, domain: calendar
+     These READ the calendar — that's an action, not knowledge.
 
 CONTEXT-AWARE RULES:
 - Read the <conversation> block FIRST. The user's message usually continues the current topic.
