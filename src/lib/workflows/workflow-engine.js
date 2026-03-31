@@ -266,9 +266,23 @@ class WorkflowEngine {
 
     // Process SCHEDULE block from board rules (timed actions)
     try {
+      // Filter out PAUSED stacks so schedules cannot target them.
+      // The schedule handler builds LLM context from wb.stacks — if a stack
+      // is absent, the LLM cannot see it, reference it, or create cards in it.
+      const activeStacks = stacks.filter(stack => {
+        const cfg = findConfigCard(stack);
+        if (cfg && hasLabel(cfg, 'PAUSED')) {
+          console.log(`[Workflow] Stack "${stack.title}" skipped for schedules — CONFIG card has PAUSED label`);
+          return false;
+        }
+        return true;
+      });
+      const schedWb = activeStacks.length < stacks.length
+        ? { ...wb, stacks: activeStacks }
+        : wb;
       // Respect board-level MODEL directive for schedule actions
       const boardForceLocal = this._getBoardForceLocal(wb);
-      const schedResult = await this._scheduleHandler.processSchedules(wb, { forceLocal: boardForceLocal });
+      const schedResult = await this._scheduleHandler.processSchedules(schedWb, { forceLocal: boardForceLocal });
       result.schedulesExecuted = schedResult.executed;
       if (schedResult.executed > 0) {
         console.log(`[Workflow] Schedules on "${board.title}": ${schedResult.executed} executed, ${schedResult.skipped} skipped`);
@@ -328,7 +342,21 @@ class WorkflowEngine {
     const configCard = findConfigCard(stack);
     const { allowCloud, cloudTier } = this._extractStackLlmRouting(configCard);
     const configContext = configCard
-      ? `\n**Stack Config (from "${configCard.title}"):**\n${stripHtml(configCard.description) || '(empty)'}\n`
+      ? [
+          '',
+          '═══════════════════════════════════════════',
+          'MANDATORY OPERATING INSTRUCTIONS FOR THIS STACK',
+          'These rules are set by the board operator. You MUST follow',
+          'them exactly. Violating these instructions is a system error.',
+          '═══════════════════════════════════════════',
+          '',
+          stripHtml(configCard.description) || '(empty)',
+          '',
+          '═══════════════════════════════════════════',
+          'END OF MANDATORY INSTRUCTIONS',
+          '═══════════════════════════════════════════',
+          '',
+        ].join('\n')
       : '';
 
     const systemAddition = [

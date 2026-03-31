@@ -365,8 +365,17 @@ class ScheduleHandler {
       const configCard = findConfigCard(stack);
       if (configCard) {
         configContextParts.push(
-          `**Config for stack "${stack.title}":**`,
+          '═══════════════════════════════════════════',
+          `MANDATORY OPERATING INSTRUCTIONS FOR STACK "${stack.title}"`,
+          'These rules are set by the board operator. You MUST follow',
+          'them exactly. Violating these instructions is a system error.',
+          '═══════════════════════════════════════════',
+          '',
           stripHtml(configCard.description) || '(empty)',
+          '',
+          '═══════════════════════════════════════════',
+          'END OF MANDATORY INSTRUCTIONS',
+          '═══════════════════════════════════════════',
           ''
         );
       }
@@ -378,7 +387,7 @@ class ScheduleHandler {
         stripHtml(description),
       ],
       configContext: configContextParts.length > 0 ? [
-        '## Configuration Context', '', ...configContextParts,
+        '', ...configContextParts,
       ] : [],
       stackList: [
         `**All Stacks:**`,
