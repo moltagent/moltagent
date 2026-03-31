@@ -109,15 +109,27 @@ asyncTest('getItems passes custom batchSize', async () => {
   assert.ok(nc.calls[0].path.includes('batchSize=50'));
 });
 
-// Test 6: markItemRead sends PUT request
-asyncTest('markItemRead sends PUT to correct path', async () => {
+// Test 6: markItemRead sends POST request (managed NC proxy blocks PUT)
+asyncTest('markItemRead sends POST to correct path', async () => {
   const nc = createMockNC({
-    'PUT /apps/news/api/v1-3/items/42/read': { status: 200, body: {} }
+    'POST /apps/news/api/v1-3/items/42/read': { status: 200, body: {} }
   });
   const client = new NewsClient(nc);
   await client.markItemRead(42);
-  assert.strictEqual(nc.calls[0].opts.method, 'PUT');
+  assert.strictEqual(nc.calls[0].opts.method, 'POST');
   assert.ok(nc.calls[0].path.includes('/items/42/read'));
+});
+
+// Test 6b: markAllRead sends POST with newestItemId body
+asyncTest('markAllRead sends POST with newestItemId body', async () => {
+  const nc = createMockNC({
+    'POST /apps/news/api/v1-3/items/read': { status: 200, body: {} }
+  });
+  const client = new NewsClient(nc);
+  await client.markAllRead(500);
+  assert.strictEqual(nc.calls[0].opts.method, 'POST');
+  assert.ok(nc.calls[0].path.includes('/items/read'));
+  assert.deepStrictEqual(nc.calls[0].opts.body, { newestItemId: 500 });
 });
 
 // Test 7: markItemRead throws on null itemId

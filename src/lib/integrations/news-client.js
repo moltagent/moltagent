@@ -32,7 +32,8 @@
  * Data Flow:
  *   getFeeds()          → GET /apps/news/api/v1-3/feeds
  *   getItems(options)   → GET /apps/news/api/v1-3/items
- *   markItemRead(id)    → PUT /apps/news/api/v1-3/items/{id}/read
+ *   markItemRead(id)    → POST /apps/news/api/v1-3/items/{id}/read
+ *   markAllRead(id)     → POST /apps/news/api/v1-3/items/read
  *
  * Dependency Map:
  *   NewsClient
@@ -139,7 +140,18 @@ class NewsClient {
    */
   async markItemRead(itemId) {
     if (itemId == null) throw new NewsApiError('itemId is required');
-    return this._request('PUT', `/items/${encodeURIComponent(itemId)}/read`);
+    // POST not PUT — managed Nextcloud reverse proxy blocks PUT on this endpoint
+    return this._request('POST', `/items/${encodeURIComponent(itemId)}/read`);
+  }
+
+  /**
+   * Mark all items up to newestItemId as read (bulk).
+   * @param {number|string} newestItemId - All items ≤ this ID will be marked read
+   * @returns {Promise<Object>} Response from NC News
+   */
+  async markAllRead(newestItemId) {
+    if (newestItemId == null) throw new NewsApiError('newestItemId is required');
+    return this._request('POST', '/items/read', { newestItemId: Number(newestItemId) });
   }
 }
 
