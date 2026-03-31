@@ -72,8 +72,12 @@ class WorkflowEngine {
     // Loaded from and persisted to the same JSON file as _processedCards (under '_errors' key).
     this._errorState = this._loadErrorState();
 
-    // Track GATE notifications to avoid re-notifying
-    this._notifiedGates = new Set();
+    // Track GATE notifications to avoid re-notifying.
+    // Persisted to disk so service restarts don't re-notify.
+    this._notifiedGatesFile = this._dataDir
+      ? path.join(this._dataDir, 'workflow-notified-gates.json')
+      : null;
+    this._notifiedGates = this._loadNotifiedGates();
 
     // Schedule handler for timed actions in WORKFLOW: card descriptions
     this._scheduleHandler = new ScheduleHandler({
@@ -447,6 +451,18 @@ class WorkflowEngine {
       // Human has applied APPROVED or REJECTED label
       console.log(`[Workflow] GATE resolved: "${card.title}" -> ${resolution.decision}`);
 
+      // Clear notification dedup so card can be re-gated later if needed
+      const gateKey = `${board.id}:${card.id}`;
+      this._notifiedGates.delete(gateKey);
+      this._saveNotifiedGates();
+
+      // Handoff back: unassign human, assign bot for automated processing
+      const botUser = this.deck.username || this.botUsername;
+      const humanUser = wb.board.owner?.uid || wb.board.owner || this._getHumanUser();
+      await this._safeUnassign(board.id, stack.id, card.id, humanUser);
+      await this._safeAssign(board.id, stack.id, card.id, botUser, card);
+      console.log(`[Workflow] GATE resolution handoff: "${card.title}" → ${botUser}`);
+
       let { forceLocal } = this._getRoleForCard(wb, card);
       const configCard = findConfigCard(stack);
       const { allowCloud, cloudTier } = this._extractStackLlmRouting(configCard);
@@ -521,6 +537,7 @@ class WorkflowEngine {
       }
 
       this._notifiedGates.add(gateKey);
+      this._saveNotifiedGates();
       console.log(`[Workflow] GATE notification sent for "${card.title}"`);
     }
 
@@ -555,6 +572,13 @@ class WorkflowEngine {
       const path = `/index.php/apps/deck/api/v1.0/boards/${wb.board.id}/stacks/${stack.id}/cards/${card.id}/assignLabel`;
       await this.deck._request('PUT', path, { labelId: gateLabel.id });
       console.log(`[Workflow] Stamped GATE label on card "${card.title}"`);
+
+      // Handoff: unassign bot, assign board owner for human review
+      const botUser = this.deck.username || this.botUsername;
+      const humanUser = wb.board.owner?.uid || wb.board.owner || this._getHumanUser();
+      await this._safeUnassign(wb.board.id, stack.id, card.id, botUser);
+      await this._safeAssign(wb.board.id, stack.id, card.id, humanUser, card);
+      console.log(`[Workflow] GATE handoff: "${card.title}" → ${humanUser}`);
     } catch (err) {
       console.warn(`[Workflow] Could not stamp GATE label on card "${card.title}": ${err.message}`);
     }
@@ -665,6 +689,62 @@ class WorkflowEngine {
     } catch (err) {
       console.error('[Workflow] Failed to persist processed cards:', err.message);
     }
+  }
+
+  /** @private */
+  _loadNotifiedGates() {
+    if (!this._notifiedGatesFile) return new Set();
+    try {
+      const raw = fs.readFileSync(this._notifiedGatesFile, 'utf8');
+      const arr = JSON.parse(raw);
+      return new Set(Array.isArray(arr) ? arr : []);
+    } catch (_) {
+      return new Set();
+    }
+  }
+
+  /** @private */
+  _saveNotifiedGates() {
+    if (!this._notifiedGatesFile) return;
+    try {
+      if (!fs.existsSync(this._dataDir)) {
+        fs.mkdirSync(this._dataDir, { recursive: true });
+      }
+      const tmp = this._notifiedGatesFile + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify([...this._notifiedGates]), 'utf8');
+      fs.renameSync(tmp, this._notifiedGatesFile);
+    } catch (err) {
+      console.error('[Workflow] Failed to persist notified gates:', err.message);
+    }
+  }
+
+  /**
+   * Safely assign a user to a card. Skips if already assigned.
+   * @private
+   */
+  async _safeAssign(boardId, stackId, cardId, userId, card) {
+    const assigned = (card?.assignedUsers || []).some(
+      au => (au.participant?.uid || au.uid || '').toLowerCase() === userId.toLowerCase()
+    );
+    if (assigned) return;
+    try {
+      const p = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/assignUser`;
+      await this.deck._request('PUT', p, { userId });
+    } catch (err) {
+      if (err.responseBody?.message?.includes('already assigned')) return;
+      console.warn(`[Workflow] Could not assign ${userId} to card ${cardId}: ${err.message}`);
+    }
+  }
+
+  /**
+   * Safely unassign a user from a card. Ignores errors.
+   * @private
+   */
+  async _safeUnassign(boardId, stackId, cardId, userId) {
+    try {
+      const p = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/unassignUser`;
+      await this.deck._request('PUT', p, { userId });
+    } catch (_) { /* may not be assigned */ }
   }
 
   /** @private */
@@ -805,25 +885,15 @@ class WorkflowEngine {
    * @private
    */
   async _ensureAssignment(wb, stack, card) {
-    // Skip if already assigned
+    // Skip if already assigned to anyone
     if (card.assignedUsers && card.assignedUsers.length > 0) return;
 
     const isGate = GateDetector.isGate(card);
     const isDone = this._isDoneStack(wb, stack);
     if (isDone) return; // Don't assign Done cards
 
-    // Use canonical username from DeckClient (resolved by NCRequestManager)
     const userId = isGate ? this._getHumanUser() : (this.deck.username || this.botUsername);
-
-    try {
-      const path = `/index.php/apps/deck/api/v1.0/boards/${wb.board.id}/stacks/${stack.id}/cards/${card.id}/assignUser`;
-      await this.deck._request('PUT', path, { userId });
-    } catch (err) {
-      // Ignore errors (user not board member, already assigned, etc.)
-      if (!err.message?.includes('already assigned')) {
-        console.warn(`[Workflow] Could not assign ${userId} to card ${card.id}: ${err.message}`);
-      }
-    }
+    await this._safeAssign(wb.board.id, stack.id, card.id, userId, card);
   }
 
   /**
@@ -1136,6 +1206,7 @@ class WorkflowEngine {
     this._errorState.clear();
     this._saveProcessedCards();
     this._notifiedGates.clear();
+    this._saveNotifiedGates();
     this._scheduleHandler.resetState();
     this.detector.invalidateCache();
   }
