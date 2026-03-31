@@ -359,6 +359,34 @@ class WorkflowEngine {
         ].join('\n')
       : '';
 
+    // Fetch card comments for context — the LLM needs to see what humans said
+    // and what work was already done. Filter out pure status noise.
+    let commentBlock = '';
+    try {
+      const comments = await this.deck.getComments(card.id);
+      if (comments && comments.length > 0) {
+        const NOISE_PREFIXES = ['[STATUS]', '[GATE]', '[RETRY]'];
+        const relevant = comments
+          .filter(c => {
+            const msg = (c.message || '').trimStart();
+            return !NOISE_PREFIXES.some(p => msg.startsWith(p));
+          })
+          .sort((a, b) => (a.id || 0) - (b.id || 0))
+          .slice(-10); // last 10 relevant comments — cap context size
+        if (relevant.length > 0) {
+          commentBlock = '\n**Comment History:**\n' + relevant.map(c => {
+            const author = c.actorDisplayName || c.actorId || 'unknown';
+            const time = c.creationDateTime || '';
+            const msg = stripHtml(c.message || '');
+            return `  [${author}${time ? ' · ' + time : ''}]: ${msg}`;
+          }).join('\n') + '\n';
+        }
+      }
+    } catch (err) {
+      // Non-fatal — process card without comment context
+      console.warn(`[Workflow] Could not fetch comments for card ${card.id}: ${err.message}`);
+    }
+
     const systemAddition = [
       '## Active Workflow Context',
       '',
@@ -372,7 +400,7 @@ class WorkflowEngine {
       configContext,
       `**Card:** ${card.title} (ID: ${card.id})`,
       card.description ? `**Card Description:** ${stripHtml(card.description)}` : '',
-      '',
+      commentBlock,
       `**Card Labels:** ${(card.labels || []).map(l => `${l.color}: ${l.title}`).join(', ') || 'none'}`,
       `**Card Due:** ${card.duedate || 'none'}`,
       `**Assigned To:** ${(card.assignedUsers || []).map(u => u.participant?.uid).join(', ') || 'unassigned'}`,
