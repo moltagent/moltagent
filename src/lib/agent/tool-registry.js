@@ -1,7 +1,7 @@
 'use strict';
 
 const DECK = require('../../config/deck-names');
-const { isStructuralCard } = require('../integrations/deck-card-classifier');
+const { isStructuralCard, hasLabel } = require('../integrations/deck-card-classifier');
 
 /**
  * ToolRegistry - Agent Tool Definition & Execution Layer
@@ -678,6 +678,12 @@ class ToolRegistry {
             if (!stack) {
               const available = (stacks || []).map(s => `"${s.title}" (ID: ${s.id})`).join(', ');
               return `No stack "${targetStackName}" on board "${board.title}". Available stacks: ${available}`;
+            }
+
+            // Block card creation in PAUSED stacks
+            const configCard = (stack.cards || []).find(c => hasLabel(c, 'System'));
+            if (configCard && hasLabel(configCard, 'PAUSED')) {
+              return `Stack "${stack.title}" is PAUSED — cannot create cards in it. Choose a different stack.`;
             }
 
             const card = await deck._request('POST',
@@ -3354,10 +3360,8 @@ class ToolRegistry {
         }
 
         // Check if target stack is PAUSED (CONFIG card has PAUSED label)
-        const configCard = (targetStack.cards || []).find(c =>
-          (c.labels || []).some(l => l.title === 'System')
-        );
-        if (configCard && (configCard.labels || []).some(l => l.title === 'PAUSED')) {
+        const configCard = (targetStack.cards || []).find(c => hasLabel(c, 'System'));
+        if (configCard && hasLabel(configCard, 'PAUSED')) {
           this.logger.info(`[workflow_deck_create_card] Stack "${targetStack.title}" is PAUSED — skipping card creation`);
           return `Stack "${targetStack.title}" is PAUSED — card "${args.title}" not created.`;
         }

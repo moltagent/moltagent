@@ -79,6 +79,10 @@ class WorkflowEngine {
       : null;
     this._notifiedGates = this._loadNotifiedGates();
 
+    // Reentrancy guard — prevents concurrent processAll() when a pulse
+    // outlasts the heartbeat interval.
+    this._processing = false;
+
     // Schedule handler for timed actions in WORKFLOW: card descriptions
     this._scheduleHandler = new ScheduleHandler({
       agentLoop,
@@ -101,6 +105,13 @@ class WorkflowEngine {
       errors: []
     };
 
+    // Reentrancy guard: if a previous pulse is still running, skip this one.
+    if (this._processing) {
+      console.log('[Workflow] Previous processAll() still running — skipping this pulse');
+      return results;
+    }
+    this._processing = true;
+
     try {
       const workflowBoards = await this.detector.getWorkflowBoards();
 
@@ -121,6 +132,8 @@ class WorkflowEngine {
     } catch (err) {
       console.error('[Workflow] Failed to detect workflow boards:', err.message);
       results.errors.push({ board: 'detection', error: err.message });
+    } finally {
+      this._processing = false;
     }
 
     if (results.boardsProcessed > 0) {
@@ -273,16 +286,18 @@ class WorkflowEngine {
       // Filter out PAUSED stacks so schedules cannot target them.
       // The schedule handler builds LLM context from wb.stacks — if a stack
       // is absent, the LLM cannot see it, reference it, or create cards in it.
+      const pausedStackNames = [];
       const activeStacks = stacks.filter(stack => {
         const cfg = findConfigCard(stack);
         if (cfg && hasLabel(cfg, 'PAUSED')) {
           console.log(`[Workflow] Stack "${stack.title}" skipped for schedules — CONFIG card has PAUSED label`);
+          pausedStackNames.push(stack.title);
           return false;
         }
         return true;
       });
       const schedWb = activeStacks.length < stacks.length
-        ? { ...wb, stacks: activeStacks }
+        ? { ...wb, stacks: activeStacks, _pausedStacks: pausedStackNames }
         : wb;
       // Respect board-level MODEL directive for schedule actions
       const boardForceLocal = this._getBoardForceLocal(wb);
@@ -460,7 +475,7 @@ class WorkflowEngine {
       const botUser = this.deck.username || this.botUsername;
       const humanUser = wb.board.owner?.uid || wb.board.owner || this._getHumanUser();
       await this._safeUnassign(board.id, stack.id, card.id, humanUser);
-      await this._safeAssign(board.id, stack.id, card.id, botUser, card);
+      await this._safeAssign(board.id, stack.id, card.id, botUser);
       console.log(`[Workflow] GATE resolution handoff: "${card.title}" → ${botUser}`);
 
       let { forceLocal } = this._getRoleForCard(wb, card);
@@ -558,6 +573,12 @@ class WorkflowEngine {
 
     if (hasWorkflowLabel) return;
 
+    // Dedup: if we already stamped this gate (label may be invisible due to
+    // stale cache), skip. Uses the same _notifiedGates set that _handleGate
+    // checks before sending notifications.
+    const gateKey = `${wb.board.id}:${card.id}`;
+    if (this._notifiedGates.has(gateKey)) return;
+
     // Find the GATE label ID on this board so we can assign it
     try {
       const fullBoard = await this.deck.getBoard(wb.board.id);
@@ -569,15 +590,20 @@ class WorkflowEngine {
         return;
       }
 
-      const path = `/index.php/apps/deck/api/v1.0/boards/${wb.board.id}/stacks/${stack.id}/cards/${card.id}/assignLabel`;
-      await this.deck._request('PUT', path, { labelId: gateLabel.id });
+      const labelPath = `/index.php/apps/deck/api/v1.0/boards/${wb.board.id}/stacks/${stack.id}/cards/${card.id}/assignLabel`;
+      await this.deck._request('PUT', labelPath, { labelId: gateLabel.id });
       console.log(`[Workflow] Stamped GATE label on card "${card.title}"`);
+
+      // Record the stamp so we don't re-stamp on stale cache AND so
+      // _handleGate on the next pulse skips re-notification.
+      this._notifiedGates.add(gateKey);
+      this._saveNotifiedGates();
 
       // Handoff: unassign bot, assign board owner for human review
       const botUser = this.deck.username || this.botUsername;
       const humanUser = wb.board.owner?.uid || wb.board.owner || this._getHumanUser();
       await this._safeUnassign(wb.board.id, stack.id, card.id, botUser);
-      await this._safeAssign(wb.board.id, stack.id, card.id, humanUser, card);
+      await this._safeAssign(wb.board.id, stack.id, card.id, humanUser);
       console.log(`[Workflow] GATE handoff: "${card.title}" → ${humanUser}`);
     } catch (err) {
       console.warn(`[Workflow] Could not stamp GATE label on card "${card.title}": ${err.message}`);
@@ -722,17 +748,15 @@ class WorkflowEngine {
    * Safely assign a user to a card. Skips if already assigned.
    * @private
    */
-  async _safeAssign(boardId, stackId, cardId, userId, card) {
-    const assigned = (card?.assignedUsers || []).some(
-      au => (au.participant?.uid || au.uid || '').toLowerCase() === userId.toLowerCase()
-    );
-    if (assigned) return;
+  async _safeAssign(boardId, stackId, cardId, userId) {
     try {
       const p = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/assignUser`;
       await this.deck._request('PUT', p, { userId });
     } catch (err) {
-      if (err.responseBody?.message?.includes('already assigned')) return;
-      console.warn(`[Workflow] Could not assign ${userId} to card ${cardId}: ${err.message}`);
+      const msg = err.responseBody?.message || err.message || '';
+      // "already assigned" is expected — not an error
+      if (msg.includes('already assigned')) return;
+      console.warn(`[Workflow] Could not assign ${userId} to card ${cardId}: ${msg} (status: ${err.status || 'unknown'})`);
     }
   }
 
@@ -744,7 +768,12 @@ class WorkflowEngine {
     try {
       const p = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/unassignUser`;
       await this.deck._request('PUT', p, { userId });
-    } catch (_) { /* may not be assigned */ }
+    } catch (err) {
+      const msg = err.responseBody?.message || err.message || '';
+      // "not assigned" is expected — not an error
+      if (msg.includes('not assigned')) return;
+      console.warn(`[Workflow] Could not unassign ${userId} from card ${cardId}: ${msg} (status: ${err.status || 'unknown'})`);
+    }
   }
 
   /** @private */
@@ -893,7 +922,7 @@ class WorkflowEngine {
     if (isDone) return; // Don't assign Done cards
 
     const userId = isGate ? this._getHumanUser() : (this.deck.username || this.botUsername);
-    await this._safeAssign(wb.board.id, stack.id, card.id, userId, card);
+    await this._safeAssign(wb.board.id, stack.id, card.id, userId);
   }
 
   /**

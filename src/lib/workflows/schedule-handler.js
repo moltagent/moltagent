@@ -392,7 +392,14 @@ class ScheduleHandler {
       stackList: [
         `**All Stacks:**`,
         stacks.map(s => `  - "${s.title}" (ID: ${s.id}, ${(s.cards || []).length} cards)`).join('\n'),
-      ]
+      ],
+      pausedWarning: Array.isArray(wb._pausedStacks) && wb._pausedStacks.length > 0
+        ? [
+          '',
+          `**PAUSED STACKS (do NOT create, move, or modify cards in these):** ${wb._pausedStacks.map(n => `"${n}"`).join(', ')}`,
+          ''
+        ]
+        : []
     };
   }
 
@@ -425,6 +432,7 @@ class ScheduleHandler {
       '',
       ...ctx.configContext,
       ...ctx.stackList,
+      ...ctx.pausedWarning,
       '',
       '**Scheduled Action:**',
       schedule.action,
@@ -474,6 +482,7 @@ class ScheduleHandler {
         '',
         ...ctx.configContext,
         ...ctx.stackList,
+        ...ctx.pausedWarning,
         '',
         `**Phase ${phaseNum} Action:**`,
         phase.action,

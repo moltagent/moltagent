@@ -925,6 +925,136 @@ function createMockTalkQueue() {
     assert.strictEqual(requestCalls.length, 0, 'Should make no API calls for clean card');
   });
 
+  // --- Reentrancy guard ---
+
+  await asyncTest('processAll() skips when already processing (reentrancy guard)', async () => {
+    let resolveFirst;
+    const blocker = new Promise(r => { resolveFirst = r; });
+    const detector = {
+      getWorkflowBoards: async () => {
+        await blocker;
+        return [];
+      },
+      invalidateCache: () => {}
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: detector,
+      deckClient: createMockDeck(),
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    // Start first processAll (blocks on detector)
+    const first = engine.processAll();
+
+    // Second should skip immediately
+    const second = await engine.processAll();
+    assert.strictEqual(second.boardsProcessed, 0, 'Second call should skip');
+
+    // Unblock first
+    resolveFirst();
+    const firstResult = await first;
+    assert.strictEqual(firstResult.boardsProcessed, 0, 'First call should complete');
+    assert.strictEqual(engine._processing, false, 'Flag should be cleared after completion');
+  });
+
+  // --- _ensureGateLabel dedup via _notifiedGates ---
+
+  await asyncTest('_ensureGateLabel() does not re-stamp when gate key already in _notifiedGates', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+    mockDeck.getBoard = async () => ({
+      labels: [{ id: 5, title: 'GATE', color: '000000' }]
+    });
+    mockDeck.username = 'moltagent';
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token',
+      config: { adminUser: 'funana' }
+    });
+
+    const wb = { board: { id: 1, owner: { uid: 'funana' } }, stacks: [], description: 'WORKFLOW: pipe' };
+    const stack = { id: 10, title: 'Review' };
+    const card = { id: 200, title: 'n8n Tax', labels: [] };
+
+    // First call — should stamp
+    await engine._ensureGateLabel(wb, stack, card);
+    const labelCalls = requestCalls.filter(c => c.path.includes('assignLabel'));
+    assert.strictEqual(labelCalls.length, 1, 'Should stamp GATE label once');
+    assert.ok(engine._notifiedGates.has('1:200'), 'Gate key should be in _notifiedGates');
+
+    // Second call with stale card (still no label in local object) — should skip
+    requestCalls.length = 0;
+    await engine._ensureGateLabel(wb, stack, card);
+    const labelCalls2 = requestCalls.filter(c => c.path.includes('assignLabel'));
+    assert.strictEqual(labelCalls2.length, 0, 'Should NOT re-stamp when gate key already tracked');
+  });
+
+  // --- _safeAssign no longer depends on stale card.assignedUsers ---
+
+  await asyncTest('_safeAssign() calls API without relying on card.assignedUsers', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    // No card argument — just board/stack/card/user
+    await engine._safeAssign(1, 10, 200, 'funana');
+    const putCalls = requestCalls.filter(c => c.method === 'PUT' && c.path.includes('assignUser'));
+    assert.strictEqual(putCalls.length, 1, 'Should call assignUser API');
+    assert.strictEqual(putCalls[0].body.userId, 'funana');
+  });
+
+  // --- _safeUnassign logs errors instead of swallowing ---
+
+  await asyncTest('_safeUnassign() logs non-trivial errors', async () => {
+    const mockDeck = createMockDeck();
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+
+    mockDeck._request = async () => {
+      const err = new Error('403 Forbidden');
+      err.status = 403;
+      throw err;
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    await engine._safeUnassign(1, 10, 200, 'moltagent');
+
+    console.warn = origWarn;
+    const relevant = warnings.filter(w => w.includes('Could not unassign'));
+    assert.strictEqual(relevant.length, 1, 'Should log a warning for 403 error');
+    assert.ok(relevant[0].includes('403'), 'Warning should include status code');
+  });
+
   summary();
   exitWithCode();
 })();

@@ -417,10 +417,10 @@ class AgentLoop {
 
       let response;
       try {
-        // Workflow iterations are tool-calling loops — always 'tools' job.
-        // _classifyJob auto-promotes to 'writing' after 2+ tool results,
-        // which routes to Opus. Workflow synthesis doesn't need Opus;
-        // Haiku/Sonnet handle RSS evaluation and card creation fine.
+        // LLM: cloud (no cloudTier) → writing job so Sonnet/Opus handles
+        // content-creation cards. LLM: cloud-fast or local → tools job;
+        // Haiku is sufficient for lightweight evaluation and card creation.
+        const job = (allowCloud && !cloudTier) ? 'writing' : 'tools';
         response = await this.llmProvider.chat({
           system: systemPrompt,
           messages,
@@ -428,7 +428,7 @@ class AgentLoop {
           forceLocal: forceLocal && !allowCloud,
           allowCloud,
           cloudTier,
-          job: 'tools'
+          job
         });
       } catch (llmErr) {
         // Salvage: if previous iterations completed tool calls successfully,
