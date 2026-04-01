@@ -433,7 +433,10 @@ class WorkflowEngine {
       `**Assigned To:** ${(card.assignedUsers || []).map(u => u.participant?.uid).join(', ') || 'unassigned'}`,
       '',
       `**All Stacks (left to right):**`,
-      stacks.map(s => `  - "${s.title}" (ID: ${s.id}, ${(s.cards || []).length} cards)`).join('\n'),
+      stacks.filter(s => {
+        const cfg = findConfigCard(s);
+        return !(cfg && hasLabel(cfg, 'PAUSED'));
+      }).map(s => `  - "${s.title}" (ID: ${s.id}, ${(s.cards || []).length} cards)`).join('\n'),
       '',
       '**Instructions:**',
       'Follow the CONFIG instructions for this stack. The CONFIG card defines',
