@@ -3366,11 +3366,26 @@ class ToolRegistry {
           targetStack = stacks[0];
         }
 
-        // Check if target stack is PAUSED (CONFIG card has PAUSED label)
-        const configCard = (targetStack.cards || []).find(c => hasLabel(c, 'System'));
-        if (configCard && hasLabel(configCard, 'PAUSED')) {
-          this.logger.info(`[workflow_deck_create_card] Stack "${targetStack.title}" is PAUSED — skipping card creation`);
-          return `Stack "${targetStack.title}" is PAUSED — card "${args.title}" not created.`;
+        // Check if target stack is PAUSED (CONFIG card has PAUSED label).
+        // The stacks response from NCRequestManager cache may have mutated
+        // labels (shared mutable object). Fetch the CONFIG card directly
+        // with skipCache to get reliable label state.
+        const configCardRef = (targetStack.cards || []).find(c => hasLabel(c, 'System'));
+        if (configCardRef) {
+          try {
+            const cardPath = `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${targetStack.id}/cards/${configCardRef.id}`;
+            const freshResp = await nc.request(cardPath, { method: 'GET', skipCache: true });
+            const freshCard = freshResp.body;
+            if (freshCard && hasLabel(freshCard, 'PAUSED')) {
+              this.logger.info(`[workflow_deck_create_card] Stack "${targetStack.title}" is PAUSED — blocked`);
+              return `Stack "${targetStack.title}" is PAUSED — card "${args.title}" not created.`;
+            }
+          } catch (_) {
+            // If we can't verify, check the cached version as fallback
+            if (hasLabel(configCardRef, 'PAUSED')) {
+              return `Stack "${targetStack.title}" is PAUSED — card "${args.title}" not created.`;
+            }
+          }
         }
 
         const createFn = deck
