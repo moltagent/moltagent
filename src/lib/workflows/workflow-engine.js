@@ -406,14 +406,22 @@ class WorkflowEngine {
       console.warn(`[Workflow] Could not fetch comments for card ${card.id}: ${err.message}`);
     }
 
+    // Strip schedule definitions and evaluation criteria from board rules.
+    // Per-card processing should only see the workflow type, system card rules,
+    // and the CONFIG instructions for the current stack. Schedule blocks and
+    // PICK/SKIP logic are for the schedule handler — including them causes the
+    // LLM to follow schedule instructions (e.g. "Create card in Ideas") while
+    // processing unrelated Drafting cards.
+    const boardRules = this._stripScheduleContext(wb._plainDescription);
+
     const systemAddition = [
       '## Active Workflow Context',
       '',
-      'You are processing a card in a workflow board. Follow the rules exactly.',
+      'You are processing a card in a workflow board. Follow the CONFIG instructions for this stack exactly.',
       '',
       `**Board:** ${board.title} (ID: ${board.id})`,
       `**Board Rules:**`,
-      wb._plainDescription,
+      boardRules,
       '',
       `**Current Stack:** ${stack.title} (ID: ${stack.id})`,
       configContext,
@@ -428,14 +436,14 @@ class WorkflowEngine {
       stacks.map(s => `  - "${s.title}" (ID: ${s.id}, ${(s.cards || []).length} cards)`).join('\n'),
       '',
       '**Instructions:**',
-      'Read the board rules above. Based on the card\'s current stack and the',
-      'transition rules, determine and execute the appropriate actions.',
-      'Use workflow_deck_* tools with numeric IDs to move cards, add comments,',
-      'create cards in other boards, etc.',
+      'Follow the CONFIG instructions for this stack. The CONFIG card defines',
+      'exactly what to do with cards in this stack.',
+      'Use workflow_deck_update_card to write or rewrite the card description.',
+      'Use workflow_deck_* tools with numeric IDs to move cards, add comments, etc.',
       'Comment on the card with what you did.',
-      'If the rules say to notify in Talk, use the talk_send tool.',
+      'If the CONFIG says to notify in Talk, use the talk_send tool.',
       'If you need to create files, use file tools.',
-      'If the rules reference wiki pages with [[Page Name]], search and read them.'
+      'If the CONFIG references wiki pages with [[Page Name]], search and read them.'
     ].filter(Boolean).join('\n');
 
     await this.agent.processWorkflowTask({
@@ -742,6 +750,24 @@ class WorkflowEngine {
     } catch (err) {
       console.error('[Workflow] Failed to persist notified gates:', err.message);
     }
+  }
+
+  /**
+   * Strip schedule definitions and evaluation criteria from board rules.
+   * Per-card processing only needs the workflow type and system card rules.
+   * Schedule blocks (SCHEDULE:, EVALUATION CRITERIA:, PICK/SKIP) are for
+   * the schedule handler and confuse the LLM during per-card processing.
+   * @private
+   */
+  _stripScheduleContext(plainDescription) {
+    if (!plainDescription) return '';
+    // Remove everything from **SCHEDULE:** onward. The schedule block and
+    // evaluation criteria are always at the end of the WORKFLOW card.
+    const schedIdx = plainDescription.search(/\*{0,2}SCHEDULE\*{0,2}\s*:/i);
+    if (schedIdx > 0) {
+      return plainDescription.substring(0, schedIdx).trim();
+    }
+    return plainDescription;
   }
 
   /**
