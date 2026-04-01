@@ -83,13 +83,16 @@ class ToolRegistry {
    * Get only workflow-relevant tool definitions (for local/sovereign LLMs).
    * Keeps the prompt small enough for 8B models on CPU.
    */
-  getWorkflowToolDefinitions() {
+  getWorkflowToolDefinitions({ includeUpdateCard = false } = {}) {
     const allowed = new Set([
       'workflow_deck_move_card',
       'workflow_deck_add_comment',
       'workflow_deck_create_card',
       'deck_add_label'
     ]);
+    if (includeUpdateCard) {
+      allowed.add('workflow_deck_update_card');
+    }
     return Array.from(this.tools.values())
       .filter(t => allowed.has(t.name))
       .map(t => ({
@@ -110,16 +113,20 @@ class ToolRegistry {
    * @param {string} [boardContext=''] - The workflow system addition (board rules, card info)
    * @returns {Array<{type: 'function', function: {name: string, description: string, parameters: Object}}>}
    */
-  getCloudWorkflowToolDefinitions(boardContext = '') {
+  getCloudWorkflowToolDefinitions(boardContext = '', { includeUpdateCard = false } = {}) {
     // Base tools every workflow needs
-    // workflow_deck_update_card intentionally excluded — schedules create,
-    // per-card processing updates. Clean separation.
     const allowed = new Set([
       'workflow_deck_move_card',
       'workflow_deck_add_comment',
       'workflow_deck_create_card',
       'deck_add_label',
     ]);
+
+    // Per-card processing can update card descriptions (e.g. writing drafts).
+    // Schedules only create cards, never update existing ones.
+    if (includeUpdateCard) {
+      allowed.add('workflow_deck_update_card');
+    }
 
     // Scan context for capabilities the board actually needs
     const ctx = boardContext.toLowerCase();

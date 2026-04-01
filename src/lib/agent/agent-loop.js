@@ -394,9 +394,10 @@ class AgentLoop {
 
     let tools;
     if (forceLocal && !allowCloud) {
-      tools = this.toolRegistry.getWorkflowToolDefinitions();
+      tools = this.toolRegistry.getWorkflowToolDefinitions({ includeUpdateCard: cardId > 0 });
     } else {
-      tools = this.toolRegistry.getCloudWorkflowToolDefinitions(systemAddition);
+      // Per-card processing (cardId > 0) gets update_card; schedules (cardId === 0) don't.
+      tools = this.toolRegistry.getCloudWorkflowToolDefinitions(systemAddition, { includeUpdateCard: cardId > 0 });
     }
 
     const messages = [
