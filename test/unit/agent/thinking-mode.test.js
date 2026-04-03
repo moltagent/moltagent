@@ -101,17 +101,16 @@ asyncTest('TK-02: Prompt includes SOUL.md content', async () => {
   assert.ok(content.includes(soul), 'Prompt should contain SOUL.md');
 });
 
-asyncTest('TK-03: Prompt includes enrichment when available', async () => {
+asyncTest('TK-03: Prompt does NOT include enrichment (thinking skips enricher)', async () => {
   const { handler, routerCalls, enricherCalls } = buildThinkingHandler({
     enrichment: '<wiki>Architecture page content</wiki>'
   });
   await handler._handleThinkingQuery('Think about our architecture', null, null);
 
-  assert.strictEqual(enricherCalls.length, 1);
-  assert.strictEqual(enricherCalls[0].intent, 'thinking');
+  assert.strictEqual(enricherCalls.length, 0, 'Enricher should NOT be called — thinking = opinion, not fact retrieval');
   const content = routerCalls[0].content;
-  assert.ok(content.includes('WORKSPACE KNOWLEDGE'), 'Should label enrichment block');
-  assert.ok(content.includes('Architecture page content'), 'Should include enrichment');
+  assert.ok(!content.includes('WORKSPACE KNOWLEDGE'), 'Should NOT include enrichment block');
+  assert.ok(!content.includes('Architecture page content'), 'Should NOT include enrichment data');
 });
 
 asyncTest('TK-04: Prompt includes living context when provided', async () => {

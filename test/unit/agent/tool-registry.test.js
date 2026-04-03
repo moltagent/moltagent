@@ -1327,8 +1327,8 @@ test('all 51 tools registered with all clients', () => {
     textExtractor: createMockTextExtractor(),
     logger: silentLogger
   });
-  // 24 deck + 10 calendar + 1 tag + 1 memory + 10 file + 1 search + 4 workflow_deck = 51
-  assert.strictEqual(registry.size, 51, `Expected 51 tools, got ${registry.size}`);
+  // 24 deck + 10 calendar + 1 tag + 1 memory + 10 file + 1 search + 5 workflow_deck = 52
+  assert.strictEqual(registry.size, 52, `Expected 52 tools, got ${registry.size}`);
 });
 
 asyncTest('file_read returns file content', async () => {
@@ -1607,7 +1607,7 @@ test('getCloudWorkflowToolDefinitions returns base workflow tools', () => {
   assert.ok(names.includes('workflow_deck_move_card'), 'Should include move_card');
   assert.ok(names.includes('workflow_deck_add_comment'), 'Should include add_comment');
   assert.ok(names.includes('workflow_deck_create_card'), 'Should include create_card');
-  assert.ok(names.includes('workflow_deck_update_card'), 'Should include update_card');
+  assert.ok(!names.includes('workflow_deck_update_card'), 'update_card intentionally excluded');
   assert.ok(names.includes('deck_add_label'), 'Should include add_label');
   assert.ok(names.length <= 10, `Base tools should be <=10, got ${names.length}`);
 });

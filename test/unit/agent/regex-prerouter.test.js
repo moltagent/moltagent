@@ -101,7 +101,7 @@ test('buildClassificationPrompt handles null/undefined gracefully', () => {
 
 // ---- All messages use fast model first (no pre-routing) ----
 
-asyncTest('messages with memory verbs use fast model (no pre-routing to qwen3:8b)', async () => {
+asyncTest('messages with memory verbs use smart model first', async () => {
   const models = [];
   const router = new IntentRouter({
     provider: {
@@ -113,11 +113,11 @@ asyncTest('messages with memory verbs use fast model (no pre-routing to qwen3:8b
     config: { classifyTimeout: 5000 }
   });
   await router.classify('Remember that Sarah prefers video calls');
-  assert.strictEqual(models[0], 'qwen2.5:3b', 'Fast model used first — no English regex pre-routing');
-  assert.strictEqual(models.length, 1, 'Exactly one model call — fast model succeeded');
+  assert.strictEqual(models[0], 'qwen3:8b', 'Smart model used first');
+  assert.strictEqual(models.length, 1, 'Exactly one model call — smart model succeeded');
 });
 
-asyncTest('contextual references use fast model (no pre-routing to qwen3:8b)', async () => {
+asyncTest('contextual references use smart model first', async () => {
   const models = [];
   const router = new IntentRouter({
     provider: {
@@ -131,11 +131,11 @@ asyncTest('contextual references use fast model (no pre-routing to qwen3:8b)', a
   await router.classify('move the most recent one to done', [
     { role: 'assistant', content: 'Here are your tasks: Fix bug, Update docs' }
   ]);
-  assert.strictEqual(models[0], 'qwen2.5:3b', 'Fast model used first for contextual refs');
+  assert.strictEqual(models[0], 'qwen3:8b', 'Smart model used first for contextual refs');
   assert.strictEqual(models.length, 1, 'No pre-routing needed — LLM gets context in prompt');
 });
 
-asyncTest('explicit action messages use fast model', async () => {
+asyncTest('explicit action messages use smart model', async () => {
   const models = [];
   const router = new IntentRouter({
     provider: {
@@ -147,7 +147,7 @@ asyncTest('explicit action messages use fast model', async () => {
     config: { classifyTimeout: 5000 }
   });
   await router.classify('Delete the Team Sync meeting');
-  assert.strictEqual(models[0], 'qwen2.5:3b');
+  assert.strictEqual(models[0], 'qwen3:8b');
   assert.strictEqual(models.length, 1);
 });
 

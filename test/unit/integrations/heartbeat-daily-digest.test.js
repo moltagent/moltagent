@@ -365,8 +365,8 @@ console.log('\n=== Heartbeat Daily Digest Tests ===\n');
     const hb = new HeartbeatManager(config);
     stubPulseInternals(hb);
 
-    // Set _cockpitDailyDigest to the current hour so the time gate passes
-    const h = new Date().getHours();
+    // Set _cockpitDailyDigest to the current UTC hour (mock config uses timezone: 'UTC')
+    const h = new Date().getUTCHours();
     hb._cockpitDailyDigest = String(h).padStart(2, '0') + ':00';
 
     await hb.pulse();

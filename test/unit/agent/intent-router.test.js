@@ -219,10 +219,10 @@ asyncTest('classify() fallback model uses appropriate timeout', async () => {
   });
   await router.classify('create a card');
   assert.strictEqual(calls.length, 2);
-  assert.strictEqual(calls[0].model, 'qwen2.5:3b', 'First call is fast model (explicit message)');
-  assert.strictEqual(calls[0].timeout, 5000, 'Fast model uses base timeout');
-  assert.strictEqual(calls[1].model, 'qwen3:8b', 'Fallback is smart model');
-  assert.strictEqual(calls[1].timeout, 20000, 'Smart model uses 4× timeout');
+  assert.strictEqual(calls[0].model, 'qwen3:8b', 'First call is smart model');
+  assert.strictEqual(calls[0].timeout, 20000, 'Smart model gets 4x timeout');
+  assert.strictEqual(calls[1].model, 'qwen2.5:3b', 'Fallback is fast model');
+  assert.strictEqual(calls[1].timeout, 5000, 'Fast model uses base timeout');
 });
 
 // -- Test 12: LLM returns {"intent":"deck"} wrapped in think tags → parsed correctly --
@@ -494,8 +494,8 @@ test('system prompt includes file context rule (via buildClassificationPrompt)',
   assert.ok(prompt.includes('Upload the report'), 'Prompt should include file action example');
 });
 
-asyncTest('classify() uses fast model (no needsSmartClassifier routing)', async () => {
-  // Language-agnostic: no English-only regex pre-router. All messages go to fast model first.
+asyncTest('classify() uses smart model first', async () => {
+  // Smart model (qwen3:8b) is tried first, fast model (qwen2.5:3b) is fallback.
   const models = [];
   const router = new IntentRouter({
     provider: {
@@ -512,8 +512,7 @@ asyncTest('classify() uses fast model (no needsSmartClassifier routing)', async 
     { role: 'assistant', content: 'report.pdf — 2KB — 2026-03-02\nnotes.txt — 512B — 2026-03-03' }
   ]);
 
-  // Without needsSmartClassifier, the fast model is always tried first
-  assert.strictEqual(models[0], 'qwen2.5:3b', 'Fast model should be used first — LLM handles context natively');
+  assert.strictEqual(models[0], 'qwen3:8b', 'Smart model should be used first');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 100);
