@@ -1,0 +1,17 @@
+site_name: Moltagent Documentation
+site_url: https://moltagent.cloud/docs
+repo_url: https://github.com/moltagent/moltagent
+repo_name: moltagent/moltagent
+
+theme:
+  name: material
+  palette:
+    scheme: slate
+
+nav:
+  - Home: index.md
+  - Quick Start: quickstart.md
+  - Architecture: architecture.md
+  - Security Model: security-model.md
+  - Configuration: configuration.md
+  - LLM Providers: providers.md
