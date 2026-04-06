@@ -783,6 +783,26 @@ function createMockTalkQueue() {
     assert.strictEqual(result.allowCloud, true);
   });
 
+  await asyncTest('_extractStackLlmRouting: cloud-writing returns cloudTier writing', async () => {
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([]),
+      deckClient: createMockDeck(),
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const result = engine._extractStackLlmRouting({ description: 'LLM: cloud-writing\nWrite content.' });
+    assert.strictEqual(result.allowCloud, true, 'cloud-writing should allow cloud');
+    assert.strictEqual(result.cloudTier, 'writing', 'cloud-writing should set tier to writing');
+
+    const fast = engine._extractStackLlmRouting({ description: 'LLM: cloud-fast\nEval.' });
+    assert.strictEqual(fast.cloudTier, 'fast', 'cloud-fast should set tier to fast');
+
+    const plain = engine._extractStackLlmRouting({ description: 'LLM: cloud\nWrite.' });
+    assert.strictEqual(plain.cloudTier, null, 'cloud should have null tier');
+  });
+
   // ─── allowCloud propagation to AgentLoop ─────────────────────────────
 
   await asyncTest('_processCard passes allowCloud from CONFIG card to AgentLoop', async () => {
@@ -958,46 +978,6 @@ function createMockTalkQueue() {
     const firstResult = await first;
     assert.strictEqual(firstResult.boardsProcessed, 0, 'First call should complete');
     assert.strictEqual(engine._processing, false, 'Flag should be cleared after completion');
-  });
-
-  // --- _ensureGateLabel dedup via _notifiedGates ---
-
-  await asyncTest('_ensureGateLabel() does not re-stamp when gate key already in _notifiedGates', async () => {
-    const mockDeck = createMockDeck();
-    const requestCalls = [];
-    mockDeck._request = async (method, path, body) => {
-      requestCalls.push({ method, path, body });
-      return {};
-    };
-    mockDeck.getBoard = async () => ({
-      labels: [{ id: 5, title: 'GATE', color: '000000' }]
-    });
-    mockDeck.username = 'moltagent';
-
-    const engine = new WorkflowEngine({
-      workflowDetector: createMockDetector(),
-      deckClient: mockDeck,
-      agentLoop: createMockAgentLoop(),
-      talkSendQueue: createMockTalkQueue(),
-      talkToken: 'test-token',
-      config: { adminUser: 'funana' }
-    });
-
-    const wb = { board: { id: 1, owner: { uid: 'funana' } }, stacks: [], description: 'WORKFLOW: pipe' };
-    const stack = { id: 10, title: 'Review' };
-    const card = { id: 200, title: 'n8n Tax', labels: [] };
-
-    // First call — should stamp
-    await engine._ensureGateLabel(wb, stack, card);
-    const labelCalls = requestCalls.filter(c => c.path.includes('assignLabel'));
-    assert.strictEqual(labelCalls.length, 1, 'Should stamp GATE label once');
-    assert.ok(engine._notifiedGates.has('1:200'), 'Gate key should be in _notifiedGates');
-
-    // Second call with stale card (still no label in local object) — should skip
-    requestCalls.length = 0;
-    await engine._ensureGateLabel(wb, stack, card);
-    const labelCalls2 = requestCalls.filter(c => c.path.includes('assignLabel'));
-    assert.strictEqual(labelCalls2.length, 0, 'Should NOT re-stamp when gate key already tracked');
   });
 
   // --- _safeAssign no longer depends on stale card.assignedUsers ---

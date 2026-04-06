@@ -48,11 +48,10 @@ class GateDetector {
    * Check if a card is a GATE card.
    *
    * Primary signal: the card carries the "GATE" label (explicit, auditable).
-   * Fallback signal: the card title starts with the "GATE:" structural prefix.
-   * This supports the transition from title-based to label-based GATE marking —
-   * cards are stamped with the GATE label by _ensureGateLabel() once detected,
-   * but _ensureDueDate() / _ensureAssignment() call isGate() before that stamp.
+   * The LLM stamps the GATE label via workflow_deck_assign_label after
+   * completing pre-gate work described in the CONFIG card.
    *
+   * Fallback signal: the card title starts with the "GATE:" structural prefix.
    * Title-prefix detection is structural plumbing (like CONFIG: or WORKFLOW:),
    * not natural-language intelligence — no regex for intelligence violation.
    *

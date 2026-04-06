@@ -88,7 +88,8 @@ class ToolRegistry {
       'workflow_deck_move_card',
       'workflow_deck_add_comment',
       'workflow_deck_create_card',
-      'deck_add_label'
+      'deck_add_label',
+      'workflow_deck_assign_label'
     ]);
     if (includeUpdateCard) {
       allowed.add('workflow_deck_update_card');
@@ -120,6 +121,7 @@ class ToolRegistry {
       'workflow_deck_add_comment',
       'workflow_deck_create_card',
       'deck_add_label',
+      'workflow_deck_assign_label',
     ]);
 
     // Per-card processing can update card descriptions (e.g. writing drafts).
@@ -3453,6 +3455,35 @@ class ToolRegistry {
         } catch (err) {
           this.logger.error(`[workflow_deck_update_card] ${err.message}`);
           return `Failed to update card: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'workflow_deck_assign_label',
+      description: 'Assign a label to a card using raw numeric IDs. Use this in workflow processing to add labels (e.g. GATE, APPROVED) to cards on any board.',
+      parameters: {
+        type: 'object',
+        properties: {
+          board_id: { type: 'number', description: 'Numeric board ID' },
+          stack_id: { type: 'number', description: 'Numeric stack ID' },
+          card_id: { type: 'number', description: 'Numeric card ID' },
+          label_id: { type: 'number', description: 'Numeric label ID (from Available Labels in context)' }
+        },
+        required: ['board_id', 'stack_id', 'card_id', 'label_id']
+      },
+      handler: async (args) => {
+        try {
+          const labelPath = `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${args.stack_id}/cards/${args.card_id}/assignLabel`;
+          if (deck) {
+            await deck._request('PUT', labelPath, { labelId: args.label_id });
+          } else {
+            await nc.request(labelPath, { method: 'PUT', body: { labelId: args.label_id } });
+          }
+          return `Assigned label ${args.label_id} to card ${args.card_id}.`;
+        } catch (err) {
+          this.logger.error(`[workflow_deck_assign_label] ${err.message}`);
+          return `Failed to assign label: ${err.message}`;
         }
       }
     });

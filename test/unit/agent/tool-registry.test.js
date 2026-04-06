@@ -1316,7 +1316,7 @@ test('search tool registered when ncSearchClient provided', () => {
   assert.ok(registry.has('unified_search'), 'Should have unified_search');
 });
 
-test('all 51 tools registered with all clients', () => {
+test('all 53 tools registered with all clients', () => {
   const registry = new ToolRegistry({
     deckClient: createMockDeckClient(),
     calDAVClient: createMockCalDAVClient(),
@@ -1327,8 +1327,9 @@ test('all 51 tools registered with all clients', () => {
     textExtractor: createMockTextExtractor(),
     logger: silentLogger
   });
-  // 24 deck + 10 calendar + 1 tag + 1 memory + 10 file + 1 search + 5 workflow_deck = 52
-  assert.strictEqual(registry.size, 52, `Expected 52 tools, got ${registry.size}`);
+  // 24 deck + 10 calendar + 1 tag + 1 memory + 10 file + 1 search + 6 workflow_deck = 53
+  // (workflow_deck_assign_label added as part of LLM-driven GATE architecture)
+  assert.strictEqual(registry.size, 53, `Expected 53 tools, got ${registry.size}`);
 });
 
 asyncTest('file_read returns file content', async () => {

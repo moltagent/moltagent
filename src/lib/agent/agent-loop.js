@@ -418,10 +418,14 @@ class AgentLoop {
 
       let response;
       try {
-        // LLM: cloud (no cloudTier) → writing job so Sonnet/Opus handles
-        // content-creation cards. LLM: cloud-fast or local → tools job;
-        // Haiku is sufficient for lightweight evaluation and card creation.
-        const job = (allowCloud && !cloudTier) ? 'writing' : 'tools';
+        // LLM: cloud         → writing job (Opus → Sonnet → Haiku)
+        // LLM: cloud-writing → coding job  (Sonnet → Haiku, skips Opus)
+        // LLM: cloud-fast    → tools job   (Haiku only)
+        // LLM: local         → tools job   (local only)
+        const job = !allowCloud ? 'tools'
+          : cloudTier === 'fast' ? 'tools'
+          : cloudTier === 'writing' ? 'coding'
+          : 'writing';
         response = await this.llmProvider.chat({
           system: systemPrompt,
           messages,

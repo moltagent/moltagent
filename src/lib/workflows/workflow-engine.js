@@ -232,15 +232,6 @@ class WorkflowEngine {
             continue;
           }
 
-          // If this card is in a GATE stack (CONFIG card mentions GATE) and has
-          // no workflow label yet, stamp it with the GATE label so the engine
-          // tracks it correctly on the next pulse.
-          if (GateDetector.isGateStack(stack.cards || [])) {
-            await this._ensureGateLabel(wb, stack, card);
-            // Re-check — the label may have just been added (local object is stale,
-            // but re-reading on next pulse is sufficient; don't block this pulse).
-          }
-
           // Should we process this card?
           let cardWasTouched = false;
           if (this._shouldProcess(board.id, card, stack)) {
@@ -318,7 +309,11 @@ class WorkflowEngine {
 
   /**
    * Extract LLM routing directive from a CONFIG: card's description.
-   * Looks for a line starting with "LLM:" followed by "cloud[-fast]" or "local".
+   * Looks for a line starting with "LLM:" followed by a directive.
+   *   cloud         → writing job (Opus → Sonnet → Haiku)
+   *   cloud-writing → coding job  (Sonnet → Haiku, no Opus)
+   *   cloud-fast    → tools job   (Haiku only)
+   *   local         → local only
    * @private
    * @param {Object|null} configCard - CONFIG card object with .description
    * @returns {{ allowCloud: boolean, cloudTier: string|null }}
@@ -326,12 +321,13 @@ class WorkflowEngine {
   _extractStackLlmRouting(configCard) {
     if (!configCard?.description) return { allowCloud: false, cloudTier: null };
     const plain = stripHtml(configCard.description);
-    const match = plain.match(/^LLM:\s*(cloud-fast|cloud|local)\b/im);
+    const match = plain.match(/^LLM:\s*(cloud-writing|cloud-fast|cloud|local)\b/im);
     if (!match) return { allowCloud: false, cloudTier: null };
     const directive = match[1].toLowerCase();
+    const tierMap = { 'cloud-fast': 'fast', 'cloud-writing': 'writing' };
     return {
       allowCloud: directive.startsWith('cloud'),
-      cloudTier: directive === 'cloud-fast' ? 'fast' : null
+      cloudTier: tierMap[directive] || null
     };
   }
 
@@ -414,6 +410,44 @@ class WorkflowEngine {
     // processing unrelated Drafting cards.
     const boardRules = this._stripScheduleContext(wb._plainDescription);
 
+    // Fetch board labels so the LLM can assign them by ID
+    let labelBlock = '';
+    try {
+      const fullBoard = await this.deck.getBoard(board.id);
+      const boardLabels = (fullBoard.labels || []);
+      if (boardLabels.length > 0) {
+        labelBlock = '\n**Available Labels:**\n' +
+          boardLabels.map(l => `  - "${l.title}" (ID: ${l.id})`).join('\n') + '\n';
+      }
+    } catch (err) {
+      console.warn(`[Workflow] Could not fetch labels for board ${board.id}: ${err.message}`);
+    }
+
+    // Resolve parent card content when description references "Parent: #ID" or "Parent card: #ID"
+    let parentBlock = '';
+    const cardDesc = stripHtml(card.description || '');
+    const parentMatch = cardDesc.match(/\bParent(?:\s+card)?:\s*#(\d+)/i);
+    if (parentMatch) {
+      const parentId = parseInt(parentMatch[1], 10);
+      try {
+        // Find the parent card across all stacks on this board
+        let parentCard = null;
+        for (const s of stacks) {
+          parentCard = (s.cards || []).find(c => c.id === parentId);
+          if (parentCard) break;
+        }
+        if (parentCard && parentCard.description) {
+          const parentDesc = stripHtml(parentCard.description);
+          if (parentDesc.length > 0) {
+            parentBlock = `**Parent Content (card #${parentId} "${parentCard.title}"):**\n${parentDesc}\n`;
+            console.log(`[Workflow] Resolved parent card #${parentId} for "${card.title}" (${parentDesc.length} chars)`);
+          }
+        }
+      } catch (err) {
+        console.warn(`[Workflow] Could not resolve parent card #${parentId}: ${err.message}`);
+      }
+    }
+
     const systemAddition = [
       '## Active Workflow Context',
       '',
@@ -426,9 +460,11 @@ class WorkflowEngine {
       `**Current Stack:** ${stack.title} (ID: ${stack.id})`,
       configContext,
       `**Card:** ${card.title} (ID: ${card.id})`,
+      parentBlock,
       card.description ? `**Card Description:** ${stripHtml(card.description)}` : '',
       commentBlock,
       `**Card Labels:** ${(card.labels || []).map(l => `${l.color}: ${l.title}`).join(', ') || 'none'}`,
+      labelBlock,
       `**Card Due:** ${card.duedate || 'none'}`,
       `**Assigned To:** ${(card.assignedUsers || []).map(u => u.participant?.uid).join(', ') || 'unassigned'}`,
       '',
@@ -446,7 +482,10 @@ class WorkflowEngine {
       'Comment on the card with what you did.',
       'If the CONFIG says to notify in Talk, use the talk_send tool.',
       'If you need to create files, use file tools.',
-      'If the CONFIG references wiki pages with [[Page Name]], search and read them.'
+      'If the CONFIG references wiki pages with [[Page Name]], search and read them.',
+      'When the CONFIG mentions GATE, first complete all work described before the GATE instruction,',
+      'then use workflow_deck_assign_label to add the GATE label (check Available Labels for the ID),',
+      'and assign the human reviewer. Do not proceed past the GATE point.',
     ].filter(Boolean).join('\n');
 
     await this.agent.processWorkflowTask({
@@ -502,6 +541,19 @@ class WorkflowEngine {
         }
       }
 
+      // Fetch board labels so the LLM can assign them by ID during resolution
+      let gateLabelBlock = '';
+      try {
+        const fullBoard = await this.deck.getBoard(board.id);
+        const boardLabels = (fullBoard.labels || []);
+        if (boardLabels.length > 0) {
+          gateLabelBlock = '\n**Available Labels:**\n' +
+            boardLabels.map(l => `  - "${l.title}" (ID: ${l.id})`).join('\n') + '\n';
+        }
+      } catch (err) {
+        console.warn(`[Workflow] Could not fetch labels for GATE resolution on board ${board.id}: ${err.message}`);
+      }
+
       const context = [
         '## GATE Resolution',
         '',
@@ -513,7 +565,7 @@ class WorkflowEngine {
         '',
         `**All Stacks:**`,
         wb.stacks.map(s => `  - "${s.title}" (ID: ${s.id})`).join('\n'),
-        '',
+        gateLabelBlock,
         'Board Rules:',
         wb._plainDescription,
         '',
@@ -567,58 +619,18 @@ class WorkflowEngine {
       console.log(`[Workflow] GATE notification sent for "${card.title}"`);
     }
 
-    return false;
-  }
-
-  /**
-   * Stamp a card with the GATE label when it is in a GATE stack but does not
-   * yet carry any workflow label (GATE/APPROVED/REJECTED).
-   * Idempotent — skips if the card already has any workflow label.
-   * @private
-   */
-  async _ensureGateLabel(wb, stack, card) {
-    const hasWorkflowLabel =
-      hasLabel(card, 'GATE') ||
-      hasLabel(card, 'APPROVED') ||
-      hasLabel(card, 'REJECTED');
-
-    if (hasWorkflowLabel) return;
-
-    // Dedup: if we already stamped this gate (label may be invisible due to
-    // stale cache), skip. Uses the same _notifiedGates set that _handleGate
-    // checks before sending notifications.
-    const gateKey = `${wb.board.id}:${card.id}`;
-    if (this._notifiedGates.has(gateKey)) return;
-
-    // Find the GATE label ID on this board so we can assign it
-    try {
-      const fullBoard = await this.deck.getBoard(wb.board.id);
-      const gateLabel = (fullBoard.labels || []).find(
-        l => (l.title || '').toUpperCase() === 'GATE'
-      );
-      if (!gateLabel) {
-        console.warn(`[Workflow] GATE label not found on board "${wb.board.title}" — run ensureWorkflowLabels first`);
-        return;
-      }
-
-      const labelPath = `/index.php/apps/deck/api/v1.0/boards/${wb.board.id}/stacks/${stack.id}/cards/${card.id}/assignLabel`;
-      await this.deck._request('PUT', labelPath, { labelId: gateLabel.id });
-      console.log(`[Workflow] Stamped GATE label on card "${card.title}"`);
-
-      // Record the stamp so we don't re-stamp on stale cache AND so
-      // _handleGate on the next pulse skips re-notification.
-      this._notifiedGates.add(gateKey);
-      this._saveNotifiedGates();
-
-      // Handoff: unassign bot, assign board owner for human review
-      const botUser = this.deck.username || this.botUsername;
+    // Safety net: if GATE card is still assigned to bot, reassign to human.
+    // This catches cases where the LLM stamped GATE but forgot to reassign.
+    const botUser = this.deck.username || this.botUsername;
+    const assignedUids = (card.assignedUsers || []).map(u => u.participant?.uid);
+    if (assignedUids.includes(botUser)) {
       const humanUser = wb.board.owner?.uid || wb.board.owner || this._getHumanUser();
-      await this._safeUnassign(wb.board.id, stack.id, card.id, botUser);
-      await this._safeAssign(wb.board.id, stack.id, card.id, humanUser);
-      console.log(`[Workflow] GATE handoff: "${card.title}" → ${humanUser}`);
-    } catch (err) {
-      console.warn(`[Workflow] Could not stamp GATE label on card "${card.title}": ${err.message}`);
+      await this._safeUnassign(board.id, stack.id, card.id, botUser);
+      await this._safeAssign(board.id, stack.id, card.id, humanUser);
+      console.log(`[Workflow] GATE safety net: reassigned "${card.title}" from ${botUser} to ${humanUser}`);
     }
+
+    return false;
   }
 
   /**
