@@ -36,7 +36,7 @@ cp -r moltagent-caldav/src/lib/integrations/* src/lib/integrations/
 const CalDAVClient = require('./src/lib/integrations/caldav-client');
 
 const caldav = new CalDAVClient({
-  ncUrl: 'https://nx89136.your-storageshare.de',
+  ncUrl: 'https://YOUR_NEXTCLOUD_URL',
   username: 'moltagent',
   password: 'xxx'
 });
@@ -109,7 +109,7 @@ const HeartbeatManager = require('./src/lib/integrations/heartbeat-manager');
 
 const heartbeat = new HeartbeatManager({
   nextcloud: {
-    url: 'https://nx89136.your-storageshare.de',
+    url: 'https://YOUR_NEXTCLOUD_URL',
     username: 'moltagent',
     password: 'xxx'
   },

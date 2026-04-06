@@ -17,7 +17,7 @@ set -e
 # Configuration
 PORT="${1:-3000}"
 SECRET="${2:-test-secret-for-webhook-testing-must-be-long-enough}"
-BACKEND="${NC_URL:-https://nx89136.your-storageshare.de}"
+BACKEND="${NC_URL:-https://YOUR_NEXTCLOUD_URL}"
 BASE_URL="http://localhost:${PORT}"
 
 # Colors

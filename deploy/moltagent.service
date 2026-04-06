@@ -30,15 +30,15 @@ ExecStart=/usr/bin/node /opt/moltagent/webhook-server.js
 
 # Environment (non-sensitive config only)
 Environment=NODE_ENV=production
-Environment=NC_URL=https://nx89136.your-storageshare.de
+Environment=NC_URL=https://YOUR_NEXTCLOUD_URL
 Environment=NC_USER=moltagent
-Environment=OLLAMA_URL=http://138.201.246.236:11434
+Environment=OLLAMA_URL=http://YOUR_OLLAMA_IP:11434
 Environment=OLLAMA_MODEL=qwen3:8b
 Environment=OLLAMA_MODEL_CREDENTIAL=qwen3:14b-fast
 Environment=CLAUDE_MODEL_PREMIUM=claude-opus-4-6
 Environment=CLAUDE_MODEL_STANDARD=claude-sonnet-4-5-20250929
-Environment=WHISPER_URL=http://138.201.246.236:8014
-Environment=SPEACHES_URL=http://138.201.246.236:8014
+Environment=WHISPER_URL=http://YOUR_OLLAMA_IP:8014
+Environment=SPEACHES_URL=http://YOUR_OLLAMA_IP:8014
 Environment=DECK_BOARD_ID=8
 Environment=HEARTBEAT_INTERVAL=300000
 Environment=INITIATIVE_LEVEL=2

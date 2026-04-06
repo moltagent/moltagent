@@ -28,7 +28,7 @@
 - PID: 289731, Memory: 54.1M, CPU: ~1m
 - Entry point: `/opt/moltagent/webhook-server.js`
 - No fatal/crash errors in journal (signature mismatch noise is expected — test probes)
-- Ollama: `qwen3:8b` confirmed available at `http://138.201.246.236:11434`
+- Ollama: `qwen3:8b` confirmed available at `http://YOUR_OLLAMA_IP:11434`
 
 ### [Phase 0] Test Suite Baseline
 **Status:** ✅ PASS

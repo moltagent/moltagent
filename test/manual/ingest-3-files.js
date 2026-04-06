@@ -10,7 +10,7 @@
 const fs = require('fs');
 
 // ── Credentials ──
-process.env.NC_URL = 'https://nx89136.your-storageshare.de';
+process.env.NC_URL = 'https://YOUR_NEXTCLOUD_URL';
 process.env.NC_USER = 'moltagent';
 const credDir = process.env.CREDENTIALS_DIRECTORY || '/etc/credstore';
 try { process.env.NC_PASS = fs.readFileSync(credDir + '/moltagent-nc-password', 'utf8').trim(); } catch {}

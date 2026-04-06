@@ -10,7 +10,7 @@ const config = require('./config/providers.json');
 
 // NC Configuration
 const ncConfig = {
-  ncUrl: process.env.NC_URL || 'https://nx89136.your-storageshare.de',
+  ncUrl: process.env.NC_URL || 'https://YOUR_NEXTCLOUD_URL',
   username: process.env.NC_USER || 'moltagent',
   password: process.env.NC_PASSWORD
 };

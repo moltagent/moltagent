@@ -22,7 +22,7 @@ console.log('\n--- Constructor Tests ---\n');
 
 test('TC-CTOR-001: Default config values', () => {
   const client = new WhisperClient();
-  assert.strictEqual(client.baseUrl, 'http://138.201.246.236:8014');
+  assert.strictEqual(client.baseUrl, 'http://YOUR_OLLAMA_IP:8014');
   assert.strictEqual(client.timeout, 60000);
   assert.strictEqual(client.model, 'small');
 });

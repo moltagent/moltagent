@@ -211,7 +211,7 @@ const config = {
   // Nextcloud Connection
   // -------------------------------------------------------------------------
   nextcloud: {
-    url: envStr('NC_URL', 'https://nx89136.your-storageshare.de'),
+    url: envStr('NC_URL', 'https://YOUR_NEXTCLOUD_URL'),
     username: envStr('NC_USER', 'moltagent')
   },
 
@@ -227,7 +227,7 @@ const config = {
   // Ollama LLM
   // -------------------------------------------------------------------------
   ollama: {
-    url: envStr('OLLAMA_URL', 'http://138.201.246.236:11434'),
+    url: envStr('OLLAMA_URL', 'http://YOUR_OLLAMA_IP:11434'),
     model: envStr('OLLAMA_MODEL', 'phi4-mini'),
     modelCredential: envStr('OLLAMA_MODEL_CREDENTIAL', null) || envStr('OLLAMA_MODEL', 'phi4-mini'),
     modelFast: envStr('OLLAMA_MODEL_FAST', null) || envStr('OLLAMA_CLASSIFY_MODEL', 'qwen2.5:3b'),
@@ -526,13 +526,13 @@ const config = {
   // Voice Pipeline (Whisper STT + call-aware routing)
   // -------------------------------------------------------------------------
   voice: {
-    whisperUrl: envStr('WHISPER_URL', 'http://138.201.246.236:8014'),
+    whisperUrl: envStr('WHISPER_URL', 'http://YOUR_OLLAMA_IP:8014'),
     whisperTimeout: envInt('WHISPER_TIMEOUT', 60000),
     whisperModel: envStr('WHISPER_MODEL', 'small'),
     ffmpegPath: envStr('FFMPEG_PATH', 'ffmpeg'),
     enabled: envBool('VOICE_ENABLED', true),
     maxAudioDurationSec: envInt('VOICE_MAX_DURATION', 300),
-    speachesUrl: envStr('SPEACHES_URL', 'http://138.201.246.236:8014'),
+    speachesUrl: envStr('SPEACHES_URL', 'http://YOUR_OLLAMA_IP:8014'),
     speachesTimeout: envInt('SPEACHES_TIMEOUT', 30000),
     speachesSttModel: envStr('SPEACHES_STT_MODEL', 'Systran/faster-whisper-small'),
     speachesTtsModel: envStr('SPEACHES_TTS_MODEL', 'piper'),
@@ -560,7 +560,7 @@ const config = {
     selfHealEnabled: envBool('INFRA_SELF_HEAL', true),
     notifyOnFailure: envBool('INFRA_NOTIFY_ON_FAILURE', true),
     heald: {
-      url: envStr('HEALD_URL', 'http://138.201.246.236:7867'),
+      url: envStr('HEALD_URL', 'http://YOUR_OLLAMA_IP:7867'),
       tokenCredential: envStr('HEALD_TOKEN_CREDENTIAL', 'heald-token'),
       timeoutMs: envInt('HEALD_TIMEOUT', 15000),
     },

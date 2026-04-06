@@ -11,12 +11,12 @@ const LLMRouter = require('../src/lib/llm-router');
 
 const CONFIG = {
   nextcloud: {
-    url: 'https://nx89136.your-storageshare.de',
+    url: 'https://YOUR_NEXTCLOUD_URL',
     username: 'moltagent',
-    password: 'uS694pDVvnbDpmQ'
+    password: process.env.MOLTAGENT_PASSWORD || 'CHANGE_ME'
   },
   ollama: {
-    url: 'http://138.201.246.236:11434',
+    url: process.env.OLLAMA_URL || 'http://YOUR_OLLAMA_IP:11434',
     model: 'qwen3:8b'
   },
   deck: {

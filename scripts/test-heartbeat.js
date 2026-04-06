@@ -13,9 +13,9 @@ const HeartbeatManager = require('../src/lib/integrations/heartbeat-manager');
 // Configuration
 const config = {
   nextcloud: {
-    url: process.env.NC_URL || 'https://nx89136.your-storageshare.de',
+    url: process.env.NC_URL || 'https://YOUR_NEXTCLOUD_URL',
     username: process.env.NC_USER || 'moltagent',
-    password: process.env.MOLTAGENT_PASSWORD || 'uS694pDVvnbDpmQ'
+    password: process.env.MOLTAGENT_PASSWORD || 'CHANGE_ME'
   },
   deck: {
     boardId: 8,

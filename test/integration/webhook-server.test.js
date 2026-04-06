@@ -17,7 +17,7 @@ const crypto = require('crypto');
 const CONFIG = {
   serverUrl: process.env.WEBHOOK_URL || 'http://localhost:3000',
   secret: process.env.NC_TALK_SECRET || 'test-secret-for-webhook-testing-must-be-long-enough',
-  backend: process.env.NC_URL || 'https://nx89136.your-storageshare.de'
+  backend: process.env.NC_URL || 'https://YOUR_NEXTCLOUD_URL'
 };
 
 // Test utilities

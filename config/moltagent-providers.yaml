@@ -6,7 +6,7 @@ providers:
   # Local - always available (sovereign/free)
   ollama-local:
     adapter: ollama
-    endpoint: http://138.201.246.236:11434
+    endpoint: http://YOUR_OLLAMA_IP:11434
     model: phi4-mini
 
   # Premium tier - Claude Opus (deep reasoning, complex writing)

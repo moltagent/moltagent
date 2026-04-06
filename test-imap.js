@@ -5,7 +5,7 @@ async function testImap() {
   const CredentialBroker = require('/opt/moltagent/src/lib/credential-broker');
   
   const broker = new CredentialBroker({
-    ncUrl: process.env.NC_URL || 'https://nx89136.your-storageshare.de',
+    ncUrl: process.env.NC_URL || 'https://YOUR_NEXTCLOUD_URL',
     ncUsername: process.env.NC_USER || 'moltagent'
   });
   

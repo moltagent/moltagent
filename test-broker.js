@@ -7,7 +7,7 @@ const CredentialBroker = require('./lib/credential-broker');
 
 // Configuration - UPDATE THESE VALUES
 const config = {
-  ncUrl: process.env.NC_URL || 'https://nx89136.your-storageshare.de',
+  ncUrl: process.env.NC_URL || 'https://YOUR_NEXTCLOUD_URL',
   username: process.env.NC_USER || 'moltagent',
   password: process.env.NC_PASSWORD || 'YOUR_NC_PASSWORD_HERE'
 };

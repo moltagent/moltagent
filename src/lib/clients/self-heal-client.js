@@ -12,7 +12,7 @@
 class SelfHealClient {
   /**
    * @param {Object} config
-   * @param {string} config.url            - heald base URL (e.g. http://138.201.246.236:7867)
+   * @param {string} config.url            - heald base URL (e.g. http://YOUR_OLLAMA_IP:7867)
    * @param {string} config.tokenCredential - NC Passwords label for the bearer token
    * @param {number} [config.timeoutMs=15000]
    * @param {Object} config.credentialBroker - CredentialBroker instance

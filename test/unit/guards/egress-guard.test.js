@@ -58,10 +58,10 @@ test('TC-EG-003: Constructor auto-adds nextcloudDomain', () => {
 
 test('TC-EG-004: Constructor auto-adds ollamaHost', () => {
   const guard = new EgressGuard({
-    ollamaHost: '138.201.246.236',
+    ollamaHost: 'YOUR_OLLAMA_IP',
   });
-  assert.ok(guard.allowedDomains.has('138.201.246.236'));
-  assert.strictEqual(guard.ollamaHost, '138.201.246.236');
+  assert.ok(guard.allowedDomains.has('YOUR_OLLAMA_IP'));
+  assert.strictEqual(guard.ollamaHost, 'YOUR_OLLAMA_IP');
 });
 
 test('TC-EG-005: Constructor accepts additionalBlocked domains', () => {
@@ -342,10 +342,10 @@ test('TC-EG-072: ALLOW configured Nextcloud domain', () => {
 test('TC-EG-073: ALLOW configured Ollama host (HTTP)', () => {
   const guard = new EgressGuard({
     allowedDomains: ['api.anthropic.com'],
-    ollamaHost: '138.201.246.236',
+    ollamaHost: 'YOUR_OLLAMA_IP',
   });
   // Ollama typically runs on HTTP
-  const result = guard.evaluate('http://138.201.246.236:11434/api/generate');
+  const result = guard.evaluate('http://YOUR_OLLAMA_IP:11434/api/generate');
   assert.strictEqual(result.allowed, true);
 });
 

@@ -16,9 +16,9 @@ const CalDAVClient = require('../src/lib/integrations/caldav-client');
 
 // Configuration from environment or defaults
 const config = {
-  ncUrl: process.env.NC_URL || 'https://nx89136.your-storageshare.de',
+  ncUrl: process.env.NC_URL || 'https://YOUR_NEXTCLOUD_URL',
   username: process.env.NC_USER || 'moltagent',
-  password: process.env.MOLTAGENT_PASSWORD || 'uS694pDVvnbDpmQ'
+  password: process.env.MOLTAGENT_PASSWORD || 'CHANGE_ME'
 };
 
 const client = new CalDAVClient({
