@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or support
+    url: https://github.com/moltagent/moltagent/discussions/new?category=q-a
+    about: Ask questions and get help in Discussions. Issues are for bugs and feature requests.
+  - name: Ideas
+    url: https://github.com/moltagent/moltagent/discussions/new?category=ideas
+    about: Share and discuss ideas before opening a feature request.
+  - name: Security vulnerability
+    url: mailto:security@moltagent.cloud
+    about: Do NOT open a public issue. Email security@moltagent.cloud instead.

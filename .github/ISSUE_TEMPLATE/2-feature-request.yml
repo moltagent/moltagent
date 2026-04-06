@@ -1,0 +1,56 @@
+name: Feature Request
+description: Suggest an idea for Moltagent
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature. Please start a [Discussion](https://github.com/moltagent/moltagent/discussions/new?category=ideas) first if you want to explore the idea before filing a formal request.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the use case or frustration this addresses.
+      placeholder: "I need my agent to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How do you imagine this working?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you've thought about, including workarounds.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Which area does this affect?
+      options:
+        - Workflow engine
+        - Knowledge / Living memory
+        - LLM routing / providers
+        - Nextcloud integration
+        - Voice / email
+        - Search
+        - Security / trust boundaries
+        - Cost metering
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Any other information, screenshots, or examples.

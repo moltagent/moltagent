@@ -1,0 +1,88 @@
+name: Bug Report
+description: Something isn't working as expected
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug. Please fill out the information below so we can investigate.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: Describe what went wrong.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce this?
+      placeholder: |
+        1. Send a message in Talk...
+        2. The agent tries to...
+        3. Error appears...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: input
+    id: moltagent-version
+    attributes:
+      label: Moltagent version
+      description: Check your package.json or release tag
+      placeholder: "v0.1.0-beta"
+    validations:
+      required: true
+
+  - type: input
+    id: nextcloud-version
+    attributes:
+      label: Nextcloud version
+      placeholder: "30.0.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: llm-preset
+    attributes:
+      label: LLM preset
+      options:
+        - all-local
+        - smart-mix
+        - cloud-first
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any error messages or log output. This will be formatted as code automatically.
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Any other information that might help.
