@@ -68,3 +68,6 @@ status-manifest.json
 dist/
 build/
 tmp/
+
+# --- Internal development briefings ---
+briefings/
