@@ -360,7 +360,8 @@ class EgressGuard {
     }
 
     // Check private IP patterns (SSRF prevention)
-    if (this._isPrivateIP(hostname)) {
+    // Exempt the configured Ollama host — it's expected to be on a private IP
+    if (this._isPrivateIP(hostname) && !(this.ollamaHost && hostname.toLowerCase() === this.ollamaHost)) {
       return {
         allowed: false,
         reason: `Blocked private IP: ${hostname}`,
