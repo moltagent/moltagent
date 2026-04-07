@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -340,7 +340,7 @@ asyncTest('TC-HTE-024: none auth adds no extra headers beyond User-Agent', async
     const capturedHeaders = await capturePromise;
     assert.ok(!capturedHeaders['Authorization']);
     assert.ok(!capturedHeaders['X-API-Key']);
-    assert.strictEqual(capturedHeaders['User-Agent'], 'MoltAgent/1.0');
+    assert.strictEqual(capturedHeaders['User-Agent'], 'Moltagent/1.0');
   } finally {
     restoreFetch();
   }

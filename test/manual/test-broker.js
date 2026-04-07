@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MoltAgent Credential Broker Test
+ * Moltagent Credential Broker Test
  */
 
 const CredentialBroker = require('./lib/credential-broker');
@@ -13,7 +13,7 @@ const config = {
 };
 
 async function main() {
-  console.log('=== MoltAgent Credential Broker Test ===\n');
+  console.log('=== Moltagent Credential Broker Test ===\n');
 
   // Check if password is set
   if (config.password === 'YOUR_NC_PASSWORD_HERE') {

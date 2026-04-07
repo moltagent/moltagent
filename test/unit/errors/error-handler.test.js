@@ -33,7 +33,7 @@ console.log('\n--- Constructor Tests ---\n');
 
 test('TC-CTOR-001: Default initialization', () => {
   const handler = new ErrorHandler();
-  assert.strictEqual(handler.serviceName, 'MoltAgent');
+  assert.strictEqual(handler.serviceName, 'Moltagent');
   assert.strictEqual(handler.includeRequestId, false);
   assert.strictEqual(handler.onError, null);
   assert.strictEqual(typeof handler.auditLog, 'function');

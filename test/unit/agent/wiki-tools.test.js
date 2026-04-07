@@ -160,7 +160,7 @@ asyncTest('wiki_list returns section tree', async () => {
   const mockCollectives = createMockCollectivesClient({
     resolveCollective: 10,
     listPages: [
-      { id: 1, title: 'MoltAgent Knowledge', parentId: 0, emoji: '' },
+      { id: 1, title: 'Moltagent Knowledge', parentId: 0, emoji: '' },
       { id: 100, title: 'People', parentId: 1, emoji: '👥' },
       { id: 101, title: 'Projects', parentId: 1, emoji: '📁' },
       { id: 200, title: 'John Smith', parentId: 100, emoji: '' },
@@ -245,7 +245,7 @@ asyncTest('wiki_search falls back to listPages on 500', async () => {
   const mockCollectives = createMockCollectivesClient({
     resolveCollective: 10,
     listPages: [
-      { id: 1, title: 'MoltAgent Knowledge', parentId: 0 },
+      { id: 1, title: 'Moltagent Knowledge', parentId: 0 },
       { id: 100, title: 'Marketing Plan', parentId: 1 },
       { id: 101, title: 'Engineering Roadmap', parentId: 1 },
       { id: 102, title: 'Market Research', parentId: 1 }

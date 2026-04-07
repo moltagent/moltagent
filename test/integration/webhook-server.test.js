@@ -2,7 +2,7 @@
 /**
  * NC Talk Webhook Server Integration Test
  *
- * Simulates NC Talk sending webhook requests to the MoltAgent webhook server.
+ * Simulates NC Talk sending webhook requests to the Moltagent webhook server.
  * Tests signature verification, message processing, and error handling.
  *
  * Usage:
@@ -286,7 +286,7 @@ async function testChatMessage() {
     object: {
       type: 'Note',
       id: '67890',
-      content: 'Hello, MoltAgent!'
+      content: 'Hello, Moltagent!'
     },
     target: {
       type: 'Collection',

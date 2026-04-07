@@ -251,7 +251,7 @@ asyncTest('conversation history is included in messages', async () => {
 
   const history = [
     { role: 'user', name: 'Fu', content: 'What tasks do I have?', timestamp: 1000 },
-    { role: 'assistant', name: 'MoltAgent', content: 'You have 3 tasks.', timestamp: 1001 }
+    { role: 'assistant', name: 'Moltagent', content: 'You have 3 tasks.', timestamp: 1001 }
   ];
 
   const loop = new AgentLoop({

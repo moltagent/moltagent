@@ -1,4 +1,4 @@
-# MoltAgent Deck Configuration
+# Moltagent Deck Configuration
 #
 # This file configures the NC Deck integration for task management.
 # Copy to your config directory and adjust as needed.
@@ -8,7 +8,7 @@ deck:
   enabled: true
   
   # Board name (created automatically if doesn't exist)
-  boardName: "MoltAgent Tasks"
+  boardName: "Moltagent Tasks"
   
   # Days to keep completed cards before auto-archiving
   # Set to 0 to disable auto-archiving

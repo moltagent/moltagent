@@ -1,5 +1,5 @@
 /**
- * MoltAgent Email Handler
+ * Moltagent Email Handler
  *
  * Architecture Brief:
  * -------------------

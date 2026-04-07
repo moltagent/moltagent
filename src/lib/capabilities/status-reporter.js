@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -91,7 +91,7 @@ class StatusReporter {
    * @returns {Promise<string>} Markdown-formatted status report
    */
   async generateStatus() {
-    const lines = ['**MoltAgent Status Report**\n'];
+    const lines = ['**Moltagent Status Report**\n'];
 
     // Uptime
     const uptime = this.formatUptime(Date.now() - this.startTime);

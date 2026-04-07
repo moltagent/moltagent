@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MoltAgent Self-Heal Daemon (heald)
+Moltagent Self-Heal Daemon (heald)
 
 Minimal HTTP daemon that restarts allowlisted systemd services on request.
 Runs on the Ollama VM, controlled by the bot via authenticated API calls.

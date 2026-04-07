@@ -1,5 +1,5 @@
 /**
- * MoltAgent CockpitManager -- Deck as Control Plane
+ * Moltagent CockpitManager -- Deck as Control Plane
  *
  * Architecture Brief:
  * -------------------

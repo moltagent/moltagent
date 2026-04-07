@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -220,7 +220,7 @@ asyncTest('Board resolution: exact match', async () => {
     logger: silentLogger
   });
 
-  const result = await executor.execute('Archive MoltAgent Tasks', { userName: 'alice' });
+  const result = await executor.execute('Archive Moltagent Tasks', { userName: 'alice' });
   const resp = getResponse(result);
   assert.ok(resp.includes('Archived'), `Exact match should work, got: ${resp}`);
 });
@@ -265,7 +265,7 @@ asyncTest('Stack resolution on board', async () => {
     logger: silentLogger
   });
 
-  const result = await executor.execute('Delete the Inbox stack on MoltAgent Tasks', { userName: 'alice' });
+  const result = await executor.execute('Delete the Inbox stack on Moltagent Tasks', { userName: 'alice' });
   const resp = getResponse(result);
   assert.ok(resp.includes('Deleted stack'), `Should confirm deletion, got: ${resp}`);
   assert.ok(resp.includes('Inbox'), `Should include stack name, got: ${resp}`);
@@ -647,7 +647,7 @@ asyncTest('rename_stack resolves board and stack', async () => {
     logger: silentLogger
   });
 
-  const result = await executor.execute('Rename Inbox to Triage on MoltAgent Tasks', { userName: 'alice' });
+  const result = await executor.execute('Rename Inbox to Triage on Moltagent Tasks', { userName: 'alice' });
   const resp = getResponse(result);
   assert.ok(resp.includes('Renamed'), `Should confirm rename, got: ${resp}`);
   assert.ok(resp.includes('Triage'), `Should include new name, got: ${resp}`);
@@ -662,7 +662,7 @@ asyncTest('delete_stack includes card count', async () => {
     logger: silentLogger
   });
 
-  const result = await executor.execute('Delete the Inbox stack on MoltAgent Tasks', { userName: 'alice' });
+  const result = await executor.execute('Delete the Inbox stack on Moltagent Tasks', { userName: 'alice' });
   const resp = getResponse(result);
   assert.ok(resp.includes('2 cards'), `Should report card count, got: ${resp}`);
 });

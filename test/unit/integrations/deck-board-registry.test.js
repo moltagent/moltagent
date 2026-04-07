@@ -169,7 +169,7 @@ asyncTest('TC-REG-008: resolveBoard returns null when title does not match', asy
     listBoards: async () => [{ id: 1, title: 'Unrelated Board' }],
   };
 
-  const result = await boardRegistry.resolveBoard(mockDeck, 'tasks', 'MoltAgent Tasks');
+  const result = await boardRegistry.resolveBoard(mockDeck, 'tasks', 'Moltagent Tasks');
   assert.strictEqual(result, null);
 
   const all = boardRegistry.getAll();

@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -197,7 +197,7 @@ test('parseLog parses markdown format correctly', () => {
   const mockNC = createMockNC();
   const log = new LearningLog({ ncRequestManager: mockNC });
 
-  const markdown = `# MoltAgent Learning Log
+  const markdown = `# Moltagent Learning Log
 
 ## 2026-02-06
 
@@ -227,7 +227,7 @@ test('parseLog respects limit parameter', () => {
   const mockNC = createMockNC();
   const log = new LearningLog({ ncRequestManager: mockNC });
 
-  const markdown = `# MoltAgent Learning Log
+  const markdown = `# Moltagent Learning Log
 
 ## 2026-02-06
 
@@ -265,7 +265,7 @@ test('parseLog handles multiple dates', () => {
   const mockNC = createMockNC();
   const log = new LearningLog({ ncRequestManager: mockNC });
 
-  const markdown = `# MoltAgent Learning Log
+  const markdown = `# Moltagent Learning Log
 
 ## 2026-02-06
 
@@ -295,7 +295,7 @@ test('parseLog extracts optional Room and User fields', () => {
   const mockNC = createMockNC();
   const log = new LearningLog({ ncRequestManager: mockNC });
 
-  const markdown = `# MoltAgent Learning Log
+  const markdown = `# Moltagent Learning Log
 
 ## 2026-02-06
 
@@ -321,7 +321,7 @@ test('parseLog extracts optional Room and User fields', () => {
 asyncTest('flushWrites appends to existing log via WebDAV', async () => {
   const mockNC = createMockNC([
     // GET existing log
-    { status: 200, body: '# MoltAgent Learning Log\n\n', headers: {} },
+    { status: 200, body: '# Moltagent Learning Log\n\n', headers: {} },
     // PUT updated log
     { status: 201, body: '', headers: {} }
   ]);
@@ -342,7 +342,7 @@ asyncTest('flushWrites appends to existing log via WebDAV', async () => {
   assert.ok(calls[1].path.includes('/Memory/LearningLog.md'));
   assert.ok(typeof calls[1].options.body === 'string');
   assert.ok(calls[1].options.body.includes('Test entry'));
-  assert.ok(calls[1].options.body.includes('# MoltAgent Learning Log'));
+  assert.ok(calls[1].options.body.includes('# Moltagent Learning Log'));
 });
 
 asyncTest('flushWrites creates new log if none exists (404)', async () => {
@@ -362,7 +362,7 @@ asyncTest('flushWrites creates new log if none exists (404)', async () => {
 
   // PUT body should contain the header
   const putBody = calls[1].options.body;
-  assert.ok(putBody.includes('# MoltAgent Learning Log'));
+  assert.ok(putBody.includes('# Moltagent Learning Log'));
   assert.ok(putBody.includes('First entry'));
 });
 
@@ -378,7 +378,7 @@ asyncTest('flushWrites does nothing when no pending writes', async () => {
 asyncTest('flushWrites re-queues entries on write failure', async () => {
   const mockNC = createMockNC([
     // GET succeeds
-    { status: 200, body: '# MoltAgent Learning Log\n\n', headers: {} },
+    { status: 200, body: '# Moltagent Learning Log\n\n', headers: {} },
     // PUT fails
     { status: 500, body: 'Server Error', headers: {} }
   ]);
@@ -396,7 +396,7 @@ asyncTest('flushWrites re-queues entries on write failure', async () => {
 
 asyncTest('flushWrites batches multiple entries into one write', async () => {
   const mockNC = createMockNC([
-    { status: 200, body: '# MoltAgent Learning Log\n\n', headers: {} },
+    { status: 200, body: '# Moltagent Learning Log\n\n', headers: {} },
     { status: 201, body: '', headers: {} }
   ]);
   const log = new LearningLog({ ncRequestManager: mockNC, writeDebounceMs: 60000 });
@@ -475,7 +475,7 @@ test('_appendToLog creates new log when empty', () => {
 
   const result = log._appendToLog('', '## 2026-02-06\n\n### 10:00 - Learned: Test\n');
 
-  assert.ok(result.startsWith('# MoltAgent Learning Log'));
+  assert.ok(result.startsWith('# Moltagent Learning Log'));
   assert.ok(result.includes('## 2026-02-06'));
 });
 
@@ -483,7 +483,7 @@ test('_appendToLog inserts after header', () => {
   const mockNC = createMockNC();
   const log = new LearningLog({ ncRequestManager: mockNC });
 
-  const existing = '# MoltAgent Learning Log\n\n## 2026-02-05\n\n### 09:00 - Learned: Old fact\n';
+  const existing = '# Moltagent Learning Log\n\n## 2026-02-05\n\n### 09:00 - Learned: Old fact\n';
   const newEntries = '## 2026-02-06\n\n### 10:00 - Learned: New fact\n';
 
   const result = log._appendToLog(existing, newEntries);
@@ -499,7 +499,7 @@ test('_appendToLog inserts after header', () => {
 // ============================================================
 
 asyncTest('getRecent returns parsed entries from WebDAV', async () => {
-  const logContent = `# MoltAgent Learning Log
+  const logContent = `# Moltagent Learning Log
 
 ## 2026-02-06
 

@@ -1,5 +1,5 @@
 /**
- * MoltAgent NC Request Manager
+ * Moltagent NC Request Manager
  *
  * Central gateway for all Nextcloud API requests with:
  * - Request queue with concurrency limiting

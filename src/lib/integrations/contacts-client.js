@@ -1,9 +1,9 @@
 /**
- * MoltAgent CardDAV Contacts Client
+ * Moltagent CardDAV Contacts Client
  *
  * Architecture Brief:
  * -------------------
- * Problem: MoltAgent cannot resolve human names to email addresses for
+ * Problem: Moltagent cannot resolve human names to email addresses for
  * meeting scheduling and people intelligence.
  *
  * Pattern: CardDAV REPORT client using NCRequestManager. Searches contacts

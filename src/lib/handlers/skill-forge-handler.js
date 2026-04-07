@@ -1,5 +1,5 @@
 /**
- * MoltAgent Skill Forge Handler
+ * Moltagent Skill Forge Handler
  *
  * Architecture Brief:
  * -------------------

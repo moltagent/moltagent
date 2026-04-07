@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MoltAgent Audit Logger Test
+ * Moltagent Audit Logger Test
  */
 
 const AuditLogger = require('./lib/audit-logger');
@@ -15,7 +15,7 @@ const config = {
 };
 
 async function main() {
-  console.log('=== MoltAgent Audit Logger Test ===\n');
+  console.log('=== Moltagent Audit Logger Test ===\n');
 
   if (!config.password) {
     console.log('ERROR: Set NC_PASSWORD environment variable');

@@ -987,7 +987,7 @@ asyncTest('TC-REVIEW-001: Submit for review updates description and moves card',
   await client.submitForReview(1001, 'working', 'Original task', 'LLM response here');
 
   assert.ok(updatedDescription.includes('## Original Task'));
-  assert.ok(updatedDescription.includes('## MoltAgent Response'));
+  assert.ok(updatedDescription.includes('## Moltagent Response'));
   assert.ok(updatedDescription.includes('LLM response here'));
   assert.strictEqual(movedTo, 104); // review stack
 });

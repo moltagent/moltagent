@@ -13,7 +13,7 @@ const config = require('../lib/config');
 
 module.exports = {
   boards: {
-    tasks:    config.deck?.taskBoardTitle    || 'MoltAgent Tasks',
+    tasks:    config.deck?.taskBoardTitle    || 'Moltagent Tasks',
     cockpit:  config.deck?.cockpitBoardTitle || config.cockpit?.boardTitle || 'Moltagent Cockpit',
     personal: config.deck?.personalBoardTitle || 'Personal',
   },

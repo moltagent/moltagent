@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MoltAgent Integrated Test
+ * Moltagent Integrated Test
  * Tests the full pipeline: Router + Credential Broker + LLM Providers
  */
 
@@ -16,7 +16,7 @@ const ncConfig = {
 };
 
 async function main() {
-  console.log('=== MoltAgent Integrated Test ===\n');
+  console.log('=== Moltagent Integrated Test ===\n');
 
   if (!ncConfig.password) {
     console.log('ERROR: Set NC_PASSWORD environment variable');

@@ -1,9 +1,9 @@
 /**
- * MoltAgent Bot Enroller
+ * Moltagent Bot Enroller
  *
  * Architecture Brief:
  * -------------------
- * Problem: When users add the "MoltAgent" Nextcloud user to a Talk room, the
+ * Problem: When users add the "Moltagent" Nextcloud user to a Talk room, the
  * bot webhook does not fire because the NC Talk bot must also be separately
  * enabled in that room. Users are unaware of this requirement.
  *
@@ -39,8 +39,8 @@ class BotEnroller {
    * @param {Object} opts
    * @param {Object} opts.ncRequestManager - NCRequestManager instance for API calls
    * @param {Object} [opts.config] - Configuration object (or pass botName directly)
-   * @param {string} [opts.config.botName='MoltAgent'] - Name of the bot to look up
-   * @param {string} [opts.botName='MoltAgent'] - Shortcut for config.botName
+   * @param {string} [opts.config.botName='Moltagent'] - Name of the bot to look up
+   * @param {string} [opts.botName='Moltagent'] - Shortcut for config.botName
    * @param {Function} [opts.auditLog] - Audit log function (event, data) => Promise
    */
   constructor(opts = {}) {
@@ -49,7 +49,7 @@ class BotEnroller {
     }
 
     this.nc = opts.ncRequestManager;
-    this.botName = opts.botName || opts.config?.botName || 'MoltAgent';
+    this.botName = opts.botName || opts.config?.botName || 'Moltagent';
     this.auditLog = opts.auditLog || null;
 
     /** @type {number|null} Resolved on first run via admin or per-room discovery */

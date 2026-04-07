@@ -1,5 +1,5 @@
 /**
- * MoltAgent Room Monitor
+ * Moltagent Room Monitor
  *
  * Architecture Brief:
  * -------------------
@@ -198,7 +198,7 @@ class RoomMonitor {
       '1. Click the **\u22ef** menu (top right, next to the room name)\n' +
       '2. Select **Conversation settings**\n' +
       '3. Go to **Bots** in the left sidebar\n' +
-      '4. Click **Enable** next to MoltAgent\n\n' +
+      '4. Click **Enable** next to Moltagent\n\n' +
       'Once enabled, I\'ll be ready to help! \ud83d\udfe2';
 
     try {

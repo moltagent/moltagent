@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MoltAgent Knowledge Collective Setup Script
+ * Moltagent Knowledge Collective Setup Script
  *
  * Creates the Moltagent Knowledge collective and page structure:
  * - Sections: People, Projects, Procedures, Research, Meta
@@ -28,7 +28,7 @@ async function setupKnowledgeCollective(options = {}) {
 
   if (verbose) {
     console.log('╔════════════════════════════════════════════════════════════╗');
-    console.log('║      MoltAgent Knowledge Collective Setup                  ║');
+    console.log('║      Moltagent Knowledge Collective Setup                  ║');
     console.log('╚════════════════════════════════════════════════════════════╝');
     console.log('');
   }
@@ -84,7 +84,7 @@ confidence: high
 ---
 # Learning Log
 
-This page tracks what MoltAgent has learned over time.
+This page tracks what Moltagent has learned over time.
 
 ## Recent Entries
 
@@ -146,7 +146,7 @@ confidence: high
 ---
 # ${collectiveName}
 
-This is the knowledge base for MoltAgent — a living wiki where the agent stores and organizes what it learns.
+This is the knowledge base for Moltagent — a living wiki where the agent stores and organizes what it learns.
 
 ## Sections
 

@@ -60,7 +60,7 @@ const FULL_BOARD = {
 // Board Classification Tests
 // ============================================================
 
-test('classifyBoard: MoltAgent Tasks → moltagent-tasks', () => {
+test('classifyBoard: Moltagent Tasks → moltagent-tasks', () => {
   const nc = createMockNCRequestManager();
   const client = new DeckClient(nc, { boardName: DECK.boards.tasks });
   assert.strictEqual(client.classifyBoard({ id: 1, title: DECK.boards.tasks }), 'moltagent-tasks');

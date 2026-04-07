@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -18,7 +18,7 @@
  *
  * Architecture Brief:
  * -------------------
- * Problem: MoltAgent has 8 discrete security modules (5 guards, ResponseWrapper,
+ * Problem: Moltagent has 8 discrete security modules (5 guards, ResponseWrapper,
  * MemoryIntegrityChecker, SessionManager) but no single enforcement point that
  * coordinates them into a unified pipeline for every message and operation.
  *

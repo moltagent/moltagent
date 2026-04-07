@@ -1,4 +1,4 @@
-# MoltAgent SearXNG Configuration — EU-Only Sovereign Variant
+# Moltagent SearXNG Configuration — EU-Only Sovereign Variant
 # Uses exclusively EU-hosted / EU-jurisdiction search engines
 # Deploy: mount this as /etc/searxng/settings.yml for EU-only deployments
 

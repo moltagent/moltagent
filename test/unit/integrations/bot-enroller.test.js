@@ -2,7 +2,7 @@
  * BotEnroller Unit Tests
  *
  * Tests the auto-enrollment of the NC Talk bot in rooms where
- * the MoltAgent user has been added.
+ * the Moltagent user has been added.
  *
  * Run: node test/unit/integrations/bot-enroller.test.js
  *
@@ -81,13 +81,13 @@ const SAMPLE_ROOMS = [
 
 /** Sample admin bots response */
 const SAMPLE_ADMIN_BOTS = [
-  { id: 42, name: 'MoltAgent', description: 'AI assistant' },
+  { id: 42, name: 'Moltagent', description: 'AI assistant' },
   { id: 99, name: 'OtherBot', description: 'Some other bot' }
 ];
 
 /** Sample per-room bots response */
 const SAMPLE_ROOM_BOTS = [
-  { id: 42, name: 'MoltAgent', state: 0 },
+  { id: 42, name: 'Moltagent', state: 0 },
   { id: 99, name: 'OtherBot', state: 1 }
 ];
 
@@ -110,7 +110,7 @@ test('constructor accepts config with ncRequestManager', () => {
   const nc = createMockNC();
   const enroller = new BotEnroller({ ncRequestManager: nc });
   assert.ok(enroller);
-  assert.strictEqual(enroller.botName, 'MoltAgent');
+  assert.strictEqual(enroller.botName, 'Moltagent');
   assert.strictEqual(enroller.botId, null);
   assert.strictEqual(enroller.enrolledCount, 0);
 });

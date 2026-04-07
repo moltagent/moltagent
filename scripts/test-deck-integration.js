@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MoltAgent Deck Integration Test Script
+ * Moltagent Deck Integration Test Script
  * 
  * Tests all Deck API operations to verify the integration works correctly.
  * 
@@ -34,7 +34,7 @@ function warn(message) { log('!', message, colors.yellow); }
 async function runTests(config) {
   console.log('');
   console.log('╔════════════════════════════════════════════════════════════╗');
-  console.log('║         MoltAgent Deck Integration Tests                   ║');
+  console.log('║         Moltagent Deck Integration Tests                   ║');
   console.log('╚════════════════════════════════════════════════════════════╝');
   console.log('');
 
@@ -240,7 +240,7 @@ async function runTests(config) {
     deck.clearCache();
     const card = await deck.getCard(reviewCardId, 'review');
     if (!card.description.includes('## Original Task')) throw new Error('Original task section missing');
-    if (!card.description.includes('## MoltAgent Response')) throw new Error('Response section missing');
+    if (!card.description.includes('## Moltagent Response')) throw new Error('Response section missing');
   });
 
   await test('Scan review cards', async () => {
@@ -326,7 +326,7 @@ if (require.main === module) {
     },
     credentialBroker: password,
     deck: {
-      boardName: process.env.DECK_BOARD_NAME || 'MoltAgent Tasks',
+      boardName: process.env.DECK_BOARD_NAME || 'Moltagent Tasks',
       archiveAfterDays: 180
     }
   };

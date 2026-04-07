@@ -1,5 +1,5 @@
 /**
- * MoltAgent NC Deck Client
+ * Moltagent NC Deck Client
  *
  * API client for Nextcloud Deck integration.
  * Enables task management via kanban board.
@@ -19,7 +19,7 @@ const { ROLES } = require('./deck-board-registry');
  * Custom error class for Deck API errors
  */
 /**
- * Prefixes used by MoltAgent bot comments.
+ * Prefixes used by Moltagent bot comments.
  * Used to distinguish bot comments from human comments in scanners.
  * @type {string[]}
  */
@@ -324,7 +324,7 @@ class DeckClient {
   }
 
   /**
-   * Find the MoltAgent Tasks board by name
+   * Find the Moltagent Tasks board by name
    * @returns {Promise<Object|null>} Board object or null
    */
   async findBoard() {
@@ -363,7 +363,7 @@ class DeckClient {
   }
 
   /**
-   * Create the MoltAgent Tasks board with all required stacks and labels
+   * Create the Moltagent Tasks board with all required stacks and labels
    * @returns {Promise<Object>} Object with boardId and stacks mapping
    */
   async createBoard() {
@@ -456,7 +456,7 @@ class DeckClient {
   }
 
   // ============================================================
-  // GENERIC BOARD CRUD (v2 — any board, not just MoltAgent Tasks)
+  // GENERIC BOARD CRUD (v2 — any board, not just Moltagent Tasks)
   // ============================================================
 
   /**
@@ -533,7 +533,7 @@ class DeckClient {
   }
 
   /**
-   * Create a card on any board/stack by IDs (not just default MoltAgent board).
+   * Create a card on any board/stack by IDs (not just default Moltagent board).
    * Unlike createCard(stackName, card), this uses raw IDs for board-agnostic creation.
    * @param {number} boardId - Board ID
    * @param {number} stackId - Stack ID
@@ -567,7 +567,7 @@ class DeckClient {
     let board = await this.findBoard();
 
     if (!board) {
-      console.log('[Deck] MoltAgent Tasks board not found, creating...');
+      console.log('[Deck] Moltagent Tasks board not found, creating...');
       return await this.createBoard();
     }
 
@@ -1125,7 +1125,7 @@ class DeckClient {
     const currentCard = await this.getCard(cardId, stackName);
 
     // Build new description with original task + response
-    const newDescription = `## Original Task\n\n${originalDescription || '(No description provided)'}\n\n---\n\n## MoltAgent Response\n\n${llmResponse}`;
+    const newDescription = `## Original Task\n\n${originalDescription || '(No description provided)'}\n\n---\n\n## Moltagent Response\n\n${llmResponse}`;
 
     // Update card description (must include title and owner)
     await this._request(
@@ -1199,7 +1199,7 @@ class DeckClient {
   }
 
   /**
-   * Scan all active stacks for cards with human comments assigned to MoltAgent
+   * Scan all active stacks for cards with human comments assigned to Moltagent
    * Useful for detecting clarifications or questions on in-progress work
    * @param {Array<string>} [stackNames=['inbox', 'queued', 'working', 'review']] - Stacks to scan
    * @returns {Promise<Array>} Cards with human comments, including stack info
@@ -1212,7 +1212,7 @@ class DeckClient {
         const cards = await this.getCardsInStack(stackName);
 
         for (const card of cards) {
-          // Check if MoltAgent is assigned to this card
+          // Check if Moltagent is assigned to this card
           const assignedUsers = card.assignedUsers || [];
           const isAssignedToMe = assignedUsers.some(u =>
             u.participant?.uid?.toLowerCase() === this.username.toLowerCase() ||
@@ -1220,7 +1220,7 @@ class DeckClient {
           );
 
           if (!isAssignedToMe) {
-            continue; // Skip cards not assigned to MoltAgent
+            continue; // Skip cards not assigned to Moltagent
           }
 
           try {
@@ -1268,9 +1268,9 @@ class DeckClient {
   }
 
   /**
-   * Scan all stacks for cards assigned to MoltAgent
+   * Scan all stacks for cards assigned to Moltagent
    * @param {Array<string>} [stackNames=['inbox', 'queued', 'working', 'review']] - Stacks to scan
-   * @returns {Promise<Array>} Cards assigned to MoltAgent
+   * @returns {Promise<Array>} Cards assigned to Moltagent
    */
   async scanAssignedCards(stackNames = ['inbox', 'queued', 'working', 'review']) {
     const assignedCards = [];
@@ -1575,14 +1575,14 @@ class DeckClient {
   }
 
   /**
-   * Ensure MoltAgent and card creator are assigned.
+   * Ensure Moltagent and card creator are assigned.
    * Called when picking up a task.
    * @param {number} cardId - Card ID
    * @param {string} stackName - Stack the card is in
    * @param {string} creatorId - Original card creator username
    */
   async ensureAssignments(cardId, stackName, creator) {
-    // Always assign MoltAgent
+    // Always assign Moltagent
     await this.assignUser(cardId, stackName, this.username);
 
     // Extract creator ID from object or string

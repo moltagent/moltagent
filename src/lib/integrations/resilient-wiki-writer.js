@@ -1,5 +1,5 @@
 /**
- * MoltAgent Resilient Wiki Writer
+ * Moltagent Resilient Wiki Writer
  *
  * Dual-path writer that tries OCS Collectives API first, falls back to
  * NCFiles WebDAV when OCS is unavailable. Provides health tracking with

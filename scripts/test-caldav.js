@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * MoltAgent CalDAV Integration Tests
+ * Moltagent CalDAV Integration Tests
  * 
  * Tests calendar operations:
  * - Calendar discovery
@@ -55,7 +55,7 @@ async function test(name, fn) {
 
 async function runTests() {
   console.log('╔════════════════════════════════════════════════════════════════╗');
-  console.log('║          MoltAgent CalDAV Integration Tests                    ║');
+  console.log('║          Moltagent CalDAV Integration Tests                    ║');
   console.log('╚════════════════════════════════════════════════════════════════╝');
   console.log('');
   console.log(`NC URL: ${config.ncUrl}`);
@@ -111,8 +111,8 @@ async function runTests() {
     const end = new Date(start.getTime() + 60 * 60 * 1000); // 1 hour duration
 
     const event = await client.createEvent({
-      summary: '[TEST] MoltAgent CalDAV Test Event',
-      description: 'This is a test event created by MoltAgent CalDAV integration tests.',
+      summary: '[TEST] Moltagent CalDAV Test Event',
+      description: 'This is a test event created by Moltagent CalDAV integration tests.',
       location: 'Virtual',
       start,
       end,
@@ -136,7 +136,7 @@ async function runTests() {
     if (!event) {
       throw new Error('Event not found');
     }
-    if (event.summary !== '[TEST] MoltAgent CalDAV Test Event') {
+    if (event.summary !== '[TEST] Moltagent CalDAV Test Event') {
       throw new Error('Event summary mismatch');
     }
   });
@@ -147,7 +147,7 @@ async function runTests() {
     }
     
     const updated = await client.updateEvent('personal', testEventUid, {
-      summary: '[TEST] Updated MoltAgent Test Event',
+      summary: '[TEST] Updated Moltagent Test Event',
       description: 'This event has been updated.'
     });
     

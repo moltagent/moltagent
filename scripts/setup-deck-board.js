@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * MoltAgent Deck Board Setup Script
+ * Moltagent Deck Board Setup Script
  * 
- * Creates the MoltAgent Tasks board with proper structure:
+ * Creates the Moltagent Tasks board with proper structure:
  * - Stacks: Inbox, Queued, Working, Done, Reference
  * - Labels: urgent, research, writing, admin, blocked
  * - Welcome card with instructions
@@ -22,7 +22,7 @@
 const DeckClient = require('../src/lib/integrations/deck-client');
 
 /**
- * Setup the MoltAgent Tasks board
+ * Setup the Moltagent Tasks board
  * @param {Object} config - Configuration object
  * @param {Object} config.nextcloud - Nextcloud config
  * @param {string} config.nextcloud.url - Nextcloud URL
@@ -39,7 +39,7 @@ async function setupDeckBoard(config, options = {}) {
   
   if (verbose) {
     console.log('╔════════════════════════════════════════════════════════════╗');
-    console.log('║           MoltAgent Deck Board Setup                       ║');
+    console.log('║           Moltagent Deck Board Setup                       ║');
     console.log('╚════════════════════════════════════════════════════════════╝');
     console.log('');
   }
@@ -109,10 +109,10 @@ async function setupDeckBoard(config, options = {}) {
     if (verbose) console.log('📝 Creating welcome card...');
     
     await deck.createCard('inbox', {
-      title: '👋 Welcome to MoltAgent Tasks!',
+      title: '👋 Welcome to Moltagent Tasks!',
       description: `# How to Use This Board
 
-This board is where you assign tasks to your MoltAgent AI assistant.
+This board is where you assign tasks to your Moltagent AI assistant.
 
 ## Workflow
 
@@ -120,7 +120,7 @@ This board is where you assign tasks to your MoltAgent AI assistant.
 2. Add a **clear title** describing what you need
 3. Add **details** in the description
 4. Optionally add **labels**: urgent, research, writing, admin
-5. MoltAgent will process it automatically (within 5 minutes)
+5. Moltagent will process it automatically (within 5 minutes)
 
 ## Columns
 
@@ -170,12 +170,12 @@ This board is where you assign tasks to your MoltAgent AI assistant.
   if (verbose) {
     console.log('');
     console.log('╔════════════════════════════════════════════════════════════╗');
-    console.log('║  🎉 Setup Complete! Your MoltAgent Tasks board is ready.   ║');
+    console.log('║  🎉 Setup Complete! Your Moltagent Tasks board is ready.   ║');
     console.log('╚════════════════════════════════════════════════════════════╝');
     console.log('');
     console.log('Next steps:');
     console.log('  1. Open Nextcloud → Deck app');
-    console.log('  2. Find the "MoltAgent Tasks" board');
+    console.log('  2. Find the "Moltagent Tasks" board');
     console.log('  3. Create your first task card!');
     console.log('');
   }
@@ -264,7 +264,7 @@ if (require.main === module) {
     },
     credentialBroker: password, // Direct password for CLI
     deck: {
-      boardName: process.env.DECK_BOARD_NAME || 'MoltAgent Tasks',
+      boardName: process.env.DECK_BOARD_NAME || 'Moltagent Tasks',
       archiveAfterDays: parseInt(process.env.DECK_ARCHIVE_DAYS) || 180
     }
   };

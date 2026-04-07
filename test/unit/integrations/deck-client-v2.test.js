@@ -1,5 +1,5 @@
 /**
- * MoltAgent NC Deck Client — Generic CRUD Tests (v2)
+ * Moltagent NC Deck Client — Generic CRUD Tests (v2)
  *
  * Architecture Brief:
  * -------------------
@@ -24,8 +24,8 @@
  */
 
 /*
- * MoltAgent — Sovereign AI Agent for Nextcloud
- * Copyright (C) 2024  MoltAgent Contributors
+ * Moltagent — Sovereign AI Agent for Nextcloud
+ * Copyright (C) 2024  Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by

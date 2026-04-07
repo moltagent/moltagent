@@ -52,7 +52,7 @@ class WebReader {
    * @param {number} [options.config.maxOutputChars=12000]
    * @param {number} [options.config.cacheTtlMs=3600000] - 1 hour
    * @param {number} [options.config.maxCacheEntries=50]
-   * @param {string} [options.config.userAgent='MoltAgent/1.0']
+   * @param {string} [options.config.userAgent='Moltagent/1.0']
    */
   constructor({ config = {} } = {}) {
     this.timeoutMs = config.timeoutMs || 15000;
@@ -60,7 +60,7 @@ class WebReader {
     this.maxOutputChars = config.maxOutputChars || 12000;
     this.cacheTtlMs = config.cacheTtlMs || 60 * 60 * 1000;
     this.maxCacheEntries = config.maxCacheEntries || 50;
-    this.userAgent = config.userAgent || 'MoltAgent/1.0';
+    this.userAgent = config.userAgent || 'Moltagent/1.0';
 
     // Simple in-memory cache: url -> { result, cachedAt }
     this._cache = new Map();

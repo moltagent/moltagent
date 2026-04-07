@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * MoltAgent Heartbeat Integration Tests
+ * Moltagent Heartbeat Integration Tests
  * 
  * Tests the heartbeat manager with Deck and CalDAV integration
  * 
@@ -66,7 +66,7 @@ const heartbeat = new HeartbeatManager({
 
 async function runTests() {
   console.log('╔════════════════════════════════════════════════════════════════╗');
-  console.log('║          MoltAgent Heartbeat Integration Tests                 ║');
+  console.log('║          Moltagent Heartbeat Integration Tests                 ║');
   console.log('╚════════════════════════════════════════════════════════════════╝');
   console.log('');
   console.log(`NC URL: ${config.nextcloud.url}`);

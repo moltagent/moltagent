@@ -24,6 +24,8 @@ logs/
 npm-debug.log*
 
 # --- Runtime & State ---
+data/
+arch-data.json
 *.pid
 *.sock
 *.lock
@@ -69,6 +71,10 @@ dist/
 build/
 tmp/
 *.tar.gz
+
+# --- Python bytecode ---
+__pycache__/
+*.pyc
 
 # --- Internal development briefings ---
 briefings/

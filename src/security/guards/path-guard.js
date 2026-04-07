@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -91,7 +91,7 @@ const BLOCKED_PATHS = [
   '~/.pypirc',
   '~/.docker/config.json',
 
-  // MoltAgent credential storage
+  // Moltagent credential storage
   '/etc/credstore',
   // $CREDENTIALS_DIRECTORY is resolved at runtime and added in constructor
 ];
@@ -147,7 +147,7 @@ const BLOCKED_FILENAMES = [
  * - Cloud provider credentials (AWS, Azure, GCP, Kubernetes)
  * - Browser data (cookies, passwords)
  * - Package manager credentials
- * - MoltAgent credential storage
+ * - Moltagent credential storage
  * - Files with sensitive extensions (.env, .pem, .key)
  * - Known credential filenames (id_rsa, secrets.yml, etc.)
  */

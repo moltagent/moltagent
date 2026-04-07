@@ -1,4 +1,4 @@
-# MoltAgent systemd service unit
+# Moltagent systemd service unit
 #
 # Installation:
 #   1. Create credential store: sudo mkdir -p /etc/credstore
@@ -12,7 +12,7 @@
 # Logs: journalctl -u moltagent -f
 
 [Unit]
-Description=MoltAgent - Nextcloud AI Assistant
+Description=Moltagent - Nextcloud AI Assistant
 Documentation=https://github.com/yourorg/moltagent
 After=network-online.target
 Wants=network-online.target

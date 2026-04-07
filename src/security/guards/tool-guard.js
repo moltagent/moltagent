@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -162,7 +162,7 @@ class ToolGuard {
    * @private
    */
   _buildApprovalPrompt(operation, context) {
-    let prompt = `⚠️ MoltAgent wants to: ${operation}`;
+    let prompt = `⚠️ Moltagent wants to: ${operation}`;
 
     if (context && context.target) {
       prompt += ` (target: ${context.target})`;

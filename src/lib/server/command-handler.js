@@ -165,7 +165,7 @@ class CommandHandler {
    * @private
    */
   _handleHelp() {
-    return `**MoltAgent Commands:**
+    return `**Moltagent Commands:**
 - /status - Show server status
 - /stats - Show verification statistics
 - /persist - Force-persist current session (wiki + commitment cards)
@@ -191,7 +191,7 @@ Just send a message to chat with the AI!`;
     const verifierStats = this.signatureVerifier.getStats();
     const routerStats = this.messageRouter ? this.messageRouter.getStats() : null;
 
-    return `**MoltAgent Status:**
+    return `**Moltagent Status:**
 - Server: Running
 - Signature verifications: ${verifierStats.totalVerifications}
 - Success rate: ${verifierStats.successRate}

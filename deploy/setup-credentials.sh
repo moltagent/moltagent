@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# MoltAgent Credential Setup Script
+# Moltagent Credential Setup Script
 #
-# This script sets up secure credential storage for MoltAgent.
+# This script sets up secure credential storage for Moltagent.
 # Run as root or with sudo.
 #
 # Usage: sudo ./setup-credentials.sh
@@ -14,7 +14,7 @@ CREDSTORE_DIR="/etc/credstore"
 CREDENTIAL_FILE="$CREDSTORE_DIR/moltagent-nc-password"
 
 echo "========================================"
-echo "MoltAgent Credential Setup"
+echo "Moltagent Credential Setup"
 echo "========================================"
 echo ""
 

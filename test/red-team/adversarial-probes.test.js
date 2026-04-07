@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -11,7 +11,7 @@
 /**
  * Red Team Adversarial Test Suite
  *
- * Simulates real attacks against MoltAgent's security layer.
+ * Simulates real attacks against Moltagent's security layer.
  * Every test should PASS — meaning the attack is BLOCKED or mitigated.
  *
  * Categories:

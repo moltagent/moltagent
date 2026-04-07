@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# MoltAgent NC Talk Bot Test Script
+# Moltagent NC Talk Bot Test Script
 #
 # Tests the webhook server with simulated NC Talk messages.
 #
@@ -29,7 +29,7 @@ NC='\033[0m' # No Color
 
 echo ""
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║           MoltAgent NC Talk Bot Test Script                    ║"
+echo "║           Moltagent NC Talk Bot Test Script                    ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 echo -e "Server URL: ${BLUE}${BASE_URL}${NC}"
@@ -126,7 +126,7 @@ echo "════════════════════════�
 
 echo ""
 echo "4. Testing simple message..."
-send_webhook "Hello, MoltAgent!"
+send_webhook "Hello, Moltagent!"
 
 echo ""
 echo "5. Testing from different user..."
