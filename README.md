@@ -156,7 +156,7 @@ We use Moltagent daily for our own operations. Here's a picture of where things 
 - Voice pipeline (Speaches STT)
 - Cost metering and budget enforcement
 - LLM routing with 13 provider adapters
-- 224 tests, all passing
+- 217 tests, all passing
 
 **Working but still being refined:**
 

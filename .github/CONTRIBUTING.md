@@ -30,7 +30,7 @@ Documentation improvements are always welcome: fix typos, clarify confusing sect
 
 Moltagent requires a Nextcloud backend to run. For development, you need:
 
-- Node.js 20+
+- Node.js 18+
 - A Nextcloud instance with the Passwords, Deck, Collectives, and Talk apps
 - A `moltagent` user account in Nextcloud
 - Ollama (optional, for local LLM testing)

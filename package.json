@@ -1,8 +1,8 @@
 {
-  "name": "moltagent-deck",
+  "name": "moltagent",
   "version": "1.0.0",
-  "description": "NC Deck integration for MoltAgent task management",
-  "main": "src/lib/integrations/deck-client.js",
+  "description": "Sovereign AI agent platform built on Nextcloud",
+  "main": "index.js",
   "scripts": {
     "setup": "node scripts/setup-deck-board.js",
     "test": "node scripts/run-all-tests.js",
@@ -23,7 +23,7 @@
     "task-management",
     "ai-agent"
   ],
-  "author": "MoltAgent Contributors",
+  "author": "Moltagent Contributors",
   "license": "AGPL-3.0",
   "engines": {
     "node": ">=18.0.0"
