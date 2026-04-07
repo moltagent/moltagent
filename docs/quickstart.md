@@ -241,3 +241,5 @@ This skips network isolation and is not suitable for production, but it's suffic
 - [Security Model](security-model.md) - trust boundaries and credential brokering
 - [Configuration](configuration.md) - full reference for all config options
 - [LLM Providers](providers.md) - provider adapters and job routing
+
+For the complete deployment reference including SearXNG, Speaches, email setup, and credential organization, see the [Deployment Guide](deployment.md).

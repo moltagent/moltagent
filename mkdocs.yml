@@ -11,6 +11,7 @@ theme:
 nav:
   - Home: index.md
   - Quick Start: quickstart.md
+  - Deployment Guide: deployment.md
   - Architecture: architecture.md
   - Security Model: security-model.md
   - Configuration: configuration.md

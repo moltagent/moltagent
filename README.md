@@ -240,6 +240,7 @@ Moltagent runs on a box in your office, workshop or farm. Or on a virtual server
 |                                          |                                                      |
 | ---------------------------------------- | ---------------------------------------------------- |
 | [Start](docs/quickstart.md)              | Get running in 30 minutes                            |
+| [Deployment Guide](docs/deployment.md)   | SearXNG, Speaches, email, credentials, full setup    |
 | [Architecture](docs/architecture.md)     | Three-VM isolation, network segmentation             |
 | [Security Model](docs/security-model.md) | Trust boundaries, credential brokering, threat model |
 | [Configuration](docs/configuration.md)   | Full reference for config.yaml                       |
