@@ -15,10 +15,12 @@ Your AI employee. Your infrastructure. Your rules.
 [![CI](https://github.com/moltagent/moltagent/actions/workflows/test.yml/badge.svg)](https://github.com/moltagent/moltagent/actions/workflows/test.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-<!--
-  Hero image: architecture diagram or screenshot goes here
-  CC will render from the simplified architecture diagram below
--->
+<p align="center">
+  <a href="https://public.moltagent.cloud">
+    <img src="assets/architecture-preview.png" alt="Moltagent Architecture" width="800">
+  </a>
+</p>
+<p align="center"><em>Live architecture view at <a href="https://public.moltagent.cloud">public.moltagent.cloud</a></em></p>
 
 ---
 
