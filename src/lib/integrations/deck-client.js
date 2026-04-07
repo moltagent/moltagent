@@ -758,6 +758,7 @@ class DeckClient {
    * @returns {Promise<Array>} Array of stack objects
    */
   async getStacks(boardId) {
+    if (!boardId) throw new DeckApiError('boardId is required for getStacks');
     return await this._request('GET', `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks`);
   }
 
