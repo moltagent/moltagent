@@ -191,6 +191,10 @@ class DeckClient {
     this._boardTypes = new Map();
     this._boardTypesLastRefresh = 0;
     this._boardTypesCacheMaxAge = 300000; // 5 minutes
+
+    // PAUSED-stack cache: "boardId/stackId" → { paused: bool, ts: number }
+    this._pausedCache = new Map();
+    this._pausedCacheTTL = 120000; // 2 minutes
   }
 
   // ============================================================
@@ -533,17 +537,52 @@ class DeckClient {
   }
 
   /**
+   * Check if a stack's CONFIG card has the PAUSED label.
+   * Cached for 2 minutes per board/stack pair.
+   * @param {number} boardId
+   * @param {number} stackId
+   * @returns {Promise<boolean>}
+   */
+  async _isStackPaused(boardId, stackId) {
+    const key = `${boardId}/${stackId}`;
+    const cached = this._pausedCache.get(key);
+    if (cached && Date.now() - cached.ts < this._pausedCacheTTL) return cached.paused;
+
+    try {
+      const stack = await this._request('GET',
+        `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}`);
+      const configCard = (stack.cards || []).find(c =>
+        typeof c.title === 'string' && c.title.toUpperCase().startsWith('CONFIG:'));
+      const paused = configCard
+        ? (configCard.labels || []).some(l =>
+          typeof l.title === 'string' && l.title.toUpperCase() === 'PAUSED')
+        : false;
+      this._pausedCache.set(key, { paused, ts: Date.now() });
+      return paused;
+    } catch {
+      return false; // API failure → don't block creation
+    }
+  }
+
+  /**
    * Create a card on any board/stack by IDs (not just default Moltagent board).
    * Unlike createCard(stackName, card), this uses raw IDs for board-agnostic creation.
+   * Refuses to create if the stack's CONFIG card has the PAUSED label.
    * @param {number} boardId - Board ID
    * @param {number} stackId - Stack ID
    * @param {string} title - Card title
    * @param {Object} [opts] - { description? }
-   * @returns {Promise<Object>} Created card
+   * @returns {Promise<Object|null>} Created card, or null if stack is PAUSED
    */
   async createCardOnBoard(boardId, stackId, title, opts = {}) {
     if (!boardId || !stackId) throw new DeckApiError('boardId and stackId are required');
     if (!title || typeof title !== 'string') throw new DeckApiError('Card title is required');
+
+    if (await this._isStackPaused(boardId, stackId)) {
+      console.warn(`[Deck] Refusing card creation in PAUSED stack (board=${boardId}, stack=${stackId}): "${title}"`);
+      return null;
+    }
+
     return await this._request('POST',
       `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards`,
       { title, description: opts.description || '', type: 'plain', order: 0 });
@@ -753,6 +792,11 @@ class DeckClient {
 
     if (!stackId) {
       throw new DeckApiError(`Unknown stack: ${stackName}`);
+    }
+
+    if (await this._isStackPaused(boardId, stackId)) {
+      console.warn(`[Deck] Refusing card creation in PAUSED stack "${stackName}" (board=${boardId}): "${card.title}"`);
+      return null;
     }
 
     // TRACE-5: What's being sent to Deck API?

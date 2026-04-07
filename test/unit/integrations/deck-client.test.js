@@ -1413,6 +1413,80 @@ test('TC-AWAIT-012: bot [RETRY] as last comment → not awaiting (transient fail
   assert.strictEqual(isAwaitingHumanResponse(comments, 'moltagent'), false);
 });
 
+// --- PAUSED stack guard ---
+
+asyncTest('createCardOnBoard returns null for PAUSED stack', async () => {
+  const nc = createMockNCRequestManager({
+    'GET:/index.php/apps/deck/api/v1.0/boards/144/stacks/10': {
+      status: 200, headers: {},
+      body: {
+        id: 10, title: 'Ideas',
+        cards: [
+          { id: 900, title: 'WORKFLOW: pipeline', labels: [] },
+          { id: 901, title: 'CONFIG: Ideas', labels: [{ id: 50, title: 'PAUSED', color: '90A4AE' }] }
+        ]
+      }
+    }
+  });
+  const deck = new DeckClient(nc);
+  const result = await deck.createCardOnBoard(144, 10, 'New idea');
+  assert.strictEqual(result, null, 'Should refuse card creation in PAUSED stack');
+});
+
+asyncTest('createCardOnBoard creates card when stack is not PAUSED', async () => {
+  const nc = createMockNCRequestManager({
+    'GET:/index.php/apps/deck/api/v1.0/boards/144/stacks/10': {
+      status: 200, headers: {},
+      body: {
+        id: 10, title: 'Ideas',
+        cards: [
+          { id: 900, title: 'WORKFLOW: pipeline', labels: [] },
+          { id: 901, title: 'CONFIG: Ideas', labels: [] }
+        ]
+      }
+    },
+    'POST:/index.php/apps/deck/api/v1.0/boards/144/stacks/10/cards': {
+      status: 200, headers: {},
+      body: { id: 999, title: 'New idea' }
+    }
+  });
+  const deck = new DeckClient(nc);
+  const result = await deck.createCardOnBoard(144, 10, 'New idea');
+  assert.ok(result !== null, 'Should create card');
+  assert.strictEqual(result.id, 999);
+});
+
+asyncTest('createCardOnBoard creates card when stack has no CONFIG card', async () => {
+  const nc = createMockNCRequestManager({
+    'GET:/index.php/apps/deck/api/v1.0/boards/12/stacks/5': {
+      status: 200, headers: {},
+      body: { id: 5, title: 'Inbox', cards: [{ id: 100, title: 'Some task', labels: [] }] }
+    },
+    'POST:/index.php/apps/deck/api/v1.0/boards/12/stacks/5/cards': {
+      status: 200, headers: {},
+      body: { id: 101, title: 'Another task' }
+    }
+  });
+  const deck = new DeckClient(nc);
+  const result = await deck.createCardOnBoard(12, 5, 'Another task');
+  assert.ok(result !== null, 'Should create card when no CONFIG card exists');
+});
+
+asyncTest('_isStackPaused cache prevents repeated API calls', async () => {
+  let callCount = 0;
+  const nc = createMockNCRequestManager({
+    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/2': () => {
+      callCount++;
+      return { status: 200, headers: {}, body: { id: 2, title: 'Test', cards: [] } };
+    }
+  });
+  const deck = new DeckClient(nc);
+  await deck._isStackPaused(1, 2);
+  await deck._isStackPaused(1, 2);
+  await deck._isStackPaused(1, 2);
+  assert.strictEqual(callCount, 1, 'Should only call API once (cache hit for subsequent calls)');
+});
+
 // --- Summary ---
 setTimeout(() => {
   summary();
