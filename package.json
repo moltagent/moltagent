@@ -1,8 +1,12 @@
 {
   "name": "moltagent",
-  "version": "1.0.0",
+  "version": "0.1.0-beta",
   "description": "Sovereign AI agent platform built on Nextcloud",
-  "main": "index.js",
+  "main": "webhook-server.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moltagent/moltagent.git"
+  },
   "scripts": {
     "setup": "node scripts/setup-deck-board.js",
     "test": "node scripts/run-all-tests.js",
@@ -17,11 +21,14 @@
     "prepare": "husky"
   },
   "keywords": [
-    "moltagent",
+    "sovereign-ai",
+    "ai-agent",
     "nextcloud",
-    "deck",
-    "task-management",
-    "ai-agent"
+    "self-hosted",
+    "llm",
+    "workflow-automation",
+    "knowledge-management",
+    "agpl-3"
   ],
   "author": "Moltagent Contributors",
   "license": "AGPL-3.0",
