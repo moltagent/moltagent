@@ -21,6 +21,13 @@ const WorkflowEngine = require('../../../src/lib/workflows/workflow-engine');
 // ============================================================
 
 function createMockDetector(boards = []) {
+  for (const wb of boards) {
+    if (!wb.rulesCardId && wb.stacks && wb.stacks.length) {
+      const rulesCard = { id: 900, title: 'WORKFLOW: pipeline', description: 'RULES', labels: [] };
+      wb.stacks[0].cards = [rulesCard, ...(wb.stacks[0].cards || [])];
+      wb.rulesCardId = 900;
+    }
+  }
   return {
     getWorkflowBoards: async () => boards,
     invalidateCache: () => {}
