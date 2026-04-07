@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MoltAgent NC Talk Webhook Server
+ * Moltagent NC Talk Webhook Server
  *
  * Receives messages from NC Talk, routes through LLM, responds.
  * All incoming messages are verified using HMAC-SHA256 signatures.
@@ -634,7 +634,7 @@ async function notifyUser(notification) {
 async function initialize() {
   console.log('');
   console.log('======================================================================');
-  console.log('           MoltAgent Webhook Server Initializing...                   ');
+  console.log('           Moltagent Webhook Server Initializing...                   ');
   console.log('======================================================================');
   console.log('');
 
@@ -830,7 +830,7 @@ async function initialize() {
   if (DeckClient && ncRequestManager) {
     try {
       deckClient2 = new DeckClient(ncRequestManager, {
-        boardName: 'MoltAgent Tasks',
+        boardName: 'Moltagent Tasks',
         role: 'tasks'
       });
       console.log('[INIT] DeckClient (message routing) ready');
@@ -2153,7 +2153,7 @@ async function initialize() {
       if (KnowledgeBoard && DeckClient && ncRequestManager) {
         try {
           const knowledgeDeckClient = new DeckClient(ncRequestManager, {
-            boardName: 'MoltAgent Knowledge',
+            boardName: 'Moltagent Knowledge',
             role: 'knowledge',
             stacks: {
               verified: 'Verified',
@@ -2730,7 +2730,7 @@ async function start() {
     server.listen(CONFIG.port, '0.0.0.0', async () => {
       console.log('');
       console.log('======================================================================');
-      console.log('           MoltAgent Webhook Server Running!                          ');
+      console.log('           Moltagent Webhook Server Running!                          ');
       console.log('======================================================================');
       console.log('');
       console.log(`Webhook URL: http://0.0.0.0:${CONFIG.port}/webhook/nctalk`);

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MoltAgent Test Runner
+ * Moltagent Test Runner
  *
  * Runs all test files and reports results.
  *
@@ -54,7 +54,7 @@ if (runIntegration && !args.includes('--unit')) {
 }
 
 console.log('\n============================================');
-console.log('       MoltAgent Test Runner');
+console.log('       Moltagent Test Runner');
 console.log('============================================\n');
 
 console.log(`Found ${unitTests.length} unit test files`);

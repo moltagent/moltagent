@@ -41,7 +41,7 @@ function createMockLLMRouter(overrides = {}) {
 
 function createSession(overrides = {}) {
   const context = overrides.context || [
-    { role: 'system', content: 'You are MoltAgent.', timestamp: Date.now() - 5000 },
+    { role: 'system', content: 'You are Moltagent.', timestamp: Date.now() - 5000 },
     { role: 'user', content: 'What about the budget?', timestamp: Date.now() - 4000 },
     { role: 'assistant', content: 'The budget looks tight.', timestamp: Date.now() - 3000 },
     { role: 'user', content: 'Can we approve it?', timestamp: Date.now() - 2000 },
@@ -107,7 +107,7 @@ async function runTests() {
     // 6 entries total, but only 2 are user/assistant (< 4 threshold)
     const session = createSession({
       context: [
-        { role: 'system', content: 'You are MoltAgent.', timestamp: Date.now() },
+        { role: 'system', content: 'You are Moltagent.', timestamp: Date.now() },
         { role: 'system', content: 'Context loaded.', timestamp: Date.now() },
         { role: 'system', content: 'Tools available.', timestamp: Date.now() },
         { role: 'system', content: 'Wiki loaded.', timestamp: Date.now() },

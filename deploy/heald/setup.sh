@@ -1,5 +1,5 @@
 #!/bin/bash
-# MoltAgent Self-Heal Daemon (heald) — Installer
+# Moltagent Self-Heal Daemon (heald) — Installer
 #
 # Usage: bash setup.sh
 # Run on the Ollama VM as root.
@@ -12,7 +12,7 @@ TOKEN_FILE="${CONFIG_DIR}/token"
 SERVICE_FILE="/etc/systemd/system/heald.service"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "=== MoltAgent Self-Heal Daemon Installer ==="
+echo "=== Moltagent Self-Heal Daemon Installer ==="
 echo ""
 
 # 1. Copy daemon script

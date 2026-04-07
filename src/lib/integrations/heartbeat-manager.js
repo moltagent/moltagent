@@ -1,5 +1,5 @@
 /**
- * MoltAgent Heartbeat Manager
+ * Moltagent Heartbeat Manager
  *
  * Periodic operations that run in the background:
  * - Process Deck inbox tasks
@@ -496,7 +496,7 @@ class HeartbeatManager {
           results.errors.push({ component: 'review', error: err.message });
         }
 
-        // Check for cards assigned to MoltAgent that need action
+        // Check for cards assigned to Moltagent that need action
         try {
           results.assignments = await this._processAssignedCards();
           this.state.lastAssignmentCheck = new Date();
@@ -1055,7 +1055,7 @@ class HeartbeatManager {
   }
 
   /**
-   * Process cards assigned to MoltAgent that need action
+   * Process cards assigned to Moltagent that need action
    */
   async _processAssignedCards() {
     try {

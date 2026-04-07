@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -348,7 +348,7 @@ class LearningLog {
    */
   _appendToLog(existing, newEntries) {
     if (!existing.trim()) {
-      return `# MoltAgent Learning Log\n\n${newEntries}`;
+      return `# Moltagent Learning Log\n\n${newEntries}`;
     }
 
     // Insert new entries after the header line

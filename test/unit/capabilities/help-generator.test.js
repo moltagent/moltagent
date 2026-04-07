@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -89,7 +89,7 @@ test('generateMainHelp includes commands section', () => {
 
   const help = gen.generateMainHelp();
 
-  assert.ok(help.includes('MoltAgent Help'));
+  assert.ok(help.includes('Moltagent Help'));
   assert.ok(help.includes('/help'));
   assert.ok(help.includes('/status'));
   assert.ok(help.includes('/capabilities'));
@@ -123,7 +123,7 @@ test('generateMainHelp works with empty registry', () => {
   const help = gen.generateMainHelp();
 
   // Should not throw, should still produce header
-  assert.ok(help.includes('MoltAgent Help'));
+  assert.ok(help.includes('Moltagent Help'));
 });
 
 // ============================================================
@@ -156,7 +156,7 @@ test('generateTopicHelp returns main help for empty topic', () => {
 
   const help = gen.generateTopicHelp('');
 
-  assert.ok(help.includes('MoltAgent Help'));
+  assert.ok(help.includes('Moltagent Help'));
 });
 
 test('generateTopicHelp returns main help for whitespace-only topic', () => {
@@ -165,7 +165,7 @@ test('generateTopicHelp returns main help for whitespace-only topic', () => {
 
   const help = gen.generateTopicHelp('   ');
 
-  assert.ok(help.includes('MoltAgent Help'));
+  assert.ok(help.includes('Moltagent Help'));
 });
 
 test('generateTopicHelp searches descriptions too', () => {

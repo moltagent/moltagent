@@ -1,5 +1,5 @@
 /**
- * Unified Error Handler for MoltAgent
+ * Unified Error Handler for Moltagent
  *
  * Centralized error handling with:
  * - Error classification into safe categories
@@ -63,7 +63,7 @@ const LOG_LEVELS = {
 };
 
 /**
- * Custom error class for MoltAgent
+ * Custom error class for Moltagent
  */
 class MoltAgentError extends Error {
   /**
@@ -98,7 +98,7 @@ class ErrorHandler {
    */
   constructor(config = {}) {
     this.auditLog = config.auditLog || (async () => {});
-    this.serviceName = config.serviceName || 'MoltAgent';
+    this.serviceName = config.serviceName || 'Moltagent';
     this.includeRequestId = config.includeRequestId || false;
     this.onError = config.onError || null;
   }

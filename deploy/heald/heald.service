@@ -1,5 +1,5 @@
 [Unit]
-Description=MoltAgent Self-Heal Daemon
+Description=Moltagent Self-Heal Daemon
 After=network.target
 
 [Service]

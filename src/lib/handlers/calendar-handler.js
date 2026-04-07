@@ -1,5 +1,5 @@
 /**
- * MoltAgent Calendar Handler
+ * Moltagent Calendar Handler
  *
  * Architecture Brief:
  * -------------------

@@ -1,5 +1,5 @@
 /**
- * MoltAgent Heartbeat Intelligence
+ * Moltagent Heartbeat Intelligence
  *
  * Proactive intelligence classes that run on the heartbeat cycle:
  *

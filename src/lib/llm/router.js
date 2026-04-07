@@ -1,5 +1,5 @@
 /**
- * MoltAgent LLM Router
+ * Moltagent LLM Router
  *
  * Routes requests to appropriate providers based on roles.
  * Implements failover chain with rate limit and budget awareness.

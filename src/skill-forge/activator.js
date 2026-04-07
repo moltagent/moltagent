@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -22,7 +22,7 @@
  * pending folder to the active skills folder. The deployment must re-scan
  * the content (defense in depth) and move NC files to the active folder.
  * Phase B1 extends this with ToolActivator, which registers forged skills
- * directly as native MoltAgent tools in the ToolRegistry.
+ * directly as native Moltagent tools in the ToolRegistry.
  *
  * Pattern: Two activators, one file.
  *   - SkillActivator (original): Async deployment pipeline with re-scan gate.

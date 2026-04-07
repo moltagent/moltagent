@@ -1,5 +1,5 @@
 /**
- * MoltAgent Deck Task Processor
+ * Moltagent Deck Task Processor
  * 
  * Processes tasks from NC Deck cards.
  * Integrates with heartbeat for automatic task pickup.
@@ -241,13 +241,13 @@ class DeckTaskProcessor {
     // Accept task from inbox (moves to queued)
     await this.deck.acceptTask(card.id, `Accepted. Processing as ${taskType} task...`);
 
-    // Ensure MoltAgent and card creator are assigned
+    // Ensure Moltagent and card creator are assigned
     await this.deck.ensureAssignments(card.id, 'queued', card.owner);
 
     // Move to working
     await this.deck.startTask(card.id, `Working on ${taskType} task...`);
 
-    // Ensure MoltAgent and card creator are assigned on the working stack
+    // Ensure Moltagent and card creator are assigned on the working stack
     try {
       await this.deck.ensureAssignments(card.id, 'working', card.owner);
     } catch (err) {
@@ -652,7 +652,7 @@ If you need more information to complete the task properly, say so clearly.
     };
 
     try {
-      // Scan ALL stacks for cards with human comments assigned to MoltAgent
+      // Scan ALL stacks for cards with human comments assigned to Moltagent
       const cardsWithFeedback = await this.deck.scanAllStacksForComments();
       results.scanned = cardsWithFeedback.length;
 
@@ -899,7 +899,7 @@ Please address the user's ${classification.type}. Be concise and helpful.
       context.originalTask = originalMatch[1].trim();
     }
 
-    const responseMatch = description.match(/## MoltAgent Response\s*\n\n([\s\S]*?)$/);
+    const responseMatch = description.match(/## Moltagent Response\s*\n\n([\s\S]*?)$/);
     if (responseMatch) {
       context.previousResponse = responseMatch[1].trim();
     }
@@ -912,7 +912,7 @@ Please address the user's ${classification.type}. Be concise and helpful.
   // ============================================================
 
   /**
-   * Scan for cards assigned to MoltAgent and determine if action is needed
+   * Scan for cards assigned to Moltagent and determine if action is needed
    * Called from heartbeat to detect new assignments
    * @returns {Promise<Object>} Processing results
    */
@@ -933,7 +933,7 @@ Please address the user's ${classification.type}. Be concise and helpful.
     };
 
     try {
-      // Scan all stacks for cards assigned to MoltAgent
+      // Scan all stacks for cards assigned to Moltagent
       const assignedCards = await this.deck.scanAssignedCards();
       results.scanned = assignedCards.length;
 
@@ -943,7 +943,7 @@ Please address the user's ${classification.type}. Be concise and helpful.
         return results;
       }
 
-      console.log(`[DeckProcessor] Found ${assignedCards.length} cards assigned to MoltAgent`);
+      console.log(`[DeckProcessor] Found ${assignedCards.length} cards assigned to Moltagent`);
 
       for (const card of assignedCards) {
         try {
@@ -1003,7 +1003,7 @@ Please address the user's ${classification.type}. Be concise and helpful.
   }
 
   /**
-   * Analyze if an assigned card needs action from MoltAgent
+   * Analyze if an assigned card needs action from Moltagent
    * @private
    * @param {Object} card - The card to analyze
    * @returns {Promise<Object>} Analysis result with action flag and reason

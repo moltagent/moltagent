@@ -1,5 +1,5 @@
 /**
- * MoltAgent Credential Cache
+ * Moltagent Credential Cache
  *
  * Thin wrapper around NCRequestManager adding credential-specific semantics:
  * - Single credential fetch with caching

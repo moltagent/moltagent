@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -272,10 +272,10 @@ asyncTest('_searchDeck returns empty for no matches — not an error', async () 
 // -- Test 18: Results include stack name and card ID --
 asyncTest('Deck results include stack name and card ID', async () => {
   const { enricher } = enricherWithDeck({
-    review: [{ id: 77, title: 'Deploy MoltAgent v2', description: 'Production deploy', duedate: '2026-03-10' }]
+    review: [{ id: 77, title: 'Deploy Moltagent v2', description: 'Production deploy', duedate: '2026-03-10' }]
   });
 
-  const result = await enricher.enrich('What about MoltAgent deploy?', 'question');
+  const result = await enricher.enrich('What about Moltagent deploy?', 'question');
   assert.ok(result.includes('Stack: review'), 'Should include stack name');
   assert.ok(result.includes('Card #77'), 'Should include card ID');
   assert.ok(result.includes('Due: 2026-03-10'), 'Should include due date');
@@ -284,18 +284,18 @@ asyncTest('Deck results include stack name and card ID', async () => {
 // -- Test 19: Deck results appear in <agent_knowledge> alongside wiki results --
 asyncTest('Deck results appear alongside wiki results in agent_knowledge', async () => {
   const wikiResults = [
-    { source: 'Wiki', title: 'MoltAgent Docs', excerpt: 'Documentation for MoltAgent' }
+    { source: 'Wiki', title: 'Moltagent Docs', excerpt: 'Documentation for Moltagent' }
   ];
   const { enricher } = enricherWithDeck(
-    { working: [{ id: 55, title: 'MoltAgent Phase 2', description: 'Phase 2 work' }] },
+    { working: [{ id: 55, title: 'Moltagent Phase 2', description: 'Phase 2 work' }] },
     wikiResults
   );
 
-  const result = await enricher.enrich('What about MoltAgent?', 'question');
+  const result = await enricher.enrich('What about Moltagent?', 'question');
   assert.ok(result.includes('source: wiki'), 'Should include wiki source');
   assert.ok(result.includes('source: deck'), 'Should include deck source');
-  assert.ok(result.includes('MoltAgent Docs'), 'Should include wiki title');
-  assert.ok(result.includes('MoltAgent Phase 2'), 'Should include deck card title');
+  assert.ok(result.includes('Moltagent Docs'), 'Should include wiki title');
+  assert.ok(result.includes('Moltagent Phase 2'), 'Should include deck card title');
 });
 
 // -- Test 20: Cache returns stale data within TTL (fast path) --

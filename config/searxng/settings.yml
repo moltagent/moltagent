@@ -1,4 +1,4 @@
-# MoltAgent Enhanced SearXNG Configuration
+# Moltagent Enhanced SearXNG Configuration
 # Overrides default settings with sovereign-first engine selection
 # Deploy: mount this as /etc/searxng/settings.yml in the SearXNG container
 

@@ -1,5 +1,5 @@
 /**
- * MoltAgent NC Collectives Client
+ * Moltagent NC Collectives Client
  *
  * API client for Nextcloud Collectives integration.
  * Enables knowledge wiki management via OCS API and WebDAV.

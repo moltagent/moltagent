@@ -1,5 +1,5 @@
 /**
- * MoltAgent Output Verifier
+ * Moltagent Output Verifier
  *
  * Security layer that checks LLM outputs before execution.
  * Blocks suspicious patterns that could indicate:

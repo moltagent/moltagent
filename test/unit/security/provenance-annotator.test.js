@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -157,7 +157,7 @@ test('TC-PA-024: _parseAgentKnowledge handles malformed entry', () => {
 
 test('TC-PA-030: _extractTokens extracts capitalized proper nouns', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
-  const tokens = pa._extractTokens('Alex works at MoltAgent');
+  const tokens = pa._extractTokens('Alex works at Moltagent');
   // Should contain the proper nouns (lowercased), not common starters
   assert.ok(tokens.has('alex'), 'should include "alex"');
   assert.ok(tokens.has('moltagent'), 'should include "moltagent"');

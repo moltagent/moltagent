@@ -1,5 +1,5 @@
 /**
- * MoltAgent Credential Broker
+ * Moltagent Credential Broker
  *
  * Secure credential management via NC Passwords API.
  *

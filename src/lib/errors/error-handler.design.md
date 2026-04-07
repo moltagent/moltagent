@@ -1,8 +1,8 @@
-# Unified Error Handling Design for MoltAgent
+# Unified Error Handling Design for Moltagent
 
 ## Architecture Brief
 
-**Problem Statement:** The MoltAgent codebase exposes internal error details (file paths, stack traces, configuration) to end users, creating a security vulnerability (P0.2). Additionally, multiple empty catch blocks silently swallow errors, making debugging difficult and potentially hiding security issues (P0.3).
+**Problem Statement:** The Moltagent codebase exposes internal error details (file paths, stack traces, configuration) to end users, creating a security vulnerability (P0.2). Additionally, multiple empty catch blocks silently swallow errors, making debugging difficult and potentially hiding security issues (P0.3).
 
 **Chosen Pattern:** Centralized Error Handler with Error Classification
 - Single module (`error-handler.js`) that acts as the error boundary between internal operations and user-facing output

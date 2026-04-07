@@ -1,5 +1,5 @@
 /**
- * MoltAgent Pending Action Store
+ * Moltagent Pending Action Store
  *
  * Architecture Brief:
  * -------------------

@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -1410,7 +1410,7 @@ Respond with ONLY the title, nothing else.`;
    *
    * Priority:
    *   1. Explicit board name from params
-   *   2. Default based on source (commitment/proactive → Personal, user request → MoltAgent Tasks)
+   *   2. Default based on source (commitment/proactive → Personal, user request → Moltagent Tasks)
    *
    * @param {Object} params - Tool call parameters
    * @param {Object} context - Execution context

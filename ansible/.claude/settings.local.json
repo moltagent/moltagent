@@ -1,7 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(NC_URL=https://nx89136.your-storageshare.de MOLTAGENT_PASSWORD=uS694pDVvnbDpmQ MOLTAGENT_USERNAME=moltagent DECK_BOARD_NAME=\"MoltAgent Tasks\" node scripts/test-deck-integration.js:*)",
+      "Bash(NC_URL=https://YOUR_NEXTCLOUD_URL MOLTAGENT_PASSWORD=uS694pDVvnbDpmQ MOLTAGENT_USERNAME=moltagent DECK_BOARD_NAME=\"Moltagent Tasks\" node scripts/test-deck-integration.js:*)",
       "WebFetch(domain:deck.readthedocs.io)",
       "Bash(curl:*)",
       "WebSearch",

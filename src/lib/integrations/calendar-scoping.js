@@ -14,7 +14,7 @@
  */
 
 /**
- * MoltAgent Calendar Alert Scoping
+ * Moltagent Calendar Alert Scoping
  *
  * Shared filter helpers that restrict calendar alerts to events relevant
  * to the instance owner. Prevents alerting on shared-calendar events

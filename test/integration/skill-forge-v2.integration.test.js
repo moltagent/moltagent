@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -290,7 +290,7 @@ asyncTest('TC-SFV2-012: Webhook tool handler calls HttpExecutor (mock fetch, ver
 
   global.fetch = mockFetch;
   try {
-    const result = await tool.handler({ text: 'Hello from MoltAgent', content: 'test' });
+    const result = await tool.handler({ text: 'Hello from Moltagent', content: 'test' });
 
     assert.ok(result.success, `Expected success, got error: ${result.error}`);
     assert.strictEqual(result.status, 200);
@@ -304,7 +304,7 @@ asyncTest('TC-SFV2-012: Webhook tool handler calls HttpExecutor (mock fetch, ver
 
     // Body should be JSON with the text field
     const body = JSON.parse(capturedOptions.body);
-    assert.strictEqual(body.text, 'Hello from MoltAgent');
+    assert.strictEqual(body.text, 'Hello from Moltagent');
   } finally {
     global.fetch = undefined;
   }

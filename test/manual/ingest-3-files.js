@@ -35,7 +35,7 @@ const CredentialBroker = require('../../src/lib/credential-broker');
 const FILES = [
   'Moltagent Development/MOLTAGENT-BRIEFING-v3.md',
   'Moltagent Development/moltagent-cost-optimization.md',
-  'Moltagent Development/MoltAgent-Security-Specification-v1.0.docx',
+  'Moltagent Development/Moltagent-Security-Specification-v1.0.docx',
 ];
 
 async function main() {

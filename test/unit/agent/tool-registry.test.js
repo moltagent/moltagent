@@ -625,7 +625,7 @@ asyncTest('deck_list_stacks resolves board and lists stacks', async () => {
     logger: silentLogger
   });
 
-  const result = await registry.execute('deck_list_stacks', { board: 'MoltAgent' });
+  const result = await registry.execute('deck_list_stacks', { board: 'Moltagent' });
   assert.ok(result.success);
   assert.ok(result.result.includes('Inbox'));
   assert.ok(result.result.includes('Done'));
@@ -653,7 +653,7 @@ asyncTest('deck_create_stack creates stack in resolved board', async () => {
   };
 
   const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
-  const result = await registry.execute('deck_create_stack', { board: 'MoltAgent', title: 'Backlog' });
+  const result = await registry.execute('deck_create_stack', { board: 'Moltagent', title: 'Backlog' });
 
   assert.ok(result.success);
   assert.strictEqual(createdBoardId, 1);
@@ -1123,7 +1123,7 @@ asyncTest('deck_share_board shares owned board', async () => {
 
   const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
   const result = await registry.execute('deck_share_board', {
-    board: 'MoltAgent',
+    board: 'Moltagent',
     participant: 'alice',
     permission: 'edit'
   });
@@ -1177,7 +1177,7 @@ asyncTest('deck_share_board with group type', async () => {
 
   const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
   const result = await registry.execute('deck_share_board', {
-    board: 'MoltAgent',
+    board: 'Moltagent',
     participant: 'dev-team',
     type: 'group',
     permission: 'manage'
@@ -1742,7 +1742,7 @@ asyncTest('deck_list_stacks output includes stack IDs', async () => {
     logger: silentLogger
   });
 
-  const result = await registry.execute('deck_list_stacks', { board: 'MoltAgent' });
+  const result = await registry.execute('deck_list_stacks', { board: 'Moltagent' });
   assert.ok(result.success);
   assert.ok(result.result.includes('ID: 301'), `Expected stack ID 301 in: ${result.result}`);
   assert.ok(result.result.includes('ID: 302'), `Expected stack ID 302 in: ${result.result}`);

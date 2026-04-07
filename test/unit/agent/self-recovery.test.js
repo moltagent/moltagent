@@ -32,7 +32,7 @@ asyncTest('TC-SR-001: createRecoveryCard creates card on Personal board', async 
     completedPart: 'Found info about NC Analytics...',
     failedAction: 'Create Deck card with findings',
     reason: 'Compound decomposition failed',
-    recoveryInstructions: 'Create card titled "NC Analytics" on MoltAgent Tasks, assign to Jordan',
+    recoveryInstructions: 'Create card titled "NC Analytics" on Moltagent Tasks, assign to Jordan',
     userId: 'Jordan',
     sessionId: 'strte9d4'
   });

@@ -1,14 +1,14 @@
 ---
 # ansible/roles/nextcloud/tasks/deck.yml
 #
-# MoltAgent NC Deck Setup Tasks
-# Enables Deck app and creates the MoltAgent Tasks board
+# Moltagent NC Deck Setup Tasks
+# Enables Deck app and creates the Moltagent Tasks board
 #
 # Variables required:
 #   - nc_url: Nextcloud URL
 #   - nc_admin_user: Admin username
 #   - nc_admin_password: Admin password
-#   - moltagent_password: MoltAgent user password
+#   - moltagent_password: Moltagent user password
 
 - name: Check if Deck app is enabled
   uri:
@@ -44,7 +44,7 @@
 # Check for existing board
 # ──────────────────────────────────────────────────────────
 
-- name: List MoltAgent user boards
+- name: List Moltagent user boards
   uri:
     url: "{{ nc_url }}/index.php/apps/deck/api/v1.0/boards"
     method: GET
@@ -57,9 +57,9 @@
     status_code: [200]
   register: deck_boards
 
-- name: Check if MoltAgent Tasks board exists
+- name: Check if Moltagent Tasks board exists
   set_fact:
-    moltagent_board: "{{ deck_boards.json | selectattr('title', 'equalto', 'MoltAgent Tasks') | list | first | default(None) }}"
+    moltagent_board: "{{ deck_boards.json | selectattr('title', 'equalto', 'Moltagent Tasks') | list | first | default(None) }}"
 
 - name: Set board_exists fact
   set_fact:
@@ -69,7 +69,7 @@
 # Create board if it doesn't exist
 # ──────────────────────────────────────────────────────────
 
-- name: Create MoltAgent Tasks board
+- name: Create Moltagent Tasks board
   uri:
     url: "{{ nc_url }}/index.php/apps/deck/api/v1.0/boards"
     method: POST
@@ -80,7 +80,7 @@
       Content-Type: "application/json"
     body_format: json
     body:
-      title: "MoltAgent Tasks"
+      title: "Moltagent Tasks"
       color: "0082c9"
     status_code: [200, 201]
   register: new_board
@@ -216,11 +216,11 @@
       Content-Type: "application/json"
     body_format: json
     body:
-      title: "👋 Welcome to MoltAgent Tasks!"
+      title: "👋 Welcome to Moltagent Tasks!"
       description: |
         # How to Use This Board
 
-        This board is where you assign tasks to your MoltAgent AI assistant.
+        This board is where you assign tasks to your Moltagent AI assistant.
 
         ## Workflow
 
@@ -228,7 +228,7 @@
         2. Add a **clear title** describing what you need
         3. Add **details** in the description
         4. Optionally add **labels**: urgent, research, writing, admin
-        5. MoltAgent will process it automatically
+        5. Moltagent will process it automatically
 
         ## Columns
 
@@ -262,9 +262,9 @@
   debug:
     msg: |
       
-      ✅ MoltAgent Deck Setup Complete
+      ✅ Moltagent Deck Setup Complete
       
-      Board: MoltAgent Tasks (ID: {{ moltagent_board_id }})
+      Board: Moltagent Tasks (ID: {{ moltagent_board_id }})
       Status: {{ 'Created new board' if not board_exists else 'Verified existing board' }}
       
       Stacks: Inbox, Queued, Working, Done, Reference

@@ -1,5 +1,5 @@
 /**
- * MoltAgent RSVP Tracker
+ * Moltagent RSVP Tracker
  *
  * Architecture Brief:
  * -------------------

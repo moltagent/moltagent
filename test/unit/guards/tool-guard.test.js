@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -547,7 +547,7 @@ test('TC-TG-084: Approval prompt contains action instructions', () => {
 test('TC-TG-085: Approval prompt format is consistent', () => {
   const guard = new ToolGuard();
   const result = guard.evaluate('execute_shell', { target: 'rm -rf /' });
-  assert.ok(result.approvalPrompt.startsWith('⚠️ MoltAgent wants to:'));
+  assert.ok(result.approvalPrompt.startsWith('⚠️ Moltagent wants to:'));
   assert.ok(result.approvalPrompt.includes('execute_shell'));
 });
 

@@ -53,8 +53,8 @@ const AGENTS_DELETE = [
   'Granite3.28b',
   // OpenInterpreter variants — keep "Open Interpreter.md"
   'OpenInterpreter',
-  // Moltbot/Moltagent variants — keep "MoltAgent.md"
-  'MoltBot', 'Moltbot', 'Moltagent Prime', 'Molti', 'MoltAgent Forge', 'moltagent', 'moltagent-demos',
+  // Moltbot/Moltagent variants — keep "Moltagent.md"
+  'MoltBot', 'Moltbot', 'Moltagent Prime', 'Molti', 'Moltagent Forge', 'moltagent', 'moltagent-demos',
   // Internal modules that aren't agents
   'BudgetEnforcer', 'DailyDigester', 'FreshnessChecker', 'HeartbeatManager', 'MeetingPreparer',
   // Misc

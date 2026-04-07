@@ -15,7 +15,7 @@
  * @version 1.0.0
  * @license AGPL-3.0
  *
- * Copyright (C) 2026 MoltAgent Contributors
+ * Copyright (C) 2026 Moltagent Contributors
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 

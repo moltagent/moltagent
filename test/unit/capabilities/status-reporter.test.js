@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -197,7 +197,7 @@ asyncTest('generateStatus includes uptime', async () => {
 
   const status = await reporter.generateStatus();
 
-  assert.ok(status.includes('MoltAgent Status Report'));
+  assert.ok(status.includes('Moltagent Status Report'));
   assert.ok(status.includes('Uptime'));
 });
 
@@ -289,7 +289,7 @@ asyncTest('generateStatus works with minimal registry', async () => {
 
   const status = await reporter.generateStatus();
 
-  assert.ok(status.includes('MoltAgent Status Report'));
+  assert.ok(status.includes('Moltagent Status Report'));
   assert.ok(status.includes('Uptime'));
 });
 

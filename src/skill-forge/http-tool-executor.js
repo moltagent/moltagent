@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -263,7 +263,7 @@ class HttpToolExecutor {
     }
 
     // Step 5: Build request headers from auth config
-    let headers = { 'User-Agent': 'MoltAgent/1.0' };
+    let headers = { 'User-Agent': 'Moltagent/1.0' };
 
     if (auth && auth.type === 'session') {
       // Session token fetched here so extras are available for body template substitution.
@@ -749,7 +749,7 @@ class HttpToolExecutor {
     const sessionMethod = (auth.session_method || 'POST').toUpperCase();
     const sessionHeaders = {
       'Content-Type': 'application/json',
-      'User-Agent': 'MoltAgent/1.0',
+      'User-Agent': 'Moltagent/1.0',
     };
 
     const sessionController = new AbortController();

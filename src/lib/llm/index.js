@@ -1,5 +1,5 @@
 /**
- * MoltAgent LLM Module
+ * Moltagent LLM Module
  *
  * Provides role-based LLM routing with failover support.
  *

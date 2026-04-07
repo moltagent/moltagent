@@ -1,5 +1,5 @@
 /**
- * AGPL-3.0 License - MoltAgent
+ * AGPL-3.0 License - Moltagent
  *
  * sendWithIcal Unit Tests
  *

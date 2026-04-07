@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -244,7 +244,7 @@ async function runTests() {
 
     const session = createSession({
       context: [
-        { role: 'system', content: 'You are MoltAgent.', timestamp: Date.now() - 5000 },
+        { role: 'system', content: 'You are Moltagent.', timestamp: Date.now() - 5000 },
         { role: 'system', content: 'Context loaded.',    timestamp: Date.now() - 4000 },
         { role: 'system', content: 'Tools available.',   timestamp: Date.now() - 3000 },
         { role: 'system', content: 'Wiki loaded.',       timestamp: Date.now() - 2000 },

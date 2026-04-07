@@ -229,7 +229,7 @@ function validateConfig(config) {
  * @returns {string} - YAML configuration example
  */
 function generateExampleConfig() {
-  return `# MoltAgent Provider Configuration
+  return `# Moltagent Provider Configuration
 # Place this file at: config/moltagent-providers.yaml
 
 # Provider definitions

@@ -1,5 +1,5 @@
 /**
- * MoltAgent CalDAV Client
+ * Moltagent CalDAV Client
  *
  * Full calendar integration for Nextcloud:
  * - Calendar discovery (owned + shared)
@@ -939,7 +939,7 @@ class CalDAVClient {
     const lines = [
       'BEGIN:VCALENDAR',
       'VERSION:2.0',
-      'PRODID:-//MoltAgent//CalDAV Client//EN',
+      'PRODID:-//Moltagent//CalDAV Client//EN',
       'CALSCALE:GREGORIAN',
       'BEGIN:VEVENT'
     ];
@@ -1151,7 +1151,7 @@ class CalDAVClient {
   }
 
   // ============================================================
-  // Convenience Methods for MoltAgent
+  // Convenience Methods for Moltagent
   // ============================================================
 
   /**

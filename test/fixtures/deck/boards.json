@@ -2,7 +2,7 @@
   "boards": [
     {
       "id": 1,
-      "title": "MoltAgent Tasks",
+      "title": "Moltagent Tasks",
       "color": "0082c9",
       "owner": {
         "uid": "admin",

@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -63,7 +63,7 @@ class HelpGenerator {
    * @returns {string} Markdown-formatted help text
    */
   generateMainHelp() {
-    const lines = ['**MoltAgent Help**\n'];
+    const lines = ['**Moltagent Help**\n'];
 
     // Commands section
     const commands = this.registry.getAllCapabilities('command');

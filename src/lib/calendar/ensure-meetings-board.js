@@ -1,7 +1,7 @@
 /**
- * AGPL-3.0 License - MoltAgent
+ * AGPL-3.0 License - Moltagent
  *
- * MoltAgent Pending Meetings Board Setup
+ * Moltagent Pending Meetings Board Setup
  *
  * Architecture Brief:
  * -------------------

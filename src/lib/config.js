@@ -1,5 +1,5 @@
 /**
- * MoltAgent Centralized Configuration
+ * Moltagent Centralized Configuration
  *
  * Architecture Brief:
  * -------------------
@@ -322,7 +322,7 @@ const config = {
   deck: {
     boardId: envInt('DECK_BOARD_ID', 8),
     archiveAfterDays: envInt('DECK_ARCHIVE_AFTER_DAYS', 180),
-    taskBoardTitle: envStr('DECK_TASK_BOARD', 'MoltAgent Tasks'),
+    taskBoardTitle: envStr('DECK_TASK_BOARD', 'Moltagent Tasks'),
     cockpitBoardTitle: envStr('DECK_COCKPIT_BOARD', 'Moltagent Cockpit'),
     personalBoardTitle: envStr('DECK_PERSONAL_BOARD', 'Personal')
   },
@@ -361,7 +361,7 @@ const config = {
       maxOutputChars: envInt('WEB_READER_MAX_CHARS', 12000),
       cacheTtlMs: envInt('WEB_READER_CACHE_TTL', 60 * 60 * 1000),
       maxCacheEntries: envInt('WEB_READER_MAX_CACHE', 50),
-      userAgent: envStr('WEB_READER_USER_AGENT', 'MoltAgent/1.0')
+      userAgent: envStr('WEB_READER_USER_AGENT', 'Moltagent/1.0')
     }
   },
 
