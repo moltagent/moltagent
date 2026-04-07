@@ -112,9 +112,13 @@ Label the active mode card with ⚙️★. The agent reads this label on heartbe
 
 ## Workflow Board Configuration
 
-Workflow boards use a special CONFIG card (first card in the first stack) to define processing rules.
+Any Deck board becomes a workflow board when its first stack contains a card with a title starting with `WORKFLOW:`. This is the rules card — its description contains the workflow instructions in natural language.
 
-The CONFIG card description contains the workflow rules in natural language. The agent reads these rules and applies them to all cards on the board.
+```
+WORKFLOW: Content Pipeline
+```
+
+The agent scans all boards on each heartbeat and detects workflow boards automatically. The rules card description tells the agent how to process cards on that board. Write rules as plain sentences — the LLM interprets them.
 
 ### Label semantics
 
