@@ -58,19 +58,19 @@ Credentials in NC Passwords are accessed by name. The folder structure below is 
 
 ```
 NC Passwords/
-  MoltAgent Core/              Shared with moltagent user
+  Moltagent Core/              Shared with moltagent user
     nc-files-token
     nc-calendar-token
     nc-contacts-token
-  MoltAgent Communication/     Shared with moltagent user
+  Moltagent Communication/     Shared with moltagent user
     email-imap
     email-smtp
     talk-bot-secret
-  MoltAgent LLM/               Shared with moltagent user
+  Moltagent LLM/               Shared with moltagent user
     claude-api-key
     deepseek-api-key
     ollama-url
-  MoltAgent Integrations/      Shared selectively
+  Moltagent Integrations/      Shared selectively
     project-specific-apis
   RESTRICTED/                  NEVER shared with moltagent
     banking-credentials

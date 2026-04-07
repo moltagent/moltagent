@@ -154,7 +154,7 @@ All environment variables have sensible defaults in `src/lib/config.js`. See tha
 
 ```ini
 [Unit]
-Description=MoltAgent - Nextcloud AI Assistant
+Description=Moltagent - Nextcloud AI Assistant
 After=network-online.target
 Wants=network-online.target
 

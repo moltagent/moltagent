@@ -44,7 +44,7 @@ This guide walks you through deploying Moltagent on Hetzner infrastructure. The 
 ## Step 2: Configure Nextcloud
 
 1. Log into your Nextcloud admin panel
-2. Install required apps: **Passwords**, **Deck**, **Collectives**, **Talk**
+2. Install required apps: **Passwords**, **Deck**, **Collectives**, **Talk**, **Mail**, **Calendar**, **Contacts**
 3. Create the `moltagent` user via the Nextcloud admin panel (Settings → Users). On a managed Storage Share, `occ` is not available — use the web interface instead.
 
 4. Create the agent's folder structure:
@@ -152,6 +152,8 @@ systemctl start moltagent
 ufw default deny outgoing
 ufw default deny incoming
 ufw allow ssh
+# Allow inbound webhook from Nextcloud Storage Share
+ufw allow in from <NC_STORAGE_SHARE_IP> to any port 3000
 ufw allow out to <NC_STORAGE_SHARE_IP> port 443
 ufw allow out to <OLLAMA_IP> port 11434
 # Allow cloud LLM APIs (skip for local-only mode)
@@ -161,7 +163,55 @@ ufw allow out to api.deepseek.com port 443
 ufw enable
 ```
 
-## Step 5: Verify
+## Step 5: Register the Talk Bot
+
+Hetzner Storage Share does not allow running arbitrary OCC commands. You need to file a support ticket.
+
+### Generate the bot secret
+
+On the Bot VM:
+
+```bash
+# Generate 128-character hex secret
+openssl rand -hex 64
+```
+
+Save this output. You will need it in two places:
+- Store it as `nc-talk-secret` in NC Passwords and share with the `moltagent` user
+- Include it in the Hetzner support ticket below
+
+### Request bot registration from Hetzner
+
+File a support ticket at Hetzner with the following:
+
+```
+Subject: Enable NC Talk Bot for Storage Share nxXXXXX
+
+Please run the following OCC command:
+
+sudo -u www-data php occ talk:bot:install \
+  --feature=webhook \
+  --feature=response \
+  "Moltagent" \
+  "<YOUR_128_CHAR_SECRET>" \
+  "http://<BOT_VM_IP>:3000/webhook/nctalk" \
+  "Moltagent AI Assistant"
+
+Thank you.
+```
+
+Replace `<YOUR_128_CHAR_SECRET>` with the secret you generated and `<BOT_VM_IP>` with your Bot VM's IPv4 address. Hetzner support typically responds within a few hours.
+
+### Configure the Talk room
+
+Once Hetzner confirms the bot is registered:
+
+1. Create a new Talk room in Nextcloud (or use an existing one)
+2. Add the Moltagent bot to the room
+3. Note the room token from the URL (the part after `/call/`)
+4. Ensure your Bot VM firewall allows inbound connections from the Storage Share IP on port 3000
+
+### Test
 
 Check that the service is running:
 
@@ -170,7 +220,7 @@ systemctl status moltagent
 journalctl -u moltagent -f
 ```
 
-Open your Nextcloud Talk and send a message to the Moltagent bot. If everything is configured correctly, it will respond.
+Send a message in the Talk room. If the webhook is configured correctly, the bot will respond.
 
 Check the [public dashboard](https://public.moltagent.cloud) architecture view for a reference of what a healthy system looks like.
 
