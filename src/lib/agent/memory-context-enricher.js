@@ -74,6 +74,7 @@ class MemoryContextEnricher {
     this._deckCache = null;
     this._deckCacheTime = 0;
     this._deckCacheTTL = 120000; // 2 minutes
+    this._boardIndex = null; // Map<boardTitle, boardId> — populated alongside _deckCache
   }
 
   /**
@@ -135,31 +136,43 @@ class MemoryContextEnricher {
   async enrich(message, intent) {
     if (SKIP_INTENTS.has(intent)) return null;
 
-    const searchTerms = this._extractSearchTerms(message);
-    if (searchTerms.length === 0) return null;
-
     try {
       const _timeout = (ms) => new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms));
 
-      // Parallel probes — wiki and deck, independent, with timeout
-      const [wikiResult, deckResult] = await Promise.allSettled([
-        Promise.race([
-          this.memorySearcher.search(searchTerms.join(' '), { maxResults: 3, scope: 'all' }),
-          _timeout(this.timeout)
-        ]),
-        Promise.race([
-          this._searchDeck(searchTerms),
-          _timeout(this.timeout)
-        ])
-      ]);
+      // Pre-warm deck cache once — board map and card search both read from it
+      if (this.deckClient) {
+        await Promise.race([this._getDeckState(), _timeout(this.timeout)]).catch(() => {});
+      }
 
-      const wikiResults = wikiResult.status === 'fulfilled' && Array.isArray(wikiResult.value) ? wikiResult.value : [];
-      const deckResults = deckResult.status === 'fulfilled' && Array.isArray(deckResult.value) ? deckResult.value : [];
+      const searchTerms = this._extractSearchTerms(message);
+
+      // Board map is always included — lets the LLM resolve board names to IDs.
+      // Wiki + deck search only run when there are search terms.
+      const promises = [
+        Promise.race([this._buildBoardMapBlock(), _timeout(this.timeout)]).catch(() => null)
+      ];
+
+      if (searchTerms.length > 0) {
+        promises.push(
+          Promise.race([
+            this.memorySearcher.search(searchTerms.join(' '), { maxResults: 3, scope: 'all' }),
+            _timeout(this.timeout)
+          ]).catch(() => []),
+          Promise.race([
+            this._searchDeck(searchTerms),
+            _timeout(this.timeout)
+          ]).catch(() => [])
+        );
+      }
+
+      const settled = await Promise.all(promises);
+      const boardMapBlock = settled[0];
+      const wikiResults = Array.isArray(settled[1]) ? settled[1] : [];
+      const deckResults = Array.isArray(settled[2]) ? settled[2] : [];
 
       const allResults = [...wikiResults, ...deckResults];
-      if (allResults.length === 0) return null;
 
-      // Format results — wiki results use existing format, deck results have their own
+      // Format search results
       const contextParts = allResults
         .filter(r => r.title || r.excerpt || r.snippet)
         .map(r => {
@@ -174,11 +187,17 @@ class MemoryContextEnricher {
           return `[source: ${source}, confidence: ${confidence}]\n${title}\n${snippet}`;
         });
 
-      if (contextParts.length === 0) return null;
+      if (contextParts.length > 0) {
+        this.logger.info(`[MemoryEnrich] Found ${contextParts.length} matches for: ${searchTerms.join(', ')}`);
+      }
 
-      this.logger.info(`[MemoryEnrich] Found ${contextParts.length} matches for: ${searchTerms.join(', ')}`);
+      if (contextParts.length === 0 && !boardMapBlock) return null;
 
-      return `<agent_knowledge>\n${contextParts.join('\n\n')}\n</agent_knowledge>`;
+      const sections = [];
+      if (boardMapBlock) sections.push(boardMapBlock);
+      if (contextParts.length > 0) sections.push(contextParts.join('\n\n'));
+
+      return `<agent_knowledge>\n${sections.join('\n\n')}\n</agent_knowledge>`;
     } catch (err) {
       if (err.message !== 'timeout') {
         this.logger.warn(`[MemoryEnrich] Search failed: ${err.message}`);
@@ -222,6 +241,7 @@ class MemoryContextEnricher {
       const boards = await this.deckClient.listBoards();
       const activeBoards = (boards || []).filter(b => !b.archived);
       const state = {};
+      const boardIndex = new Map();
 
       // Fetch stacks (with cards) for each board in parallel
       const stackResults = await Promise.allSettled(
@@ -231,6 +251,7 @@ class MemoryContextEnricher {
       for (const result of stackResults) {
         if (result.status !== 'fulfilled') continue;
         const { board, stacks } = result.value;
+        boardIndex.set(board.title, board.id);
         for (const stack of (stacks || [])) {
           const key = `${board.title}/${stack.title}`;
           const cards = (stack.cards || []).map(c => ({ ...c, _boardTitle: board.title, _boardId: board.id }));
@@ -245,6 +266,7 @@ class MemoryContextEnricher {
       }
 
       this._deckCache = state;
+      this._boardIndex = boardIndex;
       this._deckCacheTime = now;
       return state;
     } catch (err) {
@@ -347,11 +369,55 @@ class MemoryContextEnricher {
   }
 
   /**
+   * Return a lightweight board map from the cached deck state.
+   * Format: [{ id, title, stacks: [stackName, ...] }]
+   * Uses the existing 2-minute cache — no new API calls.
+   *
+   * @returns {Promise<Array<{id: number, title: string, stacks: string[]}>>}
+   */
+  async getBoardMap() {
+    if (!this.deckClient) return [];
+    try {
+      const state = await this._getDeckState();
+      // state keys are "BoardTitle/StackTitle" → group by board
+      const boards = new Map();
+      for (const key of Object.keys(state || {})) {
+        const sep = key.indexOf('/');
+        if (sep < 0) continue;
+        const boardTitle = key.substring(0, sep);
+        const stackTitle = key.substring(sep + 1);
+        if (!boards.has(boardTitle)) {
+          const boardId = this._boardIndex ? this._boardIndex.get(boardTitle) : undefined;
+          boards.set(boardTitle, { id: boardId != null ? boardId : null, title: boardTitle, stacks: [] });
+        }
+        boards.get(boardTitle).stacks.push(stackTitle);
+      }
+      return Array.from(boards.values());
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Format the board map as a <deck_boards> XML block for LLM context.
+   * @returns {Promise<string|null>}
+   */
+  async _buildBoardMapBlock() {
+    const map = await this.getBoardMap();
+    if (map.length === 0) return null;
+    const lines = map.map(b =>
+      `Board "${b.title}"${b.id != null ? ` (id: ${b.id})` : ''} — stacks: ${b.stacks.join(', ')}`
+    );
+    return `<deck_boards>\n${lines.join('\n')}\n</deck_boards>`;
+  }
+
+  /**
    * Invalidate the cached deck board state.
    * Call this after DeckExecutor operations (card created/moved/updated/deleted).
    */
   invalidateDeckCache() {
     this._deckCache = null;
+    this._boardIndex = null;
     this._deckCacheTime = 0;
   }
 }
