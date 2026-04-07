@@ -21,8 +21,8 @@ test('finds email address in message', () => {
 });
 
 test('finds "with [Name]" pattern', () => {
-  const result = extractAttendees('Lunch with Carlos Friday noon');
-  assert.ok(result.includes('Carlos'), `expected Carlos, got: ${result}`);
+  const result = extractAttendees('Lunch with Alex Friday noon');
+  assert.ok(result.includes('Alex'), `expected Alex, got: ${result}`);
 });
 
 test('finds "with [First Last]" including accented characters', () => {

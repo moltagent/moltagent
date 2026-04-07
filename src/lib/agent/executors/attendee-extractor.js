@@ -34,7 +34,7 @@ const FALSE_POSITIVES = new Set([
 
 /**
  * Trim trailing false-positive words from a captured name.
- * "Carlos Friday" → "Carlos" (Friday is a day name)
+ * "Alex Friday" → "Alex" (Friday is a day name)
  * @param {string} name
  * @returns {string}
  * @private

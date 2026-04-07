@@ -42,14 +42,14 @@ test('buildClassificationPrompt() is exported as a static function', () => {
 test('buildClassificationPrompt("EN") contains English examples', () => {
   const prompt = IntentRouter.buildClassificationPrompt('EN');
   assert.ok(prompt.includes('Create a board for content planning'), 'Should have EN deck example');
-  assert.ok(prompt.includes('Send an email to Carlos'), 'Should have EN email example');
+  assert.ok(prompt.includes('Send an email to Alex'), 'Should have EN email example');
   assert.ok(prompt.includes('Book a meeting for Tuesday'), 'Should have EN calendar example');
 });
 
 test('buildClassificationPrompt("DE") contains German examples', () => {
   const prompt = IntentRouter.buildClassificationPrompt('DE');
   assert.ok(prompt.includes('Erstelle ein Board'), 'Should have DE deck example');
-  assert.ok(prompt.includes('Schicke Carlos eine E-Mail'), 'Should have DE email example');
+  assert.ok(prompt.includes('Schicke Alex eine E-Mail'), 'Should have DE email example');
   assert.ok(prompt.includes('Buche ein Meeting'), 'Should have DE calendar example');
   assert.ok(prompt.includes('Hallo'), 'Should have DE greeting example');
 });
@@ -57,7 +57,7 @@ test('buildClassificationPrompt("DE") contains German examples', () => {
 test('buildClassificationPrompt("PT") contains Portuguese examples', () => {
   const prompt = IntentRouter.buildClassificationPrompt('PT');
   assert.ok(prompt.includes('Cria um board'), 'Should have PT deck example');
-  assert.ok(prompt.includes('Envia um email ao Carlos'), 'Should have PT email example');
+  assert.ok(prompt.includes('Envia um email ao Alex'), 'Should have PT email example');
   assert.ok(prompt.includes('Olá'), 'Should have PT greeting example');
 });
 

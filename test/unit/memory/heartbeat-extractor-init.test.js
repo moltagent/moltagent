@@ -165,7 +165,7 @@ asyncTest('New preference page gets decay_days: 365', async () => {
 asyncTest('Appending to existing page does NOT overwrite frontmatter', async () => {
   const wiki = createMockWikiClient();
   // Pre-create a page with existing content (no frontmatter, like legacy pages)
-  wiki.getPages()['People/Carlos'] = '# Carlos\n\n- Existing fact\n';
+  wiki.getPages()['People/Alex'] = '# Alex\n\n- Existing fact\n';
 
   const extractor = new HeartbeatExtractor({
     activityLogger: createMockActivityLogger(makeEntries(5)),
@@ -174,7 +174,7 @@ asyncTest('Appending to existing page does NOT overwrite frontmatter', async () 
       writePageContent: async (name, content) => { wiki.getPages()[name] = content; },
     },
     llmRouter: createMockRouter(JSON.stringify({
-      people: [{ name: 'Carlos', fact: 'VP of Marketing' }],
+      people: [{ name: 'Alex', fact: 'VP of Marketing' }],
     })),
     logger: silentLogger,
   });
@@ -182,7 +182,7 @@ asyncTest('Appending to existing page does NOT overwrite frontmatter', async () 
 
   await extractor.tick();
 
-  const content = wiki.getPages()['People/Carlos'];
+  const content = wiki.getPages()['People/Alex'];
   assert.ok(content.includes('Existing fact'), 'Should preserve existing content');
   assert.ok(content.includes('VP of Marketing'), 'Should append new fact');
   // Should NOT have frontmatter since page already existed

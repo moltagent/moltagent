@@ -124,9 +124,9 @@ asyncTest('TC-SPT-010: session page includes filtered claims section', async () 
   });
 
   const session = buildSession([
-    userEntry('Tell me about Carlos'),
-    assistantEntry('Carlos works at TheCatalyne', [
-      { text: 'Carlos works at TheCatalyne', trust: 'grounded', provenance: 'wiki', sourceRefs: ['wiki:People/Carlos'], confidence: 0.9 }
+    userEntry('Tell me about Alex'),
+    assistantEntry('Alex works at @user-123', [
+      { text: 'Alex works at @user-123', trust: 'grounded', provenance: 'wiki', sourceRefs: ['wiki:People/Alex'], confidence: 0.9 }
     ]),
     userEntry('What about Phoenix?'),
     assistantEntry('Phoenix might relate to Berlin office', [
@@ -189,7 +189,7 @@ asyncTest('TC-SPT-020: myth alerts section appears in session page', async () =>
     trustLevel: 'relaxed'  // relaxed so nothing is filtered, only myths shown
   });
 
-  const mythClaim = 'Sarah runs the Q3 campaign at ManeraMedia';
+  const mythClaim = 'Sarah runs the Q3 campaign at AcmeCorp';
   const mythSeg = { text: mythClaim, trust: 'ungrounded', provenance: 'model', sourceRefs: [], confidence: 0.1 };
 
   const session = buildSession([

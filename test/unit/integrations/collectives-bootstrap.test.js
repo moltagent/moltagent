@@ -221,14 +221,14 @@ asyncTest('shareWithAdmin sends correct Circles API call', async () => {
   const mockNC = createBootstrapMock([]);
   const client = new CollectivesClient(mockNC);
 
-  const result = await client.shareWithAdmin('Funana');
+  const result = await client.shareWithAdmin('Jordan');
 
   assert.strictEqual(result.success, true);
-  assert.ok(result.message.includes('Funana'));
+  assert.ok(result.message.includes('Jordan'));
 
   // Verify Circles API was called with correct body
   assert.strictEqual(mockNC._calls.circles.length, 1);
-  assert.strictEqual(mockNC._calls.circles[0].body.userId, 'Funana');
+  assert.strictEqual(mockNC._calls.circles[0].body.userId, 'Jordan');
   assert.strictEqual(mockNC._calls.circles[0].body.type, 1);
   assert.ok(mockNC._calls.circles[0].url.includes('circle-abc-123'));
 });
@@ -237,7 +237,7 @@ asyncTest('shareWithAdmin with already-member returns success', async () => {
   const mockNC = createBootstrapMock([], { circleStatus: 400 });
   const client = new CollectivesClient(mockNC);
 
-  const result = await client.shareWithAdmin('Funana');
+  const result = await client.shareWithAdmin('Jordan');
 
   assert.strictEqual(result.success, true);
   assert.ok(result.message.includes('already a member'));

@@ -73,7 +73,7 @@ test('TC-TG-010: aggressive — grounded segment passes', () => {
   const gate = new TrustGate({ trustLevel: 'aggressive', logger: silentLogger });
   const entries = [
     assistantEntry([
-      { text: 'Carlos works at TheCatalyne', trust: 'grounded', provenance: 'wiki', sourceRefs: ['wiki:People/Carlos'], confidence: 0.9 }
+      { text: 'Alex works at AcmeCorp', trust: 'grounded', provenance: 'wiki', sourceRefs: ['wiki:People/Alex'], confidence: 0.9 }
     ])
   ];
   const { kept, filtered } = gate.filter(entries);
@@ -85,7 +85,7 @@ test('TC-TG-011: aggressive — verified segment passes', () => {
   const gate = new TrustGate({ trustLevel: 'aggressive', logger: silentLogger });
   const entries = [
     assistantEntry([
-      { text: 'Email sent to carlos@thecatalyne.com', trust: 'verified', provenance: 'tool', sourceRefs: ['tool:email'], confidence: 0.95 }
+      { text: 'Email sent to alex@example.com', trust: 'verified', provenance: 'tool', sourceRefs: ['tool:email'], confidence: 0.95 }
     ])
   ];
   const { kept, filtered } = gate.filter(entries);
@@ -110,7 +110,7 @@ test('TC-TG-013: aggressive — stated segment filtered', () => {
   const gate = new TrustGate({ trustLevel: 'aggressive', logger: silentLogger });
   const entries = [
     assistantEntry([
-      { text: 'You mentioned Carlos is your colleague', trust: 'stated', provenance: 'user', sourceRefs: ['user:current'], confidence: 0.8 }
+      { text: 'You mentioned Alex is your colleague', trust: 'stated', provenance: 'user', sourceRefs: ['user:current'], confidence: 0.8 }
     ])
   ];
   const { kept, filtered } = gate.filter(entries);
@@ -122,13 +122,13 @@ test('TC-TG-014: aggressive — mixed segments partially kept', () => {
   const gate = new TrustGate({ trustLevel: 'aggressive', logger: silentLogger });
   const entries = [
     assistantEntry([
-      { text: 'Carlos works at TheCatalyne', trust: 'grounded', provenance: 'wiki', sourceRefs: [], confidence: 0.9 },
+      { text: 'Alex works at AcmeCorp', trust: 'grounded', provenance: 'wiki', sourceRefs: [], confidence: 0.9 },
       { text: 'He might be in Berlin', trust: 'ungrounded', provenance: 'model', sourceRefs: [], confidence: 0.1 }
     ])
   ];
   const { kept, filtered } = gate.filter(entries);
   assert.strictEqual(kept.length, 1);
-  assert.ok(kept[0].content.includes('Carlos'));
+  assert.ok(kept[0].content.includes('Alex'));
   assert.ok(!kept[0].content.includes('Berlin'));
   assert.strictEqual(filtered.length, 1);
 });
@@ -141,7 +141,7 @@ test('TC-TG-020: balanced — grounded passes', () => {
   const gate = new TrustGate({ trustLevel: 'balanced', logger: silentLogger });
   const entries = [
     assistantEntry([
-      { text: 'Carlos works at TheCatalyne', trust: 'grounded', provenance: 'wiki', sourceRefs: [], confidence: 0.9 }
+      { text: 'Alex works at AcmeCorp', trust: 'grounded', provenance: 'wiki', sourceRefs: [], confidence: 0.9 }
     ])
   ];
   const { kept } = gate.filter(entries);
@@ -152,7 +152,7 @@ test('TC-TG-021: balanced — stated passes', () => {
   const gate = new TrustGate({ trustLevel: 'balanced', logger: silentLogger });
   const entries = [
     assistantEntry([
-      { text: 'You said Carlos is your colleague', trust: 'stated', provenance: 'user', sourceRefs: [], confidence: 0.8 }
+      { text: 'You said Alex is your colleague', trust: 'stated', provenance: 'user', sourceRefs: [], confidence: 0.8 }
     ])
   ];
   const { kept, filtered } = gate.filter(entries);
@@ -174,7 +174,7 @@ test('TC-TG-022: balanced — ungrounded not repeated → filtered', () => {
 
 test('TC-TG-023: balanced — ungrounded repeated 3x → passes', () => {
   const gate = new TrustGate({ trustLevel: 'balanced', logger: silentLogger });
-  const repeatedText = 'Sarah runs the campaign at ManeraMedia';
+  const repeatedText = 'Sarah runs the campaign at AcmeCorp';
   const seg = { text: repeatedText, trust: 'ungrounded', provenance: 'model', sourceRefs: [], confidence: 0.2 };
   const entries = [
     assistantEntry([seg]),

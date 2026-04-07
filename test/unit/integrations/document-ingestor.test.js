@@ -104,7 +104,7 @@ asyncTest('processFile extracts text and runs entity extraction', async () => {
     ncFilesClient: makeNcFilesClient(),
     textExtractor: makeTextExtractor({
       extract: async () => ({
-        text: 'Sarah Chen leads Project Phoenix at TheCatalyne. More text to pass the minimum threshold check here.',
+        text: 'Sarah Chen leads Project Phoenix at @user-123. Adding more text to pass the minimum threshold check here.',
         truncated: false,
         totalLength: 100,
       }),
@@ -114,11 +114,11 @@ asyncTest('processFile extracts text and runs entity extraction', async () => {
         entityCalled = true;
         entityTitle = title;
         return {
-          summary: 'This document discusses Project Phoenix led by Sarah Chen at TheCatalyne.',
+          summary: 'This document discusses Project Phoenix led by Sarah Chen at @user-123.',
           entities: [
-            { name: 'Sarah Chen',      type: 'person',       significance: 'high', description: 'Leads Project Phoenix at TheCatalyne as principal engineer and project director.' },
-            { name: 'Project Phoenix', type: 'project',      significance: 'high', description: 'Main project at TheCatalyne focused on cloud infrastructure modernization.' },
-            { name: 'TheCatalyne',     type: 'organization', significance: 'high', description: 'Parent company for all projects in the enterprise solutions division.' },
+            { name: 'Sarah Chen',      type: 'person',       significance: 'high', description: 'Leads Project Phoenix at @user-123 as principal engineer and project director.' },
+            { name: 'Project Phoenix', type: 'project',      significance: 'high', description: 'Main project at @user-123 focused on cloud infrastructure modernization.' },
+            { name: '@user-123',     type: 'organization', significance: 'high', description: 'Parent company for all projects in the enterprise solutions division.' },
           ],
         };
       },
@@ -459,16 +459,16 @@ asyncTest('processFile skips entity wiki page when page already exists', async (
     ncFilesClient: makeNcFilesClient(),
     textExtractor: makeTextExtractor({
       extract: async () => ({
-        text: 'Carlos leads the team at TheCatalyne. More text to pass the minimum threshold check here and there, yes.',
+        text: 'Alex leads the team at @user-123. More text to pass the minimum threshold check here and there, yes.',
         truncated: false,
         totalLength: 100,
       }),
     }),
     entityExtractor: makeEntityExtractor({
       extractEntitiesFromDocument: async () => ({
-        summary: 'About Carlos at TheCatalyne.',
+        summary: 'About Alex at @user-123.',
         entities: [
-          { name: 'Carlos', type: 'person', significance: 'high', description: 'Team lead' },
+          { name: 'Alex', type: 'person', significance: 'high', description: 'Team lead' },
         ],
       }),
     }),
@@ -479,7 +479,7 @@ asyncTest('processFile skips entity wiki page when page already exists', async (
       },
       listPages: async (section) => {
         if (section === 'People') {
-          return { pages: [{ title: 'Carlos' }], method: 'ocs' };
+          return { pages: [{ title: 'Alex' }], method: 'ocs' };
         }
         return { pages: [], method: 'ocs' };
       },
@@ -503,16 +503,16 @@ asyncTest('processFile only creates wiki pages for high-significance entities', 
     ncFilesClient: makeNcFilesClient(),
     textExtractor: makeTextExtractor({
       extract: async () => ({
-        text: 'DeepSeek and Claude are used in the pipeline. Carlos manages it. Enough text to pass the threshold here.',
+        text: 'DeepSeek and Claude are used in the pipeline. Alex manages it. Enough text to pass the threshold here.',
         truncated: false,
         totalLength: 100,
       }),
     }),
     entityExtractor: makeEntityExtractor({
       extractEntitiesFromDocument: async () => ({
-        summary: 'Pipeline uses DeepSeek and Claude, managed by Carlos.',
+        summary: 'Pipeline uses DeepSeek and Claude, managed by Alex.',
         entities: [
-          { name: 'Carlos',     type: 'person',  significance: 'high',   description: 'Pipeline manager at the team responsible for coordinating LLM model deployments.' },
+          { name: 'Alex',     type: 'person',  significance: 'high',   description: 'Pipeline manager at the team responsible for coordinating LLM model deployments.' },
           { name: 'DeepSeek',   type: 'tool',    significance: 'medium', description: 'LLM model used in the pipeline for inference tasks and classification.' },
           { name: 'Claude',     type: 'tool',    significance: 'medium', description: 'LLM model developed by Anthropic used for reasoning and analysis tasks.' },
           { name: 'Zero Trust', type: 'concept', significance: 'low',    description: 'Security concept that requires verification of every request to the system.' },
@@ -531,12 +531,12 @@ asyncTest('processFile only creates wiki pages for high-significance entities', 
 
   const result = await ingestor.processFile('Documents/pipeline.txt');
 
-  assert.strictEqual(result.entityPagesCreated, 1, 'Only Carlos (high significance person) should get a page');
+  assert.strictEqual(result.entityPagesCreated, 1, 'Only Alex (high significance person) should get a page');
   assert.strictEqual(result.entitiesFound, 4, 'All 4 entities should be counted');
 
   const entityPage = wikiPages.find(p => p.section === 'People');
   assert.ok(entityPage, 'People page should exist');
-  assert.strictEqual(entityPage.name, 'Carlos');
+  assert.strictEqual(entityPage.name, 'Alex');
 
   // No tool or concept pages
   assert.ok(!wikiPages.find(p => p.name === 'DeepSeek'),   'No page for medium-significance tool');

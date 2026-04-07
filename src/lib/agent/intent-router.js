@@ -55,7 +55,7 @@ const CLASSIFICATION_EXAMPLES = {
     action: `
   Examples:
   "Create a board for content planning" → action, domain: deck
-  "Send an email to Carlos" → action, domain: email
+  "Send an email to Alex" → action, domain: email
   "Book a meeting for Tuesday at 3pm" → action, domain: calendar
   "Do I have events today?" → action, domain: calendar
   "What's on my calendar this week?" → action, domain: calendar
@@ -68,14 +68,14 @@ const CLASSIFICATION_EXAMPLES = {
   "Upload the report" → action, domain: file`,
     compound: `
   Examples:
-  "Check if Carlos is available Tuesday and book a meeting" → compound, domain: calendar
+  "Check if Alex is available Tuesday and book a meeting" → compound, domain: calendar
   "What's the status of onboarding and create a follow-up task" → compound, domain: deck
   "Research what Analytics can do. Create a card with the findings." → compound, domain: deck
   "What does Nextcloud Forms do? Put it on a Deck card for me." → compound, domain: deck
   "Look into the project status. Send me a summary by email." → compound, domain: email`,
     knowledge: `
   Examples (ALL factual questions are knowledge — "What is X?", "Who does X?", "How does X work?"):
-  "Who is Carlos?" → knowledge
+  "Who is Alex?" → knowledge
   "What's the status of onboarding?" → knowledge
   "What boards do I have?" → knowledge
   "What's the weather in Lisbon?" → knowledge
@@ -84,7 +84,7 @@ const CLASSIFICATION_EXAMPLES = {
   "How does document ingestion work?" → knowledge
   "Explain the trust boundary to me" → knowledge
   "What can you do?" → knowledge
-  "What is OpenClaw?" → knowledge
+  "What is AutoAgent?" → knowledge
   "Tell me about the memory architecture" → knowledge`,
     thinking: `
   Examples (ONLY explicit reflection, opinion, or hypothetical — never factual questions):
@@ -101,7 +101,7 @@ const CLASSIFICATION_EXAMPLES = {
     action: `
   Beispiele:
   "Erstelle ein Board für Content-Planung" → action, domain: deck
-  "Schicke Carlos eine E-Mail" → action, domain: email
+  "Schicke Alex eine E-Mail" → action, domain: email
   "Buche ein Meeting für Dienstag um 15 Uhr" → action, domain: calendar
   "Habe ich heute Termine?" → action, domain: calendar
   "Was steht diese Woche im Kalender?" → action, domain: calendar
@@ -114,13 +114,13 @@ const CLASSIFICATION_EXAMPLES = {
   "Lade den Bericht hoch" → action, domain: file`,
     compound: `
   Beispiele:
-  "Prüfe ob Carlos am Dienstag verfügbar ist und buche ein Meeting" → compound, domain: calendar
+  "Prüfe ob Alex am Dienstag verfügbar ist und buche ein Meeting" → compound, domain: calendar
   "Was ist der Stand beim Onboarding und erstelle eine Folgeaufgabe" → compound, domain: deck
   "Recherchiere was Analytics kann. Schreib die Ergebnisse auf eine Karte." → compound, domain: deck
   "Was macht Nextcloud Forms? Pack es auf eine Deck-Karte." → compound, domain: deck`,
     knowledge: `
   Beispiele (ALLE Sachfragen sind knowledge — "Was ist X?", "Wer macht X?", "Wie funktioniert X?"):
-  "Wer ist Carlos?" → knowledge
+  "Wer ist Alex?" → knowledge
   "Wie ist der Stand beim Onboarding?" → knowledge
   "Welche Boards habe ich?" → knowledge
   "Wie ist das Wetter in Berlin?" → knowledge
@@ -142,7 +142,7 @@ const CLASSIFICATION_EXAMPLES = {
     action: `
   Exemplos:
   "Cria um board para planeamento de conteúdo" → action, domain: deck
-  "Envia um email ao Carlos" → action, domain: email
+  "Envia um email ao Alex" → action, domain: email
   "Marca uma reunião para terça às 15h" → action, domain: calendar
   "Tenho eventos hoje?" → action, domain: calendar
   "O que tenho no calendário esta semana?" → action, domain: calendar
@@ -154,13 +154,13 @@ const CLASSIFICATION_EXAMPLES = {
   "Carrega o relatório" → action, domain: file`,
     compound: `
   Exemplos:
-  "Verifica se o Carlos está disponível terça e marca uma reunião" → compound, domain: calendar
+  "Verifica se o Alex está disponível terça e marca uma reunião" → compound, domain: calendar
   "Qual é o estado do onboarding e cria uma tarefa de follow-up" → compound, domain: deck
   "Pesquisa o que o Analytics faz. Cria um cartão com os resultados." → compound, domain: deck
   "O que faz o Nextcloud Forms? Põe num cartão do Deck." → compound, domain: deck`,
     knowledge: `
   Exemplos (TODAS as perguntas factuais são knowledge — "O que é X?", "Quem faz X?", "Como funciona X?"):
-  "Quem é o Carlos?" → knowledge
+  "Quem é o Alex?" → knowledge
   "Qual é o estado do onboarding?" → knowledge
   "Que boards é que tenho?" → knowledge
   "Como está o tempo em Lisboa?" → knowledge
@@ -181,17 +181,17 @@ const CLASSIFICATION_EXAMPLES = {
     action: `
   Exemples:
   "Crée un board pour la planification de contenu" → action, domain: deck
-  "Envoie un email à Carlos" → action, domain: email
+  "Envoie un email à Alex" → action, domain: email
   "Réserve une réunion pour mardi à 15h" → action, domain: calendar
   "Déplace la carte d'onboarding vers Terminé" → action, domain: deck
   "Sauvegarde ça dans le wiki" → action, domain: wiki`,
     compound: `
   Exemples:
-  "Vérifie si Carlos est disponible mardi et réserve une réunion" → compound, domain: calendar
+  "Vérifie si Alex est disponible mardi et réserve une réunion" → compound, domain: calendar
   "Recherche ce que fait Analytics. Crée une carte avec les résultats." → compound, domain: deck`,
     knowledge: `
   Exemples (TOUTES les questions factuelles sont knowledge — "Qu'est-ce que X ?", "Qui fait X ?", "Comment fonctionne X ?"):
-  "Qui est Carlos ?" → knowledge
+  "Qui est Alex ?" → knowledge
   "Quel est le statut de l'onboarding ?" → knowledge
   "Quel temps fait-il à Paris ?" → knowledge
   "Qu'est-ce que le HeartbeatManager ?" → knowledge
@@ -209,17 +209,17 @@ const CLASSIFICATION_EXAMPLES = {
     action: `
   Ejemplos:
   "Crea un board para planificación de contenido" → action, domain: deck
-  "Envía un email a Carlos" → action, domain: email
+  "Envía un email a Alex" → action, domain: email
   "Reserva una reunión para el martes a las 15h" → action, domain: calendar
   "Mueve la tarjeta de onboarding a Hecho" → action, domain: deck
   "Guarda esto en el wiki" → action, domain: wiki`,
     compound: `
   Ejemplos:
-  "Comprueba si Carlos está disponible el martes y reserva una reunión" → compound, domain: calendar
+  "Comprueba si Alex está disponible el martes y reserva una reunión" → compound, domain: calendar
   "Investiga qué hace Analytics. Crea una tarjeta con los resultados." → compound, domain: deck`,
     knowledge: `
   Ejemplos (TODAS las preguntas factuales son knowledge — "¿Qué es X?", "¿Quién hace X?", "¿Cómo funciona X?"):
-  "¿Quién es Carlos?" → knowledge
+  "¿Quién es Alex?" → knowledge
   "¿Cuál es el estado del onboarding?" → knowledge
   "¿Qué tiempo hace en Madrid?" → knowledge
   "¿Qué es el HeartbeatManager?" → knowledge

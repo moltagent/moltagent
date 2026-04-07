@@ -60,20 +60,20 @@ asyncTest('Remember creates page titled with entity name from LLM extraction', a
   // Second route call: entity extraction → proper entity info
   const executor = new WikiExecutor({
     router: createSequenceRouter([
-      { result: JSON.stringify({ action: 'remember', fact: 'Carlos from TheCatalyne, email carlos@thecatalyne.com', topic: 'contacts' }) },
-      { result: JSON.stringify({ page_title: 'Carlos', section: 'People', entity_type: 'person', fields: { name: 'Carlos', company: 'TheCatalyne', email: 'carlos@thecatalyne.com' } }) }
+      { result: JSON.stringify({ action: 'remember', fact: 'Alex from @user-123, email alex@example.com', topic: 'contacts' }) },
+      { result: JSON.stringify({ page_title: 'Alex', section: 'People', entity_type: 'person', fields: { name: 'Alex', company: '@user-123', email: 'alex@example.com' } }) }
     ]),
     toolRegistry: registry,
     logger: silentLogger
   });
 
-  const result = await executor.execute('Remember Carlos from TheCatalyne, email carlos@thecatalyne.com', { userName: 'alice' });
+  const result = await executor.execute('Remember Alex from @user-123, email alex@example.com', { userName: 'alice' });
   const resp = getResponse(result);
-  assert.ok(resp.includes('Carlos'), `Should confirm entity name in response, got: ${resp}`);
+  assert.ok(resp.includes('Alex'), `Should confirm entity name in response, got: ${resp}`);
 
   const writeCall = registry.getCallsFor('wiki_write')[0];
   assert.ok(writeCall, 'Should call wiki_write');
-  assert.strictEqual(writeCall.args.page_title, 'Carlos', 'Page title should be entity name "Carlos", not "contacts"');
+  assert.strictEqual(writeCall.args.page_title, 'Alex', 'Page title should be entity name "Alex", not "contacts"');
   assert.strictEqual(writeCall.args.parent, 'People', 'Parent should be "People" from entity extraction');
 });
 
@@ -85,14 +85,14 @@ asyncTest('Remember page has frontmatter with type and structured fields', async
 
   const executor = new WikiExecutor({
     router: createSequenceRouter([
-      { result: JSON.stringify({ action: 'remember', fact: 'Carlos from TheCatalyne, email carlos@thecatalyne.com' }) },
-      { result: JSON.stringify({ page_title: 'Carlos', section: 'People', entity_type: 'person', fields: { name: 'Carlos', company: 'TheCatalyne', email: 'carlos@thecatalyne.com' } }) }
+      { result: JSON.stringify({ action: 'remember', fact: 'Alex from @user-123, email alex@example.com' }) },
+      { result: JSON.stringify({ page_title: 'Alex', section: 'People', entity_type: 'person', fields: { name: 'Alex', company: '@user-123', email: 'alex@example.com' } }) }
     ]),
     toolRegistry: registry,
     logger: silentLogger
   });
 
-  await executor.execute('Remember Carlos from TheCatalyne', { userName: 'alice' });
+  await executor.execute('Remember Alex from @user-123', { userName: 'alice' });
 
   const writeCall = registry.getCallsFor('wiki_write')[0];
   const content = writeCall.args.content;
@@ -100,9 +100,9 @@ asyncTest('Remember page has frontmatter with type and structured fields', async
   assert.ok(content.includes('type: person'), 'Frontmatter should include type: person');
   assert.ok(content.includes('confidence: medium'), 'Frontmatter should include confidence');
   assert.ok(content.includes('last_verified:'), 'Frontmatter should include last_verified');
-  assert.ok(content.includes('email: carlos@thecatalyne.com'), 'Frontmatter should include email field');
-  assert.ok(content.includes('company: TheCatalyne'), 'Frontmatter should include company field');
-  assert.ok(content.includes('# Carlos'), 'Content should have entity name as heading');
+  assert.ok(content.includes('email: alex@example.com'), 'Frontmatter should include email field');
+  assert.ok(content.includes('company: @user-123'), 'Frontmatter should include company field');
+  assert.ok(content.includes('# Alex'), 'Content should have entity name as heading');
 });
 
 // -- Test 3: Remember project creates page under Projects --
@@ -139,25 +139,25 @@ asyncTest('EntityExtractor.extractFromPage called after successful wiki write', 
   const mockExtractor = {
     extractFromPage: async (title, content) => {
       extractorCalls.push({ title, content });
-      return { entities: [{ name: 'Carlos', type: 'person' }] };
+      return { entities: [{ name: 'Alex', type: 'person' }] };
     }
   };
 
   const executor = new WikiExecutor({
     router: createSequenceRouter([
-      { result: JSON.stringify({ action: 'remember', fact: 'Carlos from TheCatalyne' }) },
-      { result: JSON.stringify({ page_title: 'Carlos', section: 'People', entity_type: 'person', fields: {} }) }
+      { result: JSON.stringify({ action: 'remember', fact: 'Alex from @user-123' }) },
+      { result: JSON.stringify({ page_title: 'Alex', section: 'People', entity_type: 'person', fields: {} }) }
     ]),
     toolRegistry: registry,
     entityExtractor: mockExtractor,
     logger: silentLogger
   });
 
-  await executor.execute('Remember Carlos from TheCatalyne', { userName: 'alice' });
+  await executor.execute('Remember Alex from @user-123', { userName: 'alice' });
 
   assert.strictEqual(extractorCalls.length, 1, 'EntityExtractor.extractFromPage should be called once');
-  assert.ok(extractorCalls[0].title.includes('Carlos'), 'Should pass page path containing entity name');
-  assert.ok(extractorCalls[0].content.includes('Carlos from TheCatalyne'), 'Should pass page content');
+  assert.ok(extractorCalls[0].title.includes('Alex'), 'Should pass page path containing entity name');
+  assert.ok(extractorCalls[0].content.includes('Alex from @user-123'), 'Should pass page content');
 });
 
 // -- Test 5: EntityExtractor failure doesn't block wiki write --
@@ -172,19 +172,19 @@ asyncTest('EntityExtractor failure does not block wiki write response', async ()
 
   const executor = new WikiExecutor({
     router: createSequenceRouter([
-      { result: JSON.stringify({ action: 'remember', fact: 'Carlos from TheCatalyne' }) },
-      { result: JSON.stringify({ page_title: 'Carlos', section: 'People', entity_type: 'person', fields: {} }) }
+      { result: JSON.stringify({ action: 'remember', fact: 'Alex from @user-123' }) },
+      { result: JSON.stringify({ page_title: 'Alex', section: 'People', entity_type: 'person', fields: {} }) }
     ]),
     toolRegistry: registry,
     entityExtractor: mockExtractor,
     logger: silentLogger
   });
 
-  const result = await executor.execute('Remember Carlos from TheCatalyne', { userName: 'alice' });
+  const result = await executor.execute('Remember Alex from @user-123', { userName: 'alice' });
   const resp = getResponse(result);
 
   // Wiki write should still succeed
-  assert.ok(resp.includes('Carlos'), `Response should confirm wiki write despite extractor failure, got: ${resp}`);
+  assert.ok(resp.includes('Alex'), `Response should confirm wiki write despite extractor failure, got: ${resp}`);
   assert.ok(resp.includes('Saved'), `Should report saved, got: ${resp}`);
   assert.strictEqual(registry.getCallsFor('wiki_write').length, 1, 'Wiki write should complete');
 });
@@ -239,19 +239,19 @@ asyncTest('_formatKnowledgePage produces correct frontmatter + content structure
     logger: silentLogger
   });
 
-  const page = executor._formatKnowledgePage('Carlos', {
+  const page = executor._formatKnowledgePage('Alex', {
     entity_type: 'person',
-    fields: { email: 'carlos@thecatalyne.com', company: 'TheCatalyne', role: 'CTO' }
-  }, 'Carlos from TheCatalyne is our partner contact');
+    fields: { email: 'alex@example.com', company: '@user-123', role: 'CTO' }
+  }, 'Alex from @user-123 is our partner contact');
 
   const lines = page.split('\n');
   assert.strictEqual(lines[0], '---', 'First line should be frontmatter delimiter');
   assert.ok(lines[1].includes('type: person'), 'Should have type');
-  assert.ok(page.includes('email: carlos@thecatalyne.com'), 'Should have email field');
-  assert.ok(page.includes('company: TheCatalyne'), 'Should have company field');
+  assert.ok(page.includes('email: alex@example.com'), 'Should have email field');
+  assert.ok(page.includes('company: @user-123'), 'Should have company field');
   assert.ok(page.includes('role: CTO'), 'Should have role field');
-  assert.ok(page.includes('# Carlos'), 'Should have entity heading');
-  assert.ok(page.includes('Carlos from TheCatalyne is our partner contact'), 'Should include raw content');
+  assert.ok(page.includes('# Alex'), 'Should have entity heading');
+  assert.ok(page.includes('Alex from @user-123 is our partner contact'), 'Should include raw content');
 
   // Frontmatter should be closed
   const fmEnd = page.indexOf('---', 3);

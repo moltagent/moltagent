@@ -52,9 +52,9 @@ function createRouter(providerResponse) {
 // KNOWLEDGE GATE (default — 6 tests)
 // ============================================================
 
-asyncTest('TG-01: "What\'s Carlos\'s email?" → knowledge (NOT email)', async () => {
+asyncTest('TG-01: "What\'s Alex\'s email?" → knowledge (NOT email)', async () => {
   const router = createRouter('{"gate":"knowledge","confidence":0.9}');
-  const result = await router.classify("What's Carlos's email?");
+  const result = await router.classify("What's Alex's email?");
   assert.strictEqual(result.gate, 'knowledge');
   assert.strictEqual(result.domain, null);
   // Backward compat
@@ -69,9 +69,9 @@ asyncTest('TG-02: "What\'s the status of onboarding?" → knowledge (NOT deck)',
   assert.strictEqual(result.intent, 'knowledge');
 });
 
-asyncTest('TG-03: "Who do we know at TheCatalyne?" → knowledge', async () => {
+asyncTest('TG-03: "Who do we know at AcmeCorp?" → knowledge', async () => {
   const router = createRouter('{"gate":"knowledge","confidence":0.9}');
-  const result = await router.classify("Who do we know at TheCatalyne?");
+  const result = await router.classify("Who do we know at AcmeCorp?");
   assert.strictEqual(result.gate, 'knowledge');
   assert.strictEqual(result.domain, null);
 });
@@ -110,9 +110,9 @@ asyncTest('TG-07: "Create a board called Sprint Planning" → action, deck', asy
   assert.strictEqual(result.intent, 'deck');
 });
 
-asyncTest('TG-08: "Send an email to Carlos about the meeting" → action, email', async () => {
+asyncTest('TG-08: "Send an email to Alex about the meeting" → action, email', async () => {
   const router = createRouter('{"gate":"action","domain":"email","confidence":0.95}');
-  const result = await router.classify("Send an email to Carlos about the meeting");
+  const result = await router.classify("Send an email to Alex about the meeting");
   assert.strictEqual(result.gate, 'action');
   assert.strictEqual(result.domain, 'email');
   assert.strictEqual(result.intent, 'email');
@@ -146,9 +146,9 @@ asyncTest('TG-11: "Remember this: Project X uses React" → action, wiki', async
 // COMPOUND GATE (2 tests)
 // ============================================================
 
-asyncTest('TG-12: "Check Carlos\'s availability and book a meeting" → compound', async () => {
+asyncTest('TG-12: "Check Alex\'s availability and book a meeting" → compound', async () => {
   const router = createRouter('{"gate":"compound","domain":"calendar","confidence":0.85}');
-  const result = await router.classify("Check Carlos's availability and book a meeting");
+  const result = await router.classify("Check Alex's availability and book a meeting");
   assert.strictEqual(result.gate, 'compound');
   assert.strictEqual(result.domain, 'calendar');
   assert.strictEqual(result.compound, true);
@@ -251,7 +251,7 @@ test('TG-20: Legacy LLM response {"intent":"greeting"} maps to greeting gate', (
 
 test('TG-21: Regex fallback: action verb + domain → action gate', () => {
   const router = createRouter('');
-  const result = router._regexFallback('send an email to Carlos');
+  const result = router._regexFallback('send an email to Alex');
   assert.strictEqual(result.gate, 'action');
   assert.strictEqual(result.domain, 'email');
 });

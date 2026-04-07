@@ -90,7 +90,7 @@ class MemoryContextEnricher {
 
     const terms = new Set();
 
-    // Capitalized multi-word names: "Sarah Miller", "Project X", "ManeraMedia"
+    // Capitalized multi-word names: "Sarah Miller", "Project X", "AcmeCorp"
     const capitalizedPattern = /(?:^|\s)([A-Z][a-zA-Z]{2,}(?:\s+[A-Z][a-zA-Z]{2,})*)/g;
     let match;
     while ((match = capitalizedPattern.exec(message)) !== null) {

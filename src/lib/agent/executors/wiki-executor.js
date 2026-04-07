@@ -93,7 +93,7 @@ If the message is NOT about wiki/knowledge, set requires_clarification to true.
 
 Action rules:
 - "introspect" = structural/listing query with NO specific topic. Examples: "What's in your wiki?", "List your pages", "Show me your knowledge base"
-- "read" = query about a SPECIFIC topic. Examples: "What do you know about Carlos?", "What do you know about reading documents?", "Tell me about the onboarding process"
+- "read" = query about a SPECIFIC topic. Examples: "What do you know about Alex?", "What do you know about reading documents?", "Tell me about the onboarding process"
 - If the message mentions a topic ("about X", a name, a subject), use "read" with that topic — never "introspect"
 
 Message: "${message.substring(0, 300)}"`;
@@ -162,7 +162,7 @@ Message: "${message.substring(0, 300)}"`;
     }
 
     // Build candidate titles: original + possessive-stripped variant
-    // "Funana's Preferences" → also try "Funana Preferences"
+    // "Jordan's Preferences" → also try "Jordan Preferences"
     const stripped = title.replace(/['\u2019]s\b/g, '');
     const candidates = stripped !== title ? [title, stripped] : [title];
 
@@ -572,7 +572,7 @@ Field templates by entity_type:
 - topic: { name, summary }
 
 Examples:
-- "Carlos from TheCatalyne, email carlos@thecatalyne.com" → page_title: "Carlos", section: "People", entity_type: "person", fields: { name: "Carlos", company: "TheCatalyne", email: "carlos@thecatalyne.com" }
+- "Alex from @user-123, email alex@example.com" → page_title: "Alex", section: "People", entity_type: "person", fields: { name: "Alex", company: "@user-123", email: "alex@example.com" }
 - "Project Phoenix is our Q1 internal tooling initiative, led by Fu" → page_title: "Project Phoenix", section: "Projects", entity_type: "project", fields: { name: "Project Phoenix", lead: "Fu", goal: "internal tooling initiative", timeline: "Q1" }
 - "We decided to move to Postgres on Jan 15, rationale: better JSON support" → page_title: "Move to Postgres", section: "Decisions", entity_type: "decision", fields: { name: "Move to Postgres", date: "Jan 15", outcome: "move to Postgres", rationale: "better JSON support" }
 - "The deploy procedure runs weekly, depends on CI passing" → page_title: "Deploy Procedure", section: "Procedures", entity_type: "procedure", fields: { name: "Deploy Procedure", frequency: "weekly", dependencies: "CI passing" }
@@ -663,7 +663,7 @@ Content: "${content.substring(0, 500)}"`;
    * @private
    */
   async _searchViaMemory(query) {
-    // Strip possessives — "Funana's Preferences" → "Funana Preferences"
+    // Strip possessives — "Jordan's Preferences" → "Jordan Preferences"
     // NC Unified Search tokenizer chokes on apostrophe-s
     const cleaned = query.replace(/['\u2019]s\b/g, '');
     const queries = cleaned !== query ? [cleaned, query] : [query];

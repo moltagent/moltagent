@@ -52,8 +52,8 @@ const SAMPLE_VCARD_FOLDED = [
 const SAMPLE_VCARD_WITH_PARAMS = [
   'BEGIN:VCARD',
   'VERSION:3.0',
-  'FN;CHARSET=UTF-8:Carlos Pereira',
-  'N;CHARSET=UTF-8:Pereira;Carlos;;;',
+  'FN;CHARSET=UTF-8:Alex Pereira',
+  'N;CHARSET=UTF-8:Pereira;Alex;;;',
   'ORG;CHARSET=UTF-8:Org Corp',
   'TITLE;CHARSET=UTF-8:Director',
   'UID;VALUE=TEXT:uid-carlos-123',
@@ -309,8 +309,8 @@ test('_parseVCard handles properties with parameters (CHARSET etc)', () => {
   const contact = client._parseVCard(SAMPLE_VCARD_WITH_PARAMS);
 
   // With the fixed regex, params should NOT be captured as part of the value
-  assert.strictEqual(contact.name, 'Carlos Pereira');
-  assert.strictEqual(contact.firstName, 'Carlos');
+  assert.strictEqual(contact.name, 'Alex Pereira');
+  assert.strictEqual(contact.firstName, 'Alex');
   assert.strictEqual(contact.lastName, 'Pereira');
   assert.strictEqual(contact.org, 'Org Corp');
   assert.strictEqual(contact.title, 'Director');

@@ -402,7 +402,7 @@ asyncTest('backfillAll processes non-Meta, non-stub pages', async () => {
     readPageContent: async (path) => {
       if (path.includes('Meta')) return 'meta content';
       if (path.includes('Stub')) return 'short';  // < 50 chars
-      if (path.includes('Sarah')) return 'Sarah Chen is a developer at TheCatalyne. She works with [[Project Phoenix]].';
+      if (path.includes('Sarah')) return 'Sarah Chen is a developer at AcmeCorp. She works with [[Project Phoenix]].';
       if (path.includes('Phoenix')) return 'Project Phoenix is the Q1 internal tooling initiative led by Fu.';
       return null;
     }
@@ -547,7 +547,7 @@ test('addTriple() accepts expanded predicates (led_by, works_at, etc)', () => {
 
   const projId = graph.addEntity('Project Phoenix', 'project');
   const fuId = graph.addEntity('Fu', 'person');
-  const coId = graph.addEntity('TheCatalyne', 'organization');
+  const coId = graph.addEntity('AcmeCorp', 'organization');
 
   graph.addTriple(projId, 'led_by', fuId);
   graph.addTriple(fuId, 'works_at', coId);

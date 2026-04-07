@@ -132,7 +132,7 @@ test('TC-PE-05: _isTrivial() returns false for substantive messages', () => {
   const evaluator = new ProactiveEvaluator({ config: {} });
 
   const result = evaluator._isTrivial({
-    userMessage: 'I just spoke with Sarah from ManeraMedia about the proposal',
+    userMessage: 'I just spoke with Sarah from AcmeCorp about the proposal',
     classification: 'deck'
   });
 
@@ -147,7 +147,7 @@ asyncTest('TC-PE-06: _triage() calls llmRouter.route with job:quick and prompt c
   const mockRouter = createMockLLMRouter({ result: 'yes' });
   const evaluator = new ProactiveEvaluator({ llmRouter: mockRouter, config: {} });
 
-  const userMessage = 'Sarah from ManeraMedia wants the proposal by Friday';
+  const userMessage = 'Sarah from AcmeCorp wants the proposal by Friday';
   await evaluator._triage({ userMessage, assistantResponse: 'OK' });
 
   assert.ok(mockRouter.lastCall, 'route should have been called');
@@ -168,7 +168,7 @@ asyncTest('TC-PE-07: _triage() returns true when LLM says "yes"', async () => {
   const evaluator = new ProactiveEvaluator({ llmRouter: mockRouter, config: {} });
 
   const result = await evaluator._triage({
-    userMessage: 'We need to track the ManeraMedia deal',
+    userMessage: 'We need to track the AcmeCorp deal',
     assistantResponse: 'Understood.'
   });
 
@@ -233,7 +233,7 @@ asyncTest('TC-PE-11: _executeProactive() calls agentLoop.process with proactive 
   const evaluator = new ProactiveEvaluator({ agentLoop: mockLoop, config: {} });
 
   const context = {
-    userMessage: 'Sarah from ManeraMedia is our new contact',
+    userMessage: 'Sarah from AcmeCorp is our new contact',
     assistantResponse: 'Noted.',
     classification: 'deck',
     roomToken: 'room-abc'
@@ -260,7 +260,7 @@ asyncTest('TC-PE-12: _executeProactive() includes action ledger entries in promp
   const evaluator = new ProactiveEvaluator({ agentLoop: mockLoop, config: {} });
 
   const context = {
-    userMessage: 'Add a task for the ManeraMedia proposal',
+    userMessage: 'Add a task for the AcmeCorp proposal',
     assistantResponse: 'Task added.',
     classification: 'deck',
     roomToken: 'room-xyz',
@@ -337,7 +337,7 @@ test('TC-PE-16: _extractNotification() returns "none" for null/empty result', ()
 
 asyncTest('TC-PE-17: evaluate() sends notification to Talk when action taken', async () => {
   const mockRouter = createMockLLMRouter({ result: 'yes' });
-  const mockLoop = createMockAgentLoop('NOTIFY: Created page for Sarah from ManeraMedia');
+  const mockLoop = createMockAgentLoop('NOTIFY: Created page for Sarah from AcmeCorp');
   const mockTalk = createMockTalkQueue();
 
   const evaluator = new ProactiveEvaluator({
@@ -348,7 +348,7 @@ asyncTest('TC-PE-17: evaluate() sends notification to Talk when action taken', a
   });
 
   const context = {
-    userMessage: 'Sarah from ManeraMedia wants proposal by Friday',
+    userMessage: 'Sarah from AcmeCorp wants proposal by Friday',
     assistantResponse: 'OK created event',
     classification: 'calendar',
     roomToken: 'room1'
@@ -414,7 +414,7 @@ asyncTest('TC-PE-19: evaluate() catches all errors (never throws)', async () => 
   });
 
   const context = {
-    userMessage: 'Sarah from ManeraMedia wants the contract reviewed',
+    userMessage: 'Sarah from AcmeCorp wants the contract reviewed',
     assistantResponse: 'I will handle that.',
     classification: 'deck',
     roomToken: 'room3'

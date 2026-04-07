@@ -427,21 +427,21 @@ console.log('\n=== MemorySearcher Three-Channel Fusion Tests ===\n');
     // Two results: one from /People/ path, one from generic path
     // Both have the same keyword score, so the typed page should rank higher
     const ncClient = createMockNCSearchClient([
-      { title: 'Carlos', excerpt: 'Contact at TheCatalyne', link: '/apps/collectives/Moltagent Knowledge/People/Carlos' },
-      { title: 'Meeting Notes', excerpt: 'Discussed TheCatalyne', link: '/apps/collectives/Moltagent Knowledge/Meeting Notes' }
+      { title: 'Alex', excerpt: 'Contact at @user-123', link: '/apps/collectives/Moltagent Knowledge/People/Alex' },
+      { title: 'Meeting Notes', excerpt: 'Discussed @user-123', link: '/apps/collectives/Moltagent Knowledge/Meeting Notes' }
     ]);
     const searcher = new MemorySearcher({
       ncSearchClient: ncClient,
       logger: silentLogger
     });
 
-    const results = await searcher.search('TheCatalyne');
+    const results = await searcher.search('@user-123');
 
     assert.ok(results.length >= 2, 'Should return both results');
-    // Carlos (People path, 2x) should rank above Meeting Notes (no multiplier)
-    const carlosIdx = results.findIndex(r => r.title === 'Carlos');
+    // Alex (People path, 2x) should rank above Meeting Notes (no multiplier)
+    const carlosIdx = results.findIndex(r => r.title === 'Alex');
     const meetingIdx = results.findIndex(r => r.title === 'Meeting Notes');
-    assert.ok(carlosIdx < meetingIdx, `Carlos (People/ 2x) should rank above Meeting Notes, got idx ${carlosIdx} vs ${meetingIdx}`);
+    assert.ok(carlosIdx < meetingIdx, `Alex (People/ 2x) should rank above Meeting Notes, got idx ${carlosIdx} vs ${meetingIdx}`);
   });
 
   // --------------------------------------------------------------------------

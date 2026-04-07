@@ -61,13 +61,13 @@ function createMockLlmRouter(responses) {
 
 asyncTest('TC-CI-001: Simple query → compound: false', async () => {
   const router = createRouter('{"intent":"knowledge","compound":false}');
-  const result = await router.classify("What's Carlos's email?");
+  const result = await router.classify("What's Alex's email?");
   assert.strictEqual(result.compound, false);
 });
 
 asyncTest('TC-CI-002: Compound query → compound: true', async () => {
   const router = createRouter('{"intent":"knowledge","compound":true}');
-  const result = await router.classify("Check Carlos's email and book a meeting with him");
+  const result = await router.classify("Check Alex's email and book a meeting with him");
   assert.strictEqual(result.compound, true);
 });
 
@@ -115,15 +115,15 @@ test('TC-CI-006: Classification prompt includes COMPOUND gate section', () => {
 asyncTest('TC-CI-007: Decomposition produces valid plan with steps', async () => {
   const plan = {
     steps: [
-      { id: 1, type: 'probe', source: 'wiki', query: 'Carlos email' },
-      { id: 2, type: 'probe', source: 'calendar', query: 'Carlos next 14 days' },
+      { id: 1, type: 'probe', source: 'wiki', query: 'Alex email' },
+      { id: 2, type: 'probe', source: 'calendar', query: 'Alex next 14 days' },
       { id: 3, type: 'synthesis', query: 'Summarize', depends_on: [1, 2] }
     ]
   };
   const decomposer = new IntentDecomposer({
     llmRouter: createMockLlmRouter(JSON.stringify(plan))
   });
-  const result = await decomposer.decompose('Check Carlos email and his calendar');
+  const result = await decomposer.decompose('Check Alex email and his calendar');
   assert.ok(result, 'Should return a plan');
   assert.ok(Array.isArray(result.steps), 'Plan should have steps array');
   assert.strictEqual(result.steps.length, 3);
@@ -135,7 +135,7 @@ asyncTest('TC-CI-008: Decomposition failure returns null', async () => {
   const decomposer = new IntentDecomposer({
     llmRouter: createMockLlmRouter('not valid json at all')
   });
-  const result = await decomposer.decompose('Check Carlos email');
+  const result = await decomposer.decompose('Check Alex email');
   // The _cleanJson will extract {} which has no steps → null
   assert.strictEqual(result, null);
 });
@@ -160,14 +160,14 @@ test('TC-CI-010: if_empty condition — step returned nothing → execute', () =
 test('TC-CI-011: if_empty condition — step returned results → skip', () => {
   const decomposer = new IntentDecomposer({});
   const results = new Map();
-  results.set(2, { results: [{ title: 'Meeting with Carlos' }] });
+  results.set(2, { results: [{ title: 'Meeting with Alex' }] });
   assert.strictEqual(decomposer._evaluateCondition('if_empty:2', results), false);
 });
 
 test('TC-CI-012: if_found condition — step returned results → execute', () => {
   const decomposer = new IntentDecomposer({});
   const results = new Map();
-  results.set(1, { results: [{ title: 'Carlos email' }] });
+  results.set(1, { results: [{ title: 'Alex email' }] });
   assert.strictEqual(decomposer._evaluateCondition('if_found:1', results), true);
 });
 
@@ -194,17 +194,17 @@ test('TC-CI-015: Unknown condition → execute by default', () => {
 
 asyncTest('TC-CI-016: Plan with parallel probes executes all probes', async () => {
   const plan = {
-    originalMessage: 'Check Carlos email and calendar',
+    originalMessage: 'Check Alex email and calendar',
     steps: [
-      { id: 1, type: 'probe', source: 'wiki', query: 'Carlos email' },
-      { id: 2, type: 'probe', source: 'deck', query: 'Carlos tasks' },
+      { id: 1, type: 'probe', source: 'wiki', query: 'Alex email' },
+      { id: 2, type: 'probe', source: 'deck', query: 'Alex tasks' },
       { id: 3, type: 'synthesis', query: 'Summarize', depends_on: [1, 2] }
     ]
   };
 
   const probed = [];
   const probeExecutor = {
-    probeWiki: async (terms) => { probed.push('wiki'); return [{ title: 'Carlos', snippet: 'carlos@test.com' }]; },
+    probeWiki: async (terms) => { probed.push('wiki'); return [{ title: 'Alex', snippet: 'carlos@test.com' }]; },
     probeDeck: async (terms) => { probed.push('deck'); return [{ title: 'Onboarding', snippet: '[Working] Onboarding' }]; },
     probeCalendar: async () => [],
     probeGraph: async () => [],
@@ -212,7 +212,7 @@ asyncTest('TC-CI-016: Plan with parallel probes executes all probes', async () =
   };
 
   const decomposer = new IntentDecomposer({
-    llmRouter: createMockLlmRouter('Here are the results for Carlos.')
+    llmRouter: createMockLlmRouter('Here are the results for Alex.')
   });
 
   const response = await decomposer.executePlan(plan, { probeExecutor });
@@ -306,15 +306,15 @@ test('TC-CI-020: Plain-text fallback formats results without LLM', () => {
   const plan = {
     originalMessage: 'test',
     steps: [
-      { id: 1, type: 'probe', source: 'wiki', query: 'Carlos' },
+      { id: 1, type: 'probe', source: 'wiki', query: 'Alex' },
       { id: 2, type: 'synthesis', query: 'Summarize', depends_on: [1] }
     ]
   };
   const results = new Map();
-  results.set(1, { source: 'wiki', results: [{ title: 'Carlos', snippet: 'carlos@test.com' }], provenance: 'stored_knowledge' });
+  results.set(1, { source: 'wiki', results: [{ title: 'Alex', snippet: 'carlos@test.com' }], provenance: 'stored_knowledge' });
 
   const formatted = decomposer._formatResultsPlain(plan, results);
-  assert.ok(formatted.includes('Carlos'), 'Should include result title');
+  assert.ok(formatted.includes('Alex'), 'Should include result title');
   assert.ok(formatted.includes('carlos@test.com'), 'Should include result snippet');
 });
 

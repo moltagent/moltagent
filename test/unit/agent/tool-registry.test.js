@@ -34,12 +34,12 @@ function createMockDeckClient(cards = {}) {
     ensureBoard: async () => ({ boardId: 1, stacks: {} }),
     listBoards: async () => [
       { id: 1, title: DECK.boards.tasks, owner: { uid: 'moltagent' } },
-      { id: 2, title: 'Marketing', owner: { uid: 'funana' } }
+      { id: 2, title: 'Marketing', owner: { uid: 'jordan' } }
     ],
     getBoard: async (boardId) => ({
       id: boardId,
       title: boardId === 1 ? DECK.boards.tasks : 'Marketing',
-      owner: { uid: boardId === 1 ? 'moltagent' : 'funana' },
+      owner: { uid: boardId === 1 ? 'moltagent' : 'jordan' },
       stacks: [
         { id: 301, title: 'Inbox', cards: [{ id: 10 }] },
         { id: 302, title: 'Done', cards: [] }

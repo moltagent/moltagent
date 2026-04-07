@@ -98,12 +98,12 @@ test('TC-PA-014: _segmentResponse handles single sentence no terminator', () => 
 
 test('TC-PA-020: _parseAgentKnowledge parses wiki entry', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
-  const block = '<agent_knowledge>\n[source: wiki, confidence: high]\nPeople/Carlos\nCarlos is the CTO.\n</agent_knowledge>';
+  const block = '<agent_knowledge>\n[source: wiki, confidence: high]\nPeople/Alex\nAlex is the CTO.\n</agent_knowledge>';
   const entries = pa._parseAgentKnowledge(block);
   assert.strictEqual(entries.length, 1);
   assert.strictEqual(entries[0].type, 'wiki');
-  assert.ok(entries[0].content.includes('Carlos is the CTO'));
-  assert.strictEqual(entries[0].ref, 'wiki:People/Carlos');
+  assert.ok(entries[0].content.includes('Alex is the CTO'));
+  assert.strictEqual(entries[0].ref, 'wiki:People/Alex');
   assert.strictEqual(entries[0].confidence, 'high');
 });
 
@@ -122,8 +122,8 @@ test('TC-PA-022: _parseAgentKnowledge parses multiple entries', () => {
   const block = [
     '<agent_knowledge>',
     '[source: wiki, confidence: high]',
-    'People/Carlos',
-    'Carlos is the CTO of TheCatalyne. His email is carlos@thecatalyne.com.',
+    'People/Alex',
+    'Alex is the CTO of AcmeCorp. His email is alex@example.com.',
     '',
     '[source: deck, match: title, confidence: high]',
     'Card #42: "Fix login bug"',
@@ -157,9 +157,9 @@ test('TC-PA-024: _parseAgentKnowledge handles malformed entry', () => {
 
 test('TC-PA-030: _extractTokens extracts capitalized proper nouns', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
-  const tokens = pa._extractTokens('Carlos works at MoltAgent');
+  const tokens = pa._extractTokens('Alex works at MoltAgent');
   // Should contain the proper nouns (lowercased), not common starters
-  assert.ok(tokens.has('carlos'), 'should include "carlos"');
+  assert.ok(tokens.has('alex'), 'should include "alex"');
   assert.ok(tokens.has('moltagent'), 'should include "moltagent"');
   // 'The' (if present) should be excluded as a common starter
   assert.ok(!tokens.has('the'), 'should exclude "the"');
@@ -167,8 +167,8 @@ test('TC-PA-030: _extractTokens extracts capitalized proper nouns', () => {
 
 test('TC-PA-031: _extractTokens extracts email addresses', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
-  const tokens = pa._extractTokens('Contact carlos@example.com for details');
-  assert.ok(tokens.has('carlos@example.com'), 'should include email address');
+  const tokens = pa._extractTokens('Contact alex@example.com for details');
+  assert.ok(tokens.has('alex@example.com'), 'should include email address');
 });
 
 test('TC-PA-032: _extractTokens extracts ISO dates', () => {
@@ -214,14 +214,14 @@ test('TC-PA-036: _extractTokens extracts natural dates', () => {
 
 test('TC-PA-040: _overlapScore returns 1.0 for identical sets', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
-  const a = new Set(['carlos', 'thecatalyne', 'cto']);
-  const b = new Set(['carlos', 'thecatalyne', 'cto']);
+  const a = new Set(['alex', 'acmecorp', 'cto']);
+  const b = new Set(['alex', 'acmecorp', 'cto']);
   assert.strictEqual(pa._overlapScore(a, b), 1.0);
 });
 
 test('TC-PA-041: _overlapScore returns 0 for disjoint sets', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
-  const a = new Set(['carlos', 'thecatalyne']);
+  const a = new Set(['alex', 'acmecorp']);
   const b = new Set(['alice', 'acme']);
   assert.strictEqual(pa._overlapScore(a, b), 0);
 });
@@ -229,15 +229,15 @@ test('TC-PA-041: _overlapScore returns 0 for disjoint sets', () => {
 test('TC-PA-042: _overlapScore returns 0 for empty tokensA', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
   const a = new Set();
-  const b = new Set(['carlos', 'thecatalyne']);
+  const b = new Set(['alex', 'acmecorp']);
   assert.strictEqual(pa._overlapScore(a, b), 0);
 });
 
 test('TC-PA-043: _overlapScore computes partial overlap correctly', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
   // tokensA has 4 tokens, 2 match tokensB -> score = 2/4 = 0.5
-  const a = new Set(['carlos', 'thecatalyne', 'cto', 'engineer']);
-  const b = new Set(['carlos', 'thecatalyne', 'alice', 'acme']);
+  const a = new Set(['alex', 'acmecorp', 'cto', 'engineer']);
+  const b = new Set(['alex', 'acmecorp', 'alice', 'acme']);
   assert.strictEqual(pa._overlapScore(a, b), 0.5);
 });
 
@@ -246,8 +246,8 @@ test('TC-PA-044: _overlapScore is directional (A/B not B/A)', () => {
   // A has 1 token, B has 3 tokens, 1 overlaps
   // score(A, B) = 1/1 = 1.0
   // score(B, A) = 1/3 ≈ 0.333
-  const a = new Set(['carlos']);
-  const b = new Set(['carlos', 'thecatalyne', 'cto']);
+  const a = new Set(['alex']);
+  const b = new Set(['alex', 'acmecorp', 'cto']);
   const scoreAB = pa._overlapScore(a, b);
   const scoreBA = pa._overlapScore(b, a);
   assert.strictEqual(scoreAB, 1.0);
@@ -261,14 +261,14 @@ test('TC-PA-044: _overlapScore is directional (A/B not B/A)', () => {
 
 test('TC-PA-050: _findGrounding returns grounded when agent_knowledge overlaps >= 0.5', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
-  // Segment about Carlos at TheCatalyne — should match the wiki entry heavily
-  const segment = { text: 'Carlos is the CTO of TheCatalyne.' };
+  // Segment about Alex at AcmeCorp — should match the wiki entry heavily
+  const segment = { text: 'Alex is the CTO of AcmeCorp.' };
   const sources = {
     agentKnowledge: [
       {
         type: 'wiki',
-        content: 'Carlos is the CTO of TheCatalyne. His email is carlos@thecatalyne.com.',
-        ref: 'wiki:People/Carlos',
+        content: 'Alex is the CTO of AcmeCorp. His email is alex@example.com.',
+        ref: 'wiki:People/Alex',
         confidence: 'high',
       },
     ],
@@ -284,12 +284,12 @@ test('TC-PA-050: _findGrounding returns grounded when agent_knowledge overlaps >
 
 test('TC-PA-051: _findGrounding returns stated when user message overlaps >= 0.3', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
-  // Segment echoes what the user said about Carlos
-  const segment = { text: 'Carlos joined TheCatalyne last year.' };
+  // Segment echoes what the user said about Alex
+  const segment = { text: 'Alex joined AcmeCorp last year.' };
   const sources = {
     agentKnowledge: [],
-    // User message contains Carlos and TheCatalyne — overlap should meet threshold
-    userMessage: 'Tell me about Carlos at TheCatalyne.',
+    // User message contains Alex and AcmeCorp — overlap should meet threshold
+    userMessage: 'Tell me about Alex at AcmeCorp.',
     actionLedger: [],
   };
   const result = pa._findGrounding(segment, sources);
@@ -324,8 +324,8 @@ test('TC-PA-053: _findGrounding returns ungrounded when no overlap meets thresho
     agentKnowledge: [
       {
         type: 'wiki',
-        content: 'Carlos is the CTO of TheCatalyne.',
-        ref: 'wiki:People/Carlos',
+        content: 'Alex is the CTO of AcmeCorp.',
+        ref: 'wiki:People/Alex',
         confidence: 'high',
       },
     ],
@@ -346,8 +346,8 @@ test('TC-PA-054: _findGrounding returns ungrounded for empty token segments', ()
     agentKnowledge: [
       {
         type: 'wiki',
-        content: 'Carlos is the CTO of TheCatalyne.',
-        ref: 'wiki:People/Carlos',
+        content: 'Alex is the CTO of AcmeCorp.',
+        ref: 'wiki:People/Alex',
         confidence: 'high',
       },
     ],
@@ -363,18 +363,18 @@ test('TC-PA-055: _findGrounding prefers grounded over stated', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
   // Segment tokens overlap with both wiki knowledge AND user message
   // Grounded (wiki) should take priority
-  const segment = { text: 'Carlos is the CTO of TheCatalyne.' };
+  const segment = { text: 'Alex is the CTO of AcmeCorp.' };
   const sources = {
     agentKnowledge: [
       {
         type: 'wiki',
-        content: 'Carlos is the CTO of TheCatalyne. His email is carlos@thecatalyne.com.',
-        ref: 'wiki:People/Carlos',
+        content: 'Alex is the CTO of AcmeCorp. His email is alex@example.com.',
+        ref: 'wiki:People/Alex',
         confidence: 'high',
       },
     ],
-    // User message also mentions Carlos and TheCatalyne
-    userMessage: 'What can you tell me about Carlos at TheCatalyne?',
+    // User message also mentions Alex and AcmeCorp
+    userMessage: 'What can you tell me about Alex at AcmeCorp?',
     actionLedger: [],
   };
   const result = pa._findGrounding(segment, sources);
@@ -402,7 +402,7 @@ test('TC-PA-061: annotate returns empty result for empty string response', () =>
 
 test('TC-PA-062: annotate produces correct segment structure', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
-  const response = 'Carlos is the CTO.';
+  const response = 'Alex is the CTO.';
   const contextSources = {
     agentKnowledge: null,
     userMessage: '',
@@ -422,12 +422,12 @@ test('TC-PA-062: annotate produces correct segment structure', () => {
 test('TC-PA-063: annotate computes groundedRatio correctly', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
   // Two sentences: one overlaps heavily with knowledge (grounded), one invents a new entity (ungrounded)
-  const response = 'Carlos is the CTO of TheCatalyne. Zephyrus rules the Xanadu galaxy.';
+  const response = 'Alex is the CTO of AcmeCorp. Zephyrus rules the Xanadu galaxy.';
   const agentKnowledge = [
     '<agent_knowledge>',
     '[source: wiki, confidence: high]',
-    'People/Carlos',
-    'Carlos is the CTO of TheCatalyne. His email is carlos@thecatalyne.com.',
+    'People/Alex',
+    'Alex is the CTO of AcmeCorp. His email is alex@example.com.',
     '</agent_knowledge>',
   ].join('\n');
   const contextSources = {
@@ -456,20 +456,20 @@ test('TC-PA-064: annotate with full context sources end-to-end', () => {
   const agentKnowledge = [
     '<agent_knowledge>',
     '[source: wiki, confidence: high]',
-    'People/Carlos',
-    'Carlos is the CTO of TheCatalyne. His email is carlos@thecatalyne.com.',
+    'People/Alex',
+    'Alex is the CTO of AcmeCorp. His email is alex@example.com.',
     '',
     '[source: deck, match: title, confidence: high]',
     'Card #42: "Fix login bug"',
     'Stack: To Do',
     '</agent_knowledge>',
   ].join('\n');
-  const response = 'Carlos is the CTO of TheCatalyne. Card #42 is in the To Do stack.';
+  const response = 'Alex is the CTO of AcmeCorp. Card #42 is in the To Do stack.';
   const contextSources = {
     agentKnowledge,
-    userMessage: 'Tell me about Carlos and the login bug.',
+    userMessage: 'Tell me about Alex and the login bug.',
     actionLedger: [
-      { type: 'wiki_lookup', refs: ['People/Carlos'] },
+      { type: 'wiki_lookup', refs: ['People/Alex'] },
     ],
   };
   const result = pa.annotate(response, contextSources);
@@ -483,7 +483,7 @@ test('TC-PA-064: annotate with full context sources end-to-end', () => {
     assert.ok(typeof seg.confidence === 'number');
     assert.ok(seg.confidence >= 0 && seg.confidence <= 1);
   }
-  // At least the Carlos segment should be grounded against the wiki entry
+  // At least the Alex segment should be grounded against the wiki entry
   const groundedSegs = result.segments.filter(s => s.trust === 'grounded');
   assert.ok(groundedSegs.length > 0, 'at least one segment should be grounded');
 });
@@ -491,7 +491,7 @@ test('TC-PA-064: annotate with full context sources end-to-end', () => {
 test('TC-PA-065: annotate handles missing contextSources gracefully', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
   // Missing fields: null contextSources, undefined individual fields
-  const response = 'Carlos is the CTO of TheCatalyne.';
+  const response = 'Alex is the CTO of AcmeCorp.';
 
   // Should not throw with null contextSources
   const result1 = pa.annotate(response, null);
@@ -512,12 +512,12 @@ test('TC-PA-065: annotate handles missing contextSources gracefully', () => {
 test('TC-PA-066: annotate performance — < 50ms for typical response', () => {
   const pa = new ProvenanceAnnotator({ logger: silentLogger });
 
-  // ~10 sentence response covering Carlos, TheCatalyne, and a bug card
+  // ~10 sentence response covering Alex, AcmeCorp, and a bug card
   const response = [
-    'Carlos is the CTO of TheCatalyne.',
-    'His email is carlos@thecatalyne.com.',
-    'TheCatalyne was founded in 2021.',
-    'Carlos leads the engineering team of 25 developers.',
+    'Alex is the CTO of AcmeCorp.',
+    'His email is alex@example.com.',
+    'AcmeCorp was founded in 2021.',
+    'Alex leads the engineering team of 25 developers.',
     'Card #42 Fix login bug is currently in the To Do stack.',
     'The sprint started on 2026-03-01 and ends on 2026-03-15.',
     'Alice is the project manager overseeing Card #43.',
@@ -530,12 +530,12 @@ test('TC-PA-066: annotate performance — < 50ms for typical response', () => {
   const agentKnowledge = [
     '<agent_knowledge>',
     '[source: wiki, confidence: high]',
-    'People/Carlos',
-    'Carlos is the CTO of TheCatalyne. His email is carlos@thecatalyne.com.',
+    'People/Alex',
+    'Alex is the CTO of AcmeCorp. His email is alex@example.com.',
     '',
     '[source: wiki, confidence: medium]',
-    'Company/TheCatalyne',
-    'TheCatalyne was founded in 2021 by a group of engineers.',
+    'Company/AcmeCorp',
+    'AcmeCorp was founded in 2021 by a group of engineers.',
     '',
     '[source: deck, match: title, confidence: high]',
     'Card #42: "Fix login bug"',
@@ -553,9 +553,9 @@ test('TC-PA-066: annotate performance — < 50ms for typical response', () => {
 
   const contextSources = {
     agentKnowledge,
-    userMessage: 'Give me a full status update on Carlos and the current sprint.',
+    userMessage: 'Give me a full status update on Alex and the current sprint.',
     actionLedger: [
-      { type: 'wiki_lookup', refs: ['People/Carlos', 'Company/TheCatalyne'] },
+      { type: 'wiki_lookup', refs: ['People/Alex', 'Company/AcmeCorp'] },
       { type: 'deck_lookup', refs: ['Card #42', 'Card #43'] },
     ],
   };

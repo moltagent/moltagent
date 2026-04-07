@@ -97,8 +97,8 @@ asyncTest('TC-CC-011: getHistory returns chronological messages', async () => {
   const nc = createMockNC([
     // Talk API returns newest-first
     makeMessage(3, 'moltagent', 'MoltAgent', 'Task Board Summary:\nInbox: 1', now - 5),
-    makeMessage(2, 'funana', 'Funana', 'Do I have open tasks?', now - 10),
-    makeMessage(1, 'funana', 'Funana', 'Hello', now - 60),
+    makeMessage(2, 'jordan', 'Jordan', 'Do I have open tasks?', now - 10),
+    makeMessage(1, 'jordan', 'Jordan', 'Hello', now - 60),
   ]);
 
   const ctx = new ConversationContext({
@@ -114,7 +114,7 @@ asyncTest('TC-CC-011: getHistory returns chronological messages', async () => {
   assert.strictEqual(history.length, 3);
   assert.strictEqual(history[0].content, 'Hello');
   assert.strictEqual(history[0].role, 'user');
-  assert.strictEqual(history[0].name, 'Funana');
+  assert.strictEqual(history[0].name, 'Jordan');
   assert.strictEqual(history[1].content, 'Do I have open tasks?');
   assert.strictEqual(history[2].content, 'Task Board Summary:\nInbox: 1');
   assert.strictEqual(history[2].role, 'assistant');
@@ -123,9 +123,9 @@ asyncTest('TC-CC-011: getHistory returns chronological messages', async () => {
 asyncTest('TC-CC-012: getHistory filters system messages', async () => {
   const now = Math.floor(Date.now() / 1000);
   const nc = createMockNC([
-    makeMessage(3, 'funana', 'Funana', 'Hello', now - 5),
-    makeMessage(2, '', '', 'Funana joined the conversation', now - 10, 'user_added'),
-    makeMessage(1, 'funana', 'Funana', 'Hey', now - 15),
+    makeMessage(3, 'jordan', 'Jordan', 'Hello', now - 5),
+    makeMessage(2, '', '', 'Jordan joined the conversation', now - 10, 'user_added'),
+    makeMessage(1, 'jordan', 'Jordan', 'Hey', now - 15),
   ]);
 
   const ctx = new ConversationContext({
@@ -134,13 +134,13 @@ asyncTest('TC-CC-012: getHistory filters system messages', async () => {
 
   const history = await ctx.getHistory('room-abc');
   assert.strictEqual(history.length, 2);
-  assert.ok(history.every(m => m.content !== 'Funana joined the conversation'));
+  assert.ok(history.every(m => m.content !== 'Jordan joined the conversation'));
 });
 
 asyncTest('TC-CC-013: getHistory excludes specified message ID', async () => {
   const now = Math.floor(Date.now() / 1000);
   const nc = createMockNC([
-    makeMessage(3, 'funana', 'Funana', 'This is the trigger', now - 5),
+    makeMessage(3, 'jordan', 'Jordan', 'This is the trigger', now - 5),
     makeMessage(2, 'moltagent', 'MoltAgent', 'Previous response', now - 10),
   ]);
 
@@ -156,8 +156,8 @@ asyncTest('TC-CC-013: getHistory excludes specified message ID', async () => {
 asyncTest('TC-CC-014: getHistory filters messages older than maxAge', async () => {
   const now = Math.floor(Date.now() / 1000);
   const nc = createMockNC([
-    makeMessage(2, 'funana', 'Funana', 'Recent', now - 60),
-    makeMessage(1, 'funana', 'Funana', 'Very old', now - 7200),  // 2 hours ago
+    makeMessage(2, 'jordan', 'Jordan', 'Recent', now - 60),
+    makeMessage(1, 'jordan', 'Jordan', 'Very old', now - 7200),  // 2 hours ago
   ]);
 
   const ctx = new ConversationContext({
@@ -174,9 +174,9 @@ asyncTest('TC-CC-015: getHistory trims to token budget (keeps most recent)', asy
   const now = Math.floor(Date.now() / 1000);
   const longMessage = 'A'.repeat(5000);  // ~1250 tokens
   const nc = createMockNC([
-    makeMessage(3, 'funana', 'Funana', 'Most recent', now - 5),
-    makeMessage(2, 'funana', 'Funana', longMessage, now - 10),
-    makeMessage(1, 'funana', 'Funana', 'Oldest', now - 15),
+    makeMessage(3, 'jordan', 'Jordan', 'Most recent', now - 5),
+    makeMessage(2, 'jordan', 'Jordan', longMessage, now - 10),
+    makeMessage(1, 'jordan', 'Jordan', 'Oldest', now - 15),
   ]);
 
   const ctx = new ConversationContext({
@@ -195,7 +195,7 @@ asyncTest('TC-CC-016: getHistory maps actorId to role correctly', async () => {
   const now = Math.floor(Date.now() / 1000);
   const nc = createMockNC([
     makeMessage(2, 'moltagent', 'MoltAgent', 'I am the assistant', now - 5),
-    makeMessage(1, 'funana', 'Funana', 'I am the user', now - 10),
+    makeMessage(1, 'jordan', 'Jordan', 'I am the user', now - 10),
   ]);
 
   const ctx = new ConversationContext({
@@ -205,7 +205,7 @@ asyncTest('TC-CC-016: getHistory maps actorId to role correctly', async () => {
   const history = await ctx.getHistory('room-abc');
   assert.strictEqual(history.length, 2);
   assert.strictEqual(history[0].role, 'user');
-  assert.strictEqual(history[0].name, 'Funana');
+  assert.strictEqual(history[0].name, 'Jordan');
   assert.strictEqual(history[1].role, 'assistant');
   assert.strictEqual(history[1].name, 'MoltAgent');
 });
@@ -217,17 +217,17 @@ test('TC-CC-020: formatForPrompt produces conversation_history block', () => {
   const ctx = new ConversationContext({ enabled: true }, createMockNC());
 
   const history = [
-    { role: 'user', name: 'Funana', content: 'Do I have tasks?', timestamp: 100 },
+    { role: 'user', name: 'Jordan', content: 'Do I have tasks?', timestamp: 100 },
     { role: 'assistant', name: 'MoltAgent', content: 'Yes, 4 open tasks.', timestamp: 101 },
-    { role: 'user', name: 'Funana', content: 'Close the first one', timestamp: 102 },
+    { role: 'user', name: 'Jordan', content: 'Close the first one', timestamp: 102 },
   ];
 
   const formatted = ctx.formatForPrompt(history);
 
   assert.ok(formatted.includes('<conversation_history>'));
-  assert.ok(formatted.includes('Funana: Do I have tasks?'));
+  assert.ok(formatted.includes('Jordan: Do I have tasks?'));
   assert.ok(formatted.includes('Moltagent: Yes, 4 open tasks.'));
-  assert.ok(formatted.includes('Funana: Close the first one'));
+  assert.ok(formatted.includes('Jordan: Close the first one'));
   assert.ok(formatted.includes('</conversation_history>'));
 });
 

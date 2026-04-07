@@ -91,7 +91,7 @@ asyncTest('TC-SPC-001: Session with commitment creates Personal board card', asy
   const wiki = createMockWikiClient();
   const router = createMockLLMRouter({
     commitments: [
-      { title: 'Look into ManeraMedia contract', type: 'research', context: 'User asked about ManeraMedia' },
+      { title: 'Look into AcmeCorp contract', type: 'research', context: 'User asked about AcmeCorp' },
       { title: 'Follow up tomorrow', type: 'follow-up', context: 'Agent promised follow-up' }
     ]
   });
@@ -105,8 +105,8 @@ asyncTest('TC-SPC-001: Session with commitment creates Personal board card', asy
 
   const session = createSession([
     { role: 'system', content: 'You are Moltagent.' },
-    { role: 'user', content: 'Can you check the ManeraMedia contract?' },
-    { role: 'assistant', content: 'I will look into the ManeraMedia contract and get back to you.' },
+    { role: 'user', content: 'Can you check the AcmeCorp contract?' },
+    { role: 'assistant', content: 'I will look into the AcmeCorp contract and get back to you.' },
     { role: 'user', content: 'Thanks' },
     { role: 'assistant', content: 'No problem, I will follow up on this tomorrow.' },
     { role: 'user', content: 'Perfect' }
@@ -175,7 +175,7 @@ asyncTest('TC-SPC-004: Commitment card includes context from user message', asyn
   const wiki = createMockWikiClient();
   const router = createMockLLMRouter({
     commitments: [
-      { title: 'Review ManeraMedia contract', type: 'action', context: 'ManeraMedia contract needs review' },
+      { title: 'Review AcmeCorp contract', type: 'action', context: 'AcmeCorp contract needs review' },
       { title: 'Research project timeline', type: 'research', context: 'User asked about timeline' }
     ]
   });
@@ -189,8 +189,8 @@ asyncTest('TC-SPC-004: Commitment card includes context from user message', asyn
 
   const session = createSession([
     { role: 'system', content: 'You are Moltagent.' },
-    { role: 'user', content: 'The ManeraMedia contract needs review.' },
-    { role: 'assistant', content: 'I will review the ManeraMedia contract.' },
+    { role: 'user', content: 'The AcmeCorp contract needs review.' },
+    { role: 'assistant', content: 'I will review the AcmeCorp contract.' },
     { role: 'user', content: 'Also check the timeline.' },
     { role: 'assistant', content: 'Sure, let me research the project timeline as well.' },
     { role: 'user', content: 'Great' }

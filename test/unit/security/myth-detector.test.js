@@ -56,7 +56,7 @@ function seg(text, trust = 'ungrounded') {
 
 test('TC-MD-001: claim repeated 3x without grounding → detected as myth', () => {
   const detector = new MythDetector({ logger: silentLogger });
-  const claim = 'Sarah runs the Q3 campaign at ManeraMedia';
+  const claim = 'Sarah runs the Q3 campaign at AcmeCorp';
   const entries = [
     assistantEntry([seg(claim)]),
     assistantEntry([seg(claim)]),
@@ -71,7 +71,7 @@ test('TC-MD-001: claim repeated 3x without grounding → detected as myth', () =
 
 test('TC-MD-002: claim repeated 3x WITH grounding → not flagged', () => {
   const detector = new MythDetector({ logger: silentLogger });
-  const claim = 'Sarah runs the Q3 campaign at ManeraMedia';
+  const claim = 'Sarah runs the Q3 campaign at AcmeCorp';
   const entries = [
     assistantEntry([seg(claim, 'grounded')]),
     assistantEntry([seg(claim)]),
@@ -83,7 +83,7 @@ test('TC-MD-002: claim repeated 3x WITH grounding → not flagged', () => {
 
 test('TC-MD-003: claim repeated only 2x → below threshold', () => {
   const detector = new MythDetector({ logger: silentLogger });
-  const claim = 'Sarah runs the Q3 campaign at ManeraMedia';
+  const claim = 'Sarah runs the Q3 campaign at AcmeCorp';
   const entries = [
     assistantEntry([seg(claim)]),
     assistantEntry([seg(claim)]),
@@ -94,7 +94,7 @@ test('TC-MD-003: claim repeated only 2x → below threshold', () => {
 
 test('TC-MD-004: claim repeated 5x → high severity', () => {
   const detector = new MythDetector({ logger: silentLogger });
-  const claim = 'Sarah runs the Q3 campaign at ManeraMedia';
+  const claim = 'Sarah runs the Q3 campaign at AcmeCorp';
   const entries = Array.from({ length: 5 }, () => assistantEntry([seg(claim)]));
   const myths = detector.detect(entries);
   assert.strictEqual(myths.length, 1);
@@ -104,7 +104,7 @@ test('TC-MD-004: claim repeated 5x → high severity', () => {
 
 test('TC-MD-005: different claims each repeated → detects each', () => {
   const detector = new MythDetector({ logger: silentLogger });
-  const claim1 = 'Sarah runs the Q3 campaign at ManeraMedia';
+  const claim1 = 'Sarah runs the Q3 campaign at AcmeCorp';
   const claim2 = 'Project Phoenix headquarters located Berlin office';
   const entries = [
     assistantEntry([seg(claim1)]),
@@ -170,7 +170,7 @@ asyncTest('TC-MD-020: alert creates Deck card for detected myth', async () => {
   };
   const detector = new MythDetector({ logger: silentLogger, deckClient: mockDeck });
   const myths = [{
-    claim: 'Sarah runs the Q3 campaign at ManeraMedia',
+    claim: 'Sarah runs the Q3 campaign at AcmeCorp',
     claimKey: 'campaign_maneramedia_runs_sarah',
     occurrences: 3,
     grounded: false,

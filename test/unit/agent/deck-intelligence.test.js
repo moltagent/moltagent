@@ -83,7 +83,7 @@ asyncTest('Fix1: Living Context enriches empty description', async () => {
     card_title: 'NC Analytics Findings'
     // No description
   }, {
-    userName: 'funana',
+    userName: 'jordan',
     roomToken: 'abc123',
     getRecentContext: () => [
       { role: 'user', content: 'What do you know about NC Analytics?' },
@@ -104,7 +104,7 @@ asyncTest('Fix1: Provided description is NOT overwritten by context', async () =
     card_title: 'Research Task',
     description: 'This is a detailed description that the LLM provided with all the findings and context needed for the card.'
   }, {
-    userName: 'funana',
+    userName: 'jordan',
     roomToken: 'abc123',
     getRecentContext: () => [
       { role: 'assistant', content: 'Some other content from conversation' }
@@ -126,14 +126,14 @@ asyncTest('Fix2: Card auto-assigned to requesting user', async () => {
   await exec._executeCreate({
     card_title: 'Analytics Task'
   }, {
-    userName: 'funana',
+    userName: 'jordan',
     roomToken: 'abc123',
     getRecentContext: () => []
   });
 
   const assignCalls = toolRegistry.getCallsFor('deck_assign_user');
   assert.strictEqual(assignCalls.length, 1, 'Should call deck_assign_user');
-  assert.strictEqual(assignCalls[0].args.user, 'funana', 'Should assign requesting user');
+  assert.strictEqual(assignCalls[0].args.user, 'jordan', 'Should assign requesting user');
   assert.strictEqual(assignCalls[0].args.card, '#42', 'Should use card ID from creation result');
 });
 
@@ -159,16 +159,16 @@ asyncTest('Fix2: Explicit assignee skips auto-assign of requester', async () => 
     card_title: 'Delegated Task',
     assignee: 'alice'
   }, {
-    userName: 'funana',
+    userName: 'jordan',
     roomToken: 'abc123',
     getRecentContext: () => []
   });
 
   const assignCalls = toolRegistry.getCallsFor('deck_assign_user');
   const aliceAssign = assignCalls.find(c => c.args.user === 'alice');
-  const funanaAssign = assignCalls.find(c => c.args.user === 'funana');
+  const jordanAssign = assignCalls.find(c => c.args.user === 'jordan');
   assert.ok(aliceAssign, 'Should assign explicit user');
-  assert.ok(!funanaAssign, 'Should NOT auto-assign requester when explicit assignee provided');
+  assert.ok(!jordanAssign, 'Should NOT auto-assign requester when explicit assignee provided');
 });
 
 // ---------------------------------------------------------------------------
@@ -194,7 +194,7 @@ test('Fix3: _resolveTargetBoard returns Personal for commitment_detector', () =>
 test('Fix3: _resolveTargetBoard returns undefined for user requests (default board)', () => {
   const { exec } = makeExecutor();
   assert.strictEqual(
-    exec._resolveTargetBoard({}, { userName: 'funana' }),
+    exec._resolveTargetBoard({}, { userName: 'jordan' }),
     undefined
   );
 });
@@ -261,7 +261,7 @@ asyncTest('Fix4: actionRecord includes cardId for reference resolution', async (
   const result = await exec._executeCreate({
     card_title: 'Test Card'
   }, {
-    userName: 'funana',
+    userName: 'jordan',
     roomToken: 'abc123',
     getRecentContext: () => []
   });

@@ -21,9 +21,9 @@ const silentLogger = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
 test('_extractSearchTerms finds capitalized entity names', () => {
   const enricher = new MemoryContextEnricher({ memorySearcher: {}, logger: silentLogger });
 
-  const terms = enricher._extractSearchTerms('Who is Sarah from ManeraMedia?');
+  const terms = enricher._extractSearchTerms('Who is Sarah from AcmeCorp?');
   assert.ok(terms.includes('Sarah'), `Should find "Sarah", got: ${terms}`);
-  assert.ok(terms.includes('ManeraMedia'), `Should find "ManeraMedia", got: ${terms}`);
+  assert.ok(terms.includes('AcmeCorp'), `Should find "AcmeCorp", got: ${terms}`);
 });
 
 // -- Test 2: _extractSearchTerms finds "know about X" patterns --
@@ -83,17 +83,17 @@ asyncTest('enrich returns formatted context when wiki has matches', async () => 
   const enricher = new MemoryContextEnricher({
     memorySearcher: {
       search: async () => [
-        { source: 'Wiki', title: 'Sarah', excerpt: 'Sarah is the marketing lead at ManeraMedia' },
-        { source: 'Wiki', title: 'ManeraMedia', excerpt: 'ManeraMedia is a podcast production company' }
+        { source: 'Wiki', title: 'Sarah', excerpt: 'Sarah is the marketing lead at AcmeCorp' },
+        { source: 'Wiki', title: 'AcmeCorp', excerpt: 'AcmeCorp is a podcast production company' }
       ]
     },
     logger: silentLogger
   });
 
-  const result = await enricher.enrich('Tell me about Sarah from ManeraMedia', 'search');
+  const result = await enricher.enrich('Tell me about Sarah from AcmeCorp', 'search');
   assert.ok(result !== null, 'Should return enrichment');
   assert.ok(result.includes('Sarah'), 'Should include Sarah page');
-  assert.ok(result.includes('ManeraMedia'), 'Should include ManeraMedia page');
+  assert.ok(result.includes('AcmeCorp'), 'Should include AcmeCorp page');
   assert.ok(result.includes('<agent_knowledge>'), 'Should wrap in agent_knowledge tags');
   assert.ok(result.includes('source:'), 'Should include source tag');
   assert.ok(result.includes('confidence:'), 'Should include confidence tag');
@@ -106,7 +106,7 @@ asyncTest('enrich returns null when search finds nothing', async () => {
     logger: silentLogger
   });
 
-  const result = await enricher.enrich('Tell me about Carlos', 'search');
+  const result = await enricher.enrich('Tell me about Alex', 'search');
   assert.strictEqual(result, null, 'Should return null when no results');
 });
 
@@ -125,7 +125,7 @@ asyncTest('enrich returns null on timeout without blocking', async () => {
   });
 
   const start = Date.now();
-  const result = await enricher.enrich('Tell me about Carlos', 'search');
+  const result = await enricher.enrich('Tell me about Alex', 'search');
   const elapsed = Date.now() - start;
 
   assert.strictEqual(result, null, 'Should return null on timeout');
@@ -158,7 +158,7 @@ asyncTest('enrich handles search error gracefully', async () => {
     logger: silentLogger
   });
 
-  const result = await enricher.enrich('Tell me about Carlos', 'search');
+  const result = await enricher.enrich('Tell me about Alex', 'search');
   assert.strictEqual(result, null, 'Should return null on search error');
 });
 
@@ -178,18 +178,18 @@ asyncTest('enricher output includes source and confidence per result', async () 
   const enricher = new MemoryContextEnricher({
     memorySearcher: {
       search: async () => [
-        { source: 'Wiki', title: 'Carlos', excerpt: 'Contact at TheCatalyne', channelScores: { keyword: 1.0, vector: 0, graph: 0 } }
+        { source: 'Wiki', title: 'Alex', excerpt: 'Contact at AcmeCorp', channelScores: { keyword: 1.0, vector: 0, graph: 0 } }
       ]
     },
     logger: silentLogger
   });
 
-  const result = await enricher.enrich('Tell me about Carlos', 'search');
+  const result = await enricher.enrich('Tell me about Alex', 'search');
   assert.ok(result.includes('<agent_knowledge>'), 'Should open agent_knowledge tag');
   assert.ok(result.includes('</agent_knowledge>'), 'Should close agent_knowledge tag');
   assert.ok(result.includes('source: wiki'), 'Should include source tag');
   assert.ok(result.includes('confidence: high'), 'Should compute high confidence for keyword 1.0');
-  assert.ok(result.includes('Carlos'), 'Should include title');
+  assert.ok(result.includes('Alex'), 'Should include title');
 });
 
 // ============================================================
@@ -264,7 +264,7 @@ asyncTest('_searchDeck returns empty for no matches — not an error', async () 
     inbox: [{ id: 1, title: 'Unrelated card', description: 'Nothing relevant' }]
   });
 
-  const result = await enricher.enrich('Tell me about Carlos', 'question');
+  const result = await enricher.enrich('Tell me about Alex', 'question');
   // Only wiki results matter here, and wiki mock returns []
   assert.strictEqual(result, null, 'Should return null when no deck or wiki matches');
 });
@@ -342,16 +342,16 @@ asyncTest('Deck API failure does not block wiki enrichment', async () => {
   const enricher = new MemoryContextEnricher({
     memorySearcher: {
       search: async () => [
-        { source: 'Wiki', title: 'Carlos', excerpt: 'Contact person' }
+        { source: 'Wiki', title: 'Alex', excerpt: 'Contact person' }
       ]
     },
     deckClient: failingDeckClient,
     logger: silentLogger
   });
 
-  const result = await enricher.enrich('Tell me about Carlos', 'question');
+  const result = await enricher.enrich('Tell me about Alex', 'question');
   assert.ok(result !== null, 'Should still return wiki results');
-  assert.ok(result.includes('Carlos'), 'Wiki result should be present despite deck failure');
+  assert.ok(result.includes('Alex'), 'Wiki result should be present despite deck failure');
   assert.ok(!result.includes('source: deck'), 'No deck results should be present');
 });
 

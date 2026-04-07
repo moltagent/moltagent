@@ -38,8 +38,8 @@ function mockNC(routes = {}) {
 
 const SAMPLE_BOARDS = [
   { id: 1, title: DECK.boards.tasks, owner: { uid: 'moltagent' } },
-  { id: 2, title: 'Personal', owner: { uid: 'Funana' } },
-  { id: 3, title: 'Podcast Scheduling', owner: { uid: 'Funana' } },
+  { id: 2, title: 'Personal', owner: { uid: 'Jordan' } },
+  { id: 3, title: 'Podcast Scheduling', owner: { uid: 'Jordan' } },
   { id: 4, title: DECK.boards.cockpit, owner: { uid: 'moltagent' } }
 ];
 
@@ -156,7 +156,7 @@ asyncTest('scanInbox: returns assignedUsers in card objects', async () => {
       id: 101, title: 'Inbox',
       cards: [{
         id: 600, title: 'Test', description: '', labels: [],
-        assignedUsers: [{ participant: { uid: 'Funana' } }],
+        assignedUsers: [{ participant: { uid: 'Jordan' } }],
         createdAt: Date.now(), lastModified: Date.now()
       }]
     }
@@ -165,7 +165,7 @@ asyncTest('scanInbox: returns assignedUsers in card objects', async () => {
   const inbox = await client.scanInbox();
   assert.strictEqual(inbox.length, 1);
   assert.ok(Array.isArray(inbox[0].assignedUsers));
-  assert.strictEqual(inbox[0].assignedUsers[0].participant.uid, 'Funana');
+  assert.strictEqual(inbox[0].assignedUsers[0].participant.uid, 'Jordan');
 });
 
 // ============================================================
@@ -180,7 +180,7 @@ asyncTest('processInbox: skips cards assigned to other users', async () => {
       id: 101, title: 'Inbox',
       cards: [{
         id: 500, title: 'User task', description: '', labels: [],
-        assignedUsers: [{ participant: { uid: 'Funana' } }],
+        assignedUsers: [{ participant: { uid: 'Jordan' } }],
         createdAt: Date.now(), lastModified: Date.now()
       }]
     }
@@ -262,7 +262,7 @@ asyncTest('processMention: detects @mention and routes through messageProcessor'
     'GET:/ocs/v2.php/apps/deck/api/v1.0/cards/100/comments': {
       ocs: {
         data: [{
-          id: 50, actorId: 'Funana',
+          id: 50, actorId: 'Jordan',
           message: '@Moltagent can you find a time slot?',
           mentions: [{ mentionId: 'Moltagent', mentionType: 'user' }],
           creationDateTime: '2026-02-19T12:00:00Z'
@@ -289,7 +289,7 @@ asyncTest('processMention: detects @mention and routes through messageProcessor'
   processor.deck.username = 'moltagent';
 
   const result = await processor.processMention(
-    { type: 'deck_comment_added', objectId: '100', user: 'Funana', data: {} },
+    { type: 'deck_comment_added', objectId: '100', user: 'Jordan', data: {} },
     { messageProcessor: mockMessageProcessor }
   );
   assert.strictEqual(result.handled, true);
@@ -299,7 +299,7 @@ asyncTest('processMention: detects @mention and routes through messageProcessor'
   assert.ok(processedData);
   assert.ok(processedData.object.content.includes('find a time slot'));
   assert.ok(!processedData.object.content.includes('[Card:'), 'card context should NOT be in content');
-  assert.strictEqual(processedData.actor.name, 'Funana');
+  assert.strictEqual(processedData.actor.name, 'Jordan');
   assert.strictEqual(processedData.target.id, null);
 });
 
@@ -321,7 +321,7 @@ asyncTest('processMention: ignores comments without @mention', async () => {
     'GET:/ocs/v2.php/apps/deck/api/v1.0/cards/100/comments': {
       ocs: {
         data: [{
-          id: 60, actorId: 'Funana',
+          id: 60, actorId: 'Jordan',
           message: 'Just a regular comment',
           mentions: [],
           creationDateTime: '2026-02-19T12:00:00Z'
@@ -335,7 +335,7 @@ asyncTest('processMention: ignores comments without @mention', async () => {
   processor.deck.username = 'moltagent';
 
   const result = await processor.processMention({
-    type: 'deck_comment_added', objectId: '100', user: 'Funana', data: {}
+    type: 'deck_comment_added', objectId: '100', user: 'Jordan', data: {}
   });
   assert.strictEqual(result.handled, false);
   assert.strictEqual(result.reason, 'no_mention_found');
@@ -355,7 +355,7 @@ asyncTest('processMention: ignores already-responded mentions', async () => {
           },
           // Older: their mention
           {
-            id: 61, actorId: 'Funana',
+            id: 61, actorId: 'Jordan',
             message: '@Moltagent help me with this',
             mentions: [{ mentionId: 'Moltagent', mentionType: 'user' }],
             creationDateTime: '2026-02-19T12:00:00Z'
@@ -370,7 +370,7 @@ asyncTest('processMention: ignores already-responded mentions', async () => {
   processor.deck.username = 'moltagent';
 
   const result = await processor.processMention({
-    type: 'deck_comment_added', objectId: '100', user: 'Funana', data: {}
+    type: 'deck_comment_added', objectId: '100', user: 'Jordan', data: {}
   });
   assert.strictEqual(result.handled, false);
   assert.strictEqual(result.reason, 'already_responded');
@@ -381,7 +381,7 @@ asyncTest('processMention: handles invalid card ID', async () => {
   processor.deck = new DeckClient(createMockNCRequestManager(), { boardName: DECK.boards.tasks });
 
   const result = await processor.processMention({
-    type: 'deck_comment_added', objectId: '', user: 'Funana', data: {}
+    type: 'deck_comment_added', objectId: '', user: 'Jordan', data: {}
   });
   assert.strictEqual(result.handled, false);
   assert.strictEqual(result.reason, 'invalid_card_id');
@@ -396,7 +396,7 @@ asyncTest('processMention: handles API errors gracefully', async () => {
   processor.deck.username = 'moltagent';
 
   const result = await processor.processMention({
-    type: 'deck_comment_added', objectId: '100', user: 'Funana', data: {}
+    type: 'deck_comment_added', objectId: '100', user: 'Jordan', data: {}
   });
   assert.strictEqual(result.handled, false);
   assert.strictEqual(result.reason, 'error');
@@ -426,7 +426,7 @@ asyncTest('_processFlowEvents: routes deck_comment_added to mention handler', as
   };
 
   hb.enqueueExternalEvent({
-    type: 'deck_comment_added', objectId: '100', user: 'Funana', data: {}
+    type: 'deck_comment_added', objectId: '100', user: 'Jordan', data: {}
   });
 
   const result = await hb._processFlowEvents();
@@ -454,8 +454,8 @@ asyncTest('_processFlowEvents: does not route non-comment events as mentions', a
     return { handled: false };
   };
 
-  hb.enqueueExternalEvent({ type: 'deck_card_created', objectId: '50', user: 'Funana', data: {} });
-  hb.enqueueExternalEvent({ type: 'file_changed', objectId: '60', user: 'Funana', data: {} });
+  hb.enqueueExternalEvent({ type: 'deck_card_created', objectId: '50', user: 'Jordan', data: {} });
+  hb.enqueueExternalEvent({ type: 'file_changed', objectId: '60', user: 'Jordan', data: {} });
 
   const result = await hb._processFlowEvents();
   assert.strictEqual(result.processed, 2);

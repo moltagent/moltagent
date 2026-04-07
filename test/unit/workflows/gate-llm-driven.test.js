@@ -63,7 +63,7 @@ function createMockTalkQueue() {
 // Build a minimal workflow board object for tests
 function makeBoard({ cardLabels = [], assignedUsers = [], extraCards = [] } = {}) {
   return {
-    board: { id: 1, title: 'Test Workflow', owner: { uid: 'funana' } },
+    board: { id: 1, title: 'Test Workflow', owner: { uid: 'jordan' } },
     stacks: [{
       id: 10,
       title: 'Inbox',
@@ -176,7 +176,7 @@ function makeBoard({ cardLabels = [], assignedUsers = [], extraCards = [] } = {}
     // Card has GATE label and is assigned to human (not bot)
     const wb = makeBoard({
       cardLabels: [{ title: 'GATE', color: 'ff0000' }],
-      assignedUsers: [{ participant: { uid: 'funana' } }]
+      assignedUsers: [{ participant: { uid: 'jordan' } }]
     });
 
     const engine = new WorkflowEngine({
