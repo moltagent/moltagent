@@ -62,31 +62,31 @@ Let's go!
 
 Moltagent is one digital employee for your team, not a personal assistant per user. It builds institutional knowledge across all interactions.
 
-**Works in Nextcloud**
+**Works in Nextcloud**:
 Files, calendar, contacts, email, tasks, wiki, kanban boards. No external SaaS dependencies for your data.
 
-**Workflow engine**
+**Workflow engine**:
 Write rules as plain sentences on kanban cards. The agent reads them and executes. No visual programming, no node graphs, no code. Human checkpoints (GATE labels) wherever you need editorial judgment.
 
-**Living memory**
+**Living memory**:
 Knowledge wiki with confidence tracking and freshness management. The agent learns from documents, conversations, and workflows. Knowledge that isn't accessed decays naturally. Knowledge that's used strengthens.
 
-**Trust boundaries**
+**Trust boundaries**:
 Every operation classified as trusted or untrusted. Sensitive work routes to local LLM automatically. Credentials fetched at the moment of use, immediately discarded. Never stored on disk.
 
-**Sovereign search**
+**Sovereign search**:
 SearXNG + Stract + Mojeek. No Google, no tracking, no filter bubbles.
 
-**Voice and email**
+**Voice and email**:
 Speech-to-text, full IMAP/SMTP integration. Human-in-the-loop for sending.
 
-**Cost metering**
+**Cost metering**:
 Per-model budget enforcement. Daily limits, automatic fallback to local when budget exhausted. You always know what you're spending.
 
-**Multilingual**
+**Multilingual**:
 German, English, Portuguese on day one. The LLM is the language layer, not the code.
 
-**Instant revocation**
+**Instant revocation**:
 Disable the agent's Nextcloud account. All access stops. Under 60 seconds to full lockdown. Or revoke single API credentials when needed. Simple.
 
 ---
