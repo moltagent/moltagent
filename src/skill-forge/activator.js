@@ -247,10 +247,7 @@ class SkillActivator {
     // Extract skill name from frontmatter
     const skillName = this.extractSkillName(contentResponse.body);
 
-    // TODO: B1 redesign — ToolActivator replaces this
-    // OpenClaw local filesystem deployment removed. Skills are now
-    // managed entirely within Nextcloud (pending → active folder).
-    // The B1 ToolActivator will register skills as native MoltAgent tools.
+    // Skills are managed entirely within Nextcloud (pending → active folder).
 
     // Update metadata
     metadata.status = 'active';

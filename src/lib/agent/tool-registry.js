@@ -3205,7 +3205,7 @@ class ToolRegistry {
         properties: {
           query: {
             type: 'string',
-            description: 'Natural language search query (e.g., "budget decision", "meeting with Carlos")'
+            description: 'Natural language search query (e.g., "budget decision", "meeting with Alex")'
           },
           scope: {
             type: 'string',

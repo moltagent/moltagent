@@ -539,7 +539,7 @@ function createMockTalkQueue() {
       agentLoop: createMockAgentLoop(),
       talkSendQueue: createMockTalkQueue(),
       talkToken: 'test-token',
-      config: { adminUser: 'funana' }
+      config: { adminUser: 'jordan' }
     });
 
     const wb = { board: { id: 1 }, stacks: [], description: 'WORKFLOW: pipeline' };
@@ -561,7 +561,7 @@ function createMockTalkQueue() {
 
     putCall = requestCalls.find(c => c.method === 'PUT' && c.path.includes('/assignUser'));
     assert.ok(putCall, 'Should assign user for GATE card');
-    assert.strictEqual(putCall.body.userId, 'funana', 'GATE card should be assigned to admin');
+    assert.strictEqual(putCall.body.userId, 'jordan', 'GATE card should be assigned to admin');
   });
 
   await asyncTest('_ensureAssignment() skips cards that are already assigned', async () => {
@@ -711,9 +711,9 @@ function createMockTalkQueue() {
       agentLoop: createMockAgentLoop(),
       talkSendQueue: createMockTalkQueue(),
       talkToken: 'test-token',
-      config: { adminUser: 'funana' }
+      config: { adminUser: 'jordan' }
     });
-    assert.strictEqual(engine1._getHumanUser(), 'funana');
+    assert.strictEqual(engine1._getHumanUser(), 'jordan');
 
     const engine2 = new WorkflowEngine({
       workflowDetector: createMockDetector(),
@@ -909,7 +909,7 @@ function createMockTalkQueue() {
     const stack = { id: 10, title: 'Ideas' };
     const card = {
       id: 200, title: 'WORKFLOW: pipeline', duedate: null,
-      assignedUsers: [{ participant: { uid: 'moltagent' } }, { participant: { uid: 'funana' } }]
+      assignedUsers: [{ participant: { uid: 'moltagent' } }, { participant: { uid: 'jordan' } }]
     };
 
     await engine._cleanStructuralCard(wb, stack, card);
@@ -917,7 +917,7 @@ function createMockTalkQueue() {
     const unassignCalls = requestCalls.filter(c => c.path.includes('unassignUser'));
     assert.strictEqual(unassignCalls.length, 2, 'Should unassign both users');
     assert.strictEqual(unassignCalls[0].body.userId, 'moltagent');
-    assert.strictEqual(unassignCalls[1].body.userId, 'funana');
+    assert.strictEqual(unassignCalls[1].body.userId, 'jordan');
   });
 
   await asyncTest('_cleanStructuralCard() does nothing on clean structural card', async () => {
@@ -999,10 +999,10 @@ function createMockTalkQueue() {
     });
 
     // No card argument — just board/stack/card/user
-    await engine._safeAssign(1, 10, 200, 'funana');
+    await engine._safeAssign(1, 10, 200, 'jordan');
     const putCalls = requestCalls.filter(c => c.method === 'PUT' && c.path.includes('assignUser'));
     assert.strictEqual(putCalls.length, 1, 'Should call assignUser API');
-    assert.strictEqual(putCalls[0].body.userId, 'funana');
+    assert.strictEqual(putCalls[0].body.userId, 'jordan');
   });
 
   // --- _safeUnassign logs errors instead of swallowing ---

@@ -1,6 +1,6 @@
 /*
- * MoltAgent - Sovereign AI Security Layer
- * Copyright (C) 2026 MoltAgent Contributors
+ * Moltagent - Sovereign AI Security Layer
+ * Copyright (C) 2026 Moltagent Contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -147,9 +147,9 @@ DESCRIPTION RULES:
 - If the document does not explicitly state what an entity IS or DOES, set description to null
 
 ENTITY TYPE rules:
-- person: actual human beings (e.g. "Carlos", "Sarah Chen"). NOT software, NOT companies, NOT AI models.
-- agent: AI assistants, language models, bots, or artificial persons (e.g. "Claude Opus", "MoltAgent", "OpenClaw"). Use for any named AI system or model.
-- organization: companies, teams, institutions, cloud providers, vendors, clients (e.g. "TheCatalyne", "Hetzner", "Anthropic").
+- person: actual human beings (e.g. "Alex", "Sarah Chen"). NOT software, NOT companies, NOT AI models.
+- agent: AI assistants, language models, bots, or artificial persons (e.g. "Claude Opus", "Moltagent", "AutoAgent"). Use for any named AI system or model.
+- organization: companies, teams, institutions, cloud providers, vendors, clients (e.g. "@user-123", "Hetzner", "Anthropic").
 - project: named projects with scope and goals (e.g. "Project Phoenix")
 - tool: generic software, libraries, frameworks used as building blocks (e.g. "Node.js", "Nextcloud", "WebDAV"). NOT AI models that act as agents.
 - concept: abstract ideas, methodologies (e.g. "Zero Trust", "AGPL-3.0")
@@ -351,9 +351,9 @@ VERIFICATION: Before returning any entity, confirm you can find the EXACT name s
 
 ENTITY rules:
 - Each entity should appear ONLY ONCE with its most accurate type
-- "Project Phoenix" is a project, not a person. Only use "person" for actual people (e.g. "Fu", "Sarah", "Carlos")
-- AI models, bots, and assistants are "agent" (e.g. "Claude Opus", "Claude Code", "MoltAgent", "GPT-4")
-- Companies, vendors, cloud providers, institutions are "organization" (e.g. "Hetzner", "TheCatalyne", "Anthropic")
+- "Project Phoenix" is a project, not a person. Only use "person" for actual people (e.g. "Fu", "Sarah", "Alex")
+- AI models, bots, and assistants are "agent" (e.g. "Claude Opus", "Claude Code", "Moltagent", "GPT-4")
+- Companies, vendors, cloud providers, institutions are "organization" (e.g. "Hetzner", "@user-123", "Anthropic")
 - When in doubt, prefer the more specific type (project, organization, agent, tool) over "person"
 - Type must be one of: person, agent, project, organization, tool, concept
 
@@ -362,7 +362,7 @@ RELATIONSHIP rules:
 - DO NOT infer relationships from text proximity
 - Predicates: leads, led_by, managed_by, works_on, works_at, reports_to, belongs_to, employed_by, affiliated_with, client_of, contacts, contact_for, responsible_for, depends_on, related_to, has_goal, has_status, blocks
 - "led by Fu" → {"from": "Project Phoenix", "predicate": "led_by", "to": "Fu"}
-- "works at TheCatalyne" → {"from": "Sarah", "predicate": "works_at", "to": "TheCatalyne"}
+- "works at @user-123" → {"from": "Sarah", "predicate": "works_at", "to": "@user-123"}
 
 If nothing worth extracting, respond: {"entities":[],"relationships":[]}`;
 

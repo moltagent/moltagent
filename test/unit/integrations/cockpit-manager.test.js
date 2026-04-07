@@ -200,11 +200,11 @@ test('constructor uses config overrides', () => {
   const auditLog = createMockAuditLog();
   const cm = new CockpitManager({
     deckClient: deck,
-    config: { adminUser: 'funana', boardTitle: 'Test Cockpit', cacheTTLMs: 60000 },
+    config: { adminUser: 'jordan', boardTitle: 'Test Cockpit', cacheTTLMs: 60000 },
     auditLog
   });
 
-  assert.strictEqual(cm.adminUser, 'funana');
+  assert.strictEqual(cm.adminUser, 'jordan');
   assert.strictEqual(cm.boardTitle, 'Test Cockpit');
   assert.strictEqual(cm.CACHE_TTL, 60000);
 });
@@ -421,13 +421,13 @@ asyncTest('bootstrap() stars Full Auto mode by default', async () => {
 
 asyncTest('bootstrap() shares board with admin user', async () => {
   const deck = createMockDeckClient();
-  const cm = new CockpitManager({ deckClient: deck, config: { adminUser: 'funana' } });
+  const cm = new CockpitManager({ deckClient: deck, config: { adminUser: 'jordan' } });
 
   await cm.bootstrap();
 
   const shareCall = deck._calls.find(c => c.method === 'shareBoard');
   assert.ok(shareCall, 'Should call shareBoard');
-  assert.strictEqual(shareCall.participant, 'funana');
+  assert.strictEqual(shareCall.participant, 'jordan');
 });
 
 asyncTest('initialize() is idempotent -- uses existing board', async () => {

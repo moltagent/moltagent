@@ -606,9 +606,9 @@ class CollectivesClient {
   /**
    * Build an absolute Collectives deep-link URL for a page.
    * Format: /apps/collectives/{collective-slug}-{collectiveId}/{page-slug}-{pageId}
-   * Example: /apps/collectives/Moltagent-Knowledge-10/Carlos-26950
+   * Example: /apps/collectives/Moltagent-Knowledge-10/Alex-26950
    *
-   * @param {string} pageTitle - Page title (e.g. "Carlos" or "John Smith")
+   * @param {string} pageTitle - Page title (e.g. "Alex" or "John Smith")
    * @param {number} pageId - Page ID from the Collectives API
    * @returns {string} Full clickable URL
    */

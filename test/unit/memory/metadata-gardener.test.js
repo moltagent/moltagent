@@ -46,12 +46,12 @@ function createMockCollectivesClient(pages = [], contentMap = {}) {
 
 // -- Test 1: Page without frontmatter gets type added --
 asyncTest('Page without frontmatter gets type + fields added', async () => {
-  const content = 'Sarah Chen is a senior developer at TheCatalyne. She works on the onboarding pipeline.';
+  const content = 'Sarah Chen is a senior developer at AcmeCorp. She works on the onboarding pipeline.';
   const client = createMockCollectivesClient(
     [{ title: 'Sarah Chen', filePath: 'People', fileName: 'Sarah Chen.md' }],
     { 'People/Sarah Chen.md': content }
   );
-  const router = createMockRouter('type: person\nconfidence: high\ncompany: TheCatalyne\nrole: senior developer');
+  const router = createMockRouter('type: person\nconfidence: high\ncompany: AcmeCorp\nrole: senior developer');
   const gardener = new MetadataGardener({ collectivesClient: client, router, logger: silentLogger });
 
   const result = await gardener.tend();
@@ -60,7 +60,7 @@ asyncTest('Page without frontmatter gets type + fields added', async () => {
   const written = client.getWritten()['People/Sarah Chen.md'];
   assert.ok(written, 'Should have written page back');
   assert.ok(written.includes('type: person'), 'Should include type: person');
-  assert.ok(written.includes('company: TheCatalyne'), 'Should include company field');
+  assert.ok(written.includes('company: AcmeCorp'), 'Should include company field');
   assert.ok(written.includes(content), 'Original content should be preserved');
 });
 

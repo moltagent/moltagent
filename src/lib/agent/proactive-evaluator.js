@@ -211,7 +211,7 @@ DO the following as needed (only if genuinely useful, not for every message):
 
 After completing any actions, output a SINGLE LINE starting with "NOTIFY:" describing what you did.
 If you took no action, output "NOTIFY: none".
-Example: "NOTIFY: Created knowledge page for Sarah (ManeraMedia) and task card for proposal deadline"`;
+Example: "NOTIFY: Created knowledge page for Sarah (AcmeCorp) and task card for proposal deadline"`;
 
     try {
       const result = await this.agentLoop.process(proactivePrompt, context.roomToken, {

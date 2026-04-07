@@ -49,15 +49,15 @@ function createRouter(providerResponse) {
 // Classification Tests
 // ============================================================
 
-asyncTest('TC-KM-001: "Who is Carlos?" → classified as knowledge, not email', async () => {
+asyncTest('TC-KM-001: "Who is Alex?" → classified as knowledge, not email', async () => {
   const router = createRouter('{"intent":"knowledge"}');
-  const result = await router.classify('Who is Carlos?');
+  const result = await router.classify('Who is Alex?');
   assert.strictEqual(result.gate, 'knowledge');
 });
 
-asyncTest('TC-KM-002: "What\'s Carlos\'s email?" → classified as knowledge, not email', async () => {
+asyncTest('TC-KM-002: "What\'s Alex\'s email?" → classified as knowledge, not email', async () => {
   const router = createRouter('{"intent":"knowledge"}');
-  const result = await router.classify("What's Carlos's email?");
+  const result = await router.classify("What's Alex's email?");
   assert.strictEqual(result.gate, 'knowledge');
 });
 
@@ -73,9 +73,9 @@ asyncTest('TC-KM-004: "Tell me about Paradiesgarten" → classified as knowledge
   assert.strictEqual(result.gate, 'knowledge');
 });
 
-asyncTest('TC-KM-005: "Send an email to Carlos" → classified as email (tool action, unchanged)', async () => {
+asyncTest('TC-KM-005: "Send an email to Alex" → classified as email (tool action, unchanged)', async () => {
   const router = createRouter('{"intent":"email_send"}');
-  const result = await router.classify('Send an email to Carlos');
+  const result = await router.classify('Send an email to Alex');
   assert.strictEqual(result.domain, 'email');
 });
 
@@ -104,7 +104,7 @@ asyncTest('TC-KM-008: Regex fallback routes "who is" to knowledge', async () => 
     provider: { chat: async () => { throw new Error('model unavailable'); } },
     config: { classifyTimeout: 100, fastModel: 'fake', smartModel: 'fake' }
   });
-  const result = await router.classify('who is Carlos and what does he do?');
+  const result = await router.classify('who is Alex and what does he do?');
   assert.strictEqual(result.gate, 'knowledge');
 });
 
@@ -122,7 +122,7 @@ asyncTest('TC-KM-010: Regex fallback still routes "send email" to email domain',
     provider: { chat: async () => { throw new Error('model unavailable'); } },
     config: { classifyTimeout: 100, fastModel: 'fake', smartModel: 'fake' }
   });
-  const result = await router.classify('send an email to Carlos about the project update');
+  const result = await router.classify('send an email to Alex about the project update');
   assert.strictEqual(result.domain, 'email');
 });
 
@@ -150,7 +150,7 @@ asyncTest('TC-KM-012: _isNotFoundResponse detects "not found" responses', async 
   assert.strictEqual(pipeline._isNotFoundResponse("No results found for that query."), true);
   assert.strictEqual(pipeline._isNotFoundResponse("I couldn't find that information."), true);
   assert.strictEqual(pipeline._isNotFoundResponse("Here is the information you asked for."), false);
-  assert.strictEqual(pipeline._isNotFoundResponse("Carlos is the project manager."), false);
+  assert.strictEqual(pipeline._isNotFoundResponse("Alex is the project manager."), false);
   assert.strictEqual(pipeline._isNotFoundResponse(42), false);
 });
 
@@ -185,19 +185,19 @@ asyncTest('TC-KM-016: LLM returning knowledge gate for email question is honoure
   // If LLM returns email_read (legacy intent), _parseClassification maps it to action gate.
   // This test verifies the LLM-native path: when LLM returns knowledge, result is knowledge.
   const router = createRouter('{"gate":"knowledge","confidence":0.9}');
-  const result = await router.classify("What's Carlos's email?");
+  const result = await router.classify("What's Alex's email?");
   assert.strictEqual(result.gate, 'knowledge', 'LLM returning knowledge should be honoured');
 });
 
 asyncTest('TC-KM-017: LLM returning knowledge for compound question is honoured', async () => {
   const router = createRouter('{"gate":"knowledge","confidence":0.9}');
-  const result = await router.classify("Who is Carlos and what's his email?");
+  const result = await router.classify("Who is Alex and what's his email?");
   assert.strictEqual(result.gate, 'knowledge');
 });
 
-asyncTest('TC-KM-018: Guard keeps "Send an email to Carlos" as email', async () => {
+asyncTest('TC-KM-018: Guard keeps "Send an email to Alex" as email', async () => {
   const router = createRouter('{"intent":"email_send"}');
-  const result = await router.classify('Send an email to Carlos');
+  const result = await router.classify('Send an email to Alex');
   assert.strictEqual(result.domain, 'email', 'Should stay as email — has action verb "send"');
 });
 

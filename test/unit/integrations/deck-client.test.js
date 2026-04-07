@@ -1263,7 +1263,7 @@ const { hasNewerBotResponse, isAwaitingHumanResponse, BOT_PREFIXES } = require('
 
 test('TC-DEDUP-001: hasNewerBotResponse returns true when bot comment has higher ID', () => {
   const comments = [
-    { id: 100, message: 'Please fix the typo', actorId: 'Funana' },
+    { id: 100, message: 'Please fix the typo', actorId: 'Jordan' },
     { id: 101, message: '[FOLLOWUP] Done', actorId: 'Moltagent' },
   ];
   assert.strictEqual(hasNewerBotResponse(comments, 'moltagent'), true);
@@ -1271,9 +1271,9 @@ test('TC-DEDUP-001: hasNewerBotResponse returns true when bot comment has higher
 
 test('TC-DEDUP-002: hasNewerBotResponse returns false when human comment has higher ID', () => {
   const comments = [
-    { id: 100, message: 'Please fix the typo', actorId: 'Funana' },
+    { id: 100, message: 'Please fix the typo', actorId: 'Jordan' },
     { id: 101, message: '[FOLLOWUP] Done', actorId: 'Moltagent' },
-    { id: 102, message: 'Actually, one more thing...', actorId: 'Funana' },
+    { id: 102, message: 'Actually, one more thing...', actorId: 'Jordan' },
   ];
   assert.strictEqual(hasNewerBotResponse(comments, 'moltagent'), false);
 });
@@ -1285,7 +1285,7 @@ test('TC-DEDUP-003: hasNewerBotResponse returns false on empty comments', () => 
 
 test('TC-DEDUP-004: hasNewerBotResponse detects bot by actorId even without prefix', () => {
   const comments = [
-    { id: 50, message: 'Hello', actorId: 'Funana' },
+    { id: 50, message: 'Hello', actorId: 'Jordan' },
     { id: 51, message: 'No prefix here', actorId: 'moltagent' },
   ];
   assert.strictEqual(hasNewerBotResponse(comments, 'moltagent'), true);
@@ -1293,7 +1293,7 @@ test('TC-DEDUP-004: hasNewerBotResponse detects bot by actorId even without pref
 
 test('TC-DEDUP-005: hasNewerBotResponse is case-insensitive for bot username', () => {
   const comments = [
-    { id: 10, message: 'Check this', actorId: 'funana' },
+    { id: 10, message: 'Check this', actorId: 'jordan' },
     { id: 11, message: '[STATUS] Updated', actorId: 'Moltagent' },
   ];
   assert.strictEqual(hasNewerBotResponse(comments, 'moltagent'), true);
@@ -1308,7 +1308,7 @@ test('TC-DEDUP-007: hasNewerBotResponse returns true when only bot comments exis
 
 test('TC-DEDUP-008: hasNewerBotResponse returns false when only human comments exist', () => {
   const comments = [
-    { id: 1, message: 'Need help', actorId: 'Funana' },
+    { id: 1, message: 'Need help', actorId: 'Jordan' },
   ];
   assert.strictEqual(hasNewerBotResponse(comments, 'moltagent'), false);
 });
@@ -1326,7 +1326,7 @@ test('TC-DEDUP-006: BOT_PREFIXES includes all expected prefixes', () => {
 
 test('TC-AWAIT-001: bot [QUESTION] as last comment → awaiting human response', () => {
   const comments = [
-    { id: 100, message: 'Do this task', actorId: 'Funana' },
+    { id: 100, message: 'Do this task', actorId: 'Jordan' },
     { id: 101, message: '[QUESTION] Should I proceed with option A or B?', actorId: 'moltagent' },
   ];
   assert.strictEqual(isAwaitingHumanResponse(comments, 'moltagent'), true);
@@ -1334,16 +1334,16 @@ test('TC-AWAIT-001: bot [QUESTION] as last comment → awaiting human response',
 
 test('TC-AWAIT-002: human replied after bot [QUESTION] → not awaiting', () => {
   const comments = [
-    { id: 100, message: 'Do this task', actorId: 'Funana' },
+    { id: 100, message: 'Do this task', actorId: 'Jordan' },
     { id: 101, message: '[QUESTION] Should I proceed with option A or B?', actorId: 'moltagent' },
-    { id: 102, message: 'Option A please', actorId: 'Funana' },
+    { id: 102, message: 'Option A please', actorId: 'Jordan' },
   ];
   assert.strictEqual(isAwaitingHumanResponse(comments, 'moltagent'), false);
 });
 
 test('TC-AWAIT-003: bot [STATUS] as last comment → not awaiting (not a question)', () => {
   const comments = [
-    { id: 100, message: 'Do this task', actorId: 'Funana' },
+    { id: 100, message: 'Do this task', actorId: 'Jordan' },
     { id: 101, message: '[STATUS] Task accepted, queued for processing.', actorId: 'moltagent' },
   ];
   assert.strictEqual(isAwaitingHumanResponse(comments, 'moltagent'), false);
@@ -1393,7 +1393,7 @@ test('TC-AWAIT-010: comments in non-ID order still finds latest by ID', () => {
   // Array order doesn't match ID order
   const comments = [
     { id: 102, message: '[QUESTION] Confirm?', actorId: 'moltagent' },
-    { id: 100, message: 'Start this', actorId: 'Funana' },
+    { id: 100, message: 'Start this', actorId: 'Jordan' },
     { id: 101, message: '[STATUS] Accepted', actorId: 'moltagent' },
   ];
   assert.strictEqual(isAwaitingHumanResponse(comments, 'moltagent'), true);

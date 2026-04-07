@@ -2207,8 +2207,8 @@ Be thoughtful. Be honest. Be yourself.`;
    * Extract page title candidates from a search result item.
    * NC Unified Search "titles" are often content snippets. This extracts
    * cleaner candidates from:
-   * 1. URL slug (e.g. /Carlos-27016 → "Carlos")
-   * 2. Markdown header in title (e.g. "# Carlos\n..." → "Carlos")
+   * 1. URL slug (e.g. /Alex-27016 → "Alex")
+   * 2. Markdown header in title (e.g. "# Alex\n..." → "Alex")
    * 3. Raw title as fallback
    * @private
    */
@@ -2323,7 +2323,7 @@ RULES:
     // Deduplicate by normalized title: each entity name is linked at most once.
     // Without this, a second probe with the same title would match the entity
     // name inside the URL slug from the first pass's markdown link, creating
-    // nested broken links like [Carlos](…/[Carlos](…)-456).
+    // nested broken links like [Alex](…/[Alex](…)-456).
     const linkedTitles = new Map(); // normalized title → { title, url }
     for (const probe of probeResults) {
       for (const result of probe.results || []) {

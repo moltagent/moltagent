@@ -682,7 +682,7 @@ asyncTest('troubleshoot: specific board found and shared', async () => {
     logger: silentLogger
   });
 
-  const result = await executor.execute("I can't see the Content Pipeline board", { userName: 'Funana' });
+  const result = await executor.execute("I can't see the Content Pipeline board", { userName: 'Jordan' });
   const resp = getResponse(result);
   assert.ok(resp.includes('shared it with you'), `Should confirm sharing, got: ${resp}`);
   assert.ok(resp.includes('Content Pipeline'), `Should mention board name, got: ${resp}`);
@@ -700,7 +700,7 @@ asyncTest('troubleshoot: board already shared returns refresh advice', async () 
     logger: silentLogger
   });
 
-  const result = await executor.execute("I can't find the Content Pipeline board", { userName: 'Funana' });
+  const result = await executor.execute("I can't find the Content Pipeline board", { userName: 'Jordan' });
   const resp = getResponse(result);
   assert.ok(resp.includes('already shared'), `Should say already shared, got: ${resp}`);
   assert.ok(resp.includes('refresh'), `Should suggest refresh, got: ${resp}`);
@@ -715,7 +715,7 @@ asyncTest('troubleshoot: unknown board returns suggestions', async () => {
     logger: silentLogger
   });
 
-  const result = await executor.execute("I can't access Ghost Board", { userName: 'Funana' });
+  const result = await executor.execute("I can't access Ghost Board", { userName: 'Jordan' });
   const resp = getResponse(result);
   assert.ok(resp.includes("couldn't find"), `Should report not found, got: ${resp}`);
   assert.ok(resp.includes(DECK.boards.tasks), `Should list available boards, got: ${resp}`);
@@ -733,7 +733,7 @@ asyncTest('troubleshoot: no board mentioned shares all and lists', async () => {
     logger: silentLogger
   });
 
-  const result = await executor.execute("I can't see my boards", { userName: 'Funana' });
+  const result = await executor.execute("I can't see my boards", { userName: 'Jordan' });
   const resp = getResponse(result);
   assert.ok(resp.includes(DECK.boards.tasks), `Should list boards, got: ${resp}`);
   assert.ok(resp.includes('Content Pipeline'), `Should list all active boards, got: ${resp}`);
@@ -751,7 +751,7 @@ asyncTest('troubleshoot: "I cant see the board" is NOT classified as create_card
     logger: silentLogger
   });
 
-  await executor.execute("I can't see the board", { userName: 'Funana' });
+  await executor.execute("I can't see the board", { userName: 'Jordan' });
   assert.strictEqual(registry.getCallsFor('deck_create_card').length, 0, 'Should NOT call deck_create_card');
   assert.strictEqual(registry.getCallsFor('deck_list_cards').length, 0, 'Should NOT call deck_list_cards');
 });

@@ -77,10 +77,10 @@ asyncTest('Read existing page by exact title', async () => {
 asyncTest('Read strips possessive to find page', async () => {
   const registry = createMockToolRegistry({
     wiki_read: (args) => {
-      if (args.page_title === "Funana's Preferences") {
-        return { success: true, result: 'No wiki page found for "Funana\'s Preferences"' };
+      if (args.page_title === "Jordan's Preferences") {
+        return { success: true, result: 'No wiki page found for "Jordan\'s Preferences"' };
       }
-      if (args.page_title === 'Funana Preferences') {
+      if (args.page_title === 'Jordan Preferences') {
         return { success: true, result: 'Preferred meeting time: mornings' };
       }
       return { success: true, result: 'No wiki page found' };
@@ -88,13 +88,13 @@ asyncTest('Read strips possessive to find page', async () => {
   });
   const executor = new WikiExecutor({
     router: createMockRouter({
-      result: JSON.stringify({ action: 'read', page_title: "Funana's Preferences" })
+      result: JSON.stringify({ action: 'read', page_title: "Jordan's Preferences" })
     }),
     toolRegistry: registry,
     logger: silentLogger
   });
 
-  const result = await executor.execute("What does the wiki say about Funana's Preferences?", { userName: 'alice' });
+  const result = await executor.execute("What does the wiki say about Jordan's Preferences?", { userName: 'alice' });
   const resp = getResponse(result);
   assert.ok(resp.includes('mornings'), `Should find page via stripped possessive, got: ${resp}`);
   assert.strictEqual(registry.getCallsFor('wiki_write').length, 0, 'Should NOT call wiki_write');
@@ -391,13 +391,13 @@ asyncTest('No warmMemory returns final not-found message', async () => {
 // -- Test 14: warmMemory without agent_knowledge tags is ignored --
 asyncTest('warmMemory without agent_knowledge tags is ignored', async () => {
   const registry = createMockToolRegistry({
-    wiki_read: { success: true, result: 'No wiki page found for "Carlos"' },
+    wiki_read: { success: true, result: 'No wiki page found for "Alex"' },
     memory_search: { success: true, result: 'No matching memories found.' }
   });
 
   const executor = new WikiExecutor({
     router: createMockRouter({
-      result: JSON.stringify({ action: 'read', topic: 'Carlos' })
+      result: JSON.stringify({ action: 'read', topic: 'Alex' })
     }),
     toolRegistry: registry,
     logger: silentLogger
@@ -408,7 +408,7 @@ asyncTest('warmMemory without agent_knowledge tags is ignored', async () => {
     warmMemory: 'Some random context string without knowledge tags'
   };
 
-  const result = await executor.execute('Tell me about Carlos', context);
+  const result = await executor.execute('Tell me about Alex', context);
   const resp = getResponse(result);
 
   assert.ok(resp.includes("I don't have anything about"), `Should not use non-tagged warmMemory, got: ${resp}`);
@@ -418,7 +418,7 @@ asyncTest('warmMemory without agent_knowledge tags is ignored', async () => {
 asyncTest('Synthesis failure falls through to not-found gracefully', async () => {
   let routeCallCount = 0;
   const registry = createMockToolRegistry({
-    wiki_read: { success: true, result: 'No wiki page found for "Carlos"' },
+    wiki_read: { success: true, result: 'No wiki page found for "Alex"' },
     memory_search: { success: true, result: 'No matching memories found.' }
   });
 
@@ -427,7 +427,7 @@ asyncTest('Synthesis failure falls through to not-found gracefully', async () =>
       route: async () => {
         routeCallCount++;
         if (routeCallCount === 1) {
-          return { result: JSON.stringify({ action: 'read', topic: 'Carlos' }) };
+          return { result: JSON.stringify({ action: 'read', topic: 'Alex' }) };
         }
         // Synthesis call fails
         throw new Error('LLM timeout');
@@ -439,10 +439,10 @@ asyncTest('Synthesis failure falls through to not-found gracefully', async () =>
 
   const context = {
     userName: 'alice',
-    warmMemory: '<agent_knowledge>\n[source: wiki]\nCarlos\nSome info\n</agent_knowledge>'
+    warmMemory: '<agent_knowledge>\n[source: wiki]\nAlex\nSome info\n</agent_knowledge>'
   };
 
-  const result = await executor.execute('Tell me about Carlos', context);
+  const result = await executor.execute('Tell me about Alex', context);
   const resp = getResponse(result);
 
   assert.ok(resp.includes("I don't have anything about"), `Should fall through on synthesis error, got: ${resp}`);

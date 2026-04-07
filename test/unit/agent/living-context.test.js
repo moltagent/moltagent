@@ -200,8 +200,8 @@ test('LC-05: Different context changes classification context', () => {
     { role: 'assistant', content: 'You have 5 tasks in review.' }
   ]);
   const session2 = mockSession([
-    { role: 'user', content: 'Send an email to Carlos' },
-    { role: 'assistant', content: 'Email sent to Carlos.' }
+    { role: 'user', content: 'Send an email to Alex' },
+    { role: 'assistant', content: 'Email sent to Alex.' }
   ]);
 
   const ctx1 = buildLiveContext(session1, 'Move the first one');
@@ -262,12 +262,12 @@ test('LC-09: Normal message should NOT trigger expansion', () => {
 // ============================================================
 
 test('LC-10: Irrelevant wiki results should not count as substantive', () => {
-  // Simulate: user asks about "weather in Lisbon" but wiki has "Learning Log" and "Carlos"
+  // Simulate: user asks about "weather in Lisbon" but wiki has "Learning Log" and "Alex"
   const searchTerms = ['weather', 'lisbon'];
   const probeResults = [
     { source: 'wiki_content', results: [
       { title: 'Learning Log', snippet: 'Notes from recent sessions about development progress' },
-      { title: 'Carlos', snippet: 'Carlos works at TheCatalyne as a project manager' }
+      { title: 'Alex', snippet: 'Alex works at AcmeCorp as a project manager' }
     ]},
     { source: 'deck', results: [] }
   ];
@@ -359,13 +359,13 @@ test('LC-16: Entity extraction finds card numbers in recent exchanges', () => {
 
 test('LC-17: Entity extraction finds named entities', () => {
   const session = mockSession([
-    { role: 'user', content: 'Tell me about Carlos at TheCatalyne' },
-    { role: 'assistant', content: 'Carlos works at TheCatalyne on the Paradiesgarten project.' }
+    { role: 'user', content: 'Tell me about Alex at AcmeCorp' },
+    { role: 'assistant', content: 'Alex works at AcmeCorp on the Paradiesgarten project.' }
   ]);
 
   const ctx = buildLiveContext(session, 'test');
   const names = ctx.recentEntityRefs.filter(e => e.type === 'name').map(e => e.ref);
-  assert.ok(names.includes('Carlos'), 'Should extract Carlos');
+  assert.ok(names.includes('Alex'), 'Should extract Alex');
   assert.ok(names.includes('Paradiesgarten'), 'Should extract Paradiesgarten');
 });
 

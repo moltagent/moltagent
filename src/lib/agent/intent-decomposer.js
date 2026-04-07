@@ -38,11 +38,11 @@ Return ONLY a JSON object with a "steps" array. Each step has:
 - condition: (optional) "if_empty:N" — only execute if step N returned no results. "if_found:N" — only if step N found results.
 - depends_on: (optional) array of step id numbers — wait for these before executing
 
-Example for "Check Carlos's email and if we have no meeting, create a reminder":
+Example for "Check Alex's email and if we have no meeting, create a reminder":
 {"steps":[
-  {"id":1,"type":"probe","source":"wiki","query":"Carlos email contact"},
-  {"id":2,"type":"probe","source":"calendar","query":"Carlos next 14 days"},
-  {"id":3,"type":"action","source":"deck","query":"Create reminder: Call Carlos","condition":"if_empty:2","depends_on":[2]},
+  {"id":1,"type":"probe","source":"wiki","query":"Alex email contact"},
+  {"id":2,"type":"probe","source":"calendar","query":"Alex next 14 days"},
+  {"id":3,"type":"action","source":"deck","query":"Create reminder: Call Alex","condition":"if_empty:2","depends_on":[2]},
   {"id":4,"type":"synthesis","query":"Summarize findings","depends_on":[1,2,3]}
 ]}
 

@@ -105,7 +105,7 @@ asyncTest('Introspect lists known pages extracted from memory_search results', a
     // memory_search returns formatted pages
     memory_search: {
       success: true,
-      result: '**Carlos** [wiki] — contact at TheCatalyne\n**Project Alpha** [wiki] — Q3 initiative\n**Meeting Notes 2026** [wiki] — quarterly review'
+      result: '**Alex** [wiki] — contact at AcmeCorp\n**Project Alpha** [wiki] — Q3 initiative\n**Meeting Notes 2026** [wiki] — quarterly review'
     }
   });
 
@@ -120,7 +120,7 @@ asyncTest('Introspect lists known pages extracted from memory_search results', a
   const result = await executor.execute("What pages are in your wiki?", { userName: 'alice' });
   const resp = getResponse(result);
 
-  assert.ok(resp.includes('Carlos'), `Response should include Carlos page, got: ${resp}`);
+  assert.ok(resp.includes('Alex'), `Response should include Alex page, got: ${resp}`);
   assert.ok(resp.includes('Project Alpha'), `Response should include Project Alpha page, got: ${resp}`);
   assert.ok(resp.includes('Meeting Notes 2026'), `Response should include Meeting Notes page, got: ${resp}`);
   assert.ok(result.actionRecord.refs.pageCount > 0, 'pageCount should reflect found pages');
@@ -190,24 +190,24 @@ asyncTest('Topic-bearing query routes to read with memory_search, not introspect
   }
 });
 
-// -- Test 6: "about Carlos" routes to read, not introspect --
-asyncTest('"What do you know about Carlos" routes to read', async () => {
+// -- Test 6: "about Alex" routes to read, not introspect --
+asyncTest('"What do you know about Alex" routes to read', async () => {
   const registry = createMockToolRegistry({
-    wiki_read: { success: true, result: 'Carlos is the contact at TheCatalyne.' }
+    wiki_read: { success: true, result: 'Alex is the contact at AcmeCorp.' }
   });
 
   const executor = new WikiExecutor({
     router: createMockRouter({
-      result: JSON.stringify({ action: 'read', topic: 'Carlos' })
+      result: JSON.stringify({ action: 'read', topic: 'Alex' })
     }),
     toolRegistry: registry,
     logger: silentLogger
   });
 
-  const result = await executor.execute('What do you know about Carlos?', { userName: 'alice' });
+  const result = await executor.execute('What do you know about Alex?', { userName: 'alice' });
   const resp = getResponse(result);
 
-  assert.ok(resp.includes('Carlos'), `Should return Carlos page, got: ${resp}`);
+  assert.ok(resp.includes('Alex'), `Should return Alex page, got: ${resp}`);
   assert.ok(result.actionRecord, 'Should have actionRecord');
   assert.strictEqual(result.actionRecord.type, 'wiki_read', 'Should be wiki_read, not wiki_introspect');
 });
@@ -241,22 +241,22 @@ asyncTest('Structural query with no topic still routes to introspect', async () 
 // -- Test 8: Safety net reclassifies introspect+topic to read --
 asyncTest('Safety net: introspect with topic reclassified to read', async () => {
   const registry = createMockToolRegistry({
-    wiki_read: { success: true, result: 'Carlos is the contact at TheCatalyne.' }
+    wiki_read: { success: true, result: 'Alex is the contact at AcmeCorp.' }
   });
 
   const executor = new WikiExecutor({
     router: createMockRouter({
       // LLM misclassified as introspect despite having a topic
-      result: JSON.stringify({ action: 'introspect', topic: 'Carlos' })
+      result: JSON.stringify({ action: 'introspect', topic: 'Alex' })
     }),
     toolRegistry: registry,
     logger: silentLogger
   });
 
-  const result = await executor.execute('What do you know about Carlos?', { userName: 'alice' });
+  const result = await executor.execute('What do you know about Alex?', { userName: 'alice' });
   const resp = getResponse(result);
 
-  assert.ok(resp.includes('Carlos'), `Should search for Carlos, got: ${resp}`);
+  assert.ok(resp.includes('Alex'), `Should search for Alex, got: ${resp}`);
   assert.ok(result.actionRecord, 'Should have actionRecord');
   assert.strictEqual(result.actionRecord.type, 'wiki_read',
     'Safety net should reclassify introspect+topic to wiki_read');
