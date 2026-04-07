@@ -156,8 +156,15 @@ class WorkflowEngine {
 
     // Board-level PAUSED check: find the WORKFLOW rules card; if it has the
     // PAUSED label, skip the entire board for this pulse.
-    const rulesCard = stacks.flatMap(s => s.cards || []).find(c => wb.rulesCardId && c.id === wb.rulesCardId);
-    if (rulesCard && hasLabel(rulesCard, 'PAUSED')) {
+    // Fail-safe: if the rules card is not resolvable, treat as PAUSED.
+    const rulesCard = wb.rulesCardId
+      ? stacks.flatMap(s => s.cards || []).find(c => c.id === wb.rulesCardId)
+      : null;
+    if (!rulesCard) {
+      console.warn(`[Workflow] Board "${board.title}" — rules card not resolvable (id=${wb.rulesCardId}), treating as PAUSED`);
+      return result;
+    }
+    if (hasLabel(rulesCard, 'PAUSED')) {
       console.log(`[Workflow] Board "${board.title}" is PAUSED — skipping`);
       return result;
     }

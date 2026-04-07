@@ -119,14 +119,15 @@ function makeCard(overrides = {}) {
  * Create a minimal workflow board descriptor for tests.
  */
 function makeWorkflowBoard(cards = [], overrides = {}) {
-  const stack = { id: 10, title: 'Inbox', cards };
+  const rulesCard = { id: 900, title: 'WORKFLOW: pipeline', description: 'RULES: Process cards.', labels: [] };
+  const stack = { id: 10, title: 'Inbox', cards: [rulesCard, ...cards] };
   return {
     board: { id: 1, title: 'Test Workflow' },
     stacks: [stack],
     description: 'WORKFLOW: pipeline\nRULES: Process cards.',
     workflowType: 'pipeline',
     boardId: 1,
-    rulesCardId: null,
+    rulesCardId: 900,
     ...overrides
   };
 }
@@ -664,6 +665,42 @@ function makeEngine({ detector, deck, agent, talkQueue, config } = {}) {
       null,
       '_getErrorState must return null for cards with no error state'
     );
+  });
+
+  // ─── Fail-safe: unresolvable rules card ──────────────────────────────
+
+  await asyncTest('Board with unresolvable rulesCardId is treated as PAUSED (fail-safe)', async () => {
+    const agent = createMockAgentLoop();
+    const card = makeCard({ labels: [] });
+    const wb = makeWorkflowBoard([card], { rulesCardId: 9999 });
+    // Remove the auto-injected rules card so 9999 is unresolvable
+    wb.stacks[0].cards = wb.stacks[0].cards.filter(c => c.id !== 900);
+
+    const engine = makeEngine({
+      detector: createMockDetector([wb]),
+      agent
+    });
+
+    const results = await engine.processAll();
+    assert.strictEqual(agent._calls.length, 0, 'No cards should be processed when rules card is unresolvable');
+    assert.strictEqual(results.cardsProcessed, 0);
+  });
+
+  await asyncTest('Board with null rulesCardId is treated as PAUSED (fail-safe)', async () => {
+    const agent = createMockAgentLoop();
+    const card = makeCard({ labels: [] });
+    const wb = makeWorkflowBoard([card], { rulesCardId: null });
+    // Remove the auto-injected rules card
+    wb.stacks[0].cards = wb.stacks[0].cards.filter(c => c.id !== 900);
+
+    const engine = makeEngine({
+      detector: createMockDetector([wb]),
+      agent
+    });
+
+    const results = await engine.processAll();
+    assert.strictEqual(agent._calls.length, 0, 'No cards should be processed when rulesCardId is null');
+    assert.strictEqual(results.cardsProcessed, 0);
   });
 
   summary();

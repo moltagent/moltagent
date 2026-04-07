@@ -7,6 +7,15 @@ const WorkflowEngine = require('../../../src/lib/workflows/workflow-engine');
 // --- Mock Factories ---
 
 function createMockDetector(boards = []) {
+  // Auto-inject a rules card when rulesCardId is missing so the fail-safe
+  // PAUSED check in _processBoard doesn't treat the board as paused.
+  for (const wb of boards) {
+    if (!wb.rulesCardId && wb.stacks && wb.stacks.length) {
+      const rulesCard = { id: 900, title: 'WORKFLOW: pipeline', description: 'RULES', labels: [] };
+      wb.stacks[0].cards = [rulesCard, ...(wb.stacks[0].cards || [])];
+      wb.rulesCardId = 900;
+    }
+  }
   return {
     getWorkflowBoards: async () => boards,
     invalidateCache: () => {}
