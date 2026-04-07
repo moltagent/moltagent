@@ -1541,12 +1541,14 @@ class MessageProcessor {
     if (router && !this.microPipeline.executors.deck && toolRegistry) {
       try {
         const DeckExecutor = require('../agent/executors/deck-executor');
+        const enricherRef = this.microPipeline?.memoryContextEnricher;
         this.microPipeline.executors.deck = new DeckExecutor({
           router, cloudProvider, toolRegistry,
           deckClient: toolRegistry.clients?.deckClient || null,
           adminUser: process.env.KNOWLEDGE_ADMIN_USER || this.adminUser || null,
           guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
-          activityLogger: aLog, timezone: tz, logger: console
+          activityLogger: aLog, timezone: tz, logger: console,
+          boardMapProvider: enricherRef ? () => enricherRef._buildBoardMapBlock() : null
         });
         console.log('[Message] Wired DeckExecutor into MicroPipeline');
       } catch (err) {

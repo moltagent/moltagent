@@ -69,6 +69,8 @@ class DeckExecutor extends BaseExecutor {
     this.toolRegistry = config.toolRegistry;
     this.deckClient = config.deckClient || null;
     this.adminUser = config.adminUser || process.env.KNOWLEDGE_ADMIN_USER || null;
+    /** @type {Function|null} async () => string|null — returns <deck_boards> block from enricher cache */
+    this._boardMapProvider = config.boardMapProvider || null;
   }
 
   _deckUrl(type, id) {
@@ -115,10 +117,17 @@ class DeckExecutor extends BaseExecutor {
       required: ['action']
     };
 
+    // Inject board map so the LLM can resolve user board names to actual titles/IDs
+    let boardMapHint = '';
+    if (this._boardMapProvider) {
+      try { boardMapHint = (await this._boardMapProvider()) || ''; } catch { /* non-blocking */ }
+    }
+
     const extractionPrompt = `${dateContext}
 
 Extract task/board operation parameters from this message.
 Leave fields as empty strings if not mentioned. Do NOT guess values.
+${boardMapHint ? `\nAvailable boards:\n${boardMapHint}\nIMPORTANT: Use the EXACT board title from the list above for board_name — the user may use abbreviations or different casing.\n` : ''}
 
 The user may use either Nextcloud Deck terms or Trello terms:
   Nextcloud Deck    Trello          Meaning
