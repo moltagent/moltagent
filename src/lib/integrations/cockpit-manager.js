@@ -813,6 +813,11 @@ class CockpitManager {
   async updateStatus(statusData) {
     if (!this._initialized) return;
 
+    // Throttle: only write status cards every 3rd heartbeat (~15 min).
+    // First call always writes (cache cold). Hash cache handles the rest.
+    this._statusPulseCount = (this._statusPulseCount || 0) + 1;
+    if (this._statusPulseCount > 1 && this._statusPulseCount % 3 !== 1) return;
+
     try {
       // Fetch Status stack cards
       const stacks = await this.deck.getStacks(this.boardId);
