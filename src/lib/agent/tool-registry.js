@@ -689,16 +689,12 @@ class ToolRegistry {
               return `No stack "${targetStackName}" on board "${board.title}". Available stacks: ${available}`;
             }
 
-            // Block card creation in PAUSED stacks
-            const configCard = (stack.cards || []).find(c => hasLabel(c, 'System'));
-            if (configCard && hasLabel(configCard, 'PAUSED')) {
+            // Route through DeckClient guard (checks CONFIG: card for PAUSED label)
+            console.log(`[deck_create_card] board=${board.id} stack=${stack.id} stackName="${stack.title}" — routing through createCardOnBoard`);
+            const card = await deck.createCardOnBoard(board.id, stack.id, args.title, { description: args.description || '' });
+            if (card === null) {
               return `Stack "${stack.title}" is PAUSED — cannot create cards in it. Choose a different stack.`;
             }
-
-            const card = await deck._request('POST',
-              `/index.php/apps/deck/api/v1.0/boards/${board.id}/stacks/${stack.id}/cards`,
-              { title: args.title, description: args.description || '', type: 'plain', order: 0 }
-            );
 
             if (!card || !card.id) return `Failed to create "${args.title}" — the server returned an empty response. Try again.`;
             return {
@@ -3368,41 +3364,22 @@ class ToolRegistry {
           targetStack = stacks[0];
         }
 
-        // Check if target stack is PAUSED (CONFIG card has PAUSED label).
-        // The stacks response from NCRequestManager cache may have mutated
-        // labels (shared mutable object). Fetch the CONFIG card directly
-        // with skipCache to get reliable label state.
-        const configCardRef = (targetStack.cards || []).find(c => hasLabel(c, 'System'));
-        if (configCardRef) {
-          try {
-            const cardPath = `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${targetStack.id}/cards/${configCardRef.id}`;
-            const freshResp = await nc.request(cardPath, { method: 'GET', skipCache: true });
-            const freshCard = freshResp.body;
-            if (freshCard && hasLabel(freshCard, 'PAUSED')) {
-              this.logger.info(`[workflow_deck_create_card] Stack "${targetStack.title}" is PAUSED — blocked`);
-              return `Stack "${targetStack.title}" is PAUSED — card "${args.title}" not created.`;
-            }
-          } catch (_) {
-            // If we can't verify, check the cached version as fallback
-            if (hasLabel(configCardRef, 'PAUSED')) {
-              return `Stack "${targetStack.title}" is PAUSED — card "${args.title}" not created.`;
-            }
+        // Route through DeckClient guard (checks CONFIG: card for PAUSED label)
+        console.log(`[workflow_deck_create_card] board=${args.board_id} stack=${targetStack.id} stackName="${targetStack.title}" — routing through createCardOnBoard`);
+        let card;
+        if (deck) {
+          card = await deck.createCardOnBoard(args.board_id, targetStack.id, args.title, { description: args.description || '' });
+          if (card === null) {
+            this.logger.info(`[workflow_deck_create_card] Stack "${targetStack.title}" is PAUSED — blocked`);
+            return `Stack "${targetStack.title}" is PAUSED — card "${args.title}" not created.`;
           }
+        } else {
+          const resp = await nc.request(
+            `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${targetStack.id}/cards`,
+            { method: 'POST', body: { title: args.title, type: 'plain', order: 0, description: args.description || '' } }
+          );
+          card = resp.body || resp;
         }
-
-        const createFn = deck
-          ? () => deck._request('POST',
-              `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${targetStack.id}/cards`,
-              { title: args.title, description: args.description || '', type: 'plain', order: 0 })
-          : async () => {
-              const resp = await nc.request(
-                `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${targetStack.id}/cards`,
-                { method: 'POST', body: { title: args.title, type: 'plain', order: 0, description: args.description || '' } }
-              );
-              return resp.body || resp;
-            };
-
-        const card = await createFn();
         if (!card || !card.id) return `Failed to create "${args.title}" — no card ID returned.`;
         return `Created "${args.title}" (card #${card.id}) in "${targetStack.title}" (stack ${targetStack.id}) on board ${args.board_id}.`;
       }

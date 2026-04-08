@@ -578,7 +578,9 @@ class DeckClient {
     if (!boardId || !stackId) throw new DeckApiError('boardId and stackId are required');
     if (!title || typeof title !== 'string') throw new DeckApiError('Card title is required');
 
-    if (await this._isStackPaused(boardId, stackId)) {
+    const paused = await this._isStackPaused(boardId, stackId);
+    console.log(`[Deck] createCardOnBoard: board=${boardId} stack=${stackId} paused=${paused} title="${(title || '').substring(0, 60)}"`);
+    if (paused) {
       console.warn(`[Deck] Refusing card creation in PAUSED stack (board=${boardId}, stack=${stackId}): "${title}"`);
       return null;
     }
@@ -758,7 +760,10 @@ class DeckClient {
    * @returns {Promise<Array>} Array of stack objects
    */
   async getStacks(boardId) {
-    if (!boardId) console.log('[Deck] getStacks called with boardId:', boardId, new Error().stack);
+    if (!boardId) {
+      console.warn('[Deck] getStacks called with invalid boardId:', boardId);
+      return [];
+    }
     return await this._request('GET', `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks`);
   }
 
@@ -795,7 +800,9 @@ class DeckClient {
       throw new DeckApiError(`Unknown stack: ${stackName}`);
     }
 
-    if (await this._isStackPaused(boardId, stackId)) {
+    const paused = await this._isStackPaused(boardId, stackId);
+    console.log(`[Deck] createCard: board=${boardId} stack=${stackId} stackName="${stackName}" paused=${paused} title="${(card.title || '').substring(0, 60)}"`);
+    if (paused) {
       console.warn(`[Deck] Refusing card creation in PAUSED stack "${stackName}" (board=${boardId}): "${card.title}"`);
       return null;
     }

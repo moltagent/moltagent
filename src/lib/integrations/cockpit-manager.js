@@ -310,7 +310,8 @@ class CockpitManager {
         try {
           board = await this.deck.getBoard(boardId);
         } catch (err) {
-          if (err.statusCode === 404 || err.statusCode === 403) {
+          if (err.statusCode === 404 || err.statusCode === 403 ||
+              /Authentication error:\s*(401|403)/.test(err.message)) {
             boardRegistry.invalidateBoard(ROLES.cockpit);
           } else {
             throw err;
@@ -652,6 +653,7 @@ class CockpitManager {
     let modeCards = cards;
 
     if (!modeCards) {
+      if (!this.boardId) return null;
       const stacks = await this.deck.getStacks(this.boardId);
       const modesStack = stacks.find(s => s.id === this.stacks.modes);
       modeCards = modesStack?.cards || [];
