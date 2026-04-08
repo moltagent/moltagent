@@ -36,6 +36,7 @@
 
 'use strict';
 
+const crypto = require('crypto');
 const appConfig = require('../config');
 const DECK = require('../../config/deck-names');
 const boardRegistry = require('./deck-board-registry');
@@ -286,6 +287,9 @@ class CockpitManager {
 
     /** @type {boolean} Whether initialize() has been called successfully */
     this._initialized = false;
+
+    /** @type {Map<number, string>} cardId -> SHA-256 hash of last written description */
+    this._descriptionHashes = new Map();
   }
 
   // ===========================================================================
@@ -830,6 +834,9 @@ class CockpitManager {
 
         try {
           const description = update.formatter(update.data);
+          const hash = crypto.createHash('sha256').update(description).digest('hex');
+          if (this._descriptionHashes.get(card.id) === hash) continue;
+
           const updatePath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${this.stacks.status}/cards/${card.id}`;
           await this.deck._request('PUT', updatePath, {
             title: card.title,
@@ -837,6 +844,7 @@ class CockpitManager {
             type: 'plain',
             owner: card.owner || 'moltagent'
           });
+          this._descriptionHashes.set(card.id, hash);
         } catch (err) {
           console.warn(`[CockpitManager] Failed to update ${card.title}:`, err.message);
         }
@@ -1677,7 +1685,9 @@ class CockpitManager {
    */
   async _writeModelsCardDescription(card, newDescription) {
     if (!card || !card.id) return;
-    if (newDescription === card.description) return; // avoid API spam
+
+    const hash = crypto.createHash('sha256').update(newDescription).digest('hex');
+    if (this._descriptionHashes.get(card.id) === hash) return;
 
     try {
       const stackId = this.stacks.system;
@@ -1689,6 +1699,7 @@ class CockpitManager {
           type: 'plain',
           owner: card.owner || 'moltagent'
         });
+        this._descriptionHashes.set(card.id, hash);
       }
     } catch (err) {
       console.warn(`[CockpitManager] Failed to write Models card description: ${err.message}`);
