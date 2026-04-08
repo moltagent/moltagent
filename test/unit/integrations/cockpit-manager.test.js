@@ -1304,7 +1304,7 @@ test('TC-INFRA-005: _formatHealthStatus with infra data renders per-service line
   const result = manager._formatHealthStatus(health);
   assert.ok(result.includes('OK'), 'Should include OK');
   assert.ok(result.includes('ollama'), 'Should include ollama');
-  assert.ok(result.includes('120ms'), 'Should include latency');
+  assert.ok(result.includes('100ms'), 'Should include latency (rounded to 50ms bucket)');
   assert.ok(result.includes('whisper'), 'Should include whisper');
   assert.ok(result.includes('Uptime: 12d'), 'Should include uptime');
 });

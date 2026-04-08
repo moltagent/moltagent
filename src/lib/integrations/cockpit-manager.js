@@ -1819,7 +1819,9 @@ class CockpitManager {
       if (infra.services) {
         for (const [id, svc] of Object.entries(infra.services)) {
           if (svc.ok) {
-            parts.push(`\ud83d\udfe2 ${id} (${svc.latencyMs}ms)`);
+            // Round latency to 50ms buckets to avoid triggering card writes on jitter
+            const latency = Math.round((svc.latencyMs || 0) / 50) * 50;
+            parts.push(`\ud83d\udfe2 ${id} (${latency}ms)`);
           } else {
             const reason = svc.error || 'error';
             parts.push(`\ud83d\udd34 ${id} -- ${reason}`);
@@ -1959,9 +1961,11 @@ class CockpitManager {
       }
     }
 
-    // Timestamp
+    // Timestamp (rounded to 5-min bucket so unchanged heartbeats don't trigger writes)
+    const now = new Date();
+    now.setMinutes(Math.floor(now.getMinutes() / 5) * 5, 0, 0);
     lines.push('');
-    lines.push(`_Updated: ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}_`);
+    lines.push(`_Updated: ${now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}_`);
 
     return lines.join('\n');
   }
