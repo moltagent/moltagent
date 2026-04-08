@@ -1961,9 +1961,9 @@ class CockpitManager {
       }
     }
 
-    // Timestamp (rounded to 5-min bucket so unchanged heartbeats don't trigger writes)
+    // Timestamp (rounded to 15-min bucket so unchanged heartbeats don't trigger writes)
     const now = new Date();
-    now.setMinutes(Math.floor(now.getMinutes() / 5) * 5, 0, 0);
+    now.setMinutes(Math.floor(now.getMinutes() / 15) * 15, 0, 0);
     lines.push('');
     lines.push(`_Updated: ${now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}_`);
 
