@@ -36,6 +36,7 @@
 
 'use strict';
 
+const crypto = require('crypto');
 const appConfig = require('../config');
 const DECK = require('../../config/deck-names');
 const boardRegistry = require('./deck-board-registry');
@@ -286,6 +287,9 @@ class CockpitManager {
 
     /** @type {boolean} Whether initialize() has been called successfully */
     this._initialized = false;
+
+    /** @type {Map<number, string>} cardId -> SHA-256 hash of last written description */
+    this._descriptionHashes = new Map();
   }
 
   // ===========================================================================
@@ -310,7 +314,8 @@ class CockpitManager {
         try {
           board = await this.deck.getBoard(boardId);
         } catch (err) {
-          if (err.statusCode === 404 || err.statusCode === 403) {
+          if (err.statusCode === 404 || err.statusCode === 403 ||
+              /Authentication error:\s*(401|403)/.test(err.message)) {
             boardRegistry.invalidateBoard(ROLES.cockpit);
           } else {
             throw err;
@@ -652,6 +657,7 @@ class CockpitManager {
     let modeCards = cards;
 
     if (!modeCards) {
+      if (!this.boardId) return null;
       const stacks = await this.deck.getStacks(this.boardId);
       const modesStack = stacks.find(s => s.id === this.stacks.modes);
       modeCards = modesStack?.cards || [];
@@ -807,6 +813,11 @@ class CockpitManager {
   async updateStatus(statusData) {
     if (!this._initialized) return;
 
+    // Throttle: only write status cards every 3rd heartbeat (~15 min).
+    // First call always writes (cache cold). Hash cache handles the rest.
+    this._statusPulseCount = (this._statusPulseCount || 0) + 1;
+    if (this._statusPulseCount > 1 && this._statusPulseCount % 3 !== 1) return;
+
     try {
       // Fetch Status stack cards
       const stacks = await this.deck.getStacks(this.boardId);
@@ -828,6 +839,9 @@ class CockpitManager {
 
         try {
           const description = update.formatter(update.data);
+          const hash = crypto.createHash('sha256').update(description).digest('hex');
+          if (this._descriptionHashes.get(card.id) === hash) continue;
+
           const updatePath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${this.stacks.status}/cards/${card.id}`;
           await this.deck._request('PUT', updatePath, {
             title: card.title,
@@ -835,6 +849,7 @@ class CockpitManager {
             type: 'plain',
             owner: card.owner || 'moltagent'
           });
+          this._descriptionHashes.set(card.id, hash);
         } catch (err) {
           console.warn(`[CockpitManager] Failed to update ${card.title}:`, err.message);
         }
@@ -1675,7 +1690,9 @@ class CockpitManager {
    */
   async _writeModelsCardDescription(card, newDescription) {
     if (!card || !card.id) return;
-    if (newDescription === card.description) return; // avoid API spam
+
+    const hash = crypto.createHash('sha256').update(newDescription).digest('hex');
+    if (this._descriptionHashes.get(card.id) === hash) return;
 
     try {
       const stackId = this.stacks.system;
@@ -1687,6 +1704,7 @@ class CockpitManager {
           type: 'plain',
           owner: card.owner || 'moltagent'
         });
+        this._descriptionHashes.set(card.id, hash);
       }
     } catch (err) {
       console.warn(`[CockpitManager] Failed to write Models card description: ${err.message}`);
@@ -1806,7 +1824,9 @@ class CockpitManager {
       if (infra.services) {
         for (const [id, svc] of Object.entries(infra.services)) {
           if (svc.ok) {
-            parts.push(`\ud83d\udfe2 ${id} (${svc.latencyMs}ms)`);
+            // Round latency to 50ms buckets to avoid triggering card writes on jitter
+            const latency = Math.round((svc.latencyMs || 0) / 50) * 50;
+            parts.push(`\ud83d\udfe2 ${id} (${latency}ms)`);
           } else {
             const reason = svc.error || 'error';
             parts.push(`\ud83d\udd34 ${id} -- ${reason}`);
@@ -1946,9 +1966,11 @@ class CockpitManager {
       }
     }
 
-    // Timestamp
+    // Timestamp (rounded to 15-min bucket so unchanged heartbeats don't trigger writes)
+    const now = new Date();
+    now.setMinutes(Math.floor(now.getMinutes() / 15) * 15, 0, 0);
     lines.push('');
-    lines.push(`_Updated: ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}_`);
+    lines.push(`_Updated: ${now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}_`);
 
     return lines.join('\n');
   }

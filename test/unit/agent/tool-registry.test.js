@@ -73,6 +73,7 @@ function createMockDeckClient(cards = {}) {
       { actorId: 'moltagent', message: '[STATUS] Working on it', creationDateTime: '2026-02-08T11:00:00Z' }
     ],
     shareBoard: async (_boardId, _participant, _type, _pe, _ps, _pm) => ({ id: 100 }),
+    createCardOnBoard: async (boardId, stackId, title, opts) => ({ id: 77, title, description: opts?.description || '' }),
     _request: async (method, path, body) => ({ id: 77, title: body?.title || 'New Board' }),
     completeTask: async (_cardId, _message) => {},
     completeReview: async (_cardId, _message) => {}
@@ -1655,13 +1656,13 @@ test('getCloudWorkflowToolDefinitions returns fewer tools than getToolDefinition
 // ============================================================
 
 asyncTest('deck_create_card with board param resolves target board and stack', async () => {
-  let requestMethod, requestPath, requestBody;
+  let calledBoardId, calledStackId, calledTitle;
   const deck = createMockDeckClient();
-  deck._request = async (method, path, body) => {
-    requestMethod = method;
-    requestPath = path;
-    requestBody = body;
-    return { id: 88, title: body?.title || 'Test' };
+  deck.createCardOnBoard = async (boardId, stackId, title, opts) => {
+    calledBoardId = boardId;
+    calledStackId = stackId;
+    calledTitle = title;
+    return { id: 88, title };
   };
 
   const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
@@ -1675,9 +1676,9 @@ asyncTest('deck_create_card with board param resolves target board and stack', a
   assert.ok(result.result.includes('/card/88'), `Expected card URL in: ${result.result}`);
   assert.ok(result.result.includes('Marketing'));
   assert.ok(result.result.includes('Inbox'));
-  assert.strictEqual(requestMethod, 'POST');
-  assert.ok(requestPath.includes('/boards/2/stacks/301/cards'), `Expected board 2, stack 301 in path: ${requestPath}`);
-  assert.strictEqual(requestBody.title, 'Test EP');
+  assert.strictEqual(calledBoardId, 2, 'Should target board 2 (Marketing)');
+  assert.strictEqual(calledStackId, 301, 'Should target stack 301 (Inbox)');
+  assert.strictEqual(calledTitle, 'Test EP');
 });
 
 asyncTest('deck_create_card without board uses default (regression)', async () => {

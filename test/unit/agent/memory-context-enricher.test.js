@@ -258,15 +258,17 @@ asyncTest('_searchDeck finds card by description keyword', async () => {
   assert.ok(result.includes('match: content'), 'Should tag as content match');
 });
 
-// -- Test 17: _searchDeck returns empty for no matches --
-asyncTest('_searchDeck returns empty for no matches — not an error', async () => {
+// -- Test 17: _searchDeck returns empty for no matches — board map still present --
+asyncTest('_searchDeck returns empty for no matches — board map still present', async () => {
   const { enricher } = enricherWithDeck({
     inbox: [{ id: 1, title: 'Unrelated card', description: 'Nothing relevant' }]
   });
 
   const result = await enricher.enrich('Tell me about Alex', 'question');
-  // Only wiki results matter here, and wiki mock returns []
-  assert.strictEqual(result, null, 'Should return null when no deck or wiki matches');
+  // No card matches, but board map is always injected when boards exist
+  assert.ok(result !== null, 'Should return board map even without card matches');
+  assert.ok(result.includes('<deck_boards>'), 'Should include board map');
+  assert.ok(!result.includes('source: deck'), 'Should NOT include card-level deck results');
 });
 
 // -- Test 18: Results include stack name and card ID --
@@ -449,6 +451,72 @@ asyncTest('Multi-board: listBoards failure falls back to single board', async ()
   const result = await enricher.enrich('What about the "fallback card"?', 'question');
   assert.ok(result !== null, 'Should find card via getAllCards fallback');
   assert.ok(result.includes('Fallback card'), 'Should include fallback card title');
+});
+
+// -- Board Map Tests --
+
+asyncTest('Enricher output includes <deck_boards> when boards exist', async () => {
+  const { enricher } = enricherWithDeck({
+    inbox: [{ id: 1, title: 'Some card', description: 'test' }]
+  });
+
+  const result = await enricher.enrich('Show me my tasks', 'deck');
+  assert.ok(result !== null, 'Should return enrichment');
+  assert.ok(result.includes('<deck_boards>'), 'Should include board map section');
+  assert.ok(result.includes('</deck_boards>'), 'Should close board map section');
+  assert.ok(result.includes(DECK.boards.tasks), 'Should include default board name');
+  assert.ok(result.includes('stacks: inbox'), 'Should include stack names');
+});
+
+asyncTest('Enricher output omits <deck_boards> when no boards', async () => {
+  const enricher = new MemoryContextEnricher({
+    memorySearcher: { search: async () => [] },
+    deckClient: {
+      listBoards: async () => [],
+      getStacks: async () => [],
+      getAllCards: async () => ({})
+    },
+    logger: silentLogger
+  });
+
+  const result = await enricher.enrich('Show me cards', 'deck');
+  assert.strictEqual(result, null, 'Should return null when no boards and no matches');
+});
+
+asyncTest('Board map includes multiple boards with their stacks', async () => {
+  const multiBoards = [
+    { id: 12, title: 'Moltagent Tasks', archived: false },
+    { id: 144, title: 'Content Pipeline - Molti', archived: false }
+  ];
+  const { enricher } = enricherWithDeck({}, [], multiBoards);
+  // Override getStacks to return different stacks per board
+  enricher.deckClient.getStacks = async (boardId) => {
+    if (boardId === 12) return [{ id: 1, title: 'Inbox', cards: [] }, { id: 2, title: 'Done', cards: [] }];
+    if (boardId === 144) return [{ id: 3, title: 'Ideas', cards: [] }, { id: 4, title: 'Drafting', cards: [] }];
+    return [];
+  };
+
+  const result = await enricher.enrich('What boards do I have?', 'deck');
+  assert.ok(result.includes('Content Pipeline - Molti'), 'Should include Content Pipeline board');
+  assert.ok(result.includes('id: 144'), 'Should include board ID 144');
+  assert.ok(result.includes('Ideas'), 'Should include Ideas stack');
+  assert.ok(result.includes('Moltagent Tasks'), 'Should include Tasks board');
+});
+
+asyncTest('getBoardMap() pulls from cache, no fresh API calls', async () => {
+  const { enricher, deckClient } = enricherWithDeck({
+    inbox: [{ id: 1, title: 'Card', description: 'test' }]
+  });
+
+  // First call populates cache
+  await enricher.enrich('Show me tasks', 'deck');
+  const firstCount = deckClient._callCount;
+
+  // getBoardMap should use cached state — no new listBoards call
+  const map = await enricher.getBoardMap();
+  assert.ok(Array.isArray(map), 'Should return array');
+  assert.ok(map.length > 0, 'Should have boards');
+  assert.strictEqual(deckClient._callCount, firstCount, 'getBoardMap must not trigger new API call');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 1000);

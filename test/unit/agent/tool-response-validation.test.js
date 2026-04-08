@@ -70,6 +70,7 @@ function createDeckClient(overrides = {}) {
     getComments: async () => [],
     shareBoard: async () => ({ id: 100 }),
     createStack: async () => ({ id: 50, title: 'New' }),
+    createCardOnBoard: overrides.createCardOnBoard || (async (boardId, stackId, title, opts) => ({ id: 77, title, description: opts?.description || '' })),
     _request: overrides._request || (async (method, path, body) => ({ id: 77, title: body?.title || 'Test' }))
   };
 }
@@ -110,10 +111,10 @@ console.log('\n=== Tool Response Validation Tests ===\n');
 
 // -- deck_create_card --
 
-asyncTest('deck_create_card: null response from board-targeted path returns failure', async () => {
+asyncTest('deck_create_card: null response from board-targeted path returns PAUSED', async () => {
   const registry = new ToolRegistry({
     deckClient: createDeckClient({
-      _request: async () => null
+      createCardOnBoard: async () => null
     }),
     logger: silentLogger
   });
@@ -123,14 +124,14 @@ asyncTest('deck_create_card: null response from board-targeted path returns fail
   });
 
   assert.ok(result.success, 'execute should succeed (handler returns string)');
-  assert.ok(result.result.includes('Failed'), `Should contain "Failed", got: ${result.result}`);
+  assert.ok(result.result.includes('PAUSED'), `Should contain "PAUSED" (null = PAUSED guard), got: ${result.result}`);
   assert.ok(!result.result.includes('undefined'), `Should not contain "undefined", got: ${result.result}`);
 });
 
 asyncTest('deck_create_card: empty body {success:true} from board-targeted path returns failure', async () => {
   const registry = new ToolRegistry({
     deckClient: createDeckClient({
-      _request: async () => ({ success: true, statusCode: 200 })
+      createCardOnBoard: async () => ({ success: true, statusCode: 200 })
     }),
     logger: silentLogger
   });
@@ -146,7 +147,7 @@ asyncTest('deck_create_card: empty body {success:true} from board-targeted path 
 asyncTest('deck_create_card: valid response with id returns success', async () => {
   const registry = new ToolRegistry({
     deckClient: createDeckClient({
-      _request: async (method, path, body) => ({ id: 1348, title: body?.title || 'Test' })
+      createCardOnBoard: async (boardId, stackId, title) => ({ id: 1348, title })
     }),
     logger: silentLogger
   });
@@ -190,11 +191,7 @@ asyncTest('deck_create_card: {success:true} without id from default board return
 
 asyncTest('workflow_deck_create_card: null response returns failure', async () => {
   const deck = createDeckClient({
-    _request: async (method, path, body) => {
-      // POST for card creation returns null (empty body)
-      if (method === 'POST') return null;
-      return { id: 77, title: body?.title || 'Test' };
-    }
+    createCardOnBoard: async () => null
   });
   // Override getStacks to return stacks for any board
   deck.getStacks = async (boardId) => [{ id: 301, title: 'Inbox' }];
@@ -205,16 +202,13 @@ asyncTest('workflow_deck_create_card: null response returns failure', async () =
     title: 'Workflow Card', board_id: 1, stack_id: 301
   });
 
-  assert.ok(result.result.includes('Failed'), `Should contain "Failed", got: ${result.result}`);
+  assert.ok(result.result.includes('PAUSED'), `Should contain "PAUSED" (null = PAUSED guard), got: ${result.result}`);
   assert.ok(!result.result.includes('undefined'), `Should not contain "undefined", got: ${result.result}`);
 });
 
 asyncTest('workflow_deck_create_card: valid response returns success with ID', async () => {
   const deck = createDeckClient({
-    _request: async (method, path, body) => {
-      if (method === 'POST') return { id: 42, title: body?.title || 'Test' };
-      return { id: 77, title: 'Test' };
-    }
+    createCardOnBoard: async (boardId, stackId, title) => ({ id: 42, title })
   });
   deck.getStacks = async (boardId) => [{ id: 301, title: 'Inbox' }];
 
