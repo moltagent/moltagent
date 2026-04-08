@@ -1177,7 +1177,7 @@ class CockpitManager {
     // Store card metadata for heartbeat writeback
     result._cardId = card.id;
     result._cardDescription = card.description || '';
-    result._userConfig = configSection;
+    result._userConfig = configSection.trim() + '\n';
     result._cardLabels = (card.labels || []).map(l => l.title);
 
     this._lastModelsConfig = result;
