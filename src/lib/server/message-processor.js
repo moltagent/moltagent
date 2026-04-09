@@ -643,13 +643,7 @@ class MessageProcessor {
         const liveContext = earlyLiveContext || (session ? buildLiveContext(session, pipelineMessage) : null);
         const { useLocal, useDomainTools, intent, compound } = await this._smartMixClassify(pipelineMessage, session, extracted.token, liveContext);
         console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}${compound ? ' [COMPOUND]' : ''}`);
-
-        // Intent-specific feedback: acknowledge the user immediately (fire-and-forget)
         const lang = this._getLanguage();
-        const feedbackMsg = compound ? getFeedbackMessage('compound', 'decomposing', lang) : getFeedbackMessage(intent, null, lang);
-        if (feedbackMsg && extracted.token) {
-          this.sendTalkReply(extracted.token, feedbackMsg).catch(() => {});
-        }
 
         if (flushPrompt) {
           // Memory flush pending — escalate to agentLoop regardless of smart-mix classification
@@ -657,6 +651,11 @@ class MessageProcessor {
           console.log(`[Message] Smart-mix overridden by memory flush — escalating to cloud`);
           if (this.agentLoop.llmProvider?.skipLocalForConversation) {
             this.agentLoop.llmProvider.skipLocalForConversation();
+          }
+          // Send feedback after validation succeeds (memory flush confirmed possible)
+          const feedbackMsg = getFeedbackMessage(intent, null, lang);
+          if (feedbackMsg && extracted.token) {
+            this.sendTalkReply(extracted.token, feedbackMsg).catch(() => {});
           }
           response = await this.agentLoop.process(pipelineMessage, extracted.token, {
             messageId: extracted.messageId,
@@ -673,6 +672,11 @@ class MessageProcessor {
             this.agentLoop.llmProvider.clearLocalSkip();
           }
           try {
+            // Send feedback after validation succeeds (decomposition confirmed possible)
+            const feedbackMsg = getFeedbackMessage('compound', 'decomposing', lang);
+            if (feedbackMsg && extracted.token) {
+              this.sendTalkReply(extracted.token, feedbackMsg).catch(() => {});
+            }
             const compoundResult = await this._handleCompoundIntent(pipelineMessage, session, extracted.token);
             if (typeof compoundResult === 'object' && compoundResult !== null) {
               this._captureActionRecord(session, compoundResult.actionRecord);
@@ -687,6 +691,10 @@ class MessageProcessor {
             // CRITICAL: knowledge pipeline CANNOT perform actions (create cards, send emails, etc).
             // The response MUST NOT claim actions were performed — append an honest disclaimer.
             console.warn(`[Message] Compound decomposition failed, falling back to knowledge-only: ${compoundErr.message}`);
+            // Send error follow-up since we already sent feedback
+            if (extracted.token) {
+              this.sendTalkReply(extracted.token, '⚠️ I need to break that down differently...').catch(() => {});
+            }
             const compoundFallbackPolicy = '\n\nCRITICAL CONSTRAINT: You are running in KNOWLEDGE-ONLY mode because the action pipeline failed. ' +
               'You CANNOT create cards, move cards, send emails, book appointments, or perform ANY action. ' +
               'If the user asked you to do something, answer the knowledge part of their question, then clearly state that you could not complete the requested action and they should ask again separately.';
@@ -742,6 +750,11 @@ class MessageProcessor {
             response = "I'm not sure what to execute — could you tell me what you'd like me to do?";
             result = { intent: 'smart_mix_confirmation_empty', provider: 'context' };
           } else try {
+            // Send feedback after validation succeeds (executing from valid context)
+            const feedbackMsg = getFeedbackMessage(intent, null, lang);
+            if (feedbackMsg && extracted.token) {
+              this.sendTalkReply(extracted.token, feedbackMsg).catch(() => {});
+            }
             const actionMessage = offerText;
             response = await this.microPipeline.process(actionMessage, {
               userName: extracted.user,
@@ -763,6 +776,10 @@ class MessageProcessor {
             result = { intent: 'smart_mix_confirmation', provider: 'local-tools' };
           } catch (confirmErr) {
             console.warn(`[Message] Confirmation execution failed, escalating: ${confirmErr.message}`);
+            // Send error follow-up since we already sent feedback
+            if (extracted.token) {
+              this.sendTalkReply(extracted.token, '❌ I couldn\'t execute that. Let me process your request differently...').catch(() => {});
+            }
             if (this.agentLoop?.llmProvider?.skipLocalForConversation) {
               this.agentLoop.llmProvider.skipLocalForConversation();
             }
@@ -782,6 +799,11 @@ class MessageProcessor {
             this.agentLoop.llmProvider.clearLocalSkip();
           }
           try {
+            // Send feedback after validation succeeds (knowledge sources accessible)
+            const feedbackMsg = getFeedbackMessage(intent, null, lang);
+            if (feedbackMsg && extracted.token) {
+              this.sendTalkReply(extracted.token, feedbackMsg).catch(() => {});
+            }
             const knowledgeResult = await this._handleKnowledgeQuery(pipelineMessage, session, liveContext, extracted.token);
             if (typeof knowledgeResult === 'object' && knowledgeResult !== null) {
               this._captureActionRecord(session, knowledgeResult.actionRecord);
@@ -794,6 +816,10 @@ class MessageProcessor {
             result = { intent: 'smart_mix_knowledge', provider: 'local' };
           } catch (knowledgeErr) {
             console.warn(`[Message] Knowledge query failed, escalating to cloud: ${knowledgeErr.message}`);
+            // Send error follow-up since we already sent feedback
+            if (extracted.token) {
+              this.sendTalkReply(extracted.token, '⚠️ I hit a snag searching my knowledge. Trying again...').catch(() => {});
+            }
             if (this.agentLoop?.llmProvider?.skipLocalForConversation) {
               this.agentLoop.llmProvider.skipLocalForConversation();
             }
@@ -813,6 +839,11 @@ class MessageProcessor {
             this.agentLoop.llmProvider.clearLocalSkip();
           }
           try {
+            // Send feedback after validation succeeds (domain resource/permission validated)  
+            const feedbackMsg = getFeedbackMessage(intent, null, lang);
+            if (feedbackMsg && extracted.token) {
+              this.sendTalkReply(extracted.token, feedbackMsg).catch(() => {});
+            }
             response = await this.microPipeline.process(pipelineMessage, {
               userName: extracted.user,
               roomToken: extracted.token,
@@ -836,6 +867,13 @@ class MessageProcessor {
           } catch (domainErr) {
             // Domain escalation: local tool-calling failed → fall back to cloud
             console.warn(`[Message] Domain ${intent} escalated to cloud: ${domainErr.message}`);
+            // Send error follow-up since we already sent feedback
+            if (extracted.token) {
+              const errorMsg = domainErr.message?.includes('not found') || domainErr.message?.includes('not exist')
+                ? '❌ Couldn\'t find that resource. Searching alternatives...'
+                : '⚠️ Hit an issue with that operation. Trying another approach...';
+              this.sendTalkReply(extracted.token, errorMsg).catch(() => {});
+            }
             if (this.agentLoop.llmProvider?.skipLocalForConversation) {
               this.agentLoop.llmProvider.skipLocalForConversation();
             }
@@ -857,6 +895,11 @@ class MessageProcessor {
             this.agentLoop.llmProvider.clearLocalSkip();
           }
           try {
+            // Send feedback after validation succeeds (local processing confirmed possible)
+            const feedbackMsg = getFeedbackMessage(intent, null, lang);
+            if (feedbackMsg && extracted.token) {
+              this.sendTalkReply(extracted.token, feedbackMsg).catch(() => {});
+            }
             response = await this.microPipeline.process(pipelineMessage, {
               userName: extracted.user,
               roomToken: extracted.token,
@@ -879,6 +922,10 @@ class MessageProcessor {
             result = { intent: `smart_mix_local:${intent}`, provider: 'local' };
           } catch (chatErr) {
             console.warn(`[Message] Chitchat escalated to cloud: ${chatErr.message}`);
+            // Send error follow-up since we already sent feedback
+            if (extracted.token) {
+              this.sendTalkReply(extracted.token, '⚠️ Let me reconsider that...').catch(() => {});
+            }
             if (this.agentLoop.llmProvider?.skipLocalForConversation) {
               this.agentLoop.llmProvider.skipLocalForConversation();
             }
@@ -899,6 +946,11 @@ class MessageProcessor {
             this.agentLoop.llmProvider.skipLocalForConversation();
           }
           try {
+            // Send feedback after validation succeeds (thinking context prepared)
+            const feedbackMsg = getFeedbackMessage(intent, null, lang);
+            if (feedbackMsg && extracted.token) {
+              this.sendTalkReply(extracted.token, feedbackMsg).catch(() => {});
+            }
             const thinkingResult = await this._handleThinkingQuery(pipelineMessage, session, liveContext);
             if (typeof thinkingResult === 'object' && thinkingResult !== null) {
               this._captureActionRecord(session, thinkingResult.actionRecord);
@@ -910,6 +962,10 @@ class MessageProcessor {
             result = { intent: 'smart_mix_thinking', provider: 'cloud' };
           } catch (thinkErr) {
             console.warn(`[Message] Thinking query failed, escalating to agentLoop: ${thinkErr.message}`);
+            // Send error follow-up since we already sent feedback
+            if (extracted.token) {
+              this.sendTalkReply(extracted.token, '⚠️ Need a moment to reconsider...').catch(() => {});
+            }
             response = await this.agentLoop.process(pipelineMessage, extracted.token, {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
@@ -943,6 +999,12 @@ class MessageProcessor {
             } catch (err) {
               console.warn(`[Message] Cloud path enrichment failed: ${err.message}`);
             }
+          }
+
+          // Send feedback after validation succeeds (enrichment complete, ready for cloud processing)
+          const feedbackMsg = getFeedbackMessage(intent, null, lang);
+          if (feedbackMsg && extracted.token) {
+            this.sendTalkReply(extracted.token, feedbackMsg).catch(() => {});
           }
 
           const voiceReplyEnabled = extracted._isVoice && this.voiceManager && this.voiceManager.mode === 'full';
@@ -982,12 +1044,12 @@ class MessageProcessor {
         }
       } else if (this.agentLoop) {
         // Session 14: AgentLoop handles all natural language via tool-calling LLM
-        // Generic feedback — no classification available in this path
-        if (extracted.token) {
-          const agentFeedback = getFeedbackMessage('complex', null, this._getLanguage());
-          if (agentFeedback) this.sendTalkReply(extracted.token, agentFeedback).catch(() => {});
-        }
+        // Send feedback after validation succeeds (AgentLoop ready to process)
         const voiceReplyEnabled = extracted._isVoice && this.voiceManager && this.voiceManager.mode === 'full';
+        const agentFeedback = getFeedbackMessage('complex', null, this._getLanguage());
+        if (agentFeedback && extracted.token) {
+          this.sendTalkReply(extracted.token, agentFeedback).catch(() => {});
+        }
         const agentOpts = {
           messageId: extracted.messageId,
           inputType: extracted._isVoice ? 'voice' : 'text',
