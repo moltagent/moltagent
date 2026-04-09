@@ -67,8 +67,14 @@ class CostTracker {
     this.usdToEur = usdToEur;
 
     // In-memory accumulators (survive until process restart)
-    this.daily = { cost: 0, cloudCalls: 0, localCalls: 0, byJob: {} };
-    this.monthly = { cost: 0, cloudCalls: 0, localCalls: 0, byJob: {} };
+    //
+    // Two parallel accumulators per period:
+    //  • `cost` / `byJob` — TOTAL (incl. internal heartbeat housekeeping).
+    //    Used by BudgetEnforcer: runaway internal calls must still trip limits.
+    //  • `displayCost` / `displayByJob` — EXTERNAL only (excl. internal).
+    //    Used by Cockpit Status cards: the observer must not change the observed.
+    this.daily = { cost: 0, displayCost: 0, cloudCalls: 0, localCalls: 0, byJob: {}, displayByJob: {} };
+    this.monthly = { cost: 0, displayCost: 0, cloudCalls: 0, localCalls: 0, byJob: {}, displayByJob: {} };
 
     // Track current period boundaries
     this.currentDay = this._todayKey();
@@ -119,8 +125,8 @@ class CostTracker {
     if (!raw || typeof raw !== 'string') return;
 
     // Reset accumulators before rehydrating
-    this.daily = { cost: 0, cloudCalls: 0, localCalls: 0, byJob: {} };
-    this.monthly = { cost: 0, cloudCalls: 0, localCalls: 0, byJob: {} };
+    this.daily = { cost: 0, displayCost: 0, cloudCalls: 0, localCalls: 0, byJob: {}, displayByJob: {} };
+    this.monthly = { cost: 0, displayCost: 0, cloudCalls: 0, localCalls: 0, byJob: {}, displayByJob: {} };
 
     const lines = raw.split('\n');
     let restored = 0;
@@ -138,28 +144,41 @@ class CostTracker {
 
       const entryDate = (entry.timestamp || '').slice(0, 10);
       const isLocal = !!entry.is_local;
+      const isInternal = !!entry.internal;
       const cost = Number(entry.cost_usd) || 0;
 
       // Monthly accumulation (all entries in this file are current month)
       if (isLocal) {
-        this.monthly.localCalls++;
+        if (!isInternal) this.monthly.localCalls++;
       } else {
         this.monthly.cost += cost;
-        this.monthly.cloudCalls++;
+        if (!isInternal) {
+          this.monthly.displayCost += cost;
+          this.monthly.cloudCalls++;
+        }
       }
 
       const jobKey = `${entry.job || 'unknown'}:${isLocal ? 'local' : 'cloud'}`;
       this.monthly.byJob[jobKey] = (this.monthly.byJob[jobKey] || 0) + cost;
+      if (!isInternal) {
+        this.monthly.displayByJob[jobKey] = (this.monthly.displayByJob[jobKey] || 0) + cost;
+      }
 
       // Daily accumulation (only today's entries)
       if (entryDate === today) {
         if (isLocal) {
-          this.daily.localCalls++;
+          if (!isInternal) this.daily.localCalls++;
         } else {
           this.daily.cost += cost;
-          this.daily.cloudCalls++;
+          if (!isInternal) {
+            this.daily.displayCost += cost;
+            this.daily.cloudCalls++;
+          }
         }
         this.daily.byJob[jobKey] = (this.daily.byJob[jobKey] || 0) + cost;
+        if (!isInternal) {
+          this.daily.displayByJob[jobKey] = (this.daily.displayByJob[jobKey] || 0) + cost;
+        }
       }
 
       restored++;
@@ -197,8 +216,12 @@ class CostTracker {
     const isLocal = entry.isLocal || this._isLocalModel(entry.model);
     const isInternal = !!entry.internal;
 
-    // Accumulate — internal calls still track cost (for budget enforcement)
-    // but are excluded from call counts (which feed Status cards)
+    // Accumulate.
+    //  • `cost` / `byJob` always track everything — BudgetEnforcer reads these
+    //    and must still trip on runaway internal usage.
+    //  • `displayCost` / `displayByJob` / `cloudCalls` / `localCalls` are the
+    //    user-facing counters that Cockpit Status cards read. Internal calls
+    //    are excluded so idle heartbeats don't flap the card content.
     if (isLocal) {
       if (!isInternal) {
         this.daily.localCalls++;
@@ -208,17 +231,24 @@ class CostTracker {
       this.daily.cost += cost;
       this.monthly.cost += cost;
       if (!isInternal) {
+        this.daily.displayCost += cost;
+        this.monthly.displayCost += cost;
         this.daily.cloudCalls++;
         this.monthly.cloudCalls++;
       }
     }
 
-    // Track by job
+    // Track by job — parallel total and display accumulators
     const jobKey = `${entry.job || 'unknown'}:${isLocal ? 'local' : 'cloud'}`;
     this.daily.byJob[jobKey] = (this.daily.byJob[jobKey] || 0) + cost;
     this.monthly.byJob[jobKey] = (this.monthly.byJob[jobKey] || 0) + cost;
+    if (!isInternal) {
+      this.daily.displayByJob[jobKey] = (this.daily.displayByJob[jobKey] || 0) + cost;
+      this.monthly.displayByJob[jobKey] = (this.monthly.displayByJob[jobKey] || 0) + cost;
+    }
 
-    // Buffer audit entry
+    // Buffer audit entry — `internal` is persisted so restore() can
+    // reconstruct the display accumulators accurately after a restart.
     this._buffer.push({
       timestamp: new Date().toISOString(),
       model: entry.model,
@@ -231,6 +261,7 @@ class CostTracker {
       cache_read_tokens: entry.cacheReadTokens || 0,
       cost_usd: Math.round(cost * 1000000) / 1000000,
       is_local: isLocal,
+      internal: isInternal,
     });
 
     console.log(
@@ -243,7 +274,15 @@ class CostTracker {
 
   /**
    * Get current totals for display and budget checks.
-   * Returns both USD and EUR values.
+   *
+   * Two parallel cost views:
+   *  • `costUsd` / `costEur` — TOTAL spend (incl. internal heartbeat calls).
+   *    Read by BudgetEnforcer; must reflect real wallet impact.
+   *  • `displayCostUsd` / `displayCostEur` — EXTERNAL-only spend.
+   *    Read by Cockpit Status cards; stable across idle heartbeats.
+   *
+   * `topSpending` uses `displayByJob` so the card doesn't rank internal
+   * housekeeping jobs above user-facing work.
    */
   getTotals() {
     this._checkReset();
@@ -251,12 +290,16 @@ class CostTracker {
       daily: {
         costUsd: this.daily.cost,
         costEur: this.daily.cost * this.usdToEur,
+        displayCostUsd: this.daily.displayCost,
+        displayCostEur: this.daily.displayCost * this.usdToEur,
         cloudCalls: this.daily.cloudCalls,
         localCalls: this.daily.localCalls,
       },
       monthly: {
         costUsd: this.monthly.cost,
         costEur: this.monthly.cost * this.usdToEur,
+        displayCostUsd: this.monthly.displayCost,
+        displayCostEur: this.monthly.displayCost * this.usdToEur,
         cloudCalls: this.monthly.cloudCalls,
         localCalls: this.monthly.localCalls,
       },
@@ -483,7 +526,9 @@ class CostTracker {
   }
 
   _topSpending() {
-    return Object.entries(this.monthly.byJob)
+    // Reads from displayByJob (external only) so internal heartbeat jobs
+    // don't rank in the Cockpit Status card breakdown.
+    return Object.entries(this.monthly.displayByJob)
       .filter(([, cost]) => cost > 0)
       .sort(([, a], [, b]) => b - a)
       .slice(0, 5)
@@ -499,13 +544,13 @@ class CostTracker {
 
     if (today !== this.currentDay) {
       console.log(`[CostTracker] Day reset: ${this.currentDay} → ${today}`);
-      this.daily = { cost: 0, cloudCalls: 0, localCalls: 0, byJob: {} };
+      this.daily = { cost: 0, displayCost: 0, cloudCalls: 0, localCalls: 0, byJob: {}, displayByJob: {} };
       this.currentDay = today;
     }
 
     if (month !== this.currentMonth) {
       console.log(`[CostTracker] Month reset: ${this.currentMonth} → ${month}`);
-      this.monthly = { cost: 0, cloudCalls: 0, localCalls: 0, byJob: {} };
+      this.monthly = { cost: 0, displayCost: 0, cloudCalls: 0, localCalls: 0, byJob: {}, displayByJob: {} };
       this.currentMonth = month;
     }
   }

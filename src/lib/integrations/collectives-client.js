@@ -520,6 +520,38 @@ class CollectivesClient {
   }
 
   /**
+   * Ensure a directory path exists inside the collective, creating any
+   * missing segments via WebDAV MKCOL. Idempotent — a 405 (collection
+   * already exists) for any segment is treated as success.
+   *
+   * Required before writing pages to a new sub-folder: Nextcloud's WebDAV
+   * returns 404 on PUT when the parent collection is missing, so callers
+   * must create the tree first.
+   *
+   * @param {string} dirPath - Directory path relative to the collective root
+   *                           (e.g. "Memory/Episodes"). Must not contain "..".
+   * @returns {Promise<void>}
+   */
+  async ensureDirectory(dirPath) {
+    if (!dirPath) return;
+    if (dirPath.includes('..')) throw new CollectivesApiError('Path traversal not allowed');
+
+    const segments = dirPath.split('/').filter(Boolean);
+    let acc = '';
+    for (const seg of segments) {
+      acc = acc ? `${acc}/${seg}` : seg;
+      const fullPath = `${this._webdavBasePath()}/${acc}`;
+      try {
+        await this._webdavRequest('MKCOL', fullPath);
+      } catch (err) {
+        // 405 Method Not Allowed = collection already exists; acceptable.
+        if (err && err.statusCode === 405) continue;
+        throw err;
+      }
+    }
+  }
+
+  /**
    * Touch a page via OCS API to invalidate NC Text editor cache.
    * Call after WebDAV writes so the Collectives UI re-reads the .md file.
    * @param {number} collectiveId - Collective ID

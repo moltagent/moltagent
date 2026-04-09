@@ -292,6 +292,201 @@ test('Internal calls are still buffered in CostTracker audit log', () => {
 
   assert.strictEqual(tracker._buffer.length, 1, 'audit entry still buffered');
   assert.strictEqual(tracker._buffer[0].job, 'heartbeat_garden');
+  assert.strictEqual(tracker._buffer[0].internal, true, 'internal flag persisted');
+});
+
+// ============================================================
+// displayCost / displayByJob split
+//
+// Internal calls still accumulate into `cost` and `byJob` (budget truth)
+// but are excluded from `displayCost` and `displayByJob` (card truth).
+// Without this split the Costs card flapped on every heartbeat as tiny
+// internal synthesis costs pushed the rounded EUR display up by €0.01.
+// ============================================================
+
+console.log('\n--- displayCost split ---\n');
+
+test('Internal cloud call: cost tracked, displayCost NOT tracked', () => {
+  const tracker = new CostTracker();
+
+  tracker.record({
+    model: 'claude-haiku-4-5-20251001',
+    job: 'synthesis',
+    trigger: 'heartbeat_digest',
+    inputTokens: 1000,
+    outputTokens: 500,
+    internal: true,
+  });
+
+  assert.ok(tracker.daily.cost > 0, 'total cost incremented (budget truth)');
+  assert.strictEqual(tracker.daily.displayCost, 0, 'displayCost NOT incremented');
+  assert.ok(tracker.monthly.cost > 0, 'total monthly cost incremented');
+  assert.strictEqual(tracker.monthly.displayCost, 0, 'displayCost monthly NOT incremented');
+});
+
+test('Normal cloud call: both cost and displayCost tracked', () => {
+  const tracker = new CostTracker();
+
+  tracker.record({
+    model: 'claude-haiku-4-5-20251001',
+    job: 'tools',
+    trigger: 'user_message',
+    inputTokens: 1000,
+    outputTokens: 500,
+  });
+
+  assert.ok(tracker.daily.cost > 0);
+  assert.ok(tracker.daily.displayCost > 0);
+  assert.strictEqual(tracker.daily.cost, tracker.daily.displayCost,
+    'non-internal: cost === displayCost');
+});
+
+test('getTotals exposes both cost views', () => {
+  const tracker = new CostTracker();
+
+  // 1 external user call
+  tracker.record({
+    model: 'claude-haiku-4-5-20251001',
+    job: 'tools',
+    trigger: 'user_message',
+    inputTokens: 1000,
+    outputTokens: 500,
+  });
+
+  // 3 internal heartbeat calls
+  for (let i = 0; i < 3; i++) {
+    tracker.record({
+      model: 'claude-haiku-4-5-20251001',
+      job: 'synthesis',
+      trigger: 'heartbeat_digest',
+      inputTokens: 1000,
+      outputTokens: 500,
+      internal: true,
+    });
+  }
+
+  const totals = tracker.getTotals();
+
+  // Budget view includes all 4 calls
+  assert.ok(totals.daily.costUsd > 0);
+  assert.ok(totals.monthly.costUsd > 0);
+
+  // Display view only includes the 1 external call
+  assert.ok(totals.daily.displayCostUsd > 0);
+  assert.ok(totals.daily.displayCostEur > 0);
+  assert.ok(totals.monthly.displayCostUsd > 0);
+  assert.ok(totals.monthly.displayCostEur > 0);
+
+  // Budget total must be exactly 4x the display total (same per-call cost)
+  assert.strictEqual(
+    totals.daily.costUsd.toFixed(6),
+    (totals.daily.displayCostUsd * 4).toFixed(6),
+    'total cost = 4x display cost (1 external + 3 internal at same price)'
+  );
+});
+
+test('topSpending excludes internal jobs', () => {
+  const tracker = new CostTracker();
+
+  // 5 expensive internal synthesis calls
+  for (let i = 0; i < 5; i++) {
+    tracker.record({
+      model: 'claude-haiku-4-5-20251001',
+      job: 'synthesis',
+      trigger: 'heartbeat_digest',
+      inputTokens: 10000,
+      outputTokens: 5000,
+      internal: true,
+    });
+  }
+
+  // 1 cheap external tools call
+  tracker.record({
+    model: 'claude-haiku-4-5-20251001',
+    job: 'tools',
+    trigger: 'user_message',
+    inputTokens: 100,
+    outputTokens: 50,
+  });
+
+  const totals = tracker.getTotals();
+
+  // Internal synthesis was 100x more expensive in total, but topSpending
+  // reads from displayByJob so it should rank `tools` (the only external job)
+  assert.strictEqual(totals.topSpending.length, 1,
+    'only the external job appears in topSpending');
+  assert.strictEqual(totals.topSpending[0].job, 'tools');
+});
+
+test('Idle pulse stability: displayCost frozen across internal calls', () => {
+  const tracker = new CostTracker();
+
+  // Baseline: 1 external call sets display state
+  tracker.record({
+    model: 'claude-haiku-4-5-20251001',
+    job: 'tools',
+    trigger: 'user_message',
+    inputTokens: 1000,
+    outputTokens: 500,
+  });
+
+  const baseline = {
+    displayCost: tracker.daily.displayCost,
+    cloudCalls: tracker.daily.cloudCalls,
+    displayByJob: { ...tracker.daily.displayByJob },
+  };
+
+  // Simulate 10 idle heartbeat pulses, each making an internal synthesis call
+  for (let i = 0; i < 10; i++) {
+    tracker.record({
+      model: 'claude-haiku-4-5-20251001',
+      job: 'synthesis',
+      trigger: 'heartbeat_digest',
+      inputTokens: 1142,
+      outputTokens: 140,
+      internal: true,
+    });
+  }
+
+  // Display state must be byte-for-byte identical to baseline —
+  // this is the property that keeps the Cockpit Costs card hash stable.
+  assert.strictEqual(tracker.daily.displayCost, baseline.displayCost,
+    'displayCost frozen across 10 idle pulses');
+  assert.strictEqual(tracker.daily.cloudCalls, baseline.cloudCalls);
+  assert.deepStrictEqual(tracker.daily.displayByJob, baseline.displayByJob,
+    'displayByJob frozen across 10 idle pulses');
+
+  // But the budget total MUST have moved (otherwise runaway internal usage
+  // would never trip the budget limit).
+  assert.ok(tracker.daily.cost > baseline.displayCost,
+    'total cost advanced past baseline (budget tracking preserved)');
+});
+
+test('Audit buffer persists internal flag for restore()', () => {
+  const tracker = new CostTracker();
+
+  tracker.record({
+    model: 'claude-haiku-4-5-20251001',
+    job: 'synthesis',
+    trigger: 'heartbeat_digest',
+    inputTokens: 1142,
+    outputTokens: 140,
+    internal: true,
+  });
+
+  tracker.record({
+    model: 'claude-haiku-4-5-20251001',
+    job: 'tools',
+    trigger: 'user_message',
+    inputTokens: 500,
+    outputTokens: 200,
+  });
+
+  assert.strictEqual(tracker._buffer.length, 2);
+  assert.strictEqual(tracker._buffer[0].internal, true,
+    'heartbeat call marked internal in audit buffer');
+  assert.strictEqual(tracker._buffer[1].internal, false,
+    'user call marked non-internal in audit buffer');
 });
 
 // ============================================================
