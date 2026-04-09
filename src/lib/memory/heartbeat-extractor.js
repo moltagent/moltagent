@@ -139,7 +139,8 @@ Rules:
     const rawResponse = await this.router.route({
       job: 'synthesis',
       content: prompt,
-      requirements: { maxTokens: 500, format: MEMORY_SCHEMA }
+      requirements: { maxTokens: 500, format: MEMORY_SCHEMA },
+      context: { trigger: 'heartbeat_extract', internal: true }
     });
 
     const extracted = this._parseJson(rawResponse.result || rawResponse);

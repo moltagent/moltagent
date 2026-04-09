@@ -188,22 +188,29 @@ class CostTracker {
    * @param {number} [entry.cacheReadTokens=0] - Anthropic cache read tokens
    * @param {boolean} [entry.isLocal=false] - Whether this was a local model call
    * @param {string} [entry.provider] - Provider ID for attribution
+   * @param {boolean} [entry.internal=false] - Internal heartbeat call (excluded from display counters)
    */
   record(entry) {
     this._checkReset();
 
     const cost = this._computeCost(entry);
     const isLocal = entry.isLocal || this._isLocalModel(entry.model);
+    const isInternal = !!entry.internal;
 
-    // Accumulate
+    // Accumulate — internal calls still track cost (for budget enforcement)
+    // but are excluded from call counts (which feed Status cards)
     if (isLocal) {
-      this.daily.localCalls++;
-      this.monthly.localCalls++;
+      if (!isInternal) {
+        this.daily.localCalls++;
+        this.monthly.localCalls++;
+      }
     } else {
       this.daily.cost += cost;
-      this.daily.cloudCalls++;
       this.monthly.cost += cost;
-      this.monthly.cloudCalls++;
+      if (!isInternal) {
+        this.daily.cloudCalls++;
+        this.monthly.cloudCalls++;
+      }
     }
 
     // Track by job

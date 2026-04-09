@@ -174,10 +174,14 @@ class LLMRouter {
    */
   async route(request) {
     const startTime = Date.now();
-    this.stats.totalCalls++;
-
     // Normalize request
     const { task, content, requirements = {}, context = {} } = request;
+    const isInternal = !!context.internal;
+
+    // Internal calls (heartbeat housekeeping) are excluded from user-facing stats
+    if (!isInternal) {
+      this.stats.totalCalls++;
+    }
     const role = requirements.role || 'value';
     const options = {
       maxTokens: requirements.maxTokens,
@@ -334,12 +338,15 @@ class LLMRouter {
             cacheCreationTokens: result.cacheCreationTokens || 0,
             cacheReadTokens: result.cacheReadTokens || 0,
             isLocal: provider.type === 'local',
+            internal: isInternal,
           });
         }
 
-        // Track stats
-        this.stats.successfulCalls++;
-        this.stats.byProvider[providerId] = (this.stats.byProvider[providerId] || 0) + 1;
+        // Track stats (internal calls excluded from user-facing counters)
+        if (!isInternal) {
+          this.stats.successfulCalls++;
+          this.stats.byProvider[providerId] = (this.stats.byProvider[providerId] || 0) + 1;
+        }
 
         if (failoverPath.length > 0) {
           this.stats.failovers++;
@@ -1218,6 +1225,7 @@ class LLMRouter {
    * @param {number} [outcome.outputTokens] - Output tokens
    * @param {Object} [outcome.headers] - Response headers (for rate limit tracking)
    * @param {string} [outcome.opType] - 'proactive' | 'reactive'
+   * @param {boolean} [outcome.internal] - Whether this is an internal housekeeping call
    */
   recordOutcome(providerId, outcome = {}) {
     if (outcome.success) {
@@ -1236,9 +1244,11 @@ class LLMRouter {
         }
       }
 
-      // Track stats
-      this.stats.successfulCalls++;
-      this.stats.byProvider[providerId] = (this.stats.byProvider[providerId] || 0) + 1;
+      // Track stats (internal calls excluded from user-facing counters)
+      if (!outcome.internal) {
+        this.stats.successfulCalls++;
+        this.stats.byProvider[providerId] = (this.stats.byProvider[providerId] || 0) + 1;
+      }
     } else {
       const error = outcome.error || new Error('unknown');
       this.circuitBreaker.recordFailure(providerId, error);

@@ -188,7 +188,8 @@ Rules:
       const rawResponse = await this.router.route({
         job: 'synthesis',
         content: prompt,
-        requirements: { maxTokens: 300 }
+        requirements: { maxTokens: 300 },
+        context: { trigger: 'heartbeat_digest', internal: true }
       });
       return (rawResponse.result || rawResponse || '').toString().trim() || 'Activity recorded.';
     } catch (err) {

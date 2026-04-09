@@ -217,7 +217,8 @@ Respond with ONLY the YAML key-value pairs (NO --- delimiters, no other text):`;
     const rawResponse = await this.router.route({
       job: 'quick',
       content: prompt,
-      requirements: { maxTokens: 300 }
+      requirements: { maxTokens: 300 },
+      context: { trigger: 'heartbeat_garden', internal: true }
     });
 
     const responseText = (rawResponse.result || rawResponse || '').toString().trim();
