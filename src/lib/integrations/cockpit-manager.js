@@ -1177,7 +1177,7 @@ class CockpitManager {
     // Store card metadata for heartbeat writeback
     result._cardId = card.id;
     result._cardDescription = card.description || '';
-    result._userConfig = configSection;
+    result._userConfig = configSection.trim() + '\n';
     result._cardLabels = (card.labels || []).map(l => l.title);
 
     this._lastModelsConfig = result;
@@ -1936,16 +1936,17 @@ class CockpitManager {
 
     const lines = [];
 
-    // Daily line
-    const dailyEur = totals.daily.costEur.toFixed(2);
+    // Daily line — use displayCostEur (external calls only) so idle
+    // heartbeat housekeeping doesn't flip the rounded EUR value on every pulse.
+    const dailyEur = totals.daily.displayCostEur.toFixed(2);
     if (budget.dailyLimit) {
       lines.push(`Today: \u20ac${dailyEur} / \u20ac${budget.dailyLimit.toFixed(2)}`);
     } else {
       lines.push(`Today: \u20ac${dailyEur}`);
     }
 
-    // Monthly line
-    const monthlyEur = totals.monthly.costEur.toFixed(2);
+    // Monthly line — same reasoning.
+    const monthlyEur = totals.monthly.displayCostEur.toFixed(2);
     if (budget.monthlyLimit) {
       lines.push(`This month: \u20ac${monthlyEur} / \u20ac${budget.monthlyLimit.toFixed(2)}`);
     } else {
@@ -1966,11 +1967,10 @@ class CockpitManager {
       }
     }
 
-    // Timestamp (rounded to 15-min bucket so unchanged heartbeats don't trigger writes)
-    const now = new Date();
-    now.setMinutes(Math.floor(now.getMinutes() / 15) * 15, 0, 0);
-    lines.push('');
-    lines.push(`_Updated: ${now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}_`);
+    // No "_Updated:" timestamp line by design. Idle heartbeats must not
+    // produce any Status card writes; any non-constant line (even bucketed)
+    // eventually flips the hash and rewrites the card. Card freshness is
+    // observable via Deck's own lastModified field.
 
     return lines.join('\n');
   }

@@ -180,7 +180,7 @@ Write a brief prep summary (max 200 words) for the human. Include: who's attendi
         task: 'meeting_prep',
         content: prompt,
         requirements: { role: 'value' },
-        context: { trigger: 'heartbeat_meeting_prep' }
+        context: { trigger: 'heartbeat_meeting_prep', internal: true }
       });
 
       const header = `Meeting prep: ${event.summary}\nTime: ${event.start}\n\n`;

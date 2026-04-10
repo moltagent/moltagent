@@ -57,7 +57,14 @@ class DailyDigest {
   async generate(dateStr) {
     const date = dateStr || new Date().toISOString().slice(0, 10);
 
-    // Idempotency: never write the same day twice in one process lifetime
+    // Idempotency: never attempt the same day twice in one process lifetime.
+    //
+    // The guard is claimed BEFORE any LLM call so a failing write cannot
+    // cause the expensive narrative generation to repeat every heartbeat.
+    // On failure we log and move on; a restart clears `_lastDigestDate`
+    // and the next process lifetime gets a fresh attempt. Without this
+    // ordering a single 404 on PUT caused ~288 wasted synthesis calls per
+    // day (one per heartbeat pulse). See issue #19.
     if (this._lastDigestDate === date) {
       return { skipped: true, date };
     }
@@ -73,23 +80,37 @@ class DailyDigest {
     const changeList    = wikiChanges.status  === 'fulfilled' ? wikiChanges.value  : [];
     const deckList      = deckActivity.status === 'fulfilled' ? deckActivity.value : [];
 
-    // Nothing to write
+    // Nothing to write — skip, but DO claim the date so we don't keep
+    // scanning activity sources every 5 minutes on quiet days.
     if (sessionList.length === 0 && changeList.length === 0 && deckList.length === 0) {
+      this._lastDigestDate = date;
       return { skipped: true, date, reason: 'no activity' };
     }
 
+    // Claim the date up-front so a downstream failure (LLM timeout, WebDAV
+    // 404, network glitch) cannot re-trigger the whole path on the next pulse.
+    this._lastDigestDate = date;
+
     const activity = { sessions: sessionList, wikiChanges: changeList, deckActions: deckList };
 
-    const narrative = await this._generateNarrative(date, activity);
-    const page      = this._buildPage(date, narrative, activity);
-    const pagePath  = `${EPISODE_PATH_PREFIX}/${date}`;
+    try {
+      const narrative = await this._generateNarrative(date, activity);
+      const page      = this._buildPage(date, narrative, activity);
+      const pagePath  = `${EPISODE_PATH_PREFIX}/${date}`;
 
-    await this.wiki.writePageContent(pagePath, page);
+      // Ensure the parent collection exists — Nextcloud WebDAV returns 404
+      // on PUT when the parent folder is missing, not 409.
+      if (typeof this.wiki.ensureDirectory === 'function') {
+        await this.wiki.ensureDirectory(EPISODE_PATH_PREFIX);
+      }
+      await this.wiki.writePageContent(pagePath, page);
 
-    this._lastDigestDate = date;
-    this.logger.info(`[DailyDigest] Episode written: ${pagePath}`);
-
-    return { written: true, date, path: pagePath };
+      this.logger.info(`[DailyDigest] Episode written: ${pagePath}`);
+      return { written: true, date, path: pagePath };
+    } catch (err) {
+      this.logger.warn(`[DailyDigest] Episode write failed for ${date}: ${err.message}`);
+      return { skipped: true, date, reason: `write failed: ${err.message}` };
+    }
   }
 
   /**
@@ -188,7 +209,8 @@ Rules:
       const rawResponse = await this.router.route({
         job: 'synthesis',
         content: prompt,
-        requirements: { maxTokens: 300 }
+        requirements: { maxTokens: 300 },
+        context: { trigger: 'heartbeat_digest', internal: true }
       });
       return (rawResponse.result || rawResponse || '').toString().trim() || 'Activity recorded.';
     } catch (err) {

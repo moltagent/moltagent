@@ -84,7 +84,7 @@ class HeartbeatManager {
 
     // DeckTaskProcessor creates its own internal DeckClient
     this.deckProcessor = new DeckTaskProcessor(deckConfig, this.llmRouter, this.auditLog, {
-      routeContext: { trigger: 'heartbeat_deck' },
+      routeContext: { trigger: 'heartbeat_deck', internal: true },
       notifyUser: config.notifyUser || null,
       reviewUser: config.reviewUser || config.ownerUser || null
     });

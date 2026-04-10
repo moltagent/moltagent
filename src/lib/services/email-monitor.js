@@ -381,7 +381,7 @@ Respond with JSON only:
         task: 'email_analyze',
         content: prompt,
         requirements: { role: 'free' },
-        context: { trigger: 'heartbeat_email' }
+        context: { trigger: 'heartbeat_email', internal: true }
       });
 
       let response = result.result || result.response || result;
