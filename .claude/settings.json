@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "command": "node .claude/hooks/check-anti-patterns.js $FILE_PATH",
+            "description": "Check for natural language anti-patterns in code"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash(rm *|Bash(sudo rm *)",
+        "hooks": [
+          {
+            "command": "echo '⚠️ Destructive command detected. Confirm intent.'",
+            "description": "Warn before destructive bash commands"
+          }
+        ]
+      }
+    ]
+  }
+}
