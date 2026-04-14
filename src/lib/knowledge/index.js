@@ -26,7 +26,6 @@ const { LearningLog } = require('./learning-log');
 const { KnowledgeBoard } = require('./knowledge-board');
 const { ContextLoader } = require('./context-loader');
 const { parseFrontmatter, serializeFrontmatter } = require('./frontmatter');
-const { FreshnessChecker } = require('./freshness-checker');
 const { TEMPLATES, getTemplate, applyTemplate } = require('./page-templates');
 const { extractWikilinks, replaceWikilinks } = require('./wikilinks');
 
@@ -36,7 +35,6 @@ module.exports = {
   ContextLoader,
   parseFrontmatter,
   serializeFrontmatter,
-  FreshnessChecker,
   TEMPLATES,
   getTemplate,
   applyTemplate,

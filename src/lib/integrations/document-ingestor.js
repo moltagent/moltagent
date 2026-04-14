@@ -58,6 +58,7 @@
 const path = require('path');
 const { TextExtractor } = require('../extraction/text-extractor');
 const { DocumentClassifier } = require('../extraction/document-classifier');
+const { OBSERVATION_TYPES } = require('../maintenance/observation-log');
 
 /** Maximum characters fed to entity extraction (first 10 KB + last 2 KB). */
 const EXTRACT_HEAD = 10 * 1024;
@@ -157,7 +158,7 @@ class DocumentIngestor {
    * @param {Object} [deps.embeddingClient]  - EmbeddingClient instance for embedding-based entity dedup pre-filter
    * @param {Object} [deps.logger]           - Logger (defaults to console)
    */
-  constructor({ ncFilesClient, textExtractor, entityExtractor, knowledgeGraph, wikiWriter, learningLog, llmRouter, classifier, embeddingClient, ingestionCache, memorySearcher, logger } = {}) {
+  constructor({ ncFilesClient, textExtractor, entityExtractor, knowledgeGraph, wikiWriter, learningLog, llmRouter, classifier, embeddingClient, ingestionCache, memorySearcher, observationLog, logger } = {}) {
     if (!ncFilesClient)   throw new Error('DocumentIngestor requires ncFilesClient');
     if (!textExtractor)   throw new Error('DocumentIngestor requires textExtractor');
     if (!entityExtractor) throw new Error('DocumentIngestor requires entityExtractor');
@@ -172,6 +173,12 @@ class DocumentIngestor {
     this.wikiWriter     = wikiWriter;
     this.learningLog    = learningLog || null;
     this.logger         = logger || console;
+
+    /** @type {ObservationLog|null} Receives contradiction notices during enrich. Optional. */
+    this.observationLog = observationLog || null;
+
+    /** @type {Object|null} LLM router stored for _enrichExistingPage prompt calls. */
+    this.llmRouter = llmRouter || null;
 
     this.classifier = classifier || null;
     // Auto-create classifier if router available
@@ -409,7 +416,20 @@ class DocumentIngestor {
         const exists = await this._pageExists(section, entity.name);
         if (exists) {
           this._createdEntityPages.add(dedupKey);
-          this._trackEntityAccess(section, entity.name, filePath).catch(() => {});
+          // Track access FIRST and await it — otherwise the in-flight frontmatter
+          // write races the enrich read, and the incremented access_count gets
+          // clobbered by the subsequent append-write in _enrichExistingPage.
+          try {
+            await this._trackEntityAccess(section, entity.name, filePath);
+          } catch (trackErr) {
+            this.logger.debug?.(`[DocumentIngestor] _trackEntityAccess failed (non-fatal): ${trackErr.message}`);
+          }
+          // Enrich the existing page with any new information from this source
+          try {
+            await this._enrichExistingPage({ section, title: entity.name }, entity, filePath);
+          } catch (enrichErr) {
+            this.logger.warn(`[DocumentIngestor] Enrich failed for "${entity.name}": ${enrichErr.message}`);
+          }
           continue;
         }
 
@@ -421,7 +441,18 @@ class DocumentIngestor {
         if (match) {
           this.logger.info(`[DocumentIngestor] Entity dedup: "${entity.name}" matches existing "${match.title}" (${match.reason})`);
           this._createdEntityPages.add(dedupKey);
-          this._trackEntityAccess(section, match.title, filePath).catch(() => {});
+          // Serialize access tracking before enrich to avoid clobbering access_count.
+          try {
+            await this._trackEntityAccess(section, match.title, filePath);
+          } catch (trackErr) {
+            this.logger.debug?.(`[DocumentIngestor] _trackEntityAccess failed (non-fatal): ${trackErr.message}`);
+          }
+          // Enrich the matched page with any new information from this source
+          try {
+            await this._enrichExistingPage({ section, title: match.title }, entity, filePath);
+          } catch (enrichErr) {
+            this.logger.warn(`[DocumentIngestor] Enrich failed for "${match.title}": ${enrichErr.message}`);
+          }
           continue; // Don't create duplicate page
         }
 
@@ -1150,6 +1181,163 @@ or
     }
     const denom = Math.sqrt(magA) * Math.sqrt(magB);
     return denom === 0 ? 0 : dot / denom;
+  }
+
+  /**
+   * Enrich an existing wiki entity page with new information from a source file.
+   *
+   * When dedup finds that an entity already has a page, this method reads the
+   * existing content, asks the LLM to compare it with the new entity description,
+   * and either appends new facts or logs a contradiction observation for the
+   * Knowledge Steward to review.
+   *
+   * Prompt is multilingual by design — example fragments in EN, DE, and PT show
+   * the LLM what enrichment looks like across languages so it handles non-English
+   * wiki pages correctly.
+   *
+   * @param {{ section: string, title: string }} existingPage - Section + title of the page to enrich
+   * @param {Object} newEntity - Entity object extracted from the new source { name, type, description }
+   * @param {string} sourceFile - File path of the new source document
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _enrichExistingPage(existingPage, newEntity, sourceFile) {
+    if (!existingPage || !existingPage.title || !newEntity || !sourceFile) return;
+
+    // Require a router — cannot enrich without LLM comparison
+    const router = this.llmRouter || this.classifier?.router;
+    if (!router) {
+      this.logger.debug?.('[DocumentIngestor] _enrichExistingPage: no router available, skipping');
+      return;
+    }
+
+    // Read existing page content — try both Collectives path conventions
+    let existingContent = null;
+    try {
+      const { section, title } = existingPage;
+      let result = await this.wikiWriter.readPage?.(`${section}/${title}/Readme.md`).catch(() => null);
+      if (!result?.content) {
+        result = await this.wikiWriter.readPage?.(`${section}/${title}.md`).catch(() => null);
+      }
+      existingContent = result?.content || null;
+    } catch (err) {
+      this.logger.warn(`[DocumentIngestor] Could not read existing page "${existingPage.title}": ${err.message}`);
+      return;
+    }
+
+    if (!existingContent) {
+      this.logger.debug?.(`[DocumentIngestor] _enrichExistingPage: no content found for "${existingPage.title}", skipping`);
+      return;
+    }
+
+    const prompt = `You are maintaining a multilingual knowledge wiki. Compare the existing page with new information from a recently ingested document and determine:
+1. Does the new source contain facts NOT already in the existing page?
+2. Does any new information CONTRADICT the existing page?
+
+Existing page content:
+${existingContent.substring(0, 3000)}
+
+New information from "${sourceFile}":
+Entity: ${newEntity.name}
+Type: ${newEntity.type}
+New description: ${(newEntity.description || '').substring(0, 800)}
+
+Examples of what to return:
+
+EN example — existing page is about "Acme Corp", new source adds office location:
+{"newFacts": "## Additional Information\\n\\nHeadquarters: Berlin, Germany (added from contract-2026.pdf)", "contradictions": null}
+
+DE example — existing page is about "Carlos Meira", new source says he is CTO (existing says CEO):
+{"newFacts": null, "contradictions": [{"existing": "Position: CEO", "new": "Position: CTO", "source": "orgchart-2026.pdf"}]}
+
+PT example — existing page is about "ManeraMedia", new source adds founding year already present:
+{"newFacts": null, "contradictions": null}
+
+Rules:
+- Only include newFacts if there is genuinely new information not already covered
+- Only include contradictions if the new source explicitly disagrees with existing content
+- If the new source is a subset of what already exists, return null for both fields
+- Keep newFacts as clean Markdown suitable for appending directly to the page
+- Format newFacts as a new section (## heading) or bullet points — never duplicate existing content
+- Contradictions must be specific: quote the exact conflicting claims from both sides
+
+Return JSON only:
+{
+  "newFacts": "markdown text to append" | null,
+  "contradictions": [{"existing": "exact claim from page", "new": "claim from new source", "source": "filename"}] | null
+}`;
+
+    let raw;
+    try {
+      const routerResult = await router.route({
+        job: 'synthesis',
+        content: prompt,
+        requirements: { maxTokens: 500 },
+        context: { trigger: 'ingest_enrich', internal: true },
+      });
+      raw = routerResult?.result || routerResult?.content || '';
+    } catch (err) {
+      this.logger.warn(`[DocumentIngestor] _enrichExistingPage LLM call failed for "${existingPage.title}": ${err.message}`);
+      return;
+    }
+
+    // Parse JSON response — use structured output only, no keyword matching
+    let parsed;
+    try {
+      const cleaned = raw.replace(/```json?\s*/gi, '').replace(/```/g, '').trim();
+      // Extract the first JSON object from the response
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('no JSON object found in response');
+      parsed = JSON.parse(jsonMatch[0]);
+    } catch (err) {
+      this.logger.warn(`[DocumentIngestor] _enrichExistingPage JSON parse failed for "${existingPage.title}": ${err.message} — raw: ${raw.substring(0, 200)}`);
+      return;
+    }
+
+    // Append new facts to the existing page
+    if (parsed.newFacts && typeof parsed.newFacts === 'string' && parsed.newFacts.trim()) {
+      try {
+        const { section, title } = existingPage;
+        const pagePath = `${section}/${title}.md`;
+        const appendText = `\n\n${parsed.newFacts.trim()}\n\n_Source: ${sourceFile}_`;
+
+        // Read current content and append (preserves frontmatter)
+        let pageResult = await this.wikiWriter.readPage?.(`${section}/${title}/Readme.md`).catch(() => null);
+        if (!pageResult?.content) {
+          pageResult = await this.wikiWriter.readPage?.(`${section}/${title}.md`).catch(() => null);
+        }
+        const currentContent = pageResult?.content || existingContent;
+        await this.wikiWriter.updatePage(pagePath, currentContent.trimEnd() + appendText);
+        this.logger.info(`[DocumentIngestor] Enriched "${title}" with new facts from ${sourceFile}`);
+      } catch (err) {
+        this.logger.warn(`[DocumentIngestor] Failed to append new facts to "${existingPage.title}": ${err.message}`);
+      }
+    }
+
+    // Log contradictions for Knowledge Steward review
+    if (Array.isArray(parsed.contradictions) && parsed.contradictions.length > 0) {
+      for (const c of parsed.contradictions) {
+        if (!c || typeof c !== 'object') continue;
+        const existing = typeof c.existing === 'string' ? c.existing : String(c.existing || '');
+        const newClaim = typeof c.new === 'string' ? c.new : String(c.new || '');
+        if (!existing || !newClaim) continue;
+
+        if (this.observationLog) {
+          this.observationLog.notice({
+            type: OBSERVATION_TYPES.CONTRADICTION,
+            cluster: existingPage.section,
+            page: existingPage.title,
+            detail: `Existing: "${existing}" vs New: "${newClaim}" (source: ${sourceFile})`,
+          });
+        } else {
+          this.logger.warn(
+            `[DocumentIngestor] Contradiction detected for "${existingPage.title}" but no observationLog to notify. ` +
+            `Existing: "${existing}" vs New: "${newClaim}" (source: ${sourceFile})`
+          );
+        }
+      }
+      this.logger.warn(`[DocumentIngestor] ${parsed.contradictions.length} contradiction(s) detected for "${existingPage.title}" — see observationLog`);
+    }
   }
 
   /**

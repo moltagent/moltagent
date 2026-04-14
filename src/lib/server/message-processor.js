@@ -44,6 +44,8 @@ const { getFeedbackMessage } = require('../talk/feedback-messages');
 const IntentDecomposer = require('../agent/intent-decomposer');
 const ollamaGate = require('../shared/ollama-gate');
 const CONFIG = require('../config');
+const { OBSERVATION_TYPES } = require('../maintenance/observation-log');
+const { parseFrontmatter } = require('../knowledge/frontmatter');
 
 /** Domain intents that can be handled locally with focused tool subsets. */
 const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search', 'knowledge', 'confirmation', 'confirmation_declined']);
@@ -299,6 +301,20 @@ class MessageProcessor {
 
     /** @type {Object|null} - SelfRecovery (deferred action retry via Personal board) */
     this.selfRecovery = deps.selfRecovery || null;
+
+    /**
+     * ObservationLog — fire-and-forget side-effect of enrichment traversal.
+     * Optional: if not provided all notice() hooks are no-ops.
+     * @type {Object|null}
+     */
+    this.observationLog = deps.observationLog || null;
+
+    /**
+     * VectorStore — used to check whether a wiki page has an embedding.
+     * Optional: if not provided the UNEMBEDDED observation is skipped.
+     * @type {Object|null}
+     */
+    this.vectorStore = deps.vectorStore || null;
 
     // ClarificationManager is set by _wireMicroPipelineDomainTools() above
 
@@ -1802,7 +1818,29 @@ class MessageProcessor {
 
     console.log(`[Message] Knowledge query: "${message.substring(0, 80)}" → terms: [${searchTerms.join(', ')}]`);
 
+    // Step 1b: Level 0 read — load the mind map before probes fire.
+    // Gives synthesis step awareness of what domains exist. Per spec lines 862–868.
+    // Fire-and-forget on failure: if the landing page doesn't exist yet, proceed empty.
+    let knowledgeIndex = '';
+    const wiki = searcher?.wiki;
+    if (wiki) {
+      try {
+        const collectiveId = await wiki.resolveCollective();
+        const allPages = await wiki.listPages(collectiveId);
+        const landingPage = Array.isArray(allPages) ? allPages.find(p => p.parentId === 0) : null;
+        if (landingPage) {
+          const landingPath = wiki._buildPagePath
+            ? wiki._buildPagePath(landingPage)
+            : `${landingPage.title || 'Moltagent Knowledge'}.md`;
+          knowledgeIndex = (await wiki.readPageContent(landingPath)) || '';
+        }
+      } catch (err) {
+        console.debug(`[Message] Level 0 read failed (non-fatal): ${err.message}`);
+      }
+    }
+
     // Step 2: Parallel multi-source probes
+    // knowledgeIndex is available here for future smarter probe targeting (spec §7).
     const probeResults = await this._executeKnowledgeProbes(searchTerms, query, enricher, searcher);
 
     // Step 2b: Web fallback — gated by Cockpit Search Policy card.
@@ -2124,6 +2162,71 @@ Be thoughtful. Be honest. Be yourself.`;
         if (content && content.trim().length >= 50) {
           item.snippet = content.substring(0, 2000);
           item.title = page.title || item.title;
+        }
+
+        // Observation hooks — fire-and-forget side-effect of this traversal.
+        // Only runs when an ObservationLog was wired into the constructor.
+        // Each check is structural only: frontmatter fields + vectorStore membership.
+        // No LLM calls. No extra API calls.
+        const obs = this.observationLog;
+        if (obs && content) {
+          const pageTitle = page.title || item.title || '';
+          // Derive cluster from the filePath section prefix (e.g. "People/Alex" → "People")
+          const cluster = fp.includes('/') ? fp.split('/')[0] : (fp || pageTitle);
+
+          try {
+            const { frontmatter: fm } = parseFrontmatter(content);
+
+            // GAP: page has no type field — WikiSteward can't categorize it
+            try {
+              if (!fm.type) {
+                obs.notice({ type: OBSERVATION_TYPES.GAP, cluster, page: pageTitle, detail: 'Untyped page' });
+              }
+            } catch (_e) { /* never break enrichment */ }
+
+            // STALE_CONTENT: past decay window and last_verified is stale
+            try {
+              const decayDays = Number(fm.decay_days);
+              if (Number.isFinite(decayDays) && decayDays > 0 && fm.last_verified) {
+                const lastVerified = new Date(fm.last_verified);
+                if (!isNaN(lastVerified.getTime())) {
+                  const ageMs = Date.now() - lastVerified.getTime();
+                  const decayMs = decayDays * 24 * 60 * 60 * 1000;
+                  if (ageMs > decayMs) {
+                    obs.notice({ type: OBSERVATION_TYPES.STALE_CONTENT, cluster, page: pageTitle, detail: 'Past decay' });
+                  }
+                }
+              }
+            } catch (_e) { /* never break enrichment */ }
+
+            // UNEMBEDDED: page has no vector embedding
+            try {
+              if (this.vectorStore && typeof this.vectorStore.getMetadata === 'function') {
+                const meta = this.vectorStore.getMetadata(pageTitle);
+                if (meta === null) {
+                  obs.notice({ type: OBSERVATION_TYPES.UNEMBEDDED, cluster, page: pageTitle });
+                }
+              }
+            } catch (_e) { /* never break enrichment */ }
+
+            // HIGH_ACCESS: frequently read page that hasn't been verified recently (>30 days)
+            try {
+              const accessCount = Number(fm.access_count);
+              if (Number.isFinite(accessCount) && accessCount > 10 && fm.last_verified) {
+                const lastVerified = new Date(fm.last_verified);
+                if (!isNaN(lastVerified.getTime())) {
+                  const ageMs = Date.now() - lastVerified.getTime();
+                  const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+                  if (ageMs > thirtyDaysMs) {
+                    obs.notice({ type: OBSERVATION_TYPES.HIGH_ACCESS, cluster, page: pageTitle });
+                  }
+                }
+              }
+            } catch (_e) { /* never break enrichment */ }
+
+          } catch (_e) {
+            // parseFrontmatter failed — no observations for this page, enrichment unaffected
+          }
         }
       } catch (err) {
         console.warn(`[DeepRead] Failed for "${item.url}": ${err.message}`);

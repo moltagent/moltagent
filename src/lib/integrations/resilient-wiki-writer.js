@@ -30,7 +30,7 @@
  *   resilient-wiki-writer.js
  *     ← session-persister.js
  *     ← tool-registry.js
- *     ← metadata-gardener.js
+ *     ← wiki-steward.js
  *     ← heartbeat-manager.js
  *
  * @module resilient-wiki-writer

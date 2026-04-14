@@ -18,6 +18,8 @@ const appConfig = require('../config');
 const { MODES, normalizeModeName } = require('./cockpit-modes');
 const { filterOwnerEvents } = require('./calendar-scoping');
 const ollamaGate = require('../shared/ollama-gate');
+const WikiSteward = require('../maintenance/wiki-steward');
+const { ObservationLog } = require('../maintenance/observation-log');
 
 class HeartbeatManager {
   /**
@@ -146,7 +148,6 @@ class HeartbeatManager {
 
     // Heartbeat Intelligence components (optional)
     this.meetingPreparer = config.meetingPreparer || null;
-    this.hbFreshnessChecker = config.hbFreshnessChecker || null;
 
     // Workflow Engine (optional, for workflow board processing)
     this.workflowEngine = config.workflowEngine || null;
@@ -167,7 +168,6 @@ class HeartbeatManager {
     this.knowledgeLog = config.knowledgeLog || null;
     this.knowledgeBoard = config.knowledgeBoard || null;
     this.contextLoader = config.contextLoader || null;
-    this.freshnessChecker = config.freshnessChecker || null;
     this.agentContext = ''; // Loaded on start()
 
     // Warm Memory (optional, for M2 micro-consolidation)
@@ -183,7 +183,6 @@ class HeartbeatManager {
     this.resilientWriter = config.resilientWriter || null;
     this._lastLearningLogHash = null;
     this._lastStatsHash = null;
-    this._lastFreshnessResult = null;
 
     // Calendar alert scoping — owner identity for event filtering
     this._ownerIds = config.ownerIds || null;
@@ -202,7 +201,6 @@ class HeartbeatManager {
       lastReviewProcess: null,
       lastCalendarCheck: null,
       lastFlowProcess: null,
-      lastFreshnessCheck: null,
       consecutiveFailures: 0,
       tasksProcessedToday: 0,
       reviewFeedbackProcessedToday: 0,
@@ -224,7 +222,6 @@ class HeartbeatManager {
       notifyUpcomingMeetings: config.heartbeat?.notifyUpcomingMeetings !== false,
       quietHoursStart: config.heartbeat?.quietHoursStart ?? appConfig.heartbeat.quietHoursStart,
       quietHoursEnd: config.heartbeat?.quietHoursEnd ?? appConfig.heartbeat.quietHoursEnd,
-      freshnessCheckIntervalMs: config.heartbeat?.freshnessCheckIntervalMs || appConfig.knowledge?.freshness?.checkIntervalMs || 3600000,
       initiativeLevel: config.heartbeat?.initiativeLevel ?? appConfig.proactive?.initiativeLevel ?? 1,
       timezone: config.heartbeat?.timezone ?? appConfig.timezone ?? 'UTC',
       ...config.heartbeat
@@ -236,6 +233,59 @@ class HeartbeatManager {
     // Cockpit-propagated runtime config
     this._cockpitWorkingHours = null;   // "HH:MM-HH:MM" string from cockpit
     this._cockpitDailyDigest = null;    // "HH:MM" or "off" from cockpit
+
+    // Shared ObservationLog — produced by enrichment pipeline, consumed by WikiSteward.
+    // Created here so callers can access it via heartbeatManager.observationLog before
+    // WikiSteward is ready (deps like knowledgeGraph arrive post-construction).
+    this._observationLog = new ObservationLog({ logger: console });
+
+    // WikiSteward — lazy: instantiated on first pulse when all deps are present.
+    // knowledgeGraph, vectorStore, embeddingClient are wired post-construction from
+    // webhook-server.js, so we cannot build this in the constructor.
+    this.wikiSteward = null;
+  }
+
+  /**
+   * Shared ObservationLog instance.
+   * Callers (enrichment pipeline, document ingestor) can fire observations via
+   * heartbeatManager.observationLog.notice({...}) without importing this module.
+   *
+   * @returns {ObservationLog}
+   */
+  get observationLog() {
+    return this._observationLog;
+  }
+
+  /**
+   * Lazily construct WikiSteward once all required deps are available.
+   * knowledgeGraph, vectorStore, and embeddingClient are wired post-construction,
+   * so this is called from pulse() rather than the constructor.
+   *
+   * @returns {WikiSteward|null} WikiSteward instance, or null if deps are not ready.
+   */
+  _ensureWikiSteward() {
+    if (this.wikiSteward) return this.wikiSteward;
+    if (!this.collectivesClient || !this.knowledgeGraph || !this.vectorStore ||
+        !this.embeddingClient || !this.llmRouter) {
+      return null;
+    }
+    try {
+      this.wikiSteward = new WikiSteward({
+        collectivesClient: this.collectivesClient,
+        knowledgeGraph: this.knowledgeGraph,
+        vectorStore: this.vectorStore,
+        embeddingClient: this.embeddingClient,
+        llmRouter: this.llmRouter,
+        observationLog: this._observationLog,
+        logger: console,
+        // collectiveId omitted — WikiSteward will resolve it via collectivesClient
+      });
+      console.log('[Heartbeat] WikiSteward initialized');
+    } catch (err) {
+      console.warn('[Heartbeat] WikiSteward initialization failed:', err.message);
+      return null;
+    }
+    return this.wikiSteward;
   }
 
   /**
@@ -382,7 +432,6 @@ class HeartbeatManager {
       calendar: null,
       email: null,
       knowledge: null,
-      freshness: null,
       meetingPrep: null,
       botEnroll: null,
       infra: null,
@@ -757,19 +806,6 @@ class HeartbeatManager {
         }
       }
 
-      // Level >= 2: Knowledge freshness (heartbeat-intelligence variant, daily)
-      if (level >= 2 && this.hbFreshnessChecker) {
-        try {
-          results.freshness = await this.hbFreshnessChecker.maybeCheck();
-          if (results.freshness) {
-            this._lastFreshnessResult = results.freshness;
-          }
-        } catch (err) {
-          console.error('[Heartbeat] Freshness check error:', err.message);
-          results.errors.push({ component: 'freshness', error: err.message });
-        }
-      }
-
       // Sync LearningLog to Collectives wiki (every pulse, hash-gated)
       if (this.collectivesClient && this.ncFilesClient) {
         try {
@@ -865,26 +901,32 @@ class HeartbeatManager {
         }
       }
 
-      // MetadataGardener: ensure all wiki pages have frontmatter type
-      if (level >= 2 && this.metadataGardener) {
-        try {
-          const gardenResult = await this.metadataGardener.tend();
-          results.pagesGardened = gardenResult.gardened;
-          results.gardenQueue = gardenResult.queued;
-        } catch (err) {
-          console.warn('[Heartbeat] MetadataGardener failed:', err.message);
-          results.errors.push({ component: 'metadataGardener', error: err.message });
+      // WikiSteward: unified syntropic maintenance (replaces the three legacy workers below).
+      // Skip when user message is active — steward makes LLM calls and may swap embedding model.
+      if (level >= 2 && !ollamaGate.isUserActive()) {
+        const steward = this._ensureWikiSteward();
+        if (steward) {
+          try {
+            const tendResult = await steward.tend();
+            results.wikiSteward = tendResult;
+            if (tendResult && tendResult.cluster) {
+              console.log(
+                `[Heartbeat] WikiSteward (${tendResult.steward}) tended "${tendResult.cluster}": ` +
+                `${tendResult.pagesModified} pages modified, ${tendResult.linksAdded} links added, ` +
+                `${tendResult.observationsResolved} observations resolved`
+              );
+            }
+          } catch (err) {
+            console.warn('[Heartbeat] WikiSteward tend failed:', err.message);
+            results.errors.push({ component: 'wikiSteward', error: err.message });
+          }
         }
-      }
 
-      // Semantic Awareness: embedding refresh (lightweight — checks 1-2 pages per pulse)
-      // Skip when user message is active — embedding model swap blocks Ollama
-      if (this.embeddingRefresher && !ollamaGate.isUserActive()) {
+        // Prune expired observations from the shared log once per pulse.
         try {
-          await this.embeddingRefresher.tick();
+          this._observationLog.prune();
         } catch (err) {
-          console.warn('[Heartbeat] Embedding refresher tick failed:', err.message);
-          results.errors.push({ component: 'embeddingRefresher', error: err.message });
+          console.warn('[Heartbeat] ObservationLog prune failed:', err.message);
         }
       }
 
@@ -957,8 +999,6 @@ class HeartbeatManager {
         workflowBoards: results.workflow?.boardsProcessed || 0,
         workflowCards: results.workflow?.cardsProcessed || 0,
         cockpitUpdated: results.cockpit?.updated ? 1 : 0,
-        freshnessChecked: typeof results.freshness?.checked === 'number' ? results.freshness.checked : 0,
-        freshnessFlagged: results.freshness?.flagged || 0,
         meetingsPrepped: results.meetingPrep?.prepped || 0,
         ocsHealthy: this.resilientWriter?.isOCSHealthy ?? 'unknown',
         errors: results.errors.length
@@ -1100,19 +1140,6 @@ class HeartbeatManager {
         console.log(`[Heartbeat] ${pendingCount} knowledge items awaiting verification`);
       }
 
-      // Freshness check (rate-limited to once per interval)
-      if (this.freshnessChecker && this._shouldRunFreshnessCheck()) {
-        try {
-          const freshnessResult = await this.freshnessChecker.checkAll();
-          this.state.lastFreshnessCheck = new Date();
-          if (freshnessResult.stale > 0) {
-            console.log(`[Heartbeat] Freshness: ${freshnessResult.stale} stale pages found`);
-          }
-        } catch (err) {
-          console.error('[Heartbeat] Freshness check error:', err.message);
-        }
-      }
-
       return {
         verified: Math.max(0, status.stacks.verified || 0),
         pending: pendingCount,
@@ -1122,16 +1149,6 @@ class HeartbeatManager {
       console.error('[Heartbeat] Failed to check knowledge board:', error.message);
       throw error;
     }
-  }
-
-  /**
-   * Check whether enough time has elapsed to run a freshness scan.
-   * @returns {boolean}
-   * @private
-   */
-  _shouldRunFreshnessCheck() {
-    if (!this.state.lastFreshnessCheck) return true;
-    return Date.now() - this.state.lastFreshnessCheck.getTime() >= this.settings.freshnessCheckIntervalMs;
   }
 
   /**
@@ -1535,7 +1552,6 @@ class HeartbeatManager {
       rsvpTracked: this.rsvpTracker ? this.rsvpTracker.trackedCount : 0,
       flowEventsProcessedToday: this.state.flowEventsProcessedToday,
       flowQueueLength: this.externalEventQueue.length,
-      lastFreshnessCheck: this.hbFreshnessChecker?.lastCheckDate || null,
       meetingsPrepped: this.meetingPreparer?.preparedMeetings?.size || 0,
       initiativeLevel: this.settings.initiativeLevel,
       cockpitWorkingHours: this._cockpitWorkingHours,
@@ -1712,18 +1728,6 @@ class HeartbeatManager {
       .sort((a, b) => b[1] - a[1]);
     for (const [section, count] of sorted) {
       md += `| ${section} | ${count} |\n`;
-    }
-
-    // Freshness health (if available)
-    if (this._lastFreshnessResult && this._lastFreshnessResult.checked !== false) {
-      md += `\n## Freshness Health\n\n`;
-      md += `| Metric | Value |\n`;
-      md += `|--------|-------|\n`;
-      md += `| Pages checked | ${this._lastFreshnessResult.checked || 0} |\n`;
-      md += `| Flagged stale | ${this._lastFreshnessResult.flagged || 0} |\n`;
-      if (this._lastFreshnessResult.updated) {
-        md += `| Updated | ${this._lastFreshnessResult.updated} |\n`;
-      }
     }
 
     return md;
