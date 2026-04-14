@@ -14,7 +14,7 @@ description: >
 All NC APIs use the Moltagent service account credentials from environment:
 ```javascript
 const auth = `${process.env.NC_USER}:${process.env.NC_PASSWORD}`;
-const baseUrl = process.env.NC_URL; // e.g., https://nx89136.your-storageshare.de
+const baseUrl = process.env.NC_URL; // e.g., https://nextcloud.example.com
 ```
 
 ### OCS API (Deck, Talk, Forms, Contacts)
