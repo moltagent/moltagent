@@ -2272,6 +2272,8 @@ async function initialize() {
       // Wire DailyDigest and KnowledgeGraph into HeartbeatManager
       if (dailyDigest) heartbeatManager.dailyDigest = dailyDigest;
       if (knowledgeGraph) heartbeatManager.knowledgeGraph = knowledgeGraph;
+      if (vectorStore) heartbeatManager.vectorStore = vectorStore;
+      if (embeddingClient) heartbeatManager.embeddingClient = embeddingClient;
 
       // Wire ObservationLog into DocumentIngestor (late-bind: heartbeatManager owns the log)
       if (documentIngestor) {

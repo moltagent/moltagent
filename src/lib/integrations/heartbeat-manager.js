@@ -265,8 +265,17 @@ class HeartbeatManager {
    */
   _ensureWikiSteward() {
     if (this.wikiSteward) return this.wikiSteward;
-    if (!this.collectivesClient || !this.knowledgeGraph || !this.vectorStore ||
-        !this.embeddingClient || !this.llmRouter) {
+    const missing = [];
+    if (!this.collectivesClient) missing.push('collectivesClient');
+    if (!this.knowledgeGraph)    missing.push('knowledgeGraph');
+    if (!this.vectorStore)       missing.push('vectorStore');
+    if (!this.embeddingClient)   missing.push('embeddingClient');
+    if (!this.llmRouter)         missing.push('llmRouter');
+    if (missing.length > 0) {
+      if (!this._wikiStewardMissingWarned) {
+        console.warn(`[Heartbeat] WikiSteward not initialized — missing deps: ${missing.join(', ')}`);
+        this._wikiStewardMissingWarned = true;
+      }
       return null;
     }
     try {

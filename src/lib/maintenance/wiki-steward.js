@@ -419,13 +419,20 @@ class WikiSteward {
     try {
       const pages = await this.collectivesClient.listPages(collectiveId);
       const pageList = Array.isArray(pages) ? pages : [];
+      // The landing page has parentId === 0; its direct children are the top-level
+      // section pages. Virtual section pages (no backing .md file) return filePath=''
+      // from the Collectives API, so we fall back to the title for those.
+      const landingPage = pageList.find(p => p.parentId === 0);
+      const landingPageId = landingPage?.id;
       const sectionCounts = new Map();
       for (const page of pageList) {
-        // Derive section: prefer explicit section field, then first path segment of filePath.
         let section = page.section || null;
         if (!section && page.filePath) {
-          const parts = page.filePath.split('/');
-          section = parts.length > 1 ? parts[0] : null;
+          const parts = page.filePath.split('/').filter(Boolean);
+          section = parts[0] || null;
+        }
+        if (!section && landingPageId && page.parentId === landingPageId && page.title) {
+          section = page.title;
         }
         if (section) {
           sectionCounts.set(section, (sectionCounts.get(section) || 0) + 1);
@@ -655,11 +662,11 @@ class WikiSteward {
     const raw = routerResult?.result || routerResult?.content || '';
 
     try {
-      // Strip markdown code fences if the LLM wrapped the JSON
-      const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
-      return JSON.parse(cleaned);
-    } catch {
-      this.logger.warn(`[WikiSteward:${stewardType}] Assessment JSON parse failed — raw: ${String(raw).slice(0, 200)}`);
+      return _extractJsonObject(raw);
+    } catch (err) {
+      this.logger.warn(
+        `[WikiSteward:${stewardType}] Assessment JSON parse failed (${err.message}) — raw (first 400): ${String(raw).slice(0, 400)}`
+      );
       return { actions: [] };
     }
   }
@@ -722,7 +729,9 @@ Return JSON only (no prose, no markdown fences):
   "healthy": ["titles of pages that look good"]
 }
 
-Respond in the same language as the page content. Assessments should work equally well for German, English, and Portuguese pages.`;
+Respond in the same language as the page content. Assessments should work equally well for German, English, and Portuguese pages.
+
+OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The first character must be \`{\` and the last character must be \`}\`. Do NOT wrap the JSON in markdown code fences (no \`\`\`json, no \`\`\`). Do NOT add explanations, prefixes, or trailing notes.`;
   }
 
   /**
@@ -777,7 +786,9 @@ Return JSON only (no prose, no markdown fences):
   "crossCluster": [{"page": "title", "shouldLinkTo": "target", "cluster": "target cluster name"}]
 }
 
-Respond in the same language as the page content. Assessments should work equally well for German, English, and Portuguese pages.`;
+Respond in the same language as the page content. Assessments should work equally well for German, English, and Portuguese pages.
+
+OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The first character must be \`{\` and the last character must be \`}\`. Do NOT wrap the JSON in markdown code fences (no \`\`\`json, no \`\`\`). Do NOT add explanations, prefixes, or trailing notes.`;
   }
 
   /**
@@ -841,7 +852,9 @@ Return JSON only (no prose, no markdown fences):
   "recommendation": "one sentence on what this cluster needs most"
 }
 
-Respond in the same language as the page content. Assessments should work equally well for German, English, and Portuguese pages.`;
+Respond in the same language as the page content. Assessments should work equally well for German, English, and Portuguese pages.
+
+OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The first character must be \`{\` and the last character must be \`}\`. Do NOT wrap the JSON in markdown code fences (no \`\`\`json, no \`\`\`). Do NOT add explanations, prefixes, or trailing notes.`;
   }
 
   // ---------------------------------------------------------------------------
@@ -1625,6 +1638,44 @@ Keep Level 0 under 100 lines total so it loads fast for every query.`;
       return body;
     }
   }
+}
+
+/**
+ * Extract the first complete JSON object from a string that may be wrapped in
+ * markdown code fences, prefixed with prose, or followed by trailing content.
+ *
+ * Brace-counts from the first `{` to its matching `}`, skipping braces inside
+ * JSON strings (and respecting backslash escapes). Throws if no balanced
+ * object can be found or if the extracted substring is not valid JSON.
+ *
+ * @param {string} raw
+ * @returns {Object}
+ */
+function _extractJsonObject(raw) {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    throw new Error('empty response');
+  }
+  const start = raw.indexOf('{');
+  if (start === -1) throw new Error('no JSON object found');
+
+  let depth = 0;
+  let end = -1;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\') { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) { end = i; break; }
+    }
+  }
+  if (end === -1) throw new Error('unbalanced braces');
+  return JSON.parse(raw.slice(start, end + 1));
 }
 
 module.exports = { WikiSteward };

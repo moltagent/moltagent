@@ -374,6 +374,12 @@ class DocumentIngestor {
       wikiResult = await this.wikiWriter.createPage(sectionPath, pageName, stubContent);
       if (wikiResult?.success !== false) {
         batchCreated.push({ section: sectionPath, title: pageName });
+        this.observationLog?.notice({
+          type: OBSERVATION_TYPES.UNEMBEDDED,
+          cluster: sectionPath,
+          page: pageName,
+          detail: `New reference stub from ${filePath}`,
+        });
       }
     } catch (err) {
       this.logger.warn(`[DocumentIngestor] Reference stub failed for ${filePath}: ${err.message}`);
@@ -474,6 +480,12 @@ class DocumentIngestor {
         this._sectionEntityNames.set(section, cached);
         entityPagesCreated++;
         this.logger.info(`[DocumentIngestor] Entity page: ${section}/${entity.name}`);
+        this.observationLog?.notice({
+          type: OBSERVATION_TYPES.UNEMBEDDED,
+          cluster: section,
+          page: entity.name,
+          detail: `New entity page from ${filePath}`,
+        });
       } catch (err) {
         this.logger.warn(`[DocumentIngestor] Entity page failed for ${entity.name}: ${err.message}`);
       }
