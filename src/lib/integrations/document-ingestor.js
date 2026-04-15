@@ -365,9 +365,16 @@ class DocumentIngestor {
     const pageName    = filenameNoExt;
     const stubContent = this._buildReferenceStub(filePath, extraction, summary, entities, alsoMentioned);
 
+    // Pages created during this ingest() call — swept at the end for forward
+    // wikilink resolution so cross-referencing siblings land fully linked.
+    const batchCreated = [];
+
     let wikiResult;
     try {
       wikiResult = await this.wikiWriter.createPage(sectionPath, pageName, stubContent);
+      if (wikiResult?.success !== false) {
+        batchCreated.push({ section: sectionPath, title: pageName });
+      }
     } catch (err) {
       this.logger.warn(`[DocumentIngestor] Reference stub failed for ${filePath}: ${err.message}`);
       wikiResult = { success: false, error: err.message };
@@ -458,6 +465,7 @@ class DocumentIngestor {
 
         const pageContent = this._buildEntityPage(entity, filePath);
         await this.wikiWriter.createPage(section, entity.name, pageContent);
+        batchCreated.push({ section, title: entity.name });
         this._createdEntityPages.add(dedupKey);
         // Update persistent section cache so subsequent entities (this file AND
         // future files) can match against the page we just created.
@@ -469,6 +477,16 @@ class DocumentIngestor {
       } catch (err) {
         this.logger.warn(`[DocumentIngestor] Entity page failed for ${entity.name}: ${err.message}`);
       }
+    }
+
+    // Post-batch wikilink sweep: every sibling created in this ingest() call
+    // now exists on disk, so forward references that were preserved as raw
+    // [[...]] markup during their earlier-in-the-loop writes can finally be
+    // resolved. Pages without forward refs are skipped (no-op).
+    try {
+      await this._resolveBatchWikilinks(batchCreated);
+    } catch (err) {
+      this.logger.warn(`[DocumentIngestor] Post-batch wikilink sweep failed: ${err.message}`);
     }
 
     // Record ingestion in Learning Log
@@ -1201,6 +1219,83 @@ or
    * @returns {Promise<void>}
    * @private
    */
+  /**
+   * Post-batch wikilink resolution sweep. After all pages in an ingest() call
+   * have been created, re-resolve their bodies so forward references (sibling
+   * entities that didn't exist yet when the earlier page was first written)
+   * become clickable links instead of raw [[markup]].
+   *
+   * This is the cleanup step that lets DocumentIngestor hand the Connection
+   * Steward fully-linked batches — the steward then only needs to handle
+   * retroactive links that emerge over time (new relationships in the graph,
+   * pages created by other ingestors), not known batch siblings.
+   *
+   * Writes are skipped when resolveWikilinks returns unchanged content (no
+   * forward refs, or all refs still unknown). Failures on individual pages
+   * never break ingestion.
+   *
+   * @param {Array<{section: string, title: string}>} batchCreated
+   * @returns {Promise<{swept: number, rewrote: number}>}
+   * @private
+   */
+  async _resolveBatchWikilinks(batchCreated) {
+    if (!Array.isArray(batchCreated) || batchCreated.length === 0) {
+      return { swept: 0, rewrote: 0 };
+    }
+
+    const collectivesClient = this.wikiWriter?.collectivesClient;
+    if (!collectivesClient || typeof collectivesClient.resolveWikilinks !== 'function') {
+      this.logger.debug?.('[DocumentIngestor] _resolveBatchWikilinks: no collectivesClient.resolveWikilinks, skipping');
+      return { swept: 0, rewrote: 0 };
+    }
+
+    // Invalidate the wikilink cache so the next resolve rebuilds it with ALL
+    // siblings from this batch. Each individual createPage already invalidates,
+    // but being explicit makes the invariant obvious: after this line the next
+    // resolve sees every page we just created.
+    collectivesClient._wikilinkMap = null;
+
+    let swept = 0;
+    let rewrote = 0;
+
+    for (const { section, title } of batchCreated) {
+      if (!section || !title) continue;
+      swept++;
+
+      try {
+        // Try both Collectives path conventions (same pattern as _trackEntityAccess)
+        let pageResult = await this.wikiWriter.readPage?.(`${section}/${title}/Readme.md`).catch(() => null);
+        let pagePath = `${section}/${title}/Readme.md`;
+        if (!pageResult?.content) {
+          pageResult = await this.wikiWriter.readPage?.(`${section}/${title}.md`).catch(() => null);
+          pagePath = `${section}/${title}.md`;
+        }
+        if (!pageResult?.content) {
+          this.logger.debug?.(`[DocumentIngestor] _resolveBatchWikilinks: could not read "${section}/${title}", skipping`);
+          continue;
+        }
+
+        const original = pageResult.content;
+        if (!original.includes('[[')) continue; // nothing to resolve
+
+        const resolved = await collectivesClient.resolveWikilinks(original);
+        if (resolved === original) continue; // nothing changed (all still unknown)
+
+        await this.wikiWriter.updatePage(pagePath, resolved);
+        rewrote++;
+        this.logger.debug?.(`[DocumentIngestor] Resolved forward wikilinks in "${section}/${title}"`);
+      } catch (err) {
+        this.logger.warn(`[DocumentIngestor] _resolveBatchWikilinks failed for "${section}/${title}": ${err.message}`);
+      }
+    }
+
+    if (rewrote > 0) {
+      this.logger.info(`[DocumentIngestor] Post-batch wikilink sweep: ${rewrote}/${swept} pages rewrote with resolved forward refs`);
+    }
+
+    return { swept, rewrote };
+  }
+
   async _enrichExistingPage(existingPage, newEntity, sourceFile) {
     if (!existingPage || !existingPage.title || !newEntity || !sourceFile) return;
 

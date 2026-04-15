@@ -18,7 +18,7 @@ const appConfig = require('../config');
 const { MODES, normalizeModeName } = require('./cockpit-modes');
 const { filterOwnerEvents } = require('./calendar-scoping');
 const ollamaGate = require('../shared/ollama-gate');
-const WikiSteward = require('../maintenance/wiki-steward');
+const { WikiSteward } = require('../maintenance/wiki-steward');
 const { ObservationLog } = require('../maintenance/observation-log');
 
 class HeartbeatManager {

@@ -105,9 +105,11 @@ class ResilientWikiWriter {
       // Continue — the section may already exist from bootstrap, or WebDAV mkdir will create it
     }
 
+    const resolvedContent = await this._resolveWikilinks(content);
+
     if (this._shouldTryOCS()) {
       try {
-        const result = await this._createViaOCS(sectionPath, pageName, content);
+        const result = await this._createViaOCS(sectionPath, pageName, resolvedContent);
         return result;
       } catch (err) {
         this._markOCSDown(err);
@@ -116,11 +118,32 @@ class ResilientWikiWriter {
     }
 
     try {
-      const result = await this._createViaWebDAV(sectionPath, pageName, content);
+      const result = await this._createViaWebDAV(sectionPath, pageName, resolvedContent);
       return result;
     } catch (err) {
       this.logger.error?.('[ResilientWikiWriter] WebDAV createPage also failed:', err.message);
       return { success: false, method: null, error: err.message };
+    }
+  }
+
+  /**
+   * Resolve [[wikilinks]] in content via collectivesClient. Unknown targets
+   * are preserved as raw markup so a later pass can resolve them once the
+   * target page exists. Falls through to raw content if the resolver throws
+   * so writes never fail on resolution errors.
+   * @param {string} content
+   * @returns {Promise<string>}
+   * @private
+   */
+  async _resolveWikilinks(content) {
+    if (!content || typeof content !== 'string') return content;
+    if (!content.includes('[[')) return content;
+    if (typeof this.collectivesClient.resolveWikilinks !== 'function') return content;
+    try {
+      return await this.collectivesClient.resolveWikilinks(content);
+    } catch (err) {
+      this.logger.debug?.(`[ResilientWikiWriter] wikilink resolve failed, writing raw: ${err.message}`);
+      return content;
     }
   }
 
@@ -131,9 +154,11 @@ class ResilientWikiWriter {
    * @returns {Promise<{success: boolean, method: string|null, error?: string}>}
    */
   async updatePage(pagePath, content) {
+    const resolvedContent = await this._resolveWikilinks(content);
+
     try {
       const fullPath = `${this._basePath()}/${pagePath}`;
-      await this.ncFilesClient.writeFile(fullPath, content);
+      await this.ncFilesClient.writeFile(fullPath, resolvedContent);
       return { success: true, method: 'webdav' };
     } catch (err) {
       this.logger.warn?.('[ResilientWikiWriter] WebDAV updatePage failed, trying OCS:', err.message);
@@ -142,7 +167,7 @@ class ResilientWikiWriter {
     if (this._shouldTryOCS()) {
       try {
         await this._withTimeout(
-          this.collectivesClient.writePageContent(pagePath, content),
+          this.collectivesClient.writePageContent(pagePath, resolvedContent),
           this.ocsTimeoutMs
         );
         return { success: true, method: 'ocs' };

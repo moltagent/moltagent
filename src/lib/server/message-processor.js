@@ -1840,7 +1840,6 @@ class MessageProcessor {
     }
 
     // Step 2: Parallel multi-source probes
-    // knowledgeIndex is available here for future smarter probe targeting (spec §7).
     const probeResults = await this._executeKnowledgeProbes(searchTerms, query, enricher, searcher);
 
     // Step 2b: Web fallback — gated by Cockpit Search Policy card.
@@ -1906,7 +1905,7 @@ class MessageProcessor {
     } else if (searchPolicy === 'sovereign' && substantiveResults < 2) {
       policyContext = '\n\nNote: Search policy is sovereign — no web search. If internal knowledge is insufficient, state what you know and what gaps exist honestly. Do not offer to search the web.';
     }
-    const response = await this._synthesizeKnowledge(query, aggregated, session, router, liveContext, policyContext + extraPolicy);
+    const response = await this._synthesizeKnowledge(query, aggregated, session, router, liveContext, policyContext + extraPolicy, knowledgeIndex);
 
     return {
       response,
@@ -2365,7 +2364,7 @@ Be thoughtful. Be honest. Be yourself.`;
    * One LLM call — the model's job is ONLY synthesis.
    * @private
    */
-  async _synthesizeKnowledge(query, aggregatedKnowledge, session, router, liveContext, policyContext = '') {
+  async _synthesizeKnowledge(query, aggregatedKnowledge, session, router, liveContext, policyContext = '', knowledgeIndex = '') {
     if (!aggregatedKnowledge) {
       return "I don't have any information about that in my knowledge base.";
     }
@@ -2379,6 +2378,16 @@ Be thoughtful. Be honest. Be yourself.`;
         `Resolve "that", "it", "the one", etc. from context.\n`;
     }
 
+    // Level 0 mind map — grounds the synthesis in what the agent knows it knows.
+    // If the question matches a domain in the index but probes came back empty,
+    // the LLM should admit the gap instead of fabricating. If the question is
+    // about a domain not in the index, the agent can say so with confidence.
+    let indexBlock = '';
+    if (knowledgeIndex && knowledgeIndex.trim().length > 0) {
+      const trimmed = knowledgeIndex.trim().slice(0, 4000);
+      indexBlock = `\nKNOWLEDGE INDEX (your mind map of domains you know about):\n${trimmed}\n`;
+    }
+
     const now = new Date();
     const timeStr = `${now.toLocaleDateString('en-US', { weekday: 'long' })}, ${now.toISOString().split('T')[0]} ${now.toTimeString().split(' ')[0]} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
 
@@ -2387,7 +2396,7 @@ DO NOT claim you created a card, sent an email, booked a meeting, moved anything
 If the user asked you to DO something, say what you FOUND, then say: "I couldn't complete that action — please ask me separately."
 
 Current date/time: ${timeStr}
-${conversationBlock}
+${conversationBlock}${indexBlock}
 Here is what was found across your data sources:
 ${aggregatedKnowledge}
 ${warmMemory ? `\nRecent context:\n${warmMemory}\n` : ''}
@@ -2401,7 +2410,8 @@ RULES:
 - Use the entity names exactly as they appear in the data.
 - Items marked [Source: web] are from web search. Treat as external — useful but unverified.
 - For internal information, say "from our files" or "according to internal documents". For web information, say "from web search" or "according to online sources". Weave attribution naturally — no ugly brackets.
-- Always present internal knowledge first, web enrichment second.${policyContext}`;
+- Always present internal knowledge first, web enrichment second.
+- Use the KNOWLEDGE INDEX to calibrate confidence: if the question touches a domain that appears in the index but the probes returned nothing, say the gap is real ("I track this domain but have no specific record of that"). If the question is about a domain not in the index, say you don't track that area. Never pretend.${policyContext}`;
 
     const result = await router.route({
       job: 'synthesis',
