@@ -1,5 +1,10 @@
 # CLAUDE.md — Moltagent
 
+# CRITICAL — Read These First
+- No regex for intelligence. LLM is the language layer.
+- Run production verification before marking complete.
+- Push to `next` branch only. Never `main`.
+
 ## Project
 
 Moltagent (lowercase 'a', never "MoltAgent") is a sovereign AI agent platform built on Nextcloud. Node.js codebase, AGPL-3.0. Entry point: `webhook-server.js`. ~35 modules, ~27,000 lines.
@@ -10,30 +15,18 @@ The LLM handles understanding. Code handles plumbing. When in doubt, it's unders
 
 ## Commands
 
-```bash
-# Run
-sudo systemctl start moltagent
-
-# Logs
-journalctl -u moltagent -f --no-pager
-
-# Test
-npm test
-
-# Lint
-npm run lint
-
-# Service status
-sudo systemctl status moltagent
-```
+    sudo systemctl start moltagent
+    journalctl -u moltagent -f --no-pager
+    npm test
+    npm run lint
+    sudo systemctl status moltagent
 
 ## Git Workflow
 
-- Work on `next` branch. Never commit directly to `main`.
-- PRs: `next → main`.
+- Work on `next`. PRs: `next → main`. (Pushes to `main` blocked by deny list.)
 - SSH commit signing with `~/.ssh/id_ed25519_signing`.
 - Co-authored-by: `moltagent <github@moltagent.cloud>`.
-- Commit messages: imperative, descriptive. Not "fix stuff" — describe what changed and why.
+- Commit messages: imperative, descriptive — describe what changed and why.
 
 ## The Three Non-Negotiable Rules
 
@@ -45,7 +38,6 @@ sudo systemctl status moltagent
 
 ## Before Every Commit
 
-Ask yourself:
 - Did I create a Set/Array of natural language words? → Use LLM
 - Does this only work in English? → Add DE/PT or use LLM
 - Does this commit add more lines than it removes? → Question the altitude
@@ -54,19 +46,22 @@ Ask yourself:
 ## Key Architecture
 
 - **Trust boundary:** `trust: local-only` or `trust: cloud-ok` — one setting, respected everywhere. Never hardcode `role: 'sovereign'` or `forceLocal: true`.
-- **Four-gate classifier:** KNOWLEDGE (default), ACTION, COMPOUND, THINKING. Knowledge is the default. Thinking is the rare exception.
+- **Four-gate classifier:** KNOWLEDGE (default), ACTION, COMPOUND, THINKING. Knowledge is default. Thinking is the rare exception.
 - **Model routing:** Jobs & Players v3. Each job has a roster chain per trust level. Synthesis: Haiku → qwen3:8b. Thinking: Opus. Credentials: always local.
-- **Wiki:** Collectives-based. Fractal index (Level 0 landing page → Level 1 section parents → Level 2 entity pages). Three stewards maintain it (knowledge, connection, memory).
 
-## Read the Dev Rules
-
-Before ANY coding session, read `.moltagent-dev-rules.md` at the repo root. It contains the full anti-pattern checklist and architecture reference table. This file is the condensed version. The dev rules file has the detailed examples and the "plumbing vs intelligence" decision table.
-
-## Compaction Instructions
+## Compaction
 
 When compacting, always preserve:
-- The full list of modified files
-- Current test status (passing/failing)
-- Any uncommitted changes
-- Active task description and acceptance criteria
-- The three non-negotiable rules above
+- The current briefing objectives
+- All file paths modified in this session
+- Board/config facts (board IDs, stack names, config paths)
+- Any "generating function" or systemic analysis from this session
+
+## Dev Rules
+
+Read `.moltagent-dev-rules.md` at repo root before coding. Full anti-pattern checklist and decision tables. This file is the condensed version.
+
+# CRITICAL — Read These Last
+- No regex for intelligence. LLM is the language layer.
+- Run production verification before marking complete.
+- Push to `next` branch only. Never `main`.

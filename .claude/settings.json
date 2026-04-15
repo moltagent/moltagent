@@ -1,4 +1,12 @@
 {
+  "permissions": {
+    "deny": [
+      "Bash(git push * main)",
+      "Bash(git push origin main)",
+      "Bash(git push --force *)",
+      "Bash(rm -rf *)"
+    ]
+  },
   "hooks": {
     "PostToolUse": [
       {
