@@ -152,14 +152,18 @@ asyncTest('scanInbox: returns assignedUsers in card objects', async () => {
   const nc = mockNC({
     'GET:/index.php/apps/deck/api/v1.0/boards': [{ id: 1, title: DECK.boards.tasks }],
     'GET:/index.php/apps/deck/api/v1.0/boards/1': FULL_BOARD,
-    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/101': {
-      id: 101, title: 'Inbox',
-      cards: [{
-        id: 600, title: 'Test', description: '', labels: [],
-        assignedUsers: [{ participant: { uid: 'Jordan' } }],
-        createdAt: Date.now(), lastModified: Date.now()
-      }]
-    }
+    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks': FULL_BOARD.stacks.map(s =>
+      s.id === 101
+        ? {
+            ...s,
+            cards: [{
+              id: 600, title: 'Test', description: '', labels: [],
+              assignedUsers: [{ participant: { uid: 'Jordan' } }],
+              createdAt: Date.now(), lastModified: Date.now()
+            }]
+          }
+        : { ...s, cards: [] }
+    )
   });
   const client = new DeckClient(nc, { boardName: DECK.boards.tasks });
   const inbox = await client.scanInbox();
@@ -176,14 +180,18 @@ asyncTest('processInbox: skips cards assigned to other users', async () => {
   const nc = mockNC({
     'GET:/index.php/apps/deck/api/v1.0/boards': [{ id: 1, title: DECK.boards.tasks }],
     'GET:/index.php/apps/deck/api/v1.0/boards/1': FULL_BOARD,
-    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/101': {
-      id: 101, title: 'Inbox',
-      cards: [{
-        id: 500, title: 'User task', description: '', labels: [],
-        assignedUsers: [{ participant: { uid: 'Jordan' } }],
-        createdAt: Date.now(), lastModified: Date.now()
-      }]
-    }
+    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks': FULL_BOARD.stacks.map(s =>
+      s.id === 101
+        ? {
+            ...s,
+            cards: [{
+              id: 500, title: 'User task', description: '', labels: [],
+              assignedUsers: [{ participant: { uid: 'Jordan' } }],
+              createdAt: Date.now(), lastModified: Date.now()
+            }]
+          }
+        : { ...s, cards: [] }
+    )
   });
 
   const mockRouter = { route: async () => ({ result: 'done', provider: 'test' }) };
@@ -200,14 +208,18 @@ asyncTest('processInbox: processes unassigned cards', async () => {
   const nc = mockNC({
     'GET:/index.php/apps/deck/api/v1.0/boards': [{ id: 1, title: DECK.boards.tasks }],
     'GET:/index.php/apps/deck/api/v1.0/boards/1': FULL_BOARD,
-    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/101': {
-      id: 101, title: 'Inbox',
-      cards: [{
-        id: 501, title: 'Research topic', description: 'Do some research', labels: [],
-        assignedUsers: [],
-        createdAt: Date.now(), lastModified: Date.now()
-      }]
-    },
+    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks': FULL_BOARD.stacks.map(s =>
+      s.id === 101
+        ? {
+            ...s,
+            cards: [{
+              id: 501, title: 'Research topic', description: 'Do some research', labels: [],
+              assignedUsers: [],
+              createdAt: Date.now(), lastModified: Date.now()
+            }]
+          }
+        : { ...s, cards: [] }
+    ),
     'POST:/ocs/v2.php/apps/deck/api/v1.0/cards/501/comments': { ocs: { data: { id: 1 } } },
     'PUT:/index.php/apps/deck/api/v1.0/boards/1/stacks/102/cards/501': { id: 501 },
     'PUT:/index.php/apps/deck/api/v1.0/boards/1/stacks/103/cards/501': { id: 501 },
@@ -228,14 +240,18 @@ asyncTest('processInbox: processes cards assigned to Moltagent', async () => {
   const nc = mockNC({
     'GET:/index.php/apps/deck/api/v1.0/boards': [{ id: 1, title: DECK.boards.tasks }],
     'GET:/index.php/apps/deck/api/v1.0/boards/1': FULL_BOARD,
-    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/101': {
-      id: 101, title: 'Inbox',
-      cards: [{
-        id: 502, title: 'My own task', description: 'Self-assigned', labels: [],
-        assignedUsers: [{ participant: { uid: 'moltagent' } }],
-        createdAt: Date.now(), lastModified: Date.now()
-      }]
-    },
+    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks': FULL_BOARD.stacks.map(s =>
+      s.id === 101
+        ? {
+            ...s,
+            cards: [{
+              id: 502, title: 'My own task', description: 'Self-assigned', labels: [],
+              assignedUsers: [{ participant: { uid: 'moltagent' } }],
+              createdAt: Date.now(), lastModified: Date.now()
+            }]
+          }
+        : { ...s, cards: [] }
+    ),
     'POST:/ocs/v2.php/apps/deck/api/v1.0/cards/502/comments': { ocs: { data: { id: 1 } } },
     'PUT:/index.php/apps/deck/api/v1.0/boards/1/stacks/102/cards/502': { id: 502 },
     'PUT:/index.php/apps/deck/api/v1.0/boards/1/stacks/103/cards/502': { id: 502 },

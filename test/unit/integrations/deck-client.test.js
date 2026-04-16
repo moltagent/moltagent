@@ -175,10 +175,15 @@ function createDeckMockNC(overrides = {}) {
       body: SAMPLE_FULL_BOARD,
       headers: {}
     },
-    // List all stacks with cards (used by getAllCards/getWorkloadSummary)
+    // List all stacks with cards (used by getAllCards/getWorkloadSummary/getCardsInStack).
+    // Inbox carries SAMPLE_INBOX_STACK.cards so getCardsInStack('inbox') — which now
+    // reads via the plural endpoint — returns the same shape the singular endpoint
+    // used to return. See #22.
     'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks': {
       status: 200,
-      body: SAMPLE_FULL_BOARD.stacks,
+      body: SAMPLE_FULL_BOARD.stacks.map(s =>
+        s.id === 101 ? { ...s, cards: SAMPLE_INBOX_STACK.cards } : s
+      ),
       headers: {}
     },
     // Get inbox stack
@@ -1130,16 +1135,19 @@ asyncTest('TC-CLEANUP-001: Cleanup old cards deletes old done cards', async () =
   const deletedCards = [];
 
   const mockNC = createDeckMockNC({
-    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/105': {
+    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks': {
       status: 200,
-      body: {
-        id: 105,
-        title: 'Done',
-        cards: [
-          { id: 3001, title: 'Old Task', lastModified: oldTimestamp },
-          { id: 3002, title: 'Recent Task', lastModified: Math.floor(Date.now() / 1000) }
-        ]
-      },
+      body: SAMPLE_FULL_BOARD.stacks.map(s =>
+        s.id === 105
+          ? {
+              ...s,
+              cards: [
+                { id: 3001, title: 'Old Task', lastModified: oldTimestamp },
+                { id: 3002, title: 'Recent Task', lastModified: Math.floor(Date.now() / 1000) }
+              ]
+            }
+          : s
+      ),
       headers: {}
     },
     'DELETE:/index.php/apps/deck/api/v1.0/boards/1/stacks/105/cards/3001': () => {
@@ -1223,24 +1231,11 @@ asyncTest('TC-SCAN-001: Scan assigned cards returns filtered results', async () 
   };
 
   const mockNC = createDeckMockNC({
-    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/101': {
+    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks': {
       status: 200,
-      body: { id: 101, title: 'Inbox', cards: [assignedCard] },
-      headers: {}
-    },
-    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/102': {
-      status: 200,
-      body: { id: 102, title: 'Queued', cards: [] },
-      headers: {}
-    },
-    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/103': {
-      status: 200,
-      body: { id: 103, title: 'Working', cards: [] },
-      headers: {}
-    },
-    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/104': {
-      status: 200,
-      body: { id: 104, title: 'Review', cards: [] },
+      body: SAMPLE_FULL_BOARD.stacks.map(s =>
+        s.id === 101 ? { ...s, cards: [assignedCard] } : s
+      ),
       headers: {}
     }
   });
@@ -1413,19 +1408,21 @@ test('TC-AWAIT-012: bot [RETRY] as last comment → not awaiting (transient fail
   assert.strictEqual(isAwaitingHumanResponse(comments, 'moltagent'), false);
 });
 
-// --- PAUSED stack guard ---
+// --- PAUSED stack guard (#22, #23) ---
 
 asyncTest('createCardOnBoard returns null for PAUSED stack', async () => {
   const nc = createMockNCRequestManager({
-    'GET:/index.php/apps/deck/api/v1.0/boards/144/stacks/10': {
+    'GET:/index.php/apps/deck/api/v1.0/boards/144/stacks': {
       status: 200, headers: {},
-      body: {
-        id: 10, title: 'Ideas',
-        cards: [
-          { id: 900, title: 'WORKFLOW: pipeline', labels: [] },
-          { id: 901, title: 'CONFIG: Ideas', labels: [{ id: 50, title: 'PAUSED', color: '90A4AE' }] }
-        ]
-      }
+      body: [
+        {
+          id: 10, title: 'Ideas',
+          cards: [
+            { id: 900, title: 'WORKFLOW: pipeline', labels: [] },
+            { id: 901, title: 'CONFIG: Ideas', labels: [{ id: 50, title: 'PAUSED', color: '90A4AE' }] }
+          ]
+        }
+      ]
     }
   });
   const deck = new DeckClient(nc);
@@ -1435,15 +1432,17 @@ asyncTest('createCardOnBoard returns null for PAUSED stack', async () => {
 
 asyncTest('createCardOnBoard creates card when stack is not PAUSED', async () => {
   const nc = createMockNCRequestManager({
-    'GET:/index.php/apps/deck/api/v1.0/boards/144/stacks/10': {
+    'GET:/index.php/apps/deck/api/v1.0/boards/144/stacks': {
       status: 200, headers: {},
-      body: {
-        id: 10, title: 'Ideas',
-        cards: [
-          { id: 900, title: 'WORKFLOW: pipeline', labels: [] },
-          { id: 901, title: 'CONFIG: Ideas', labels: [] }
-        ]
-      }
+      body: [
+        {
+          id: 10, title: 'Ideas',
+          cards: [
+            { id: 900, title: 'WORKFLOW: pipeline', labels: [] },
+            { id: 901, title: 'CONFIG: Ideas', labels: [] }
+          ]
+        }
+      ]
     },
     'POST:/index.php/apps/deck/api/v1.0/boards/144/stacks/10/cards': {
       status: 200, headers: {},
@@ -1458,9 +1457,11 @@ asyncTest('createCardOnBoard creates card when stack is not PAUSED', async () =>
 
 asyncTest('createCardOnBoard creates card when stack has no CONFIG card', async () => {
   const nc = createMockNCRequestManager({
-    'GET:/index.php/apps/deck/api/v1.0/boards/12/stacks/5': {
+    'GET:/index.php/apps/deck/api/v1.0/boards/12/stacks': {
       status: 200, headers: {},
-      body: { id: 5, title: 'Inbox', cards: [{ id: 100, title: 'Some task', labels: [] }] }
+      body: [
+        { id: 5, title: 'Inbox', cards: [{ id: 100, title: 'Some task', labels: [] }] }
+      ]
     },
     'POST:/index.php/apps/deck/api/v1.0/boards/12/stacks/5/cards': {
       status: 200, headers: {},
@@ -1472,19 +1473,101 @@ asyncTest('createCardOnBoard creates card when stack has no CONFIG card', async 
   assert.ok(result !== null, 'Should create card when no CONFIG card exists');
 });
 
-asyncTest('_isStackPaused cache prevents repeated API calls', async () => {
+asyncTest('isStackPaused cache prevents repeated API calls within one pulse', async () => {
   let callCount = 0;
   const nc = createMockNCRequestManager({
-    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks/2': () => {
+    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks': () => {
       callCount++;
-      return { status: 200, headers: {}, body: { id: 2, title: 'Test', cards: [] } };
+      return { status: 200, headers: {}, body: [{ id: 2, title: 'Test', cards: [] }] };
     }
   });
   const deck = new DeckClient(nc);
-  await deck._isStackPaused(1, 2);
-  await deck._isStackPaused(1, 2);
-  await deck._isStackPaused(1, 2);
+  await deck.isStackPaused(1, 2);
+  await deck.isStackPaused(1, 2);
+  await deck.isStackPaused(1, 2);
   assert.strictEqual(callCount, 1, 'Should only call API once (cache hit for subsequent calls)');
+});
+
+asyncTest('clearPausedCache forces a fresh fetch on the next isStackPaused call', async () => {
+  let callCount = 0;
+  const nc = createMockNCRequestManager({
+    'GET:/index.php/apps/deck/api/v1.0/boards/1/stacks': () => {
+      callCount++;
+      return { status: 200, headers: {}, body: [{ id: 2, title: 'Test', cards: [] }] };
+    }
+  });
+  const deck = new DeckClient(nc);
+  await deck.isStackPaused(1, 2);
+  deck.clearPausedCache();
+  await deck.isStackPaused(1, 2);
+  assert.strictEqual(callCount, 2, 'clearPausedCache should invalidate the per-pulse cache');
+});
+
+// Regression for #22: singular endpoint returns labels: null. Verify the
+// canonical async path does not feed that shape into the predicate — it uses
+// the plural endpoint, which always hydrates labels.
+asyncTest('#22 regression: labels-null shape on a stack does not cause a false negative', () => {
+  const hydrated = {
+    id: 10, title: 'Ideas',
+    cards: [{ id: 901, title: 'CONFIG: Ideas', labels: [{ id: 50, title: 'PAUSED' }] }]
+  };
+  const broken = {
+    id: 10, title: 'Ideas',
+    cards: [{ id: 901, title: 'CONFIG: Ideas', labels: null }]
+  };
+  assert.strictEqual(DeckClient.stackHasPausedConfig(hydrated), true,
+    'Hydrated plural-endpoint shape detects PAUSED');
+  assert.strictEqual(DeckClient.stackHasPausedConfig(broken), false,
+    'Singular-endpoint shape yields false (do not feed this into the predicate)');
+});
+
+// --- stackHasPausedConfig: pure predicate unit tests ---
+
+test('stackHasPausedConfig: PAUSED label present → true', () => {
+  const stack = {
+    cards: [
+      { title: 'WORKFLOW: pipeline', labels: [] },
+      { title: 'CONFIG: Ideas', labels: [{ title: 'System' }, { title: 'PAUSED' }] }
+    ]
+  };
+  assert.strictEqual(DeckClient.stackHasPausedConfig(stack), true);
+});
+
+test('stackHasPausedConfig: PAUSED absent → false', () => {
+  const stack = { cards: [{ title: 'CONFIG: Ideas', labels: [{ title: 'System' }] }] };
+  assert.strictEqual(DeckClient.stackHasPausedConfig(stack), false);
+});
+
+test('stackHasPausedConfig: no CONFIG card → false', () => {
+  const stack = { cards: [{ title: 'Random', labels: [{ title: 'PAUSED' }] }] };
+  assert.strictEqual(DeckClient.stackHasPausedConfig(stack), false);
+});
+
+test('stackHasPausedConfig: case-insensitive label match', () => {
+  const stack = { cards: [{ title: 'CONFIG: X', labels: [{ title: 'paused' }] }] };
+  assert.strictEqual(DeckClient.stackHasPausedConfig(stack), true);
+});
+
+test('stackHasPausedConfig: archived CONFIG card is ignored', () => {
+  const stack = { cards: [{ title: 'CONFIG: X', archived: true, labels: [{ title: 'PAUSED' }] }] };
+  assert.strictEqual(DeckClient.stackHasPausedConfig(stack), false);
+});
+
+test('stackHasPausedConfig: missing stack / missing cards → false (no crash)', () => {
+  assert.strictEqual(DeckClient.stackHasPausedConfig(null), false);
+  assert.strictEqual(DeckClient.stackHasPausedConfig(undefined), false);
+  assert.strictEqual(DeckClient.stackHasPausedConfig({}), false);
+  assert.strictEqual(DeckClient.stackHasPausedConfig({ cards: null }), false);
+});
+
+test('stackHasPausedConfig: CONFIG card with labels: null → false (do not crash)', () => {
+  const stack = { cards: [{ title: 'CONFIG: X', labels: null }] };
+  assert.strictEqual(DeckClient.stackHasPausedConfig(stack), false);
+});
+
+test('stackHasPausedConfig: leading whitespace on CONFIG title is tolerated', () => {
+  const stack = { cards: [{ title: '  CONFIG: Ideas', labels: [{ title: 'PAUSED' }] }] };
+  assert.strictEqual(DeckClient.stackHasPausedConfig(stack), true);
 });
 
 // --- Summary ---

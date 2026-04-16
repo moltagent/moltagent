@@ -449,6 +449,9 @@ class HeartbeatManager {
 
     this.pulseCount++;
 
+    // Invalidate per-pulse caches so every pulse reads fresh state (#23).
+    this.deckClient?.clearPausedCache?.();
+
     // Set status to heartbeat at start of pulse
     await this.statusIndicator?.setStatus('heartbeat');
 
