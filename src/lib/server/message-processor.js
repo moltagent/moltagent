@@ -2146,19 +2146,19 @@ Be thoughtful. Be honest. Be yourself.`;
         if (!page) return;
         console.log(`[DeepRead] getPage(${ids.collectiveId}, ${ids.pageId}): title="${page.title}", filePath="${page.filePath}", fileName="${page.fileName}"`);
 
-        // Filter infrastructure pages by filePath (type cache may not be populated yet)
         const fp = page.filePath || '';
-        if (/^(Meta|Sessions)(\/|$)/i.test(fp) || /\/(Meta|Sessions)(\/|$)/i.test(fp)) {
-          console.log(`[DeepRead] Skipping infrastructure page: "${page.title}" (filePath="${fp}")`);
-          return;
-        }
+        const isInfra = /^(Meta|Sessions)(\/|$)/i.test(fp) || /\/(Meta|Sessions)(\/|$)/i.test(fp);
 
         const pagePath = wiki._buildPagePath(page);
         console.log(`[DeepRead] _buildPagePath → "${pagePath}"`);
         const content = await wiki.readPageContent(pagePath);
         console.log(`[DeepRead] "${page.title}" (id=${ids.pageId}) → ${content ? content.trim().length + ' chars' : 'null'}`);
 
-        if (content && content.trim().length >= 50) {
+        // Enrichment excludes infrastructure pages — the user-facing response
+        // does not cite Meta/Sessions pages as sources. Observations below still
+        // fire on the full set so WikiSteward sees signal even when a knowledge
+        // query lands on infrastructure.
+        if (!isInfra && content && content.trim().length >= 50) {
           item.snippet = content.substring(0, 2000);
           item.title = page.title || item.title;
         }
@@ -2167,6 +2167,9 @@ Be thoughtful. Be honest. Be yourself.`;
         // Only runs when an ObservationLog was wired into the constructor.
         // Each check is structural only: frontmatter fields + vectorStore membership.
         // No LLM calls. No extra API calls.
+        // Runs for infrastructure pages too: otherwise Meta-heavy query results
+        // produced zero observations and WikiSteward defaulted to "longest
+        // unvisited" prioritization.
         const obs = this.observationLog;
         if (obs && content) {
           const pageTitle = page.title || item.title || '';
@@ -2226,6 +2229,10 @@ Be thoughtful. Be honest. Be yourself.`;
           } catch (_e) {
             // parseFrontmatter failed — no observations for this page, enrichment unaffected
           }
+        }
+
+        if (isInfra) {
+          console.log(`[DeepRead] Skipping infrastructure page: "${page.title}" (filePath="${fp}")`);
         }
       } catch (err) {
         console.warn(`[DeepRead] Failed for "${item.url}": ${err.message}`);
