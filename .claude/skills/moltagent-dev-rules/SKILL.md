@@ -1,3 +1,8 @@
+---
+name: moltagent-dev-rules
+description: Moltagent's non-negotiable development rules and Verification Gate convention. This project is LLM-native; conventional coding instincts produce the wrong solutions. Apply whenever touching code that handles natural language, classification, intent detection, keyword extraction, multilingual behavior, trust boundaries, LLM routing, or when adding new features. Load PROACTIVELY at the start of any coding task. The 8-rule checklist and the Verification Gate at the end together form the final gate before committing code or declaring a session done.
+---
+
 # Moltagent Development Rules
 
 **Read this before writing ANY code. These rules are non-negotiable.**

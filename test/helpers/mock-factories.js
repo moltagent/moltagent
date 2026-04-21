@@ -366,15 +366,6 @@ function createMockDailyDigester(overrides = {}) {
   };
 }
 
-// FreshnessChecker (heartbeat-intelligence variant) Mock
-function createMockHeartbeatFreshnessChecker(overrides = {}) {
-  return {
-    maybeCheck: async () => overrides.maybeCheck || { checked: false },
-    checkAll: async () => overrides.checkAll || { checked: 0, flagged: 0 },
-    lastCheckDate: null
-  };
-}
-
 // BotEnroller Mock
 function createMockBotEnroller(overrides = {}) {
   const enrolledRooms = new Set();
@@ -514,7 +505,6 @@ module.exports = {
   createMockBudgetEnforcer,
   createMockMeetingPreparer,
   createMockDailyDigester,
-  createMockHeartbeatFreshnessChecker,
   createMockBotEnroller,
   createMockInfraMonitor,
   createMockNCFilesClient,

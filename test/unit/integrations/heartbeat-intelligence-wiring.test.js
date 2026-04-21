@@ -17,13 +17,12 @@
  * Heartbeat Intelligence Wiring Tests
  *
  * Tests the wiring between HeartbeatManager's pulse() method and the
- * heartbeat intelligence components: MeetingPreparer and FreshnessChecker.
+ * MeetingPreparer heartbeat intelligence component.
  *
  * Specifically verifies that:
- *  - Constructor stores both components on the instance
- *  - pulse() gates each component behind the correct initiative level
- *  - Errors in one component do not prevent the other from running
- *  - null components are handled gracefully (no crash)
+ *  - Constructor stores meetingPreparer on the instance
+ *  - pulse() gates MeetingPreparer behind the correct initiative level
+ *  - null meetingPreparer is handled gracefully (no crash)
  *
  * Run: node test/unit/integrations/heartbeat-intelligence-wiring.test.js
  */
@@ -51,8 +50,7 @@ try {
 
 /**
  * Build a minimal config that does not crash the HeartbeatManager constructor.
- * intelligence components are injected via overrides.meetingPreparer /
- * overrides.hbFreshnessChecker.
+ * MeetingPreparer is injected via overrides.meetingPreparer.
  */
 function createMockConfig(overrides = {}) {
   return {
@@ -78,8 +76,7 @@ function createMockConfig(overrides = {}) {
       getNCPassword: () => 'test'
     },
     // Heartbeat intelligence components
-    meetingPreparer: overrides.meetingPreparer || null,
-    hbFreshnessChecker: overrides.hbFreshnessChecker || null
+    meetingPreparer: overrides.meetingPreparer || null
   };
 }
 
@@ -100,19 +97,6 @@ function stubPulseInternals(hb) {
 // ============================================================================
 // Mock intelligence component factories
 // ============================================================================
-
-/**
- * Create a lightweight mock FreshnessChecker that tracks whether
- * maybeCheck() was invoked.
- */
-function createMockFreshnessChecker(result = { checked: 5, flagged: 1 }) {
-  let called = false;
-  return {
-    maybeCheck: async () => { called = true; return result; },
-    get wasCalled() { return called; },
-    lastCheckDate: null
-  };
-}
 
 /**
  * Create a lightweight mock MeetingPreparer that tracks whether
@@ -137,19 +121,7 @@ console.log('\n=== Heartbeat Intelligence Wiring Tests ===\n');
 (async () => {
 
   // --------------------------------------------------------------------------
-  // 1. Constructor stores hbFreshnessChecker on the instance
-  // --------------------------------------------------------------------------
-  test('HeartbeatManager receives hbFreshnessChecker in constructor', () => {
-    const freshnessChecker = createMockFreshnessChecker();
-    const config = createMockConfig({ hbFreshnessChecker: freshnessChecker });
-    const hb = new HeartbeatManager(config);
-
-    assert.strictEqual(hb.hbFreshnessChecker, freshnessChecker,
-      'hbFreshnessChecker should be stored on the instance');
-  });
-
-  // --------------------------------------------------------------------------
-  // 2. Constructor stores meetingPreparer on the instance
+  // 1. Constructor stores meetingPreparer on the instance
   // --------------------------------------------------------------------------
   test('HeartbeatManager receives meetingPreparer in constructor', () => {
     const meetingPreparer = createMockMeetingPreparer();
@@ -161,25 +133,7 @@ console.log('\n=== Heartbeat Intelligence Wiring Tests ===\n');
   });
 
   // --------------------------------------------------------------------------
-  // 3. pulse() at level 2 calls hbFreshnessChecker.maybeCheck()
-  // --------------------------------------------------------------------------
-  await asyncTest('pulse() at level 2 calls hbFreshnessChecker.maybeCheck()', async () => {
-    const freshnessChecker = createMockFreshnessChecker();
-    const config = createMockConfig({
-      initiativeLevel: 2,
-      hbFreshnessChecker: freshnessChecker
-    });
-    const hb = new HeartbeatManager(config);
-    stubPulseInternals(hb);
-
-    await hb.pulse();
-
-    assert.strictEqual(freshnessChecker.wasCalled, true,
-      'hbFreshnessChecker.maybeCheck() should be called at level 2');
-  });
-
-  // --------------------------------------------------------------------------
-  // 4. pulse() at level 2 does NOT call meetingPreparer.checkAndPrep()
+  // 2. pulse() at level 2 does NOT call meetingPreparer.checkAndPrep()
   // --------------------------------------------------------------------------
   await asyncTest('pulse() at level 2 does NOT call meetingPreparer.checkAndPrep()', async () => {
     const meetingPreparer = createMockMeetingPreparer();
@@ -197,7 +151,7 @@ console.log('\n=== Heartbeat Intelligence Wiring Tests ===\n');
   });
 
   // --------------------------------------------------------------------------
-  // 5. pulse() at level 3 calls meetingPreparer.checkAndPrep()
+  // 3. pulse() at level 3 calls meetingPreparer.checkAndPrep()
   // --------------------------------------------------------------------------
   await asyncTest('pulse() at level 3 calls meetingPreparer.checkAndPrep()', async () => {
     const meetingPreparer = createMockMeetingPreparer();
@@ -215,32 +169,12 @@ console.log('\n=== Heartbeat Intelligence Wiring Tests ===\n');
   });
 
   // --------------------------------------------------------------------------
-  // 6. pulse() at level 3 also calls hbFreshnessChecker.maybeCheck()
+  // 4. pulse() at level 1 does NOT call meetingPreparer
   // --------------------------------------------------------------------------
-  await asyncTest('pulse() at level 3 calls hbFreshnessChecker.maybeCheck()', async () => {
-    const freshnessChecker = createMockFreshnessChecker();
-    const config = createMockConfig({
-      initiativeLevel: 3,
-      hbFreshnessChecker: freshnessChecker
-    });
-    const hb = new HeartbeatManager(config);
-    stubPulseInternals(hb);
-
-    await hb.pulse();
-
-    assert.strictEqual(freshnessChecker.wasCalled, true,
-      'hbFreshnessChecker.maybeCheck() should also be called at level 3');
-  });
-
-  // --------------------------------------------------------------------------
-  // 7. pulse() at level 1 does NOT call either intelligence component
-  // --------------------------------------------------------------------------
-  await asyncTest('pulse() at level 1 does NOT call either component', async () => {
-    const freshnessChecker = createMockFreshnessChecker();
+  await asyncTest('pulse() at level 1 does NOT call meetingPreparer', async () => {
     const meetingPreparer = createMockMeetingPreparer();
     const config = createMockConfig({
       initiativeLevel: 1,
-      hbFreshnessChecker: freshnessChecker,
       meetingPreparer
     });
     const hb = new HeartbeatManager(config);
@@ -248,25 +182,21 @@ console.log('\n=== Heartbeat Intelligence Wiring Tests ===\n');
 
     await hb.pulse();
 
-    assert.strictEqual(freshnessChecker.wasCalled, false,
-      'hbFreshnessChecker should NOT be called at level 1');
     assert.strictEqual(meetingPreparer.wasCalled, false,
       'meetingPreparer should NOT be called at level 1');
   });
 
   // --------------------------------------------------------------------------
-  // 8. pulse() handles null components gracefully (no crash if both null)
+  // 5. pulse() handles null meetingPreparer gracefully (no crash)
   // --------------------------------------------------------------------------
-  await asyncTest('pulse() handles null components gracefully (no crash if both null)', async () => {
+  await asyncTest('pulse() handles null meetingPreparer gracefully (no crash)', async () => {
     const config = createMockConfig({
       initiativeLevel: 3,
-      hbFreshnessChecker: null,
       meetingPreparer: null
     });
     const hb = new HeartbeatManager(config);
     stubPulseInternals(hb);
 
-    // Should not throw even though both components are null
     let caughtError = null;
     try {
       await hb.pulse();
@@ -275,67 +205,7 @@ console.log('\n=== Heartbeat Intelligence Wiring Tests ===\n');
     }
 
     assert.strictEqual(caughtError, null,
-      'pulse() should not throw when both intelligence components are null');
-  });
-
-  // --------------------------------------------------------------------------
-  // 9. pulse() catches hbFreshnessChecker error without crashing
-  // --------------------------------------------------------------------------
-  await asyncTest('pulse() catches hbFreshnessChecker error without crashing', async () => {
-    const throwingFreshnessChecker = {
-      maybeCheck: async () => { throw new Error('freshness boom'); },
-      get wasCalled() { return true; },
-      lastCheckDate: null
-    };
-
-    const config = createMockConfig({
-      initiativeLevel: 2,
-      hbFreshnessChecker: throwingFreshnessChecker
-    });
-    const hb = new HeartbeatManager(config);
-    stubPulseInternals(hb);
-
-    let caughtError = null;
-    let pulseResult;
-    try {
-      pulseResult = await hb.pulse();
-    } catch (err) {
-      caughtError = err;
-    }
-
-    assert.strictEqual(caughtError, null,
-      'pulse() should not propagate hbFreshnessChecker errors');
-
-    // The error should be recorded in results.errors
-    assert.ok(
-      Array.isArray(pulseResult.errors) &&
-      pulseResult.errors.some(e => e.component === 'freshness'),
-      'freshness error should be recorded in results.errors'
-    );
-  });
-
-  // --------------------------------------------------------------------------
-  // 10. FreshnessChecker error does not block MeetingPreparer from running
-  // --------------------------------------------------------------------------
-  await asyncTest('FreshnessChecker error does not block MeetingPreparer from running', async () => {
-    const throwingFreshnessChecker = {
-      maybeCheck: async () => { throw new Error('freshness boom'); },
-      lastCheckDate: null
-    };
-    const meetingPreparer = createMockMeetingPreparer();
-
-    const config = createMockConfig({
-      initiativeLevel: 3,
-      hbFreshnessChecker: throwingFreshnessChecker,
-      meetingPreparer
-    });
-    const hb = new HeartbeatManager(config);
-    stubPulseInternals(hb);
-
-    await hb.pulse();
-
-    assert.strictEqual(meetingPreparer.wasCalled, true,
-      'meetingPreparer.checkAndPrep() should still run even when FreshnessChecker throws');
+      'pulse() should not throw when meetingPreparer is null');
   });
 
   // ============================================================================

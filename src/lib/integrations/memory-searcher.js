@@ -610,9 +610,9 @@ class MemorySearcher {
       .filter(e => {
         const url = (e.resourceUrl || '').toLowerCase();
         const sub = (e.subline || '').toLowerCase();
-        // Match pages in archive paths OR composted pages (body contains "Archived by FreshnessChecker")
+        // Match pages in archive paths OR composted pages (body contains "Archived by Memory Steward")
         return url.includes('/archive/') || url.includes('/archive') ||
-               sub.includes('archived by freshnesschecker');
+               sub.includes('archived by memory steward');
       })
       .slice(0, limit)
       .map(e => ({

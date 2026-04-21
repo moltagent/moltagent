@@ -405,11 +405,13 @@ asyncTest('resolveWikilinks resolves [[Section/Page]] using leaf title', async (
   assert.strictEqual(result, 'Contact [John Smith](https://cloud.example.com/apps/collectives/Moltagent-Knowledge-10/John-Smith-200).');
 });
 
-asyncTest('resolveWikilinks replaces unfound pages with plain text', async () => {
+asyncTest('resolveWikilinks preserves [[target]] markup for unfound pages', async () => {
   const mockNC = createWikilinkMockNC();
   const client = new CollectivesClient(mockNC);
   const result = await client.resolveWikilinks('See [[Nonexistent Page]].');
-  assert.strictEqual(result, 'See Nonexistent Page (page not found).');
+  // Unknown targets keep their markup so a later resolve pass can pick them up
+  // once the target page exists (e.g. batch entity creation with forward refs).
+  assert.strictEqual(result, 'See [[Nonexistent Page]].');
 });
 
 asyncTest('resolveWikilinks handles multiple wikilinks in one string', async () => {
@@ -418,7 +420,7 @@ asyncTest('resolveWikilinks handles multiple wikilinks in one string', async () 
   const result = await client.resolveWikilinks('Check [[People]] and [[Projects]] and [[Missing]].');
   assert.ok(result.includes('[People](https://cloud.example.com/apps/collectives/Moltagent-Knowledge-10/People-100)'));
   assert.ok(result.includes('[Projects](https://cloud.example.com/apps/collectives/Moltagent-Knowledge-10/Projects-101)'));
-  assert.ok(result.includes('Missing (page not found)'));
+  assert.ok(result.includes('[[Missing]]'), 'unknown targets preserve raw wikilink markup');
 });
 
 asyncTest('resolveWikilinks returns content unchanged when no wikilinks', async () => {
@@ -455,7 +457,9 @@ asyncTest('resolveWikilinks gracefully handles API error', async () => {
   });
   const client = new CollectivesClient(mockNC);
   const result = await client.resolveWikilinks('See [[People]].');
-  assert.strictEqual(result, 'See People (page not found).', 'Should fall back to plain text on error');
+  // Cache stays empty on error; markup is preserved for a later retry once
+  // OCS recovers, rather than destructively rewriting to a sentinel.
+  assert.strictEqual(result, 'See [[People]].', 'Should preserve wikilink markup on error');
 });
 
 asyncTest('writePageWithFrontmatter resolves wikilinks before writing', async () => {

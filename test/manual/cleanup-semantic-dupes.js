@@ -56,7 +56,7 @@ const AGENTS_DELETE = [
   // Moltbot/Moltagent variants — keep "Moltagent.md"
   'MoltBot', 'Moltbot', 'Moltagent Prime', 'Molti', 'Moltagent Forge', 'moltagent', 'moltagent-demos',
   // Internal modules that aren't agents
-  'BudgetEnforcer', 'DailyDigester', 'FreshnessChecker', 'HeartbeatManager', 'MeetingPreparer',
+  'BudgetEnforcer', 'DailyDigester', 'HeartbeatManager', 'MeetingPreparer',
   // Misc
   "Cisco's AI security team",
   // Cross-section dupes (already in Organizations/)

@@ -5,6 +5,7 @@ const path = require('path');
 const GateDetector = require('./gate-detector');
 const { ScheduleHandler, parseScheduleBlock, findConfigCard, stripHtml } = require('./schedule-handler');
 const { isStructuralCard, hasLabel } = require('../integrations/deck-card-classifier');
+const DeckClient = require('../integrations/deck-client');
 
 const DEFAULT_DATA_DIR = path.resolve(process.cwd(), 'data');
 
@@ -170,10 +171,8 @@ class WorkflowEngine {
     }
 
     for (const stack of stacks) {
-      // Stack-level PAUSED check: if the CONFIG card in this stack has the
-      // PAUSED label, skip all cards in this stack.
-      const stackConfigCard = findConfigCard(stack);
-      if (stackConfigCard && hasLabel(stackConfigCard, 'PAUSED')) {
+      // Stack-level PAUSED check via canonical predicate (#23).
+      if (DeckClient.stackHasPausedConfig(stack)) {
         console.log(`[Workflow] Stack "${stack.title}" in "${board.title}" is PAUSED — skipping stack`);
         continue;
       }
@@ -286,8 +285,7 @@ class WorkflowEngine {
       // is absent, the LLM cannot see it, reference it, or create cards in it.
       const pausedStackNames = [];
       const activeStacks = stacks.filter(stack => {
-        const cfg = findConfigCard(stack);
-        if (cfg && hasLabel(cfg, 'PAUSED')) {
+        if (DeckClient.stackHasPausedConfig(stack)) {
           console.log(`[Workflow] Stack "${stack.title}" skipped for schedules — CONFIG card has PAUSED label`);
           pausedStackNames.push(stack.title);
           return false;
@@ -476,10 +474,8 @@ class WorkflowEngine {
       `**Assigned To:** ${(card.assignedUsers || []).map(u => u.participant?.uid).join(', ') || 'unassigned'}`,
       '',
       `**All Stacks (left to right):**`,
-      stacks.filter(s => {
-        const cfg = findConfigCard(s);
-        return !(cfg && hasLabel(cfg, 'PAUSED'));
-      }).map(s => `  - "${s.title}" (ID: ${s.id}, ${(s.cards || []).length} cards)`).join('\n'),
+      stacks.filter(s => !DeckClient.stackHasPausedConfig(s))
+        .map(s => `  - "${s.title}" (ID: ${s.id}, ${(s.cards || []).length} cards)`).join('\n'),
       '',
       '**Instructions:**',
       'Follow the CONFIG instructions for this stack. The CONFIG card defines',

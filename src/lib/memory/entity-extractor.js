@@ -146,6 +146,21 @@ DESCRIPTION RULES:
 - If you cannot point to a specific sentence that supports your description, set description to null
 - If the document does not explicitly state what an entity IS or DOES, set description to null
 
+WIKILINKS — entity pages must be born connected, not orphaned:
+- When an entity's description or context references ANOTHER entity from this
+  same document OR from the EXISTING KNOWLEDGE block above, wrap that other
+  entity's name in double brackets: [[Other Entity Name]].
+- Use the exact canonical name of the target entity inside the brackets.
+- Only link to named entities that have (or will have) their own wiki page.
+  Do NOT link generic concepts ([[meeting]], [[email]], [[document]]) and do
+  NOT link role nouns ([[director]], [[project manager]]).
+- Multilingual — the bracket markup is language-agnostic:
+  EN: "Carlos is Editorial Director at [[ManeraMedia GmbH]], leading [[Q2 Editorial Calendar]]."
+  DE: "Carlos ist Redaktionsleiter bei [[ManeraMedia GmbH]] und leitet [[Q2-Redaktionskalender]]."
+  PT: "Carlos é Diretor Editorial na [[ManeraMedia GmbH]] e lidera o [[Calendário Editorial Q2]]."
+- If an entity's description has nothing to link, write it normally.
+- Self-references do not get wrapped (an entity does not link to itself).
+
 ENTITY TYPE rules:
 - person: actual human beings (e.g. "Alex", "Sarah Chen"). NOT software, NOT companies, NOT AI models.
 - agent: AI assistants, language models, bots, or artificial persons (e.g. "Claude Opus", "Moltagent", "AutoAgent"). Use for any named AI system or model.

@@ -65,26 +65,8 @@ function createMinimalHeartbeat(overrides = {}) {
     assert.ok(result.includes('| People | 3 |'), 'should include People section count');
   });
 
-  test('TC-KSTATS-FMT-002: _formatKnowledgeStats includes freshness section when data available', () => {
+  test('TC-KSTATS-FMT-003: _formatKnowledgeStats never emits Freshness Health section (removed with legacy workers)', () => {
     const hb = createMinimalHeartbeat();
-    hb._lastFreshnessResult = { checked: 15, flagged: 2 };
-
-    const stats = {
-      totalPages: 5,
-      contentPages: 3,
-      sectionCounts: { People: 3, Meta: 2 }
-    };
-
-    const result = hb._formatKnowledgeStats(stats);
-
-    assert.ok(result.includes('## Freshness Health'), 'should include Freshness Health section');
-    assert.ok(result.includes('| Pages checked | 15 |'), 'should include pages checked row');
-    assert.ok(result.includes('| Flagged stale | 2 |'), 'should include flagged stale row');
-  });
-
-  test('TC-KSTATS-FMT-003: _formatKnowledgeStats omits freshness section when no data', () => {
-    const hb = createMinimalHeartbeat();
-    // _lastFreshnessResult is null by default — do not set it
 
     const stats = {
       totalPages: 3,
@@ -94,7 +76,7 @@ function createMinimalHeartbeat(overrides = {}) {
 
     const result = hb._formatKnowledgeStats(stats);
 
-    assert.ok(!result.includes('Freshness Health'), 'should NOT include Freshness Health section');
+    assert.ok(!result.includes('Freshness Health'), 'Freshness Health section was removed with FreshnessChecker');
   });
 
   // --------------------------------------------------------------------------

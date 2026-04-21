@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git push * main)",
+      "Bash(git push origin main)",
+      "Bash(git push --force *)",
+      "Bash(rm -rf:*)",
+      "Write(.env)",
+      "Write(.env.*)",
+      "Read(.env)",
+      "Read(.env.*)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/verify-built.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

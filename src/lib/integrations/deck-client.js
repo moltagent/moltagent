@@ -192,9 +192,78 @@ class DeckClient {
     this._boardTypesLastRefresh = 0;
     this._boardTypesCacheMaxAge = 300000; // 5 minutes
 
-    // PAUSED-stack cache: "boardId/stackId" → { paused: bool, ts: number }
-    this._pausedCache = new Map();
-    this._pausedCacheTTL = 120000; // 2 minutes
+    // Per-pulse cache: boardId → Array<stack> (from plural endpoint, hydrated labels).
+    // Cleared by clearPausedCache() at heartbeat pulse start — never lives across pulses.
+    this._stacksByBoardCache = new Map();
+  }
+
+  // ============================================================
+  // PAUSED-STACK DETECTION (canonical reader, #23)
+  // ============================================================
+
+  /**
+   * Pure predicate: does this stack's CONFIG card carry the PAUSED label?
+   * Shared by both the async API-fetching path and in-memory consumers
+   * that already hold hydrated stack objects (workflow-engine).
+   *
+   * Expects a stack object as returned by the plural endpoint
+   * (GET /boards/{id}/stacks), where cards[].labels is a populated array.
+   * The singular endpoint (GET /boards/{id}/stacks/{stackId}) returns
+   * labels: null and must never feed this predicate — see #22.
+   *
+   * @param {Object} stack - Hydrated stack object with cards and labels
+   * @returns {boolean}
+   */
+  static stackHasPausedConfig(stack) {
+    if (!stack || !Array.isArray(stack.cards)) return false;
+    const configCard = stack.cards.find(c =>
+      c && !c.archived && !c.deletedAt &&
+      typeof c.title === 'string' &&
+      c.title.trim().toUpperCase().startsWith('CONFIG:')
+    );
+    if (!configCard || !Array.isArray(configCard.labels)) return false;
+    return configCard.labels.some(l =>
+      l && typeof l.title === 'string' && l.title.toUpperCase() === 'PAUSED'
+    );
+  }
+
+  /**
+   * Canonical async PAUSED check (#23). Callers without a hydrated stack
+   * object in hand — e.g. createCard, createCardOnBoard — use this.
+   *
+   * Uses the plural endpoint (GET /boards/{id}/stacks) because the
+   * singular endpoint does not hydrate per-card labels (#22).
+   *
+   * The stacks-list response is cached per board for the duration of a
+   * single heartbeat pulse. HeartbeatManager.pulse() calls
+   * clearPausedCache() at pulse start; no TTL.
+   *
+   * @param {number} boardId
+   * @param {number} stackId
+   * @returns {Promise<boolean>}
+   */
+  async isStackPaused(boardId, stackId) {
+    let stacks = this._stacksByBoardCache.get(boardId);
+    if (!stacks) {
+      try {
+        const raw = await this._request('GET',
+          `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks`);
+        stacks = Array.isArray(raw) ? raw : [];
+      } catch {
+        return false; // API failure → don't block creation
+      }
+      this._stacksByBoardCache.set(boardId, stacks);
+    }
+    const stack = stacks.find(s => s && s.id === stackId);
+    return DeckClient.stackHasPausedConfig(stack);
+  }
+
+  /**
+   * Invalidate the per-pulse stacks cache. Called by HeartbeatManager
+   * at pulse start to guarantee fresh reads once per pulse.
+   */
+  clearPausedCache() {
+    this._stacksByBoardCache.clear();
   }
 
   // ============================================================
@@ -537,34 +606,6 @@ class DeckClient {
   }
 
   /**
-   * Check if a stack's CONFIG card has the PAUSED label.
-   * Cached for 2 minutes per board/stack pair.
-   * @param {number} boardId
-   * @param {number} stackId
-   * @returns {Promise<boolean>}
-   */
-  async _isStackPaused(boardId, stackId) {
-    const key = `${boardId}/${stackId}`;
-    const cached = this._pausedCache.get(key);
-    if (cached && Date.now() - cached.ts < this._pausedCacheTTL) return cached.paused;
-
-    try {
-      const stack = await this._request('GET',
-        `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}`);
-      const configCard = (stack.cards || []).find(c =>
-        typeof c.title === 'string' && c.title.toUpperCase().startsWith('CONFIG:'));
-      const paused = configCard
-        ? (configCard.labels || []).some(l =>
-          typeof l.title === 'string' && l.title.toUpperCase() === 'PAUSED')
-        : false;
-      this._pausedCache.set(key, { paused, ts: Date.now() });
-      return paused;
-    } catch {
-      return false; // API failure → don't block creation
-    }
-  }
-
-  /**
    * Create a card on any board/stack by IDs (not just default Moltagent board).
    * Unlike createCard(stackName, card), this uses raw IDs for board-agnostic creation.
    * Refuses to create if the stack's CONFIG card has the PAUSED label.
@@ -578,7 +619,7 @@ class DeckClient {
     if (!boardId || !stackId) throw new DeckApiError('boardId and stackId are required');
     if (!title || typeof title !== 'string') throw new DeckApiError('Card title is required');
 
-    const paused = await this._isStackPaused(boardId, stackId);
+    const paused = await this.isStackPaused(boardId, stackId);
     console.log(`[Deck] createCardOnBoard: board=${boardId} stack=${stackId} paused=${paused} title="${(title || '').substring(0, 60)}"`);
     if (paused) {
       console.warn(`[Deck] Refusing card creation in PAUSED stack (board=${boardId}, stack=${stackId}): "${title}"`);
@@ -710,9 +751,15 @@ class DeckClient {
   // ============================================================
 
   /**
-   * Get all cards in a specific stack
+   * Get all cards in a specific stack.
+   *
+   * Uses the plural endpoint (GET /boards/{id}/stacks) because the singular
+   * endpoint (GET /boards/{id}/stacks/{stackId}) returns cards with
+   * labels: null — see #22. Consumers like personal-board-manager rely on
+   * card.labels to be populated.
+   *
    * @param {string} stackName - Stack name (inbox, queued, working, done, reference)
-   * @returns {Promise<Array>} Array of card objects
+   * @returns {Promise<Array>} Array of card objects with hydrated labels
    */
   async getCardsInStack(stackName) {
     const { boardId, stacks } = await this._getIds();
@@ -722,12 +769,13 @@ class DeckClient {
       throw new DeckApiError(`Unknown stack: ${stackName}`);
     }
 
-    const stack = await this._request(
+    const raw = await this._request(
       'GET',
-      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}`
+      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks`
     );
-
-    return stack.cards || [];
+    const stackList = Array.isArray(raw) ? raw : [];
+    const stack = stackList.find(s => s && s.id === stackId);
+    return stack?.cards || [];
   }
 
   /**
@@ -800,7 +848,7 @@ class DeckClient {
       throw new DeckApiError(`Unknown stack: ${stackName}`);
     }
 
-    const paused = await this._isStackPaused(boardId, stackId);
+    const paused = await this.isStackPaused(boardId, stackId);
     console.log(`[Deck] createCard: board=${boardId} stack=${stackId} stackName="${stackName}" paused=${paused} title="${(card.title || '').substring(0, 60)}"`);
     if (paused) {
       console.warn(`[Deck] Refusing card creation in PAUSED stack "${stackName}" (board=${boardId}): "${card.title}"`);

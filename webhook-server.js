@@ -29,11 +29,10 @@ const appConfig = require('./src/lib/config');
 const { createServerComponents } = require('./src/lib/server/index');
 
 // Knowledge modules for agent memory context
-let ContextLoader, LearningLog, FreshnessChecker;
+let ContextLoader, LearningLog;
 try {
   ({ ContextLoader } = require('./src/lib/knowledge/context-loader'));
   ({ LearningLog } = require('./src/lib/knowledge/learning-log'));
-  ({ FreshnessChecker } = require('./src/lib/knowledge/freshness-checker'));
 } catch {
   console.warn('[WARN] Knowledge modules not available, agent memory disabled');
 }
@@ -500,7 +499,6 @@ let talkQueue = null;
 let defaultTalkToken = appConfig.talk.primaryRoom || null; // Primary room for proactive notifications
 let contextLoader = null;
 let learningLog = null;
-let freshnessChecker = null;
 let agentLoop = null; // Session 14: AgentLoop instance
 let routerChatBridge = null; // Session B2: RouterChatBridge for dynamic provider registration
 let costTracker = null; // Cost metering: per-call audit + enriched cost reporting
@@ -534,7 +532,6 @@ let coAccessGraph = null; // Semantic Awareness: co-access pattern graph
 let documentIngestor = null; // Document Ingestion: file → text → entities → knowledge
 let embeddingClient = null; // Semantic Awareness: Ollama embedding client
 let vectorStore = null; // Semantic Awareness: SQLite vector store
-let embeddingRefresher = null; // Semantic Awareness: periodic embedding refresh
 let gapDetector = null; // Semantic Awareness: knowledge gap detection
 let rhythmTracker = null; // Semantic Awareness: user rhythm tracking
 let knowledgeGraph = null; // Knowledge Graph: entity/triple store
@@ -1307,22 +1304,6 @@ async function initialize() {
     console.warn(`[INIT] VectorStore failed: ${err.message}`);
   }
 
-  if (embeddingClient && vectorStore && collectivesClient) {
-    try {
-      const EmbeddingRefresher = require('./src/lib/memory/embedding-refresher');
-      embeddingRefresher = new EmbeddingRefresher({
-        embeddingClient,
-        vectorStore,
-        collectivesClient,
-        ncFilesClient,
-        logger: console
-      });
-      console.log('[INIT] EmbeddingRefresher ready');
-    } catch (err) {
-      console.warn(`[INIT] EmbeddingRefresher failed: ${err.message}`);
-    }
-  }
-
   try {
     const GapDetector = require('./src/lib/memory/gap-detector');
     gapDetector = new GapDetector({
@@ -1473,23 +1454,6 @@ async function initialize() {
       }
     } catch (err) {
       console.warn(`[INIT] ContextLoader failed: ${err.message}`);
-    }
-  }
-
-  // 7c2. Initialize FreshnessChecker (knowledge page staleness detection)
-  if (FreshnessChecker && collectivesClient) {
-    try {
-      freshnessChecker = new FreshnessChecker({
-        collectivesClient,
-        knowledgeBoard: null,  // Set after KnowledgeBoard is created
-        config: {
-          maxPagesPerScan: appConfig.knowledge.freshness.maxPagesPerScan,
-          defaultDecayDays: appConfig.knowledge.defaultDecayDays
-        }
-      });
-      console.log('[INIT] FreshnessChecker ready');
-    } catch (err) {
-      console.warn(`[INIT] FreshnessChecker failed: ${err.message}`);
     }
   }
 
@@ -2171,26 +2135,6 @@ async function initialize() {
 
       // Create HeartbeatIntelligence components
       let meetingPreparer = null;
-      let heartbeatFreshnessChecker = null;
-
-      if (HeartbeatIntelligence) {
-        try {
-          const { FreshnessChecker: HBFreshnessChecker } = HeartbeatIntelligence;
-
-          if (collectivesClient) {
-            heartbeatFreshnessChecker = new HBFreshnessChecker({
-              collectivesClient: collectivesClient,
-              deckClient: deckClient2,
-              notifyUser,
-              config: appConfig
-            });
-          }
-
-          console.log('[INIT] Heartbeat Intelligence components ready');
-        } catch (err) {
-          console.warn(`[INIT] Heartbeat Intelligence failed: ${err.message}`);
-        }
-      }
 
       // Create NC Flow modules for heartbeat event routing
       let ncFlowSystemTags = null;
@@ -2262,7 +2206,6 @@ async function initialize() {
         knowledgeLog: learningLog,
         knowledgeBoard,
         contextLoader,
-        freshnessChecker,
         cockpitManager,
         personalBoardManager,
         botEnroller,
@@ -2329,9 +2272,15 @@ async function initialize() {
       // Wire DailyDigest and KnowledgeGraph into HeartbeatManager
       if (dailyDigest) heartbeatManager.dailyDigest = dailyDigest;
       if (knowledgeGraph) heartbeatManager.knowledgeGraph = knowledgeGraph;
+      if (vectorStore) heartbeatManager.vectorStore = vectorStore;
+      if (embeddingClient) heartbeatManager.embeddingClient = embeddingClient;
+
+      // Wire ObservationLog into DocumentIngestor (late-bind: heartbeatManager owns the log)
+      if (documentIngestor) {
+        documentIngestor.observationLog = heartbeatManager.observationLog;
+      }
 
       // Wire Semantic Awareness components into HeartbeatManager pulse()
-      if (embeddingRefresher) heartbeatManager.embeddingRefresher = embeddingRefresher;
       if (gapDetector) heartbeatManager.gapDetector = gapDetector;
       if (rhythmTracker) heartbeatManager.rhythmTracker = rhythmTracker;
       if (coAccessGraph) heartbeatManager.coAccessGraph = coAccessGraph;
@@ -2355,11 +2304,6 @@ async function initialize() {
           });
           heartbeatManager.meetingPreparer = meetingPreparer;
 
-          // Wire freshness checker
-          if (heartbeatFreshnessChecker) {
-            heartbeatManager.hbFreshnessChecker = heartbeatFreshnessChecker;
-          }
-
           console.log('[INIT] Heartbeat Intelligence wired to HeartbeatManager');
         } catch (err) {
           console.warn(`[INIT] Heartbeat Intelligence wiring failed: ${err.message}`);
@@ -2369,6 +2313,17 @@ async function initialize() {
       // Wire MessageProcessor for mode propagation from Cockpit
       if (serverComponents && serverComponents.messageProcessor) {
         heartbeatManager.messageProcessor = serverComponents.messageProcessor;
+      }
+
+      // Wire ObservationLog and VectorStore into MessageProcessor for enrichment observations.
+      // Late-bound here because heartbeatManager (and its observationLog) is created after
+      // serverComponents. The properties are optional guards — absent before this point.
+      if (serverComponents?.messageProcessor) {
+        serverComponents.messageProcessor.observationLog = heartbeatManager.observationLog;
+        if (vectorStore) {
+          serverComponents.messageProcessor.vectorStore = vectorStore;
+        }
+        console.log('[INIT] ObservationLog + VectorStore wired into MessageProcessor');
       }
 
       // Wire NC Flow events into HeartbeatManager
@@ -2401,23 +2356,6 @@ async function initialize() {
       }
       if (ncFlowWebhookReceiver) {
         ncFlowWebhookReceiver.on('event', (event) => heartbeatManager.enqueueExternalEvent(event));
-      }
-
-      // Wire MetadataGardener into HeartbeatManager
-      if (collectivesClient && llmRouter) {
-        try {
-          const MetadataGardener = require('./src/lib/memory/metadata-gardener');
-          heartbeatManager.metadataGardener = new MetadataGardener({
-            collectivesClient,
-            resilientWriter,
-            router: llmRouter,
-            logger: console,
-            pagesPerTick: 2
-          });
-          console.log('[INIT] MetadataGardener wired to heartbeat');
-        } catch (err) {
-          console.warn(`[INIT] MetadataGardener failed: ${err.message}`);
-        }
       }
 
       console.log('[INIT] HeartbeatManager ready');

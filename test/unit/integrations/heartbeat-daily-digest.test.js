@@ -125,8 +125,7 @@ function createMockConfig(overrides = {}) {
     talkSendQueue: overrides.talkSendQueue || null,
     primaryRoomToken: overrides.primaryRoomToken || null,
     // Heartbeat intelligence components
-    meetingPreparer: overrides.meetingPreparer || null,
-    hbFreshnessChecker: overrides.hbFreshnessChecker || null
+    meetingPreparer: overrides.meetingPreparer || null
   };
 }
 
@@ -424,21 +423,11 @@ console.log('\n=== Heartbeat Daily Digest Tests ===\n');
       enqueue: async () => {}
     };
 
-    let freshnessCheckerCalled = false;
-    const mockFreshnessChecker = {
-      maybeCheck: async () => {
-        freshnessCheckerCalled = true;
-        return { checked: 1, flagged: 0 };
-      },
-      lastCheckDate: null
-    };
-
     const config = createMockConfig({
       initiativeLevel: 3,
       dailyBriefing: throwingDailyBriefing,
       talkSendQueue: mockTalkSendQueue,
-      primaryRoomToken: 'room123',
-      hbFreshnessChecker: mockFreshnessChecker
+      primaryRoomToken: 'room123'
     });
 
     const hb = new HeartbeatManager(config);
@@ -457,8 +446,6 @@ console.log('\n=== Heartbeat Daily Digest Tests ===\n');
 
     assert.strictEqual(caughtError, null,
       'pulse() should not propagate dailyBriefing errors');
-    assert.strictEqual(freshnessCheckerCalled, true,
-      'hbFreshnessChecker.maybeCheck() should still be called after dailyBriefing throws');
   });
 
   // ============================================================================

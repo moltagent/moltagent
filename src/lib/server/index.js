@@ -65,6 +65,8 @@ const HealthHandler = require('./health-handler');
  * @property {string[]} [botNames] - Names the bot responds to (Session 37: address detection)
  * @property {Object} [selfHealClient] - SelfHealClient instance for /restart command
  * @property {string} [adminUser] - Admin username for privileged commands
+ * @property {Object} [observationLog] - ObservationLog for enrichment traversal observations
+ * @property {Object} [vectorStore] - VectorStore for UNEMBEDDED observation checks
  */
 
 // -----------------------------------------------------------------------------
@@ -104,7 +106,9 @@ function createServerComponents(deps) {
     adminUser,
     proactiveEvaluator,
     sessionPersister,
-    selfRecovery
+    selfRecovery,
+    observationLog,
+    vectorStore
   } = deps;
 
   // Create command handler first (used by message processor)
@@ -143,7 +147,9 @@ function createServerComponents(deps) {
     adminUser: adminUser || '',
     proactiveEvaluator,
     referenceResolver: deps.referenceResolver || null,
-    selfRecovery: selfRecovery || null
+    selfRecovery: selfRecovery || null,
+    observationLog: observationLog || null,
+    vectorStore: vectorStore || null
   });
 
   // Create webhook handler (uses message processor)

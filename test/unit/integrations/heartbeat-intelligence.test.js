@@ -2,7 +2,7 @@
 /**
  * Heartbeat Intelligence Tests
  *
- * Tests for MeetingPreparer, DailyDigester, and FreshnessChecker.
+ * Tests for MeetingPreparer.
  *
  * Run: node test/unit/integrations/heartbeat-intelligence.test.js
  */
@@ -10,9 +10,9 @@
 const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 
-let MeetingPreparer, FreshnessChecker;
+let MeetingPreparer;
 try {
-  ({ MeetingPreparer, FreshnessChecker } = require('../../../src/lib/integrations/heartbeat-intelligence'));
+  ({ MeetingPreparer } = require('../../../src/lib/integrations/heartbeat-intelligence'));
 } catch (err) {
   console.error('Failed to load heartbeat-intelligence:', err.message);
   process.exit(1);
@@ -305,124 +305,6 @@ function createMockNotify() {
     assert.strictEqual(router._calls.length, 1);
     assert.strictEqual(router._calls[0].context.trigger, 'heartbeat_meeting_prep');
     assert.strictEqual(router._calls[0].task, 'meeting_prep');
-  });
-
-  // ==========================================================================
-  // FreshnessChecker Tests
-  // ==========================================================================
-
-  console.log('\n--- FreshnessChecker ---\n');
-
-  await asyncTest('maybeCheck() runs once per day', async () => {
-    const wiki = createMockWiki([], {});
-
-    const fc = new FreshnessChecker({
-      collectivesClient: wiki,
-      deckClient: createMockDeck(),
-      notifyUser: createMockNotify(),
-      config: {}
-    });
-
-    const r1 = await fc.maybeCheck();
-    assert.ok(r1.checked !== undefined && r1.checked !== false, 'First run should check');
-
-    const r2 = await fc.maybeCheck();
-    assert.strictEqual(r2.checked, false, 'Second run same day should skip');
-  });
-
-  await asyncTest('maybeCheck() skips if already checked today', async () => {
-    const wiki = createMockWiki([], {});
-
-    const fc = new FreshnessChecker({
-      collectivesClient: wiki,
-      deckClient: createMockDeck(),
-      notifyUser: createMockNotify(),
-      config: {}
-    });
-
-    fc.lastCheckDate = new Date().toISOString().split('T')[0];
-    const result = await fc.maybeCheck();
-    assert.strictEqual(result.checked, false);
-  });
-
-  await asyncTest('checkAll() flags pages past decay_days', async () => {
-    const oldDateStr = '2025-01-01';
-    const pages = [
-      { id: 1, title: 'Stale Page', fileId: 10, fileName: 'Stale Page.md' }
-    ];
-    const contentMap = {
-      'Stale Page.md': `---\nlast_updated: ${oldDateStr}\ndecay_days: 7\nconfidence: high\n---\n# Stale Page\nContent here.`
-    };
-
-    const notifyUser = createMockNotify();
-    const deck = createMockDeck({ inbox: [] });
-
-    const fc = new FreshnessChecker({
-      collectivesClient: createMockWiki(pages, contentMap),
-      deckClient: deck,
-      notifyUser,
-      config: {}
-    });
-
-    const result = await fc.checkAll();
-    assert.strictEqual(result.checked, 1);
-    assert.strictEqual(result.flagged, 1);
-    assert.strictEqual(notifyUser._messages.length, 1);
-    assert.ok(notifyUser._messages[0].message.includes('verification'), 'Should mention verification');
-    assert.strictEqual(deck._createdCards.length, 1);
-    assert.ok(deck._createdCards[0].title.includes('Verify: Stale Page'));
-  });
-
-  await asyncTest('checkAll() ignores pages without frontmatter', async () => {
-    const pages = [
-      { id: 1, title: 'No FM', fileId: 10, fileName: 'No FM.md' }
-    ];
-    const contentMap = {
-      'No FM.md': '# Just a heading\nNo frontmatter here.'
-    };
-
-    const fc = new FreshnessChecker({
-      collectivesClient: createMockWiki(pages, contentMap),
-      deckClient: createMockDeck({ inbox: [] }),
-      notifyUser: createMockNotify(),
-      config: {}
-    });
-
-    const result = await fc.checkAll();
-    assert.strictEqual(result.checked, 1);
-    assert.strictEqual(result.flagged, 0);
-  });
-
-  await asyncTest('_createVerificationCard() skips if card already exists', async () => {
-    const deck = createMockDeck({
-      inbox: [{ title: 'Verify: Old Page' }]
-    });
-
-    const fc = new FreshnessChecker({
-      collectivesClient: createMockWiki(),
-      deckClient: deck,
-      notifyUser: createMockNotify(),
-      config: {}
-    });
-
-    await fc._createVerificationCard({ title: 'Old Page' }, { decay_days: 30 }, 45);
-    assert.strictEqual(deck._createdCards.length, 0);
-  });
-
-  test('_daysSince() computes correct day difference', () => {
-    const fc = new FreshnessChecker({
-      collectivesClient: createMockWiki(),
-      deckClient: createMockDeck(),
-      notifyUser: createMockNotify(),
-      config: {}
-    });
-
-    const tenDaysAgo = new Date(Date.now() - 10 * 86400000).toISOString().split('T')[0];
-    const days = fc._daysSince(tenDaysAgo);
-    assert.ok(days >= 9 && days <= 11, `Expected ~10, got ${days}`);
-
-    const today = new Date().toISOString().split('T')[0];
-    assert.strictEqual(fc._daysSince(today), 0);
   });
 
   // ==========================================================================

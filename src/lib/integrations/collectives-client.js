@@ -680,9 +680,16 @@ class CollectivesClient {
   /**
    * Resolve [[wikilink]] patterns to absolute Collectives deep links.
    * [[Page/Name]] → [Name](https://ncUrl/apps/collectives/Collective-Slug-ID/Page-Slug-PageID)
-   * If page not found: Page/Name (page not found)
+   *
+   * Unknown targets preserve the raw [[target]] markup so a later resolve pass
+   * (once the target page exists) can still convert them to clickable links.
+   * This matters for batch entity creation where sibling pages reference each
+   * other before all of them exist yet — the markup survives the first write
+   * and gets resolved on the next pass once all siblings are on disk.
+   *
    * @param {string} content - Markdown content with potential wikilinks
-   * @returns {Promise<string>} Content with wikilinks resolved
+   * @returns {Promise<string>} Content with resolvable wikilinks converted,
+   *                            unknown ones preserved as [[target]] markup
    */
   async resolveWikilinks(content) {
     const matches = [...content.matchAll(/\[\[([^\]]+)\]\]/g)];
@@ -699,10 +706,9 @@ class CollectivesClient {
       const leafTitle = label.toLowerCase();
 
       const cached = this._wikilinkMap.get(leafTitle);
-      const replacement = cached
-        ? `[${label}](${this.buildPageUrl(cached.title, cached.pageId)})`
-        : `${target} (page not found)`;
+      if (!cached) continue; // preserve raw [[target]] for future resolve
 
+      const replacement = `[${label}](${this.buildPageUrl(cached.title, cached.pageId)})`;
       result = result.slice(0, match.index) + replacement + result.slice(match.index + match[0].length);
     }
     return result;
