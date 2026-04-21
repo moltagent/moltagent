@@ -4,30 +4,20 @@
       "Bash(git push * main)",
       "Bash(git push origin main)",
       "Bash(git push --force *)",
-      "Bash(rm -rf *)"
+      "Bash(rm -rf:*)",
+      "Write(.env)",
+      "Write(.env.*)",
+      "Read(.env)",
+      "Read(.env.*)"
     ]
   },
   "hooks": {
-    "PostToolUse": [
+    "Stop": [
       {
-        "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/check-anti-patterns.js $FILE_PATH",
-            "description": "Check for natural language anti-patterns in code"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash(rm *)|Bash(sudo rm *)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo '⚠️ Destructive command detected. Confirm intent.'",
-            "description": "Warn before destructive bash commands"
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/verify-built.sh"
           }
         ]
       }

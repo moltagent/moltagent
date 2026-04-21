@@ -1,67 +1,63 @@
-# CLAUDE.md — Moltagent
+# Moltagent — Claude Code Context
 
-# CRITICAL — Read These First
-- No regex for intelligence. LLM is the language layer.
-- Run production verification before marking complete.
-- Push to `next` branch only. Never `main`.
+**Project:** Moltagent — sovereign AI agent platform on Nextcloud.  
+**Language:** Node.js (>= 18), JavaScript. Multilingual by default: DE / EN / PT.  
+**License:** AGPL-3.0.
 
-## Project
+## Repo layout
 
-Moltagent (lowercase 'a', never "MoltAgent") is a sovereign AI agent platform built on Nextcloud. Node.js codebase, AGPL-3.0. Entry point: `webhook-server.js`. ~35 modules, ~27,000 lines.
-
-## Architecture in One Sentence
-
-The LLM handles understanding. Code handles plumbing. When in doubt, it's understanding → use the LLM.
+- `src/` — product code
+- `test/` — unit and integration tests
+- `scripts/` — ops and setup
+- `config/` — runtime configuration, including `SOUL.md` and `system-prompt.md` (the agent's behavioral layer)
+- `ansible/`, `deploy/` — infrastructure
+- `webhook-server.js` — entry point (large; a split is overdue, out of scope for most sessions)
 
 ## Commands
 
-    sudo systemctl start moltagent
-    journalctl -u moltagent -f --no-pager
-    npm test
-    npm run lint
-    sudo systemctl status moltagent
+- `npm run lint` — ESLint (`--fix` to auto-correct)
+- `npm test` — all tests
+- `npm run test:unit` | `test:integration` | `test:llm` | `test:deck` — narrower scopes
+- `npm run setup` — Deck board setup (one-off)
 
-## Git Workflow
+After every substantial edit, run `npm run lint`. Before declaring a task done, run the appropriate test scope. Before declaring a session done, produce a `[VERIFIED: ...]` marker per the Verification Gate (see moltagent-dev-rules.md).
 
-- Work on `next`. PRs: `next → main`. (Pushes to `main` blocked by deny list.)
-- SSH commit signing with `~/.ssh/id_ed25519_signing`.
-- Co-authored-by: `moltagent <github@moltagent.cloud>`.
-- Commit messages: imperative, descriptive — describe what changed and why.
+## Git workflow
 
-## The Three Non-Negotiable Rules
+- All work lands on feature branches off `next`.
+- PRs merge into `next`. `next` periodically promotes to `main`.
+- Commit email: `github@moltagent.cloud`
+- Signing key: SSH, `~/.ssh/id_ed25519_signing`
+- Co-authored-by: `moltagent <github@moltagent.cloud>`
 
-**1. LLM is the language layer.** Never write Sets, Arrays, or Maps of natural language words. No stop word lists. No keyword matching on user input. No regex on natural language. If the code would need to change when adding a new language → use the LLM instead. qwen2.5:3b runs locally in 100ms for free.
+## The two behavioral layers — know which one applies
 
-**2. Fix the prompt, not the code around it.** When the LLM produces wrong output: fix the prompt, add multilingual examples, use a better model. Do NOT add post-classify guards that override the LLM in code. The only acceptable post-classify guard is structural validation (invalid gate name → fallback to default).
+This repo contains two parallel behavioral-instruction documents. They serve different systems and are often confused. Choose correctly before editing.
 
-**3. Multilingual from day one.** Every feature must work in German, English, and Portuguese. All LLM prompts include DE + PT examples. No language-specific code paths. No hardcoded day/month names.
+1. **This file (`CLAUDE.md`)** — instructions for Claude Code (the developer tool). How to work on the codebase: commands, rules, conventions, workflow.
+2. **`config/SOUL.md`** and **`config/system-prompt.md`** — instructions for the *Moltagent agent itself* (the product). How the agent responds to users, how it handles knowledge gaps, how it reports tool results, how it integrates memory.
 
-## Before Every Commit
+When the user reports that the agent is behaving incorrectly — hallucinating roles, overconfident under sparse data, misusing tools, wrong tone — the fix almost always belongs in SOUL.md, not in code. This is Rule 7 (Prompt Updates, Not Code Guards) applied to the agent's own behavior: when an LLM-based system produces wrong output, fix the prompt before reaching for a code guard. Read SOUL.md first when a behavior bug is reported. Most of the time the answer is already there or belongs there.
 
-- Did I create a Set/Array of natural language words? → Use LLM
-- Does this only work in English? → Add DE/PT or use LLM
-- Does this commit add more lines than it removes? → Question the altitude
-- Am I compensating for an LLM weakness with code? → Strengthen the LLM
+## Non-negotiable rules (short form — full rules auto-load via skill)
 
-## Key Architecture
+1. **The LLM is the language layer.** Never write code containing word lists, stop words, or regex matching natural language. If code would need to change when we add a new language, it's wrong.
+2. **Analysis before fix.** What class of problem is this? What generates it? Fix the generator, not the instance. Two instances of the same pattern = stop patching.
+3. **Trust boundary is the single control.** `trust: local-only` vs `cloud-ok` governs every cloud-touching decision. No per-component overrides.
+4. **BUILT ≠ VERIFIED.** Features are only complete after confirmed production behavior. Green tests are necessary but not sufficient. The Stop hook enforces this — every session must end with a `[VERIFIED: ...]` marker. See moltagent-dev-rules.md § Verification Gate.
+5. **PAUSED always wins.** State-enforcing labels override scheduled actions. Guards belong where the pipe narrows.
 
-- **Trust boundary:** `trust: local-only` or `trust: cloud-ok` — one setting, respected everywhere. Never hardcode `role: 'sovereign'` or `forceLocal: true`.
-- **Four-gate classifier:** KNOWLEDGE (default), ACTION, COMPOUND, THINKING. Knowledge is default. Thinking is the rare exception.
-- **Model routing:** Jobs & Players v3. Each job has a roster chain per trust level. Synthesis: Haiku → qwen3:8b. Thinking: Opus. Credentials: always local.
+The full rule set — with examples, counterexamples, the architecture table, the Verification Gate convention, and the pre-commit anti-pattern checklist — is at `moltagent-dev-rules.md`. The same content is exposed as a skill at `.claude/skills/moltagent-dev-rules/SKILL.md` and auto-loads whenever you touch code that handles natural language, classification, intent detection, LLM routing, trust boundaries, or when adding new features. When the skill loads, read it. It is authoritative.
 
-## Compaction
+## Operating discipline
 
-When compacting, always preserve:
-- The current briefing objectives
-- All file paths modified in this session
-- Board/config facts (board IDs, stack names, config paths)
-- Any "generating function" or systemic analysis from this session
+- **Search the codebase before assuming structure.** Never guess file paths, function names, or API shapes. Read before writing.
+- **Run the pre-commit checklist** (Rule 8 in the dev-rules skill) before any commit.
+- **Run the Verification Gate** (section in moltagent-dev-rules.md) before declaring a session done. The Stop hook will block you if you forget the marker.
+- **Use GitHub issues** for anything not in scope for the current briefing. Don't silently expand scope.
+- **Zoom out before patching.** Two instances of the same pattern = find the generator.
+- **Small commits over large ones.** If a commit adds more lines than it removes, question whether the altitude is right.
 
-## Dev Rules
+## Architecture partnership
 
-Read `.moltagent-dev-rules.md` at repo root before coding. Full anti-pattern checklist and decision tables. This file is the condensed version.
-
-# CRITICAL — Read These Last
-- No regex for intelligence. LLM is the language layer.
-- Run production verification before marking complete.
-- Push to `next` branch only. Never `main`.
+Claude (claude.ai, Opus 4.7) operates as the architectural and strategic reasoning layer above CC. CC implements from structured briefings (typically 15–25 KB). Claude synthesizes, diagnoses, and plans at the generator level; CC executes at the instance level with skills loaded for domain grounding. This is the division of labor. Don't try to do both at once in one session.
