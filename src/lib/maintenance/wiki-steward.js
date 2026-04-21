@@ -1235,6 +1235,11 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
    * Sets compost_ready=true and related metadata. The actual page move
    * is done by the Sleep Cycle — this only marks the frontmatter.
    *
+   * Honors the `compost: never` frontmatter pin: structural/index pages
+   * carry it because their access_count stays at 0 by design (probes target
+   * content, not navigation), and the LLM would otherwise tautologically
+   * propose them for composting.
+   *
    * @param {string} page
    * @param {string} reason
    * @returns {Promise<boolean>}
@@ -1244,6 +1249,11 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
 
     const result = await this.collectivesClient.readPageWithFrontmatter(page);
     if (!result) return false;
+
+    if (result.frontmatter && result.frontmatter.compost === 'never') {
+      this.logger.info(`[WikiSteward:memory] Skipping compost of "${page}" — pinned (compost: never)`);
+      return false;
+    }
 
     const fm = { ...result.frontmatter };
     fm.compost_ready = true;

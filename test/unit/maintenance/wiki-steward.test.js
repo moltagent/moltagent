@@ -513,6 +513,24 @@ asyncTest('_markForComposting sets compost_ready true without moving the page', 
   assert.ok(written.frontmatter.compost_marked_at, 'compost_marked_at should be set');
 });
 
+// Test 16a: _markForComposting honors `compost: never` frontmatter pin
+asyncTest('_markForComposting honors compost: never pin — does not mark pinned pages', async () => {
+  const pagesByTitle = {
+    'People': {
+      frontmatter: { type: 'index', compost: 'never', access_count: 0 },
+      body: '# People\n\n## Known Entities\n- ...',
+      path: 'People.md',
+    },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+  const result = await steward._markForComposting('People', 'LLM proposed composting');
+
+  assert.strictEqual(result, false, 'pinned page should return false');
+  assert.ok(!collectivesClient._writtenPages['People'], 'pinned page must NOT be written');
+});
+
 // ---------------------------------------------------------------------------
 // INTEGRATION WITH tend()
 // ---------------------------------------------------------------------------
