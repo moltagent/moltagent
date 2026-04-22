@@ -2049,15 +2049,23 @@ async function initialize() {
     botNames = ['Molti', 'moltagent', 'molti'];
   }
 
-  // Create SelfHealClient (heald daemon on Ollama VM)
-  if (SelfHealClient && appConfig.infra?.heald?.url && credentialBroker) {
+  // Create SelfHealClient (heald daemon on Ollama VM). Skip when HEALD_URL is
+  // unset / still the placeholder sentinel — otherwise InfraMonitor calls
+  // restart() on the first service outage, the credential broker fails to
+  // resolve heald-token (never created), and we log ~90/day of warnings
+  // against a daemon that was never deployed. See #26.
+  const healdUrl = appConfig.infra?.heald?.url;
+  const healdIsConfigured = healdUrl && healdUrl !== appConfig.infra?.heald?.urlPlaceholder;
+  if (SelfHealClient && healdIsConfigured && credentialBroker) {
     selfHealClient = new SelfHealClient({
-      url: appConfig.infra.heald.url,
+      url: healdUrl,
       tokenCredential: appConfig.infra.heald.tokenCredential,
       timeoutMs: appConfig.infra.heald.timeoutMs,
       credentialBroker
     });
-    console.log(`[INIT] SelfHealClient ready → ${appConfig.infra.heald.url}`);
+    console.log(`[INIT] SelfHealClient ready → ${healdUrl}`);
+  } else if (SelfHealClient && healdUrl && !healdIsConfigured) {
+    console.log('[INIT] SelfHealClient disabled — HEALD_URL is unset (placeholder value). Set HEALD_URL to enable remote self-heal.');
   }
 
   serverComponents = createServerComponents({

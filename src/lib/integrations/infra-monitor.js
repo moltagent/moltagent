@@ -262,8 +262,11 @@ class InfraMonitor {
       });
     }
 
-    // Self-heal: remote restart via heald (after 2+ consecutive failures)
-    if (this.selfHealClient && this.selfHealEnabled) {
+    // Self-heal: remote restart via heald (after 2+ consecutive failures).
+    // Skip if the client has latched a permanent failure (e.g. credential
+    // missing) — otherwise we log a "remote restart failed" warning on
+    // every probe cycle, which produced ~90/day before #26.
+    if (this.selfHealClient && this.selfHealEnabled && this.selfHealClient.isAvailable !== false) {
       const serviceMap = { ollama: 'ollama', whisper: 'whisper-server' };
       for (const probe of this.probes) {
         const state = this.state.get(probe.id);
