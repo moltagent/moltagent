@@ -55,6 +55,9 @@ class BotEnroller {
     /** @type {number|null} Resolved on first run via per-room discovery */
     this._botId = null;
 
+    /** @type {boolean} Have we already logged the "unresolved" warn? Prevents repeating it every heartbeat. Cleared if resolution later succeeds. See #26. */
+    this._warnedUnresolved = false;
+
     /** @type {Set<string>} Room tokens we have already enrolled (this session) */
     this._enrolledRooms = new Set();
 
@@ -104,16 +107,27 @@ class BotEnroller {
    * @returns {Promise<Object>} Results object with checked, enrolled, skipped, errors
    */
   async enrollAll() {
-    // 1. Resolve our bot ID (once per session, or keep retrying if still null)
+    // 1. Resolve our bot ID. Retry every heartbeat until successful — moltagent
+    //    may not be in any room yet, in which case we want to auto-recover as
+    //    soon as it is added — but log the "unresolved" warn only once per
+    //    session so we do not spam the journal.
     if (!this._botId) {
       try {
         await this._resolveBotId();
       } catch (err) {
-        console.warn(`[BotEnroller] Bot ID resolution failed: ${err.message}`);
+        if (!this._warnedUnresolved) {
+          console.warn(`[BotEnroller] Bot ID resolution failed: ${err.message}`);
+          this._warnedUnresolved = true;
+        }
       }
       if (!this._botId) {
+        if (!this._warnedUnresolved) {
+          console.warn('[BotEnroller] Could not resolve bot ID — enrollment disabled until bot is visible in a room we participate in.');
+          this._warnedUnresolved = true;
+        }
         return { checked: 0, enrolled: 0, skipped: 0, errors: [] };
       }
+      this._warnedUnresolved = false;
     }
 
     // 2. List rooms we are in
@@ -193,10 +207,8 @@ class BotEnroller {
         if (discovered) return;
       }
     } catch {
-      // Could not list rooms
+      // Could not list rooms — enrollAll() logs once-per-session via _warnedUnresolved
     }
-
-    console.warn('[BotEnroller] Could not resolve bot ID -- enrollment disabled for this session');
   }
 
   /**
