@@ -292,6 +292,16 @@ class CockpitManager {
     this._descriptionHashes = new Map();
   }
 
+  /**
+   * Whether initialize() has completed successfully at least once. Read by
+   * the heartbeat pulse to decide whether to retry initialization before
+   * calling readConfig(). See issue #26.
+   * @returns {boolean}
+   */
+  get isInitialized() {
+    return this._initialized;
+  }
+
   // ===========================================================================
   // Lifecycle
   // ===========================================================================
