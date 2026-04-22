@@ -560,7 +560,12 @@ const config = {
     selfHealEnabled: envBool('INFRA_SELF_HEAL', true),
     notifyOnFailure: envBool('INFRA_NOTIFY_ON_FAILURE', true),
     heald: {
+      // Default is the placeholder sentinel. Downstream (webhook-server.js)
+      // treats this sentinel as "heald not deployed" and skips SelfHealClient
+      // construction so we don't log a credential-missing error every probe.
+      // See #26.
       url: envStr('HEALD_URL', 'http://YOUR_OLLAMA_IP:7867'),
+      urlPlaceholder: 'http://YOUR_OLLAMA_IP:7867',
       tokenCredential: envStr('HEALD_TOKEN_CREDENTIAL', 'heald-token'),
       timeoutMs: envInt('HEALD_TIMEOUT', 15000),
     },

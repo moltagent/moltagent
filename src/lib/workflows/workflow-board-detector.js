@@ -41,6 +41,9 @@ class WorkflowBoardDetector {
     this._cache = null;
     this._cacheTime = 0;
     this._cacheTTL = 300000; // 5 min — refresh once per pulse
+
+    /** @type {Set<number>} boardIds we have already warned about missing labels — once-per-session */
+    this._warnedMissingLabels = new Set();
   }
 
   /**
@@ -112,10 +115,32 @@ class WorkflowBoardDetector {
     const existing = new Set(
       (fullBoard.labels || []).map(l => (l.title || '').toUpperCase())
     );
+    const missing = WORKFLOW_LABELS.filter(
+      l => !existing.has(l.title.toUpperCase())
+    );
+    if (missing.length === 0) return;
 
-    for (const labelDef of WORKFLOW_LABELS) {
-      if (existing.has(labelDef.title.toUpperCase())) continue;
+    // Creating Deck labels requires PERMISSION_MANAGE. On boards we only have
+    // EDIT on (e.g. boards owned by a user who shared them with us), silent-skip
+    // creation — attempting it just produces 403 noise on every heartbeat.
+    // Emit a single one-shot WARN per board listing what is missing so the
+    // functional gap stays visible in the startup log.
+    const canManage = fullBoard.permissions?.PERMISSION_MANAGE === true;
+    if (!canManage) {
+      if (!this._warnedMissingLabels.has(boardId)) {
+        this._warnedMissingLabels.add(boardId);
+        const names = missing.map(l => l.title).join(', ');
+        const ownerName = fullBoard.owner?.displayname || fullBoard.owner?.uid || 'the board owner';
+        console.warn(
+          `[WorkflowDetector] Board ${boardId} "${fullBoard.title || ''}" is missing workflow labels [${names}], ` +
+          `and we lack PERMISSION_MANAGE to create them. Ask ${ownerName} to create these labels manually ` +
+          `or grant us MANAGE. See moltagent/moltagent#44.`
+        );
+      }
+      return;
+    }
 
+    for (const labelDef of missing) {
       try {
         await this.deck.createLabel(boardId, labelDef.title, labelDef.color);
         console.log(`[WorkflowDetector] Created label "${labelDef.title}" on board ${boardId}`);

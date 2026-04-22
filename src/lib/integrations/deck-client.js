@@ -519,12 +519,31 @@ class DeckClient {
   /**
    * Share a board with a user granting full permissions (edit, share, manage).
    * Convenience wrapper over shareBoard() for admin-level sharing.
+   *
+   * Idempotent: if the user is already in the board's ACL, the existing
+   * entry is returned without a second POST. NC Deck returns HTTP 500
+   * (not 409) on a duplicate ACL POST — see nextcloud/deck#7874 — so the
+   * pre-check is required to avoid ~7 500-response payloads per service
+   * restart in our journal. See #26.
+   *
    * @param {number} boardId
    * @param {string} username - NC username to share with
-   * @returns {Promise<Object>} ACL entry object
+   * @returns {Promise<Object>} ACL entry object (existing or newly created)
    */
   async shareBoardWithUser(boardId, username) {
     if (!boardId || !username) throw new DeckApiError('boardId and username are required');
+    try {
+      const board = await this.getBoard(boardId);
+      const existing = (board.acl || []).find(
+        entry => entry.type === 0 &&
+          (entry.participant?.uid === username ||
+            entry.participant?.primaryKey === username)
+      );
+      if (existing) return existing;
+    } catch {
+      // If pre-check fails (e.g. transient network error), fall through and
+      // attempt the POST. We prefer a failed POST over silently doing nothing.
+    }
     return await this.shareBoard(boardId, username, 0, true, true, true);
   }
 

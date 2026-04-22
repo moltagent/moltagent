@@ -23,17 +23,37 @@ class SelfHealClient {
     this.timeoutMs = timeoutMs || 15000;
     this.credentialBroker = credentialBroker;
     this._token = null;
+    /** @type {Error|null} Permanent failure (e.g. credential never existed) — once set, further work is refused. See #26. */
+    this._permanentFailure = null;
+  }
+
+  /**
+   * False once a permanent failure has been latched (e.g. credential not
+   * found in NC Passwords). InfraMonitor and other callers should check
+   * this before attempting restart() so they do not log a failed-restart
+   * warning on every probe cycle.
+   * @returns {boolean}
+   */
+  get isAvailable() {
+    return !this._permanentFailure;
   }
 
   /**
    * Fetch bearer token from credential broker (cached after first call).
+   * If the credential is missing, the failure is latched on this.
    * @returns {Promise<string>}
    * @private
    */
   async _getToken() {
+    if (this._permanentFailure) throw this._permanentFailure;
     if (this._token) return this._token;
     const token = await this.credentialBroker.get(this.tokenCredential);
-    if (!token) throw new Error(`Credential "${this.tokenCredential}" not found in broker`);
+    if (!token) {
+      const err = new Error(`Credential "${this.tokenCredential}" not found in broker`);
+      this._permanentFailure = err;
+      console.warn(`[SelfHealClient] Disabled: ${err.message}. Remote self-heal will not be attempted this session.`);
+      throw err;
+    }
     this._token = token;
     return this._token;
   }
