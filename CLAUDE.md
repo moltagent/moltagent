@@ -54,6 +54,7 @@ The full rule set — with examples, counterexamples, the architecture table, th
 - **Search the codebase before assuming structure.** Never guess file paths, function names, or API shapes. Read before writing.
 - **Run the pre-commit checklist** (Rule 8 in the dev-rules skill) before any commit.
 - **Run the Verification Gate** (section in moltagent-dev-rules.md) before declaring a session done. The Stop hook will block you if you forget the marker.
+- **Run the privacy pass** (see `.claude/skills/public-content-discipline/SKILL.md`) before drafting any content bound for a public surface — GitHub issues, PRs, README, docs, external communications. Abstract named individuals, client organizations, internal codenames, and knowledge-base quotes before they go into a public draft, not after.
 - **Use GitHub issues** for anything not in scope for the current briefing. Don't silently expand scope.
 - **Zoom out before patching.** Two instances of the same pattern = find the generator.
 - **Small commits over large ones.** If a commit adds more lines than it removes, question whether the altitude is right.

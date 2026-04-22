@@ -234,6 +234,11 @@ class HeartbeatManager {
     this._cockpitWorkingHours = null;   // "HH:MM-HH:MM" string from cockpit
     this._cockpitDailyDigest = null;    // "HH:MM" or "off" from cockpit
 
+    // Rate limit for cockpit init-failure logs. If initialize() fails (e.g. DNS
+    // flakiness at startup), we keep retrying on every pulse — but log the
+    // failure at most once per hour so we don't spam the journal. See #26.
+    this._cockpitInitErrorLastLog = 0;
+
     // Shared ObservationLog — produced by enrichment pipeline, consumed by WikiSteward.
     // Created here so callers can access it via heartbeatManager.observationLog before
     // WikiSteward is ready (deps like knowledgeGraph arrive post-construction).
@@ -647,7 +652,7 @@ class HeartbeatManager {
       // NC Flow events already processed above (before quiet hours gate)
 
       // Cockpit: Read config and update status cards (all levels)
-      if (this.cockpitManager) {
+      if (this.cockpitManager && await this._ensureCockpitInitialized(results)) {
         try {
           // Invalidate cache so card edits are picked up within one heartbeat
           this.cockpitManager.invalidateCache();
@@ -1514,6 +1519,36 @@ class HeartbeatManager {
       types[id] = (typeof provider.isLocal === 'function' ? provider.isLocal() : provider.isLocal) ? 'local' : 'cloud';
     }
     return types;
+  }
+
+  /**
+   * Ensure CockpitManager is initialized before each pulse. If startup init
+   * failed (e.g. DNS flakiness before NC is reachable), retry here and log
+   * the failure at most once per hour. Returns true if usable, false if
+   * caller should skip the cockpit block this pulse.
+   *
+   * Without this retry, a single startup failure produced ~280/day of
+   * "CockpitManager not initialized" errors until service restart. See #26.
+   *
+   * @private
+   * @param {Object} results - Pulse results object to annotate on skip
+   * @returns {Promise<boolean>} true if initialized, false if skip
+   */
+  async _ensureCockpitInitialized(results) {
+    if (this.cockpitManager.isInitialized) return true;
+    try {
+      await this.cockpitManager.initialize();
+      console.log('[Heartbeat] Cockpit manager initialized (on pulse)');
+      return true;
+    } catch (err) {
+      const now = Date.now();
+      if (now - this._cockpitInitErrorLastLog >= 3600000) {
+        console.warn(`[Heartbeat] Cockpit initialization retry failed: ${err.message}`);
+        this._cockpitInitErrorLastLog = now;
+      }
+      results.cockpit = { read: false, updated: false, reason: 'not-initialized' };
+      return false;
+    }
   }
 
   /**
