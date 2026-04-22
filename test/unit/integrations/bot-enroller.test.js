@@ -134,12 +134,12 @@ test('constructor uses botName shortcut over config', () => {
   assert.strictEqual(enroller.botName, 'ShortcutBot');
 });
 
-// --- enrollAll() resolves bot ID from admin endpoint ---
+// --- enrollAll() resolves bot ID via per-room discovery (admin endpoint removed per #26) ---
 
-asyncTest('enrollAll() resolves bot ID from admin endpoint', async () => {
+asyncTest('enrollAll() resolves bot ID via per-room discovery', async () => {
   const nc = createMockNC({
-    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/admin': ocsResponse(SAMPLE_ADMIN_BOTS),
     'GET:/ocs/v2.php/apps/spreed/api/v4/room': ocsResponse(SAMPLE_ROOMS),
+    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/abc123': ocsResponse(SAMPLE_ROOM_BOTS),
     'POST:/ocs/v2.php/apps/spreed/api/v1/bot/': { status: 201, body: {}, headers: {} }
   });
 
@@ -150,14 +150,21 @@ asyncTest('enrollAll() resolves bot ID from admin endpoint', async () => {
   assert.strictEqual(result.checked, 2); // Only group + public rooms
   assert.strictEqual(result.enrolled, 2);
   assert.strictEqual(result.errors.length, 0);
+
+  // Admin endpoint must not be called — that call produced 282/day of 403 noise
+  // before #26 and is now removed.
+  const adminCalls = nc._calls.filter(c =>
+    c.path === '/ocs/v2.php/apps/spreed/api/v1/bot/admin'
+  );
+  assert.strictEqual(adminCalls.length, 0);
 });
 
 // --- enrollAll() enables bot in rooms where user is member ---
 
 asyncTest('enrollAll() enables bot in group and public rooms', async () => {
   const nc = createMockNC({
-    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/admin': ocsResponse(SAMPLE_ADMIN_BOTS),
     'GET:/ocs/v2.php/apps/spreed/api/v4/room': ocsResponse(SAMPLE_ROOMS),
+    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/abc123': ocsResponse(SAMPLE_ROOM_BOTS),
     'POST:/ocs/v2.php/apps/spreed/api/v1/bot/': { status: 201, body: {}, headers: {} }
   });
 
@@ -179,8 +186,8 @@ asyncTest('enrollAll() enables bot in group and public rooms', async () => {
 
 asyncTest('enrollAll() skips already-enrolled rooms on second call', async () => {
   const nc = createMockNC({
-    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/admin': ocsResponse(SAMPLE_ADMIN_BOTS),
     'GET:/ocs/v2.php/apps/spreed/api/v4/room': ocsResponse(SAMPLE_ROOMS),
+    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/abc123': ocsResponse(SAMPLE_ROOM_BOTS),
     'POST:/ocs/v2.php/apps/spreed/api/v1/bot/': { status: 201, body: {}, headers: {} }
   });
 
@@ -200,11 +207,11 @@ asyncTest('enrollAll() skips already-enrolled rooms on second call', async () =>
 
 asyncTest('enrollAll() handles 403 not-moderator gracefully', async () => {
   const nc = createMockNC({
-    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/admin': ocsResponse(SAMPLE_ADMIN_BOTS),
     'GET:/ocs/v2.php/apps/spreed/api/v4/room': ocsResponse([
       { token: 'room1', type: 2, name: 'Room 1' },
       { token: 'room2', type: 2, name: 'Room 2' }
     ]),
+    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/room1': ocsResponse(SAMPLE_ROOM_BOTS),
     'POST:/ocs/v2.php/apps/spreed/api/v1/bot/': (path) => {
       if (path.includes('room1')) {
         throw new Error('Authentication error: 403');
@@ -229,10 +236,10 @@ asyncTest('enrollAll() handles 403 not-moderator gracefully', async () => {
 
 asyncTest('enrollAll() handles 400 already-enabled gracefully', async () => {
   const nc = createMockNC({
-    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/admin': ocsResponse(SAMPLE_ADMIN_BOTS),
     'GET:/ocs/v2.php/apps/spreed/api/v4/room': ocsResponse([
       { token: 'room1', type: 2, name: 'Room 1' }
     ]),
+    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/room1': ocsResponse(SAMPLE_ROOM_BOTS),
     'POST:/ocs/v2.php/apps/spreed/api/v1/bot/': new Error('HTTP 400: Bad Request')
   });
 
@@ -286,10 +293,10 @@ asyncTest('_discoverBotIdFromRoom() discovers bot ID from room bot list', async 
 
 asyncTest('resetCache() clears enrolled set so rooms are re-checked', async () => {
   const nc = createMockNC({
-    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/admin': ocsResponse(SAMPLE_ADMIN_BOTS),
     'GET:/ocs/v2.php/apps/spreed/api/v4/room': ocsResponse([
       { token: 'room1', type: 2, name: 'Room 1' }
     ]),
+    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/room1': ocsResponse(SAMPLE_ROOM_BOTS),
     'POST:/ocs/v2.php/apps/spreed/api/v1/bot/': { status: 201, body: {}, headers: {} }
   });
 
@@ -335,11 +342,11 @@ asyncTest('enrollAll() returns gracefully when bot cannot be found', async () =>
 asyncTest('enrollAll() calls auditLog when rooms are enrolled', async () => {
   const auditLog = createMockAuditLog();
   const nc = createMockNC({
-    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/admin': ocsResponse(SAMPLE_ADMIN_BOTS),
     'GET:/ocs/v2.php/apps/spreed/api/v4/room': ocsResponse([
       { token: 'room1', type: 2, name: 'Room 1' },
       { token: 'room2', type: 3, name: 'Room 2' }
     ]),
+    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/room1': ocsResponse(SAMPLE_ROOM_BOTS),
     'POST:/ocs/v2.php/apps/spreed/api/v1/bot/': { status: 201, body: {}, headers: {} }
   });
 
@@ -371,8 +378,10 @@ asyncTest('enrollAll() does not audit when no new rooms are enrolled', async () 
 // --- enrollAll() handles room list failure gracefully ---
 
 asyncTest('enrollAll() handles room list failure gracefully', async () => {
+  // Since #26 removed the admin-endpoint shortcut, a failing /room list
+  // prevents bot-id resolution entirely — enrollment is skipped this pulse
+  // and retried next heartbeat.
   const nc = createMockNC({
-    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/admin': ocsResponse(SAMPLE_ADMIN_BOTS),
     'GET:/ocs/v2.php/apps/spreed/api/v4/room': new Error('Network error: timeout')
   });
 
@@ -381,18 +390,18 @@ asyncTest('enrollAll() handles room list failure gracefully', async () => {
 
   assert.strictEqual(result.checked, 0);
   assert.strictEqual(result.enrolled, 0);
-  assert.strictEqual(result.errors.length, 1);
-  assert.ok(result.errors[0].error.includes('timeout'));
+  assert.strictEqual(result.errors.length, 0);
+  assert.strictEqual(enroller.botId, null);
 });
 
 // --- enrollAll() handles 200 (already enabled) from POST ---
 
 asyncTest('enrollAll() treats POST 200 as already-enabled (skip not enroll)', async () => {
   const nc = createMockNC({
-    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/admin': ocsResponse(SAMPLE_ADMIN_BOTS),
     'GET:/ocs/v2.php/apps/spreed/api/v4/room': ocsResponse([
       { token: 'room1', type: 2, name: 'Room 1' }
     ]),
+    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/room1': ocsResponse(SAMPLE_ROOM_BOTS),
     'POST:/ocs/v2.php/apps/spreed/api/v1/bot/': { status: 200, body: {}, headers: {} }
   });
 

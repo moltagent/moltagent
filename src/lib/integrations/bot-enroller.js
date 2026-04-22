@@ -52,7 +52,7 @@ class BotEnroller {
     this.botName = opts.botName || opts.config?.botName || 'Moltagent';
     this.auditLog = opts.auditLog || null;
 
-    /** @type {number|null} Resolved on first run via admin or per-room discovery */
+    /** @type {number|null} Resolved on first run via per-room discovery */
     this._botId = null;
 
     /** @type {Set<string>} Room tokens we have already enrolled (this session) */
@@ -104,7 +104,7 @@ class BotEnroller {
    * @returns {Promise<Object>} Results object with checked, enrolled, skipped, errors
    */
   async enrollAll() {
-    // 1. Resolve our bot ID (once per session)
+    // 1. Resolve our bot ID (once per session, or keep retrying if still null)
     if (!this._botId) {
       try {
         await this._resolveBotId();
@@ -175,35 +175,17 @@ class BotEnroller {
   }
 
   /**
-   * Resolve our bot's numeric ID from the admin endpoint.
-   * Falls back to per-room discovery if admin access is unavailable.
+   * Resolve our bot's numeric ID via per-room discovery.
+   *
+   * The admin endpoint (`/bot/admin`) is deliberately NOT attempted — the
+   * moltagent NC user is not in the admin group by design (the agent should
+   * not have site-admin rights). The admin attempt produced a 403 on every
+   * heartbeat, ~282/day of noise. See issue #26.
    *
    * @returns {Promise<void>}
    * @private
    */
   async _resolveBotId() {
-    // Try admin endpoint first
-    try {
-      const response = await this.nc.request(
-        '/ocs/v2.php/apps/spreed/api/v1/bot/admin',
-        {
-          method: 'GET',
-          headers: { 'OCS-APIRequest': 'true', 'Accept': 'application/json' }
-        }
-      );
-      const data = response.body?.ocs?.data || [];
-      const bot = data.find(b => b.name === this.botName);
-      if (bot) {
-        this._botId = bot.id;
-        console.log(`[BotEnroller] Resolved bot ID: ${this._botId} (${this.botName})`);
-        return;
-      }
-    } catch (err) {
-      // Not admin -- expected; fall through to per-room discovery
-      console.warn(`[BotEnroller] Admin bot list unavailable: ${err.message}`);
-    }
-
-    // Fallback: try to discover bot ID from rooms we are in
     try {
       const rooms = await this._listRooms();
       for (const room of rooms) {
@@ -211,10 +193,10 @@ class BotEnroller {
         if (discovered) return;
       }
     } catch {
-      // Could not list rooms either
+      // Could not list rooms
     }
 
-    console.warn('[BotEnroller] Could not resolve bot ID -- enrollment disabled');
+    console.warn('[BotEnroller] Could not resolve bot ID -- enrollment disabled for this session');
   }
 
   /**
