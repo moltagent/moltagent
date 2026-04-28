@@ -569,6 +569,131 @@ asyncTest('processSchedules: single-action schedule still works with cloudTier',
   assert.strictEqual(taskOpts.allowCloud, true);
 });
 
+// ─── PAUSED-stack chokepoint (#28) ───────────────────────────────────
+
+asyncTest('processSchedules: skips ALL schedules when any stack has PAUSED CONFIG', async () => {
+  let callCount = 0;
+  const mockAgent = { processWorkflowTask: async () => { callCount++; return 'done'; } };
+  const handler = new ScheduleHandler({ agentLoop: mockAgent });
+
+  const wb = {
+    board: { id: 144, title: 'Content Pipeline - Molti' },
+    description: 'WORKFLOW: pipeline\n\nSCHEDULE:\nEvery 1h: Scan NC News feeds. LLM: cloud\nEvery 7d: Archive stale cards. LLM: local',
+    stacks: [
+      {
+        id: 663,
+        title: 'Ideas',
+        cards: [
+          {
+            id: 100,
+            title: 'CONFIG: Evaluation',
+            archived: false,
+            deletedAt: null,
+            labels: [{ title: 'PAUSED' }]
+          }
+        ]
+      }
+    ],
+    workflowType: 'pipeline'
+  };
+
+  const result = await handler.processSchedules(wb);
+  assert.strictEqual(result.executed, 0, 'no schedules executed');
+  assert.strictEqual(result.skipped, 2, 'both schedules skipped');
+  assert.strictEqual(callCount, 0, 'agentLoop never invoked');
+});
+
+asyncTest('processSchedules: PAUSED skip is independent of due-time and budget', async () => {
+  let callCount = 0;
+  const mockAgent = { processWorkflowTask: async () => { callCount++; } };
+  const blockingBudget = { canSpend: () => ({ allowed: true }) };
+  const handler = new ScheduleHandler({ agentLoop: mockAgent, budgetEnforcer: blockingBudget });
+
+  const wb = {
+    board: { id: 1, title: 'Test' },
+    description: 'SCHEDULE:\nEvery 1h: Do something. LLM: cloud',
+    stacks: [
+      {
+        id: 10,
+        title: 'Ideas',
+        cards: [
+          { id: 100, title: 'CONFIG: x', archived: false, deletedAt: null, labels: [{ title: 'PAUSED' }] }
+        ]
+      }
+    ],
+    workflowType: 'pipeline'
+  };
+
+  // Even on first call (when isDue would return true), skip.
+  const result = await handler.processSchedules(wb);
+  assert.strictEqual(result.skipped, 1);
+  assert.strictEqual(callCount, 0);
+
+  // Re-running does not mark the schedule as run, so when the stack is
+  // unpaused the schedule fires immediately.
+  wb.stacks[0].cards[0].labels = [];
+  const result2 = await handler.processSchedules(wb);
+  assert.strictEqual(result2.executed, 1, 'fires once unpaused');
+  assert.strictEqual(callCount, 1);
+});
+
+asyncTest('processSchedules: schedules still run when no stacks have PAUSED CONFIG', async () => {
+  let callCount = 0;
+  const mockAgent = { processWorkflowTask: async () => { callCount++; return 'ok'; } };
+  const handler = new ScheduleHandler({ agentLoop: mockAgent });
+
+  const wb = {
+    board: { id: 1, title: 'Test' },
+    description: 'SCHEDULE:\nEvery 1h: Do work. LLM: cloud',
+    stacks: [
+      {
+        id: 10,
+        title: 'Ideas',
+        cards: [
+          { id: 100, title: 'CONFIG: x', archived: false, deletedAt: null, labels: [{ title: 'ACTIVE' }] }
+        ]
+      }
+    ],
+    workflowType: 'pipeline'
+  };
+
+  const result = await handler.processSchedules(wb);
+  assert.strictEqual(result.executed, 1);
+  assert.strictEqual(callCount, 1);
+});
+
+asyncTest('processSchedules: PAUSED skip log mentions board, stack, and action', async () => {
+  const logs = [];
+  const origLog = console.log;
+  console.log = (msg) => { logs.push(msg); };
+  try {
+    const handler = new ScheduleHandler({ agentLoop: { processWorkflowTask: async () => {} } });
+    const wb = {
+      board: { id: 144, title: 'Pipeline' },
+      description: 'SCHEDULE:\nEvery 1h: Scan NC News feeds. LLM: cloud',
+      stacks: [
+        {
+          id: 663,
+          title: 'Ideas',
+          cards: [
+            { id: 100, title: 'CONFIG: x', archived: false, deletedAt: null, labels: [{ title: 'PAUSED' }] }
+          ]
+        }
+      ],
+      workflowType: 'pipeline'
+    };
+    await handler.processSchedules(wb);
+    const skipLog = logs.find(l => l.startsWith('[Schedule] Skipping schedule on PAUSED stack:'));
+    assert.ok(skipLog, 'skip log line emitted');
+    assert.ok(skipLog.includes('"Scan NC News feeds. LLM: cloud"') || skipLog.includes('"Scan NC News feeds.'), 'log includes action text');
+    assert.ok(skipLog.includes('board=144'), 'log includes board id');
+    assert.ok(skipLog.includes('stack=663'), 'log includes stack id');
+    assert.ok(logs.some(l => l === '[Workflow] Stack "Ideas" skipped for schedules — CONFIG card has PAUSED label'), 'preserves existing per-stack log');
+  } finally {
+    console.log = origLog;
+  }
+});
+
 setTimeout(() => {
   summary();
   exitWithCode();
