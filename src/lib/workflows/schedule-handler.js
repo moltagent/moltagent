@@ -49,6 +49,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const DeckClient = require('../integrations/deck-client');
 
 // ─── HTML normalisation ──────────────────────────────────────────────
 
@@ -296,8 +297,27 @@ class ScheduleHandler {
     console.log(`[Schedule] Parsed ${schedules.length} schedule(s) from "${wb.board.title}"`);
     if (schedules.length === 0) return result;
 
+    // PAUSED chokepoint (#28, same generator as #13/#17/#22): if any stack
+    // on this board has a CONFIG card with the PAUSED label, no schedule
+    // on the board fires. The structural guard at DeckClient.createCardOnBoard
+    // would catch the writes, but the schedule's LLM agent loop runs to
+    // completion first — burning cloud spend and pulse time before the
+    // result gets thrown away. Guard at the firing point.
+    const pausedStacks = (wb.stacks || []).filter(s => DeckClient.stackHasPausedConfig(s));
+    for (const stack of pausedStacks) {
+      console.log(`[Workflow] Stack "${stack.title}" skipped for schedules — CONFIG card has PAUSED label`);
+    }
+
     for (const schedule of schedules) {
       try {
+        if (pausedStacks.length > 0) {
+          for (const ps of pausedStacks) {
+            console.log(`[Schedule] Skipping schedule on PAUSED stack: "${schedule.action}" (board=${wb.board.id}, stack=${ps.id})`);
+          }
+          result.skipped++;
+          continue;
+        }
+
         if (!this._isDue(wb.board.id, schedule)) {
           result.skipped++;
           continue;

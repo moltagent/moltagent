@@ -278,26 +278,14 @@ class WorkflowEngine {
       }
     }
 
-    // Process SCHEDULE block from board rules (timed actions)
+    // Process SCHEDULE block from board rules (timed actions).
+    // PAUSED-stack handling lives inside ScheduleHandler.processSchedules
+    // (#28): if any stack on this board has a PAUSED CONFIG card, every
+    // schedule on the board is skipped before its LLM agent loop fires.
     try {
-      // Filter out PAUSED stacks so schedules cannot target them.
-      // The schedule handler builds LLM context from wb.stacks — if a stack
-      // is absent, the LLM cannot see it, reference it, or create cards in it.
-      const pausedStackNames = [];
-      const activeStacks = stacks.filter(stack => {
-        if (DeckClient.stackHasPausedConfig(stack)) {
-          console.log(`[Workflow] Stack "${stack.title}" skipped for schedules — CONFIG card has PAUSED label`);
-          pausedStackNames.push(stack.title);
-          return false;
-        }
-        return true;
-      });
-      const schedWb = activeStacks.length < stacks.length
-        ? { ...wb, stacks: activeStacks, _pausedStacks: pausedStackNames }
-        : wb;
       // Respect board-level MODEL directive for schedule actions
       const boardForceLocal = this._getBoardForceLocal(wb);
-      const schedResult = await this._scheduleHandler.processSchedules(schedWb, { forceLocal: boardForceLocal });
+      const schedResult = await this._scheduleHandler.processSchedules(wb, { forceLocal: boardForceLocal });
       result.schedulesExecuted = schedResult.executed;
       if (schedResult.executed > 0) {
         console.log(`[Workflow] Schedules on "${board.title}": ${schedResult.executed} executed, ${schedResult.skipped} skipped`);
