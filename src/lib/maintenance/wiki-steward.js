@@ -743,7 +743,18 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
    * @returns {string} Prompt text.
    */
   _connectionAssessmentPrompt(neighborhood) {
-    const pageLinks = neighborhood.pages.map(p =>
+    // Structural guard: section index / navigation pages are not knowledge
+    // entities and must never be link targets. Drop them from the data the LLM
+    // sees so it cannot suggest links to "Documents", "People", etc. Index
+    // pages carry `type: index`; structural pages carry the `compost: never`
+    // pin. The prompt EXCLUSION instruction below is the intelligence-layer
+    // counterpart — belt and suspenders.
+    const contentPages = neighborhood.pages.filter(p => {
+      const fm = p.frontmatter || {};
+      return fm.type !== 'index' && fm.compost !== 'never';
+    });
+
+    const pageLinks = contentPages.map(p =>
       `### ${p.title}\n` +
       `Graph connections: ${p.graphConnections.map(e => `${e.predicate} → ${e.object}`).join(', ') || 'none'}\n` +
       `Wikilinks in content: ${p.wikilinks.join(', ') || 'none'}`
@@ -767,6 +778,12 @@ Near-duplicate (EN): Pages "ManeraMedia GmbH" and "Manera Media GmbH" likely des
 Near-duplicate (DE): Die Seiten "ManeraMedia GmbH" und "Manera Media GmbH" beschreiben wahrscheinlich dieselbe Organisation.
 Near-duplicate (PT): As páginas "ManeraMedia GmbH" e "Manera Media GmbH" provavelmente descrevem a mesma organização.
 ---
+
+EXCLUSION: Do NOT suggest links to section index pages. Pages whose type is "index"
+or whose title matches a top-level section name (Documents, People, Projects,
+Organizations, Research, Procedures, Images, Meta, emails) are structural navigation,
+not knowledge entities. They must never appear in missingLinks or orphan suggestions.
+Only suggest links between actual knowledge entities (people, projects, documents, concepts).
 
 Here are the pages with their graph connections and wikilinks:
 
@@ -1121,8 +1138,15 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
 
     const body = result.body || '';
 
-    // Idempotency: skip if [[target]] already appears anywhere in the body
+    // Idempotency: skip if the link to `target` already appears in the body,
+    // in EITHER form. writePageWithFrontmatter() runs resolveWikilinks() before
+    // every write, transforming [[target]] into [target](url). On the next
+    // heartbeat read only the resolved form remains — so a check for the
+    // unresolved form alone passes and appends a duplicate every cycle.
+    // Matching `[target](` is structural markdown-link syntax, not natural
+    // language, so it is allowed under the language policy.
     if (body.includes(`[[${target}]]`)) return false;
+    if (body.includes(`[${target}](`)) return false;
 
     // Append a Related section entry
     const relLine = `\n- [[${target}]] (${relationship || 'related'})\n`;
@@ -1260,13 +1284,11 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     fm.compost_reason = reason || 'Marked by Memory Steward';
     fm.compost_marked_at = new Date().toISOString();
 
-    let body = result.body || '';
-    const markerSignature = 'Archived by Memory Steward';
-    if (!body.includes(markerSignature)) {
-      body = `${body}\n\n---\n_${markerSignature}: ${reason || 'Marked by Memory Steward'}_\n`;
-    }
-
-    await this.collectivesClient.writePageWithFrontmatter(page, fm, body);
+    // Frontmatter carries the compost state. No inline body annotation:
+    // it was redundant with compost_ready/compost_reason/compost_marked_at and
+    // disrupted the Connection Steward's `## Related` section regex by inserting
+    // content between the heading and EOF. The body holds knowledge only.
+    await this.collectivesClient.writePageWithFrontmatter(page, fm, result.body || '');
     this.logger.info(`[WikiSteward:memory] Marked "${page}" for composting: ${reason}`);
     return true;
   }
