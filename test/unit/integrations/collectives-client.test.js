@@ -487,6 +487,71 @@ asyncTest('writePageWithFrontmatter resolves wikilinks before writing', async ()
   assert.ok(!writtenContent.includes('[['), 'Should not contain raw wikilinks');
 });
 
+// -- ensureSection — collision dedup (Fix D) --
+
+const silentLogger = { warn() {}, info() {}, error() {}, debug() {} };
+
+asyncTest('ensureSection returns the existing section without creating', async () => {
+  const client = new CollectivesClient(createCollectivesMockNC());
+  let createCalls = 0;
+  client.createPage = async () => { createCalls++; return { id: 999, title: 'WRONG' }; };
+  client.listPages = async () => ([
+    { id: 1, title: 'Landing page', parentId: 0 },
+    { id: 2, title: 'Documents', parentId: 1 },
+  ]);
+
+  const result = await client.ensureSection(10, 'Documents');
+  assert.strictEqual(result.id, 2, 'should return the existing Documents section');
+  assert.strictEqual(createCalls, 0, 'createPage must not be called when the section exists');
+});
+
+asyncTest('ensureSection creates the section when it does not exist', async () => {
+  const client = new CollectivesClient(createCollectivesMockNC());
+  let createArgs = null;
+  client.listPages = async () => ([{ id: 1, title: 'Landing page', parentId: 0 }]);
+  client.createPage = async (cid, parentId, title) => {
+    createArgs = { cid, parentId, title };
+    return { id: 50, title, parentId };
+  };
+
+  const result = await client.ensureSection(10, 'Research');
+  assert.strictEqual(result.id, 50, 'should return the newly created section');
+  assert.deepStrictEqual(createArgs, { cid: 10, parentId: 1, title: 'Research' });
+});
+
+asyncTest('ensureSection detects a (N) collision and trashes the artifact', async () => {
+  const client = new CollectivesClient(createCollectivesMockNC(), { logger: silentLogger });
+  let listCalls = 0;
+  // The pre-create check races a stale list (no Documents). After createPage
+  // collides, the fresh skipCache re-find sees the real Documents section.
+  client.listPages = async () => {
+    listCalls++;
+    const pages = [{ id: 1, title: 'Landing page', parentId: 0 }];
+    if (listCalls >= 2) pages.push({ id: 7, title: 'Documents', parentId: 1 });
+    return pages;
+  };
+  client.createPage = async () => ({ id: 99, title: 'Documents (2)', parentId: 1 });
+  let trashedId = null;
+  client.trashPage = async (cid, pid) => { trashedId = pid; };
+
+  const result = await client.ensureSection(10, 'Documents', 1);
+  assert.strictEqual(trashedId, 99, 'the (2) collision artifact should be trashed');
+  assert.strictEqual(result.id, 7, 'should return the real Documents section, not the artifact');
+});
+
+asyncTest('ensureSection keeps the suffixed page when no real section can be found', async () => {
+  const client = new CollectivesClient(createCollectivesMockNC(), { logger: silentLogger });
+  // Both the pre-check and the post-collision re-find see no un-suffixed section.
+  client.listPages = async () => ([{ id: 1, title: 'Landing page', parentId: 0 }]);
+  client.createPage = async () => ({ id: 88, title: 'Documents (2)', parentId: 1 });
+  let trashed = false;
+  client.trashPage = async () => { trashed = true; };
+
+  const result = await client.ensureSection(10, 'Documents', 1);
+  assert.strictEqual(trashed, false, 'must not trash when there is no section to fall back to');
+  assert.strictEqual(result.id, 88, 'should keep the suffixed page rather than lose the section');
+});
+
 // ============================================================
 // Summary
 // ============================================================
