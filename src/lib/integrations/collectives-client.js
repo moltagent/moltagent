@@ -45,6 +45,10 @@ class CollectivesClient {
     this.baseUrl = this.nc.ncUrl;
     this.username = this.nc.ncUser || 'moltagent';
 
+    // Optional logger; falls back to console so section-collision diagnostics
+    // still reach journald when no structured logger is wired in.
+    this.logger = config.logger || console;
+
     // Configuration
     this.collectiveName = config.collectiveName || appConfig.knowledge?.collectiveName || 'Moltagent Knowledge';
 
@@ -79,7 +83,7 @@ class CollectivesClient {
    * @param {Object} [body] - Request body
    * @returns {Promise<Object>} Response body
    */
-  async _ocsRequest(method, path, body = null) {
+  async _ocsRequest(method, path, body = null, { skipCache = false } = {}) {
     const url = `${this.ocsBase}${path}`;
     const options = {
       method,
@@ -88,6 +92,10 @@ class CollectivesClient {
         'Accept': 'application/json'
       }
     };
+
+    // Force a fresh read past the NCRequestManager response cache. Used by
+    // ensureSection so its existence check never decides on a stale page list.
+    if (skipCache) options.skipCache = true;
 
     if (body && (method === 'POST' || method === 'PUT')) {
       options.headers['Content-Type'] = 'application/json';
@@ -235,10 +243,12 @@ class CollectivesClient {
   /**
    * List all pages in a collective
    * @param {number} collectiveId - Collective ID
+   * @param {Object} [opts]
+   * @param {boolean} [opts.skipCache=false] - Bypass the response cache for a fresh read
    * @returns {Promise<Array>} List of pages
    */
-  async listPages(collectiveId) {
-    const data = await this._ocsRequest('GET', `/collectives/${collectiveId}/pages`);
+  async listPages(collectiveId, { skipCache = false } = {}) {
+    const data = await this._ocsRequest('GET', `/collectives/${collectiveId}/pages`, null, { skipCache });
     return data?.pages || data || [];
   }
 
@@ -301,8 +311,10 @@ class CollectivesClient {
     this._sectionLocks.set(lockKey, lock);
 
     try {
-      // Re-check after acquiring lock in case a previous run just created it.
-      const existing = await this._findSectionPage(collectiveId, sectionName, parentPageId);
+      // Re-check after acquiring the lock in case a previous run just created
+      // it. skipCache: this existence check is the gate that decides whether to
+      // create — a stale page list here is exactly what produces "(2)" sections.
+      const existing = await this._findSectionPage(collectiveId, sectionName, parentPageId, { skipCache: true });
       if (existing) {
         this._sectionCache.set(lockKey, existing);
         return existing;
@@ -318,6 +330,39 @@ class CollectivesClient {
       }
 
       const created = await this.createPage(collectiveId, actualParentId, sectionName);
+
+      // Post-creation collision guard. If the existence check still raced a
+      // stale listing, Collectives appends "(N)" to disambiguate. Detect that
+      // suffix, trash the artifact, and return the real section instead —
+      // otherwise the duplicate accumulates on every heartbeat (issue #25).
+      const wanted = (sectionName || '').toLowerCase().trim();
+      const suffixMatch = (created?.title || '').match(/^(.*?)\s*\(\d+\)\s*$/);
+      if (suffixMatch && suffixMatch[1].toLowerCase().trim() === wanted) {
+        const real = await this._findSectionPage(collectiveId, sectionName, parentPageId, { skipCache: true });
+        if (real && real.id !== created.id) {
+          this.logger.warn(
+            `[Collectives] ensureSection collision: requested "${sectionName}", ` +
+            `got "${created.title}". Trashing duplicate and returning existing.`
+          );
+          try {
+            await this.trashPage(collectiveId, created.id);
+          } catch (err) {
+            this.logger.warn(
+              `[Collectives] Failed to trash collision artifact "${created.title}" ` +
+              `(id ${created.id}): ${err.message}`
+            );
+          }
+          this._sectionCache.set(lockKey, real);
+          return real;
+        }
+        // No un-suffixed section to fall back to — keep the suffixed page rather
+        // than lose the section entirely. Log so it is visible for manual cleanup.
+        this.logger.warn(
+          `[Collectives] ensureSection got "${created.title}" for "${sectionName}" ` +
+          'but found no un-suffixed section to fall back to — keeping it.'
+        );
+      }
+
       this._sectionCache.set(lockKey, created);
       return created;
     } finally {
@@ -336,11 +381,14 @@ class CollectivesClient {
    *
    * @param {number} collectiveId - Collective ID
    * @param {string} sectionName  - Target section title
+   * @param {number|null} [parentPageId] - Restrict search to children of this page
+   * @param {Object} [opts]
+   * @param {boolean} [opts.skipCache=false] - Bypass the response cache for a fresh read
    * @returns {Promise<Object|null>} Page object or null if not found
    * @private
    */
-  async _findSectionPage(collectiveId, sectionName, parentPageId = null) {
-    const pages = await this.listPages(collectiveId);
+  async _findSectionPage(collectiveId, sectionName, parentPageId = null, { skipCache = false } = {}) {
+    const pages = await this.listPages(collectiveId, { skipCache });
     const pageList = Array.isArray(pages) ? pages : [];
     const target = (sectionName || '').toLowerCase().trim();
 
