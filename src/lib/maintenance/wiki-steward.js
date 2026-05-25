@@ -394,6 +394,31 @@ class WikiSteward {
   }
 
   /**
+   * Return the section name for a page, or null if no section can be derived.
+   *
+   * Chain:
+   *   1. page.section (truthy) — returned directly; defensive for future API restores.
+   *   2. page.filePath (non-empty string) — first non-empty segment after split('/').
+   *   3. page.parentId === landingPageId (direct child of landing) — page.title.
+   *   4. null — landing page itself (parentId===0, empty filePath) and orphans.
+   *
+   * @param {{ section?: string, filePath?: string, parentId?: number, title?: string }} page
+   * @param {number|undefined} landingPageId
+   * @returns {string|null}
+   */
+  _getPageSection(page, landingPageId) {
+    if (page.section) return page.section;
+    if (page.filePath) {
+      const parts = page.filePath.split('/').filter(Boolean);
+      return parts[0] || null;
+    }
+    if (landingPageId && page.parentId === landingPageId && page.title) {
+      return page.title;
+    }
+    return null;
+  }
+
+  /**
    * Enumerate clusters known to the system. First attempt: read Level 0
    * landing page and parse its `## Knowledge Domains` `###` headings to get
    * cluster names. Fallback: enumerate unique `section` values from listPages().
@@ -426,14 +451,7 @@ class WikiSteward {
       const landingPageId = landingPage?.id;
       const sectionCounts = new Map();
       for (const page of pageList) {
-        let section = page.section || null;
-        if (!section && page.filePath) {
-          const parts = page.filePath.split('/').filter(Boolean);
-          section = parts[0] || null;
-        }
-        if (!section && landingPageId && page.parentId === landingPageId && page.title) {
-          section = page.title;
-        }
+        const section = this._getPageSection(page, landingPageId);
         if (section) {
           sectionCounts.set(section, (sectionCounts.get(section) || 0) + 1);
         }
@@ -480,24 +498,17 @@ class WikiSteward {
       this.collectiveId = collectiveId;
     }
 
-    // List pages that belong to this cluster by exact section match (structural truth).
-    // Section names come from _listClusters which derives them from real filesystem sections.
+    // List pages that belong to this cluster via _getPageSection (single chokepoint
+    // shared with _listClusters; resilient to Collectives API filePath shape changes).
     let clusterPages = [];
     try {
       const allPages = await this.collectivesClient.listPages(collectiveId);
       const pageList = Array.isArray(allPages) ? allPages : [];
       const clusterName = cluster.name;
 
-      clusterPages = pageList.filter(p => {
-        // Match on explicit section field first
-        if (p.section === clusterName) return true;
-        // Fallback: first path segment of filePath
-        if (!p.section && p.filePath) {
-          const parts = p.filePath.split('/');
-          return parts.length > 1 && parts[0] === clusterName;
-        }
-        return false;
-      });
+      const landingPage = pageList.find(p => p.parentId === 0);
+      const landingPageId = landingPage?.id;
+      clusterPages = pageList.filter(p => this._getPageSection(p, landingPageId) === clusterName);
     } catch (err) {
       this.logger.warn(`[WikiSteward] Failed to list pages for cluster "${cluster.name}": ${err.message}`);
       return neighborhood;
