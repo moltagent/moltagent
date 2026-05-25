@@ -262,6 +262,85 @@ asyncTest('_readNeighborhood() skips pages that throw at the outer level and con
 });
 
 // ---------------------------------------------------------------------------
+// CLUSTER SECTION DERIVATION (#51 — _getPageSection + _readNeighborhood with
+// current Collectives API filePath shape)
+// ---------------------------------------------------------------------------
+
+test('_getPageSection returns section from folder-only filePath (current API shape)', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  const section = steward._getPageSection({ filePath: 'Documents', section: undefined, parentId: 1 }, 99);
+  assert.strictEqual(section, 'Documents');
+});
+
+test('_getPageSection honors explicit page.section when present (defensive)', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  const section = steward._getPageSection({ section: 'People', filePath: '', parentId: 1 }, 99);
+  assert.strictEqual(section, 'People');
+});
+
+test('_getPageSection falls back to title when page is direct child of landing', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  const section = steward._getPageSection(
+    { filePath: '', section: undefined, parentId: 99, title: 'Research' },
+    99
+  );
+  assert.strictEqual(section, 'Research');
+});
+
+test('_getPageSection returns null for the landing page itself', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  const section = steward._getPageSection(
+    { filePath: '', section: undefined, parentId: 0, title: 'Knowledge Domains' },
+    99
+  );
+  assert.strictEqual(section, null);
+});
+
+asyncTest('_readNeighborhood() populates pages when filePath is folder-only (current API shape)', async () => {
+  // Mimics what listPages actually returns post-API-change:
+  //   section: undefined, filePath: "Documents" (no slash, no page name).
+  const collectivesClient = makeMockCollectivesClient({
+    pagesByTitle: {
+      'Doc One': { frontmatter: { type: 'reference' }, body: 'first doc', path: 'Documents/Doc One.md' },
+      'Doc Two': { frontmatter: { type: 'reference' }, body: 'second doc', path: 'Documents/Doc Two.md' },
+    },
+    listPagesResult: [
+      { id: 1,  title: 'Knowledge Domains', section: undefined, filePath: '', parentId: 0 },
+      { id: 10, title: 'Doc One',           section: undefined, filePath: 'Documents', parentId: 1 },
+      { id: 11, title: 'Doc Two',           section: undefined, filePath: 'Documents', parentId: 1 },
+    ],
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const neighborhood = await steward._readNeighborhood({ name: 'Documents' });
+
+  assert.strictEqual(neighborhood.cluster, 'Documents');
+  assert.strictEqual(neighborhood.pages.length, 2, 'should include both Documents pages');
+  const titles = neighborhood.pages.map(p => p.title).sort();
+  assert.deepStrictEqual(titles, ['Doc One', 'Doc Two']);
+});
+
+asyncTest('_readNeighborhood() excludes pages belonging to other clusters', async () => {
+  const collectivesClient = makeMockCollectivesClient({
+    pagesByTitle: {
+      'Doc One':  { frontmatter: {}, body: 'doc', path: 'Documents/Doc One.md' },
+      'Carlos':   { frontmatter: {}, body: 'person', path: 'People/Carlos.md' },
+    },
+    listPagesResult: [
+      { id: 1,  title: 'Knowledge Domains', section: undefined, filePath: '', parentId: 0 },
+      { id: 10, title: 'Doc One',           section: undefined, filePath: 'Documents', parentId: 1 },
+      { id: 20, title: 'Carlos',            section: undefined, filePath: 'People',    parentId: 1 },
+    ],
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const neighborhood = await steward._readNeighborhood({ name: 'Documents' });
+
+  assert.strictEqual(neighborhood.pages.length, 1, 'should only include Documents pages');
+  assert.strictEqual(neighborhood.pages[0].title, 'Doc One');
+});
+
+// ---------------------------------------------------------------------------
 // KNOWLEDGE STEWARD LENS
 // ---------------------------------------------------------------------------
 
