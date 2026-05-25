@@ -532,6 +532,153 @@ asyncTest('_markForComposting honors compost: never pin — does not mark pinned
 });
 
 // ---------------------------------------------------------------------------
+// CROSS-WRITE INTERFERENCE — Fix A: wikilink idempotency survives resolution
+// ---------------------------------------------------------------------------
+
+// Fix A.1: _addWikilink returns false when the unresolved [[target]] is present.
+asyncTest('_addWikilink skips when unresolved [[target]] already in body', async () => {
+  const pagesByTitle = {
+    'Carlos': {
+      frontmatter: {},
+      body: 'Carlos.\n\n## Related\n- [[ManeraMedia GmbH]] (works_at)\n',
+      path: 'People/Carlos.md',
+    },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const added = await steward._addWikilink('Carlos', 'ManeraMedia GmbH', 'works_at');
+  assert.strictEqual(added, false, 'should skip — unresolved form already present');
+  assert.ok(!collectivesClient._writtenPages['Carlos'], 'page must not be rewritten');
+});
+
+// Fix A.2: _addWikilink returns false when the RESOLVED [target](url) is present.
+// This is the new behavior — writePageWithFrontmatter resolves [[X]] to [X](url),
+// so on the next heartbeat only the resolved form remains in the body.
+asyncTest('_addWikilink skips when resolved [target](url) already in body', async () => {
+  const pagesByTitle = {
+    'Carlos': {
+      frontmatter: {},
+      body: 'Carlos.\n\n## Related\n- [ManeraMedia GmbH](https://nc.example/f/12345) (works_at)\n',
+      path: 'People/Carlos.md',
+    },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const added = await steward._addWikilink('Carlos', 'ManeraMedia GmbH', 'works_at');
+  assert.strictEqual(added, false, 'should skip — resolved markdown link already present');
+  assert.ok(!collectivesClient._writtenPages['Carlos'], 'page must not be rewritten');
+});
+
+// Fix A.3: _addWikilink adds the link when neither form is present.
+asyncTest('_addWikilink adds the link when neither form is present', async () => {
+  const pagesByTitle = {
+    'Carlos': { frontmatter: {}, body: 'Carlos works somewhere.', path: 'People/Carlos.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const added = await steward._addWikilink('Carlos', 'ManeraMedia GmbH', 'works_at');
+  assert.strictEqual(added, true, 'should add — neither form present');
+  const written = collectivesClient._writtenPages['Carlos'];
+  assert.ok(written && written.body.includes('[[ManeraMedia GmbH]]'), 'body should carry the new link');
+});
+
+// ---------------------------------------------------------------------------
+// CROSS-WRITE INTERFERENCE — Fix B: Connection Steward excludes index pages
+// ---------------------------------------------------------------------------
+
+function makeConnectionNeighborhood(pages) {
+  return {
+    cluster: 'Documents',
+    pages: pages.map((p, i) => ({
+      id: String(i + 1),
+      title: p.title,
+      section: 'Documents',
+      frontmatter: p.frontmatter || {},
+      bodyPreview: '',
+      hasEmbedding: false,
+      graphConnections: [],
+      wikilinks: [],
+    })),
+    graphEdges: [],
+    sections: new Set(['Documents']),
+    deckCards: [],
+  };
+}
+
+// Fix B.1: pages with `type: index` are excluded from the assessment data.
+test('_connectionAssessmentPrompt excludes type:index pages from pageLinks', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  const neighborhood = makeConnectionNeighborhood([
+    { title: 'Carlos Mendez', frontmatter: {} },
+    { title: 'Documents', frontmatter: { type: 'index' } },
+  ]);
+
+  const prompt = steward._connectionAssessmentPrompt(neighborhood);
+  assert.ok(prompt.includes('### Carlos Mendez'), 'content page should appear');
+  assert.ok(!prompt.includes('### Documents'), 'index page must not appear as a link target');
+});
+
+// Fix B.2: pages with `compost: never` (structural pin) are excluded.
+test('_connectionAssessmentPrompt excludes compost:never pages from pageLinks', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  const neighborhood = makeConnectionNeighborhood([
+    { title: 'Carlos Mendez', frontmatter: {} },
+    { title: 'Structural Nav Page', frontmatter: { compost: 'never' } },
+  ]);
+
+  const prompt = steward._connectionAssessmentPrompt(neighborhood);
+  assert.ok(prompt.includes('### Carlos Mendez'), 'content page should appear');
+  assert.ok(!prompt.includes('### Structural Nav Page'), 'pinned structural page must not appear');
+});
+
+// Fix B.3: the EXCLUSION instruction is present in the prompt.
+test('_connectionAssessmentPrompt carries the EXCLUSION instruction', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  const prompt = steward._connectionAssessmentPrompt(makeConnectionNeighborhood([
+    { title: 'Carlos Mendez', frontmatter: {} },
+  ]));
+  assert.ok(prompt.includes('EXCLUSION:'), 'prompt should instruct the LLM to exclude index pages');
+});
+
+// ---------------------------------------------------------------------------
+// CROSS-WRITE INTERFERENCE — Fix C: _markForComposting writes frontmatter only
+// ---------------------------------------------------------------------------
+
+// Fix C.1: _markForComposting sets the compost frontmatter fields.
+asyncTest('_markForComposting sets compost_ready/compost_reason/compost_marked_at', async () => {
+  const pagesByTitle = {
+    'Stale Doc': { frontmatter: { confidence: 'low' }, body: '# Stale Doc\n\nbody', path: 'Documents/Stale.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const ok = await steward._markForComposting('Stale Doc', 'Never accessed, past decay');
+  assert.strictEqual(ok, true);
+  const fm = collectivesClient._writtenPages['Stale Doc'].frontmatter;
+  assert.strictEqual(fm.compost_ready, true, 'compost_ready should be true');
+  assert.strictEqual(fm.compost_reason, 'Never accessed, past decay', 'compost_reason should be set');
+  assert.ok(fm.compost_marked_at, 'compost_marked_at should be set');
+});
+
+// Fix C.2: _markForComposting does NOT modify the page body — no inline marker.
+asyncTest('_markForComposting leaves the page body unchanged (no inline archive marker)', async () => {
+  const originalBody = '# Stale Doc\n\nReal content.\n\n## Related\n- [Eelco](https://nc.example/f/9) (related)\n';
+  const pagesByTitle = {
+    'Stale Doc': { frontmatter: { confidence: 'low' }, body: originalBody, path: 'Documents/Stale.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  await steward._markForComposting('Stale Doc', 'Never accessed');
+  const writtenBody = collectivesClient._writtenPages['Stale Doc'].body;
+  assert.strictEqual(writtenBody, originalBody, 'body must be byte-identical — no inline annotation');
+  assert.ok(!writtenBody.includes('Archived by Memory Steward'), 'no inline archive marker in body');
+});
+
+// ---------------------------------------------------------------------------
 // INTEGRATION WITH tend()
 // ---------------------------------------------------------------------------
 
