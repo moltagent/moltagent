@@ -12,6 +12,10 @@
 const assert = require('assert');
 const { test, summary, exitWithCode } = require('../../helpers/test-runner');
 
+// config.js requires NC_URL; supply a test default if not already set
+// (the central test runner does this too, but support direct invocation).
+process.env.NC_URL = process.env.NC_URL || 'https://test.example.com';
+
 // Store original env to restore after tests
 const originalEnv = { ...process.env };
 
