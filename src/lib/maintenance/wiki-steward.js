@@ -944,7 +944,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       case 'knowledge': {
         for (const c of assessment.contradictions || []) {
           if (structuralTitles.has(c.pageA) || structuralTitles.has(c.pageB)) {
-            this.logger.debug(`[WikiSteward:knowledge] Skipping structural page in contradiction: "${c.pageA}" / "${c.pageB}"`);
+            this.logger.info(`[WikiSteward:knowledge] Skipping structural page in contradiction: "${c.pageA}" / "${c.pageB}"`);
             continue;
           }
           try {
@@ -956,7 +956,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
         }
         for (const s of assessment.stale || []) {
           if (structuralTitles.has(s.page)) {
-            this.logger.debug(`[WikiSteward:knowledge] Skipping structural page "${s.page}" for staleness`);
+            this.logger.info(`[WikiSteward:knowledge] Skipping structural page "${s.page}" for staleness`);
             continue;
           }
           try {
@@ -983,7 +983,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       case 'connection': {
         for (const m of assessment.missingLinks || []) {
           if (structuralTitles.has(m.page)) {
-            this.logger.debug(`[WikiSteward:connection] Skipping structural page "${m.page}" for missing link`);
+            this.logger.info(`[WikiSteward:connection] Skipping structural page "${m.page}" for missing link`);
             continue;
           }
           try {
@@ -998,7 +998,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
         }
         for (const o of assessment.orphans || []) {
           if (structuralTitles.has(o.page)) {
-            this.logger.debug(`[WikiSteward:connection] Skipping structural page "${o.page}" for orphan resolution`);
+            this.logger.info(`[WikiSteward:connection] Skipping structural page "${o.page}" for orphan resolution`);
             continue;
           }
           for (const target of o.suggestedConnections || []) {
@@ -1015,7 +1015,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
         }
         for (const d of assessment.nearDuplicates || []) {
           if (structuralTitles.has(d.pageA) || structuralTitles.has(d.pageB)) {
-            this.logger.debug(`[WikiSteward:connection] Skipping structural page in duplicate check: "${d.pageA}" / "${d.pageB}"`);
+            this.logger.info(`[WikiSteward:connection] Skipping structural page in duplicate check: "${d.pageA}" / "${d.pageB}"`);
             continue;
           }
           try {
@@ -1031,7 +1031,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       case 'memory': {
         for (const s of assessment.strengthen || []) {
           if (structuralTitles.has(s.page)) {
-            this.logger.debug(`[WikiSteward:memory] Skipping structural page "${s.page}" for strengthening`);
+            this.logger.info(`[WikiSteward:memory] Skipping structural page "${s.page}" for strengthening`);
             continue;
           }
           try {
@@ -1043,7 +1043,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
         }
         for (const c of assessment.compost || []) {
           if (structuralTitles.has(c.page)) {
-            this.logger.debug(`[WikiSteward:memory] Skipping structural page "${c.page}" for composting`);
+            this.logger.info(`[WikiSteward:memory] Skipping structural page "${c.page}" for composting`);
             continue;
           }
           try {
@@ -1054,7 +1054,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
         }
         for (const e of assessment.embed || []) {
           if (structuralTitles.has(e.page)) {
-            this.logger.debug(`[WikiSteward:memory] Skipping structural page "${e.page}" for embedding`);
+            this.logger.info(`[WikiSteward:memory] Skipping structural page "${e.page}" for embedding`);
             continue;
           }
           // Find the full pageRef from neighborhood so _embedPage has path/section
