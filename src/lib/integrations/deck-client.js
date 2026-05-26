@@ -650,6 +650,108 @@ class DeckClient {
       { title, description: opts.description || '', type: 'plain', order: 0 });
   }
 
+  // ============================================================
+  // GENERIC CARD CRUD (v2 — any board, by explicit IDs)
+  // ============================================================
+  // Mirrors the legacy stackName-based methods (createCard/deleteCard/etc.)
+  // but works against any board the bot user has ACL access to. Used by
+  // conversational deck_* tools when the user names a board other than
+  // the default. See issue #65.
+
+  async getCardById(boardId, stackId, cardId) {
+    if (!boardId || !stackId || !cardId) throw new DeckApiError('boardId, stackId, cardId are required');
+    return await this._request('GET',
+      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`);
+  }
+
+  async updateCardById(boardId, stackId, cardId, updates) {
+    if (!boardId || !stackId || !cardId) throw new DeckApiError('boardId, stackId, cardId are required');
+    return await this._request('PUT',
+      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`,
+      updates);
+  }
+
+  async deleteCardById(boardId, stackId, cardId) {
+    if (!boardId || !stackId || !cardId) throw new DeckApiError('boardId, stackId, cardId are required');
+    await this._request('DELETE',
+      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`);
+    console.log(`[Deck] Card ${cardId} deleted (board=${boardId}, stack=${stackId})`);
+  }
+
+  /**
+   * Move a card to a different stack on the same board.
+   * Uses the internal /deck/cards/${cardId}/reorder endpoint, which is
+   * board-agnostic — only the destination stackId is needed.
+   */
+  async moveCardById(cardId, toStackId, order = 0) {
+    if (!cardId || !toStackId) throw new DeckApiError('cardId and toStackId are required');
+    await this._request('PUT',
+      `/index.php/apps/deck/cards/${cardId}/reorder`,
+      { stackId: toStackId, order });
+    console.log(`[Deck] Card ${cardId} moved to stack ${toStackId}`);
+  }
+
+  async assignLabelById(boardId, stackId, cardId, labelId) {
+    if (!boardId || !stackId || !cardId || !labelId) throw new DeckApiError('boardId, stackId, cardId, labelId are required');
+    await this._request('PUT',
+      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/assignLabel`,
+      { labelId });
+  }
+
+  async removeLabelById(boardId, stackId, cardId, labelId) {
+    if (!boardId || !stackId || !cardId || !labelId) throw new DeckApiError('boardId, stackId, cardId, labelId are required');
+    await this._request('PUT',
+      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/removeLabel`,
+      { labelId });
+  }
+
+  /**
+   * Assign a user to a card on any board. Looks up the user via the board's
+   * member list for case-insensitive matching, mirroring assignUser().
+   * Returns the matched uid on success, null if the user is not a board member.
+   */
+  async assignUserById(boardId, stackId, cardId, userId) {
+    if (!boardId || !stackId || !cardId || !userId) throw new DeckApiError('boardId, stackId, cardId, userId are required');
+    const board = await this._request('GET', `/index.php/apps/deck/api/v1.0/boards/${boardId}`);
+    const members = board.users || [];
+    const match = members.find(u =>
+      u.uid.toLowerCase() === userId.toLowerCase() ||
+      u.primaryKey.toLowerCase() === userId.toLowerCase()
+    );
+    if (!match) return null;
+
+    try {
+      await this._request('PUT',
+        `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/assignUser`,
+        { userId: match.uid });
+      return match.uid;
+    } catch (e) {
+      if (e.message?.includes('already assigned')) return match.uid;
+      throw e;
+    }
+  }
+
+  async unassignUserById(boardId, stackId, cardId, userId) {
+    if (!boardId || !stackId || !cardId || !userId) throw new DeckApiError('boardId, stackId, cardId, userId are required');
+    const board = await this._request('GET', `/index.php/apps/deck/api/v1.0/boards/${boardId}`);
+    const members = board.users || [];
+    const match = members.find(u =>
+      u.uid.toLowerCase() === userId.toLowerCase() ||
+      u.primaryKey.toLowerCase() === userId.toLowerCase()
+    );
+    if (!match) return null;
+
+    try {
+      await this._request('PUT',
+        `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/unassignUser`,
+        { userId: match.uid });
+      return match.uid;
+    } catch (e) {
+      if (e.message?.includes('not assigned')) return match.uid;
+      throw e;
+    }
+  }
+
   /**
    * Ensure the board exists with all required stacks
    * Creates if missing, verifies structure if exists
