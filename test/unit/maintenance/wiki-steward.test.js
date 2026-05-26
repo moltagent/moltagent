@@ -844,11 +844,7 @@ asyncTest('tend() calls observationLog.resolve after intervention resolves types
 
 // Test 19: refreshLandingPage() builds prompt from cluster list, writes to collectivesClient
 asyncTest('refreshLandingPage() calls router and writes landing page content', async () => {
-  const mockLandingBody = `---
-type: index
----
-
-# Moltagent Knowledge
+  const mockLandingBody = `# Moltagent Knowledge
 
 ## Knowledge Domains
 
@@ -882,10 +878,131 @@ Key entities: Carlos, Eelco
   assert.ok(router._calls.length > 0, 'router should have been called');
   const routerCall = router._calls[0];
   assert.strictEqual(routerCall.job, 'synthesis');
-  // Verify the content was written somewhere
-  const writtenContent = collectivesClient._writtenContent;
-  const writtenKeys = Object.keys(writtenContent);
-  assert.ok(writtenKeys.length > 0, 'landing page content should have been written');
+  // After the fix, landing page goes through writePageWithFrontmatter, not writePageContent
+  assert.ok(
+    collectivesClient._writtenPages['Moltagent Knowledge'],
+    'landing page should be written via writePageWithFrontmatter'
+  );
+});
+
+// Test 43.1: _updateLandingPage writes frontmatter via structured path
+asyncTest('_updateLandingPage writes frontmatter fields via writePageWithFrontmatter', async () => {
+  const cleanBody = `# Moltagent Knowledge
+
+## Knowledge Domains
+
+### People
+Contacts.
+Key entities: Alice`;
+
+  const router = {
+    _calls: [],
+    async route(opts) {
+      this._calls.push(opts);
+      return { result: cleanBody, provider: 'mock', model: 'mock', cost: 0 };
+    }
+  };
+
+  const collectivesClient = makeMockCollectivesClient({
+    collectiveName: 'Moltagent Knowledge',
+    listPagesResult: [{ id: 1, title: 'Alice', section: 'People', parentId: 1 }],
+  });
+
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router }));
+  await steward.refreshLandingPage();
+
+  const written = collectivesClient._writtenPages['Moltagent Knowledge'];
+  assert.ok(written, 'writePageWithFrontmatter must be called for the landing page title');
+  assert.ok(
+    !collectivesClient._writtenContent['Moltagent Knowledge.md'],
+    'raw writePageContent must NOT be used for the landing page'
+  );
+  const fm = written.frontmatter;
+  assert.strictEqual(fm.type, 'index');
+  assert.strictEqual(fm.decay_days, -1);
+  assert.strictEqual(fm.compost, 'never');
+  assert.strictEqual(fm.auto_maintained, true);
+  assert.strictEqual(fm.confidence, 'high');
+});
+
+// Test 43.2: _updateLandingPage strips code fences from LLM output
+asyncTest('_updateLandingPage strips code fences from LLM output before writing', async () => {
+  const fencedBody = '```markdown\n# Moltagent Knowledge\n\n## Knowledge Domains\n\n### People\nContacts.\n```';
+
+  const router = {
+    async route() {
+      return { result: fencedBody, provider: 'mock', model: 'mock', cost: 0 };
+    }
+  };
+
+  const collectivesClient = makeMockCollectivesClient({
+    collectiveName: 'Moltagent Knowledge',
+    listPagesResult: [{ id: 1, title: 'Alice', section: 'People', parentId: 1 }],
+  });
+
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router }));
+  await steward.refreshLandingPage();
+
+  const written = collectivesClient._writtenPages['Moltagent Knowledge'];
+  assert.ok(written, 'page should still be written after fence stripping');
+  assert.ok(!written.body.includes('```'), 'body must not contain backtick fences');
+  assert.ok(written.body.startsWith('# Moltagent Knowledge'), 'body must start with the heading');
+});
+
+// Test 43.3: _updateLandingPage strips rogue frontmatter from LLM output
+asyncTest('_updateLandingPage strips rogue frontmatter block from LLM output', async () => {
+  const rogueFmBody = `---
+type: index
+decay_days: -1
+---
+
+# Moltagent Knowledge
+
+## Knowledge Domains
+
+### People
+Contacts.`;
+
+  const router = {
+    async route() {
+      return { result: rogueFmBody, provider: 'mock', model: 'mock', cost: 0 };
+    }
+  };
+
+  const collectivesClient = makeMockCollectivesClient({
+    collectiveName: 'Moltagent Knowledge',
+    listPagesResult: [{ id: 1, title: 'Alice', section: 'People', parentId: 1 }],
+  });
+
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router }));
+  await steward.refreshLandingPage();
+
+  const written = collectivesClient._writtenPages['Moltagent Knowledge'];
+  assert.ok(written, 'page should still be written after frontmatter stripping');
+  assert.ok(written.body.startsWith('# Moltagent Knowledge'), 'body must start with the heading, not ---');
+  assert.ok(!written.body.startsWith('---'), 'body must not begin with a frontmatter fence');
+});
+
+// Test 43.4: _updateLandingPage includes compost: never in frontmatter (focused single-fact)
+asyncTest('_updateLandingPage always sets compost: never in landing page frontmatter', async () => {
+  const router = {
+    async route() {
+      return { result: '# Moltagent Knowledge\n\n### People\nContacts.', provider: 'mock', model: 'mock', cost: 0 };
+    }
+  };
+
+  const collectivesClient = makeMockCollectivesClient({
+    collectiveName: 'Moltagent Knowledge',
+    listPagesResult: [{ id: 1, title: 'Alice', section: 'People', parentId: 1 }],
+  });
+
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router }));
+  await steward.refreshLandingPage();
+
+  assert.strictEqual(
+    collectivesClient._writtenPages['Moltagent Knowledge'].frontmatter.compost,
+    'never'
+  );
 });
 
 // ---------------------------------------------------------------------------
