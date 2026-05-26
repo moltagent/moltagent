@@ -890,6 +890,25 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
   // ---------------------------------------------------------------------------
 
   /**
+   * Determine whether a page is structural infrastructure that should not be
+   * modified by steward interventions. Structural pages serve as navigation
+   * scaffolding (section indexes, landing pages, meta pages) — their content
+   * is either auto-maintained by the fractal index refresh or intentionally
+   * minimal. Frontmatter `type: section|index|meta` marks them by role; the
+   * `compost: never` pin marks them by lifecycle policy. Either is sufficient.
+   *
+   * @param {EnrichedPage} page - Page object from neighborhood.pages
+   * @returns {boolean}
+   */
+  _isStructuralPage(page) {
+    if (!page || !page.frontmatter) return false;
+    const t = page.frontmatter.type;
+    if (t === 'section' || t === 'index' || t === 'meta') return true;
+    if (page.frontmatter.compost === 'never') return true;
+    return false;
+  }
+
+  /**
    * Execute the assessment's recommended actions. Each steward type dispatches
    * to a different set of per-action executors (the "farm hand" operations).
    *
@@ -910,9 +929,24 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       return results;
     }
 
+    // Structural pages are infrastructure, not content. Skip all interventions
+    // on them — they are maintained by the fractal index refresh cycle, not by
+    // steward assessments. Defense in depth alongside the prompt-level
+    // exclusion in _connectionAssessmentPrompt and the compost: never pin
+    // honored by _markForComposting.
+    const structuralTitles = new Set(
+      (neighborhood?.pages || [])
+        .filter(p => this._isStructuralPage(p))
+        .map(p => p.title)
+    );
+
     switch (stewardType) {
       case 'knowledge': {
         for (const c of assessment.contradictions || []) {
+          if (structuralTitles.has(c.pageA) || structuralTitles.has(c.pageB)) {
+            this.logger.info(`[WikiSteward:knowledge] Skipping structural page in contradiction: "${c.pageA}" / "${c.pageB}"`);
+            continue;
+          }
           try {
             const flagged = await this._flagContradiction(c.pageA, c.pageB, c.claim);
             if (flagged) results.pagesModified += 2;
@@ -921,6 +955,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           }
         }
         for (const s of assessment.stale || []) {
+          if (structuralTitles.has(s.page)) {
+            this.logger.info(`[WikiSteward:knowledge] Skipping structural page "${s.page}" for staleness`);
+            continue;
+          }
           try {
             const lowered = await this._lowerConfidence(s.page, s.reason);
             if (lowered) results.pagesModified++;
@@ -928,6 +966,9 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             this.logger.warn(`[WikiSteward:knowledge] _lowerConfidence("${s.page}") failed: ${err.message}`);
           }
         }
+        // _logKnowledgeGap writes to Meta/Pending Questions, not to the
+        // referenced page — the gap observation is valid even if the
+        // referencing page is structural. No guard needed here.
         for (const g of assessment.gaps || []) {
           try {
             await this._logKnowledgeGap(g.entity, g.referencedIn);
@@ -941,6 +982,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
 
       case 'connection': {
         for (const m of assessment.missingLinks || []) {
+          if (structuralTitles.has(m.page)) {
+            this.logger.info(`[WikiSteward:connection] Skipping structural page "${m.page}" for missing link`);
+            continue;
+          }
           try {
             const added = await this._addWikilink(m.page, m.shouldLinkTo, m.relationship);
             if (added) {
@@ -952,6 +997,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           }
         }
         for (const o of assessment.orphans || []) {
+          if (structuralTitles.has(o.page)) {
+            this.logger.info(`[WikiSteward:connection] Skipping structural page "${o.page}" for orphan resolution`);
+            continue;
+          }
           for (const target of o.suggestedConnections || []) {
             try {
               const added = await this._addWikilink(o.page, target, 'related');
@@ -965,6 +1014,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           }
         }
         for (const d of assessment.nearDuplicates || []) {
+          if (structuralTitles.has(d.pageA) || structuralTitles.has(d.pageB)) {
+            this.logger.info(`[WikiSteward:connection] Skipping structural page in duplicate check: "${d.pageA}" / "${d.pageB}"`);
+            continue;
+          }
           try {
             await this._flagDuplicate(d.pageA, d.pageB, d.similarity || 0);
           } catch (err) {
@@ -977,6 +1030,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
 
       case 'memory': {
         for (const s of assessment.strengthen || []) {
+          if (structuralTitles.has(s.page)) {
+            this.logger.info(`[WikiSteward:memory] Skipping structural page "${s.page}" for strengthening`);
+            continue;
+          }
           try {
             const strengthened = await this._strengthenPage(s.page);
             if (strengthened) results.pagesModified++;
@@ -985,6 +1042,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           }
         }
         for (const c of assessment.compost || []) {
+          if (structuralTitles.has(c.page)) {
+            this.logger.info(`[WikiSteward:memory] Skipping structural page "${c.page}" for composting`);
+            continue;
+          }
           try {
             await this._markForComposting(c.page, c.reason);
           } catch (err) {
@@ -992,6 +1053,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           }
         }
         for (const e of assessment.embed || []) {
+          if (structuralTitles.has(e.page)) {
+            this.logger.info(`[WikiSteward:memory] Skipping structural page "${e.page}" for embedding`);
+            continue;
+          }
           // Find the full pageRef from neighborhood so _embedPage has path/section
           const pageRef = neighborhood.pages.find(p => p.title === e.page) || { id: null, title: e.page };
           try {
