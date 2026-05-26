@@ -1191,6 +1191,429 @@ asyncTest('deck_share_board with group type', async () => {
 });
 
 // ============================================================
+// Tests - Board-aware card-mutation tools (issue #65)
+// ============================================================
+
+function createSharedBoardDeckClient(opts = {}) {
+  // A mock that simulates a shared "Content Pipeline" board (id 7) with
+  // realistic stack/card data, alongside the bot's own task board (id 1).
+  // Used to verify the foreign-board branch of card-mutation tools.
+  const sharedStacks = opts.sharedStacks || [
+    { id: 701, title: 'Inbox', cards: [
+      { id: 200, title: 'Draft outline', duedate: null, owner: { uid: 'jordan' }, type: 'plain' }
+    ]},
+    { id: 702, title: 'Working', cards: [
+      { id: 201, title: 'Editing pass', duedate: null, owner: { uid: 'jordan' }, type: 'plain' }
+    ]},
+    { id: 703, title: 'Done', cards: [] }
+  ];
+  const sharedLabels = opts.sharedLabels || [
+    { id: 1001, title: 'urgent' },
+    { id: 1002, title: 'blocked' }
+  ];
+
+  const calls = {};
+
+  return {
+    baseUrl: 'https://nc.example.com',
+    username: 'moltagent',
+    stackNames: {
+      inbox: 'Inbox', queued: 'Queued', working: 'Working',
+      review: 'Review', done: 'Done', reference: 'Reference'
+    },
+    _calls: calls,
+    getAllCards: async () => ({}),
+    listBoards: async () => [
+      { id: 1, title: DECK.boards.tasks, owner: { uid: 'moltagent' } },
+      { id: 7, title: 'Content Pipeline', owner: { uid: 'jordan' } }
+    ],
+    getBoard: async (boardId) => ({
+      id: boardId,
+      title: boardId === 7 ? 'Content Pipeline' : DECK.boards.tasks,
+      owner: { uid: boardId === 7 ? 'jordan' : 'moltagent' },
+      stacks: sharedStacks,
+      labels: sharedLabels,
+      users: [
+        { uid: 'alice', primaryKey: 'alice' },
+        { uid: 'jordan', primaryKey: 'jordan' },
+        { uid: 'moltagent', primaryKey: 'moltagent' }
+      ]
+    }),
+    getStacks: async (_boardId) => sharedStacks,
+    getCardById: async (boardId, stackId, cardId) => {
+      calls.getCardById = { boardId, stackId, cardId };
+      const stack = sharedStacks.find(s => s.id === stackId);
+      const card = stack?.cards.find(c => c.id === cardId);
+      return card
+        ? { ...card, description: 'shared-card desc', assignedUsers: [], labels: [] }
+        : null;
+    },
+    updateCardById: async (boardId, stackId, cardId, updates) => {
+      calls.updateCardById = { boardId, stackId, cardId, updates };
+    },
+    deleteCardById: async (boardId, stackId, cardId) => {
+      calls.deleteCardById = { boardId, stackId, cardId };
+    },
+    moveCardById: async (cardId, toStackId, order) => {
+      calls.moveCardById = { cardId, toStackId, order };
+    },
+    assignLabelById: async (boardId, stackId, cardId, labelId) => {
+      calls.assignLabelById = { boardId, stackId, cardId, labelId };
+    },
+    removeLabelById: async (boardId, stackId, cardId, labelId) => {
+      calls.removeLabelById = { boardId, stackId, cardId, labelId };
+    },
+    assignUserById: async (boardId, stackId, cardId, userId) => {
+      calls.assignUserById = { boardId, stackId, cardId, userId };
+      return userId;
+    },
+    unassignUserById: async (boardId, stackId, cardId, userId) => {
+      calls.unassignUserById = { boardId, stackId, cardId, userId };
+      return userId;
+    },
+    addComment: async (cardId, message, type, optsArg) => {
+      calls.addComment = { cardId, message, type, opts: optsArg };
+    },
+    getComments: async (cardId) => {
+      calls.getComments = { cardId };
+      return [{ actorId: 'jordan', message: 'looks good', creationDateTime: '2026-05-26T10:00:00Z' }];
+    },
+    // Default-board legacy methods that should NOT be touched on foreign path:
+    getCard: async () => { throw new Error('default-board getCard called for shared-board test'); },
+    updateCard: async () => { throw new Error('default-board updateCard called for shared-board test'); },
+    deleteCard: async () => { throw new Error('default-board deleteCard called for shared-board test'); },
+    moveCard: async () => { throw new Error('default-board moveCard called for shared-board test'); },
+    addLabel: async () => { throw new Error('default-board addLabel called for shared-board test'); },
+    removeLabel: async () => { throw new Error('default-board removeLabel called for shared-board test'); },
+    assignUser: async () => { throw new Error('default-board assignUser called for shared-board test'); },
+    unassignUser: async () => { throw new Error('default-board unassignUser called for shared-board test'); }
+  };
+}
+
+asyncTest('deck_delete_card on shared board routes through deleteCardById', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_delete_card', {
+    card: 'Draft outline',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.deepStrictEqual(deck._calls.deleteCardById, { boardId: 7, stackId: 701, cardId: 200 });
+  assert.ok(result.result.includes('Deleted card #200'));
+  assert.ok(result.result.includes('Inbox'));
+});
+
+asyncTest('deck_mark_done on shared board moves to Done stack via moveCardById', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_mark_done', {
+    card: 'Editing pass',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.deepStrictEqual(deck._calls.moveCardById, { cardId: 201, toStackId: 703, order: 0 });
+  assert.ok(result.result.includes('Marked card #201'));
+  assert.ok(result.result.includes('Done'));
+});
+
+asyncTest('deck_mark_done on shared board without Done stack returns clear error', async () => {
+  const deck = createSharedBoardDeckClient({
+    sharedStacks: [
+      { id: 701, title: 'Inbox', cards: [{ id: 200, title: 'No Done stack here' }] },
+      { id: 702, title: 'In Review', cards: [] }
+    ]
+  });
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_mark_done', {
+    card: 'No Done',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(deck._calls.moveCardById, undefined);
+  assert.ok(result.result.includes('No "Done" stack'));
+  assert.ok(result.result.includes('deck_move_card'));
+});
+
+asyncTest('deck_get_card on shared board uses getCardById', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_get_card', {
+    card: '#200',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.deepStrictEqual(deck._calls.getCardById, { boardId: 7, stackId: 701, cardId: 200 });
+  assert.ok(result.result.includes('Card #200'));
+  assert.ok(result.result.includes('shared-card desc'));
+});
+
+asyncTest('deck_update_card on shared board uses updateCardById', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_update_card', {
+    card: 'Draft outline',
+    title: 'Draft outline (v2)',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(deck._calls.updateCardById.boardId, 7);
+  assert.strictEqual(deck._calls.updateCardById.stackId, 701);
+  assert.strictEqual(deck._calls.updateCardById.cardId, 200);
+  assert.strictEqual(deck._calls.updateCardById.updates.title, 'Draft outline (v2)');
+});
+
+asyncTest('deck_move_card on shared board uses moveCardById', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_move_card', {
+    card: 'Draft outline',
+    target_stack: 'Working',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.deepStrictEqual(deck._calls.moveCardById, { cardId: 200, toStackId: 702, order: 0 });
+  assert.ok(result.result.includes('Moved'));
+});
+
+asyncTest('deck_move_card on shared board reports unknown target_stack', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_move_card', {
+    card: 'Draft outline',
+    target_stack: 'Backlog',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(deck._calls.moveCardById, undefined);
+  assert.ok(result.result.includes('No stack "Backlog"'));
+  assert.ok(result.result.includes('"Inbox"'));
+});
+
+asyncTest('deck_assign_user on shared board uses assignUserById', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_assign_user', {
+    card: 'Draft outline',
+    user: 'alice',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(deck._calls.assignUserById.boardId, 7);
+  assert.strictEqual(deck._calls.assignUserById.userId, 'alice');
+  assert.ok(result.result.includes('Assigned'));
+});
+
+asyncTest('deck_unassign_user on shared board uses unassignUserById', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_unassign_user', {
+    card: 'Draft outline',
+    user: 'alice',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(deck._calls.unassignUserById.boardId, 7);
+  assert.strictEqual(deck._calls.unassignUserById.userId, 'alice');
+});
+
+asyncTest('deck_set_due_date on shared board uses updateCardById', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_set_due_date', {
+    card: 'Draft outline',
+    duedate: '2026-06-01',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(deck._calls.updateCardById.updates.duedate, '2026-06-01');
+  assert.ok(result.result.includes('2026-06-01'));
+});
+
+asyncTest('deck_add_label on shared board resolves label and uses assignLabelById', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_add_label', {
+    card: 'Draft outline',
+    label: 'urgent',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(deck._calls.assignLabelById.boardId, 7);
+  assert.strictEqual(deck._calls.assignLabelById.labelId, 1001);
+  assert.ok(result.result.includes('Added label "urgent"'));
+});
+
+asyncTest('deck_add_label on shared board reports unknown label with available list', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_add_label', {
+    card: 'Draft outline',
+    label: 'critical',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(deck._calls.assignLabelById, undefined);
+  assert.ok(result.result.includes('No label "critical"'));
+  assert.ok(result.result.includes('"urgent"'));
+});
+
+asyncTest('deck_remove_label on shared board uses removeLabelById', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_remove_label', {
+    card: 'Draft outline',
+    label: 'urgent',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(deck._calls.removeLabelById.labelId, 1001);
+});
+
+asyncTest('deck_add_comment on shared board calls board-agnostic addComment', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_add_comment', {
+    card: 'Draft outline',
+    message: 'first review pass complete',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(deck._calls.addComment.cardId, 200);
+  assert.strictEqual(deck._calls.addComment.message, 'first review pass complete');
+});
+
+asyncTest('deck_list_comments on shared board reads via card ID', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_list_comments', {
+    card: 'Draft outline',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(deck._calls.getComments.cardId, 200);
+  assert.ok(result.result.includes('looks good'));
+});
+
+asyncTest('board not found returns no_board error', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_delete_card', {
+    card: 'whatever',
+    board: 'NonExistent'
+  });
+
+  assert.ok(result.success);
+  assert.ok(result.result.includes('No board found'));
+  assert.strictEqual(deck._calls.deleteCardById, undefined);
+});
+
+asyncTest('card not found on shared board cites board title', async () => {
+  const deck = createSharedBoardDeckClient();
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_delete_card', {
+    card: 'ghost card',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.ok(result.result.includes('No card found matching "ghost card"'));
+  assert.ok(result.result.includes('Content Pipeline'));
+  assert.strictEqual(deck._calls.deleteCardById, undefined);
+});
+
+asyncTest('ambiguous card title on shared board returns candidate list without mutating', async () => {
+  const deck = createSharedBoardDeckClient({
+    sharedStacks: [
+      { id: 701, title: 'Inbox', cards: [{ id: 200, title: 'Draft outline A' }] },
+      { id: 702, title: 'Working', cards: [{ id: 201, title: 'Draft outline B' }] },
+      { id: 703, title: 'Done', cards: [] }
+    ]
+  });
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_delete_card', {
+    card: 'Draft outline',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(deck._calls.deleteCardById, undefined);
+  assert.ok(result.result.includes('Multiple cards'));
+  assert.ok(result.result.includes('#200'));
+  assert.ok(result.result.includes('#201'));
+  assert.ok(result.result.includes('Draft outline A'));
+  assert.ok(result.result.includes('Draft outline B'));
+});
+
+asyncTest('ambiguous card title resolved via #ID picks the exact card', async () => {
+  const deck = createSharedBoardDeckClient({
+    sharedStacks: [
+      { id: 701, title: 'Inbox', cards: [{ id: 200, title: 'Draft outline A' }] },
+      { id: 702, title: 'Working', cards: [{ id: 201, title: 'Draft outline B' }] },
+      { id: 703, title: 'Done', cards: [] }
+    ]
+  });
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+
+  const result = await registry.execute('deck_delete_card', {
+    card: '#201',
+    board: 'Content Pipeline'
+  });
+
+  assert.ok(result.success);
+  assert.deepStrictEqual(deck._calls.deleteCardById, { boardId: 7, stackId: 702, cardId: 201 });
+});
+
+asyncTest('omitting board parameter still routes to default-board legacy methods', async () => {
+  // Regression guard: tool calls without `board` must hit the legacy mock
+  // surface — guarantees backward compatibility for callers that never pass board.
+  let touchedDefault = false;
+  const deck = createMockDeckClient({ working: [{ id: 5, title: 'Default-board task' }] });
+  deck.moveCard = async () => { touchedDefault = true; };
+
+  const registry = new ToolRegistry({ deckClient: deck, logger: silentLogger });
+  const result = await registry.execute('deck_move_card', {
+    card: 'Default-board task',
+    target_stack: 'Done'
+  });
+
+  assert.ok(result.success);
+  assert.ok(touchedDefault, 'Legacy moveCard should have been called on the default board');
+});
+
+// ============================================================
 // Tests - 403 Permission Error Handling
 // ============================================================
 

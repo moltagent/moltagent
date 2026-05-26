@@ -418,4 +418,156 @@ asyncTest('TC-ERR-003: 500 response from updateStack propagates as error', async
   );
 });
 
+// ============================================================
+// --- ID-based card mutation methods (issue #65) ---
+// ============================================================
+console.log('\n--- *ById card mutation methods ---\n');
+
+asyncTest('TC-GCB-001: getCardById sends GET to /boards/{b}/stacks/{s}/cards/{c}', async () => {
+  const fixture = { id: 200, title: 'Shared card' };
+  const { client } = makeClient({
+    'GET:/index.php/apps/deck/api/v1.0/boards/7/stacks/701/cards/200': { status: 200, body: fixture, headers: {} }
+  });
+
+  const result = await client.getCardById(7, 701, 200);
+  assert.strictEqual(result.id, 200);
+});
+
+asyncTest('TC-GCB-002: getCardById without required IDs throws', async () => {
+  const { client } = makeClient();
+  await assert.rejects(() => client.getCardById(null, 701, 200), (err) => err.message.includes('required'));
+});
+
+asyncTest('TC-UCB-001: updateCardById sends PUT with updates body', async () => {
+  const { client, nc } = makeClient({
+    'PUT:/index.php/apps/deck/api/v1.0/boards/7/stacks/701/cards/200': { status: 200, body: { id: 200 }, headers: {} }
+  });
+
+  await client.updateCardById(7, 701, 200, { title: 'Renamed', duedate: '2026-06-01' });
+  const call = nc._calls.find(c => c.method === 'PUT' && c.path.endsWith('/cards/200'));
+  assert.ok(call);
+  assert.strictEqual(call.body.title, 'Renamed');
+  assert.strictEqual(call.body.duedate, '2026-06-01');
+});
+
+asyncTest('TC-DCB-001: deleteCardById sends DELETE to correct endpoint', async () => {
+  const { client, nc } = makeClient({
+    'DELETE:/index.php/apps/deck/api/v1.0/boards/7/stacks/701/cards/200': { status: 200, body: {}, headers: {} }
+  });
+
+  await client.deleteCardById(7, 701, 200);
+  const call = nc._calls.find(c => c.method === 'DELETE' && c.path.endsWith('/cards/200'));
+  assert.ok(call);
+});
+
+asyncTest('TC-DCB-002: deleteCardById without cardId throws', async () => {
+  const { client } = makeClient();
+  await assert.rejects(() => client.deleteCardById(7, 701, null), (err) => err.message.includes('required'));
+});
+
+asyncTest('TC-MCB-001: moveCardById PUTs to internal reorder endpoint with destination stackId', async () => {
+  const { client, nc } = makeClient({
+    'PUT:/index.php/apps/deck/cards/200/reorder': { status: 200, body: {}, headers: {} }
+  });
+
+  await client.moveCardById(200, 703, 0);
+  const call = nc._calls.find(c => c.method === 'PUT' && c.path === '/index.php/apps/deck/cards/200/reorder');
+  assert.ok(call);
+  assert.strictEqual(call.body.stackId, 703);
+  assert.strictEqual(call.body.order, 0);
+});
+
+asyncTest('TC-MCB-002: moveCardById defaults order to 0 when omitted', async () => {
+  const { client, nc } = makeClient({
+    'PUT:/index.php/apps/deck/cards/200/reorder': { status: 200, body: {}, headers: {} }
+  });
+
+  await client.moveCardById(200, 703);
+  const call = nc._calls.find(c => c.method === 'PUT');
+  assert.strictEqual(call.body.order, 0);
+});
+
+asyncTest('TC-ALB-001: assignLabelById PUTs labelId to assignLabel endpoint', async () => {
+  const { client, nc } = makeClient({
+    'PUT:/index.php/apps/deck/api/v1.0/boards/7/stacks/701/cards/200/assignLabel': { status: 200, body: {}, headers: {} }
+  });
+
+  await client.assignLabelById(7, 701, 200, 1001);
+  const call = nc._calls.find(c => c.method === 'PUT' && c.path.endsWith('/assignLabel'));
+  assert.ok(call);
+  assert.strictEqual(call.body.labelId, 1001);
+});
+
+asyncTest('TC-RLB-001: removeLabelById PUTs labelId to removeLabel endpoint', async () => {
+  const { client, nc } = makeClient({
+    'PUT:/index.php/apps/deck/api/v1.0/boards/7/stacks/701/cards/200/removeLabel': { status: 200, body: {}, headers: {} }
+  });
+
+  await client.removeLabelById(7, 701, 200, 1001);
+  const call = nc._calls.find(c => c.method === 'PUT' && c.path.endsWith('/removeLabel'));
+  assert.ok(call);
+});
+
+asyncTest('TC-AUB-001: assignUserById looks up case-insensitive uid and assigns', async () => {
+  const { client, nc } = makeClient({
+    'GET:/index.php/apps/deck/api/v1.0/boards/7': {
+      status: 200,
+      body: { id: 7, users: [{ uid: 'Alice', primaryKey: 'Alice' }] },
+      headers: {}
+    },
+    'PUT:/index.php/apps/deck/api/v1.0/boards/7/stacks/701/cards/200/assignUser': { status: 200, body: {}, headers: {} }
+  });
+
+  const matched = await client.assignUserById(7, 701, 200, 'alice');
+  assert.strictEqual(matched, 'Alice');
+  const assignCall = nc._calls.find(c => c.path.endsWith('/assignUser'));
+  assert.ok(assignCall);
+  assert.strictEqual(assignCall.body.userId, 'Alice');
+});
+
+asyncTest('TC-AUB-002: assignUserById returns null when user not a board member', async () => {
+  const { client } = makeClient({
+    'GET:/index.php/apps/deck/api/v1.0/boards/7': {
+      status: 200,
+      body: { id: 7, users: [{ uid: 'jordan', primaryKey: 'jordan' }] },
+      headers: {}
+    }
+  });
+
+  const matched = await client.assignUserById(7, 701, 200, 'stranger');
+  assert.strictEqual(matched, null);
+});
+
+asyncTest('TC-AUB-003: assignUserById swallows "already assigned" and returns uid', async () => {
+  const { client } = makeClient({
+    'GET:/index.php/apps/deck/api/v1.0/boards/7': {
+      status: 200,
+      body: { id: 7, users: [{ uid: 'alice', primaryKey: 'alice' }] },
+      headers: {}
+    },
+    'PUT:/index.php/apps/deck/api/v1.0/boards/7/stacks/701/cards/200/assignUser': {
+      status: 400, body: { message: 'User already assigned' }, headers: {}
+    }
+  });
+
+  const matched = await client.assignUserById(7, 701, 200, 'alice');
+  assert.strictEqual(matched, 'alice');
+});
+
+asyncTest('TC-UUB-001: unassignUserById PUTs to unassignUser endpoint', async () => {
+  const { client, nc } = makeClient({
+    'GET:/index.php/apps/deck/api/v1.0/boards/7': {
+      status: 200,
+      body: { id: 7, users: [{ uid: 'alice', primaryKey: 'alice' }] },
+      headers: {}
+    },
+    'PUT:/index.php/apps/deck/api/v1.0/boards/7/stacks/701/cards/200/unassignUser': { status: 200, body: {}, headers: {} }
+  });
+
+  const matched = await client.unassignUserById(7, 701, 200, 'alice');
+  assert.strictEqual(matched, 'alice');
+  const call = nc._calls.find(c => c.path.endsWith('/unassignUser'));
+  assert.ok(call);
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);
