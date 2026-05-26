@@ -888,4 +888,219 @@ Key entities: Carlos, Eelco
   assert.ok(writtenKeys.length > 0, 'landing page content should have been written');
 });
 
+// ---------------------------------------------------------------------------
+// STRUCTURAL PAGE GUARD (#59) — _isStructuralPage + _intervene chokepoint
+// ---------------------------------------------------------------------------
+
+// Helper: build a neighborhood with arbitrary pages for intervention tests
+function makeInterveneNeighborhood(pages, cluster = 'Documents') {
+  return {
+    cluster,
+    pages: pages.map((p, i) => ({
+      id: String(i + 1),
+      title: p.title,
+      section: cluster,
+      frontmatter: p.frontmatter || {},
+      bodyPreview: '',
+      hasEmbedding: false,
+      graphConnections: [],
+      wikilinks: [],
+    })),
+    graphEdges: [],
+    sections: new Set([cluster]),
+    deckCards: [],
+  };
+}
+
+// Test #59.1: _isStructuralPage returns true for type: section
+test('_isStructuralPage returns true for type:section', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  assert.strictEqual(steward._isStructuralPage({ frontmatter: { type: 'section' } }), true);
+});
+
+// Test #59.2: _isStructuralPage returns true for type: index
+test('_isStructuralPage returns true for type:index', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  assert.strictEqual(steward._isStructuralPage({ frontmatter: { type: 'index' } }), true);
+});
+
+// Test #59.3: _isStructuralPage returns true for type: meta
+test('_isStructuralPage returns true for type:meta', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  assert.strictEqual(steward._isStructuralPage({ frontmatter: { type: 'meta' } }), true);
+});
+
+// Test #59.4: _isStructuralPage returns true for compost: never (lifecycle pin)
+test('_isStructuralPage returns true for compost:never (lifecycle pin)', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  assert.strictEqual(
+    steward._isStructuralPage({ frontmatter: { type: 'entity', compost: 'never' } }),
+    true,
+    'compost: never alone marks a page as structural infrastructure'
+  );
+});
+
+// Test #59.5: _isStructuralPage returns false for normal content page
+test('_isStructuralPage returns false for normal content page', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  assert.strictEqual(
+    steward._isStructuralPage({ frontmatter: { type: 'entity', confidence: 'high' } }),
+    false
+  );
+});
+
+// Test #59.6: _isStructuralPage returns false for page with no frontmatter
+test('_isStructuralPage returns false for page with missing/empty frontmatter', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  assert.strictEqual(steward._isStructuralPage({ frontmatter: null }), false);
+  assert.strictEqual(steward._isStructuralPage({}), false);
+  assert.strictEqual(steward._isStructuralPage(null), false);
+});
+
+// Test #59.7: Connection Steward skips structural page in missingLinks loop
+asyncTest('_intervene(connection): skips structural page in missingLinks', async () => {
+  const pagesByTitle = {
+    'Carlos':    { frontmatter: {}, body: 'Content page.', path: 'People/Carlos.md' },
+    'Documents': { frontmatter: { type: 'index' }, body: '# Documents', path: 'Documents.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const neighborhood = makeInterveneNeighborhood([
+    { title: 'Carlos',    frontmatter: {} },
+    { title: 'Documents', frontmatter: { type: 'index' } },
+  ]);
+
+  const assessment = {
+    missingLinks: [
+      { page: 'Documents', shouldLinkTo: 'Eelco', relationship: 'related' },
+      { page: 'Carlos',    shouldLinkTo: 'Eelco', relationship: 'works_with' },
+    ],
+    orphans: [],
+    nearDuplicates: [],
+  };
+
+  await steward._intervene('connection', assessment, neighborhood);
+
+  assert.ok(
+    !collectivesClient._writtenPages['Documents'],
+    'structural page (type:index) must not be written by Connection Steward'
+  );
+  assert.ok(
+    collectivesClient._writtenPages['Carlos'],
+    'content page should still receive its wikilink'
+  );
+});
+
+// Test #59.8: Memory Steward skips structural page in compost loop
+asyncTest('_intervene(memory): skips structural page in compost', async () => {
+  const pagesByTitle = {
+    'Carlos':   { frontmatter: { confidence: 'low' }, body: 'Content.', path: 'People/Carlos.md' },
+    'Research': { frontmatter: { type: 'index', compost: 'never' }, body: '# Research', path: 'Research.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const neighborhood = makeInterveneNeighborhood([
+    { title: 'Carlos',   frontmatter: { confidence: 'low' } },
+    { title: 'Research', frontmatter: { type: 'index', compost: 'never' } },
+  ]);
+
+  const assessment = {
+    strengthen: [],
+    compost: [
+      { page: 'Research', reason: 'Never accessed' },
+      { page: 'Carlos',   reason: 'Stale and unaccessed' },
+    ],
+    embed: [],
+  };
+
+  await steward._intervene('memory', assessment, neighborhood);
+
+  assert.ok(
+    !collectivesClient._writtenPages['Research'],
+    'structural page (type:index + compost:never) must not be touched by _markForComposting'
+  );
+  assert.ok(
+    collectivesClient._writtenPages['Carlos'],
+    'content page should still be marked for composting'
+  );
+  assert.strictEqual(
+    collectivesClient._writtenPages['Carlos'].frontmatter.compost_ready,
+    true,
+    'content page compost_ready set'
+  );
+});
+
+// Test #59.9: Knowledge Steward skips structural page in stale loop
+asyncTest('_intervene(knowledge): skips structural page in stale', async () => {
+  const pagesByTitle = {
+    'Carlos':            { frontmatter: { confidence: 'high' }, body: 'Content.', path: 'People/Carlos.md' },
+    'Pending Questions': { frontmatter: { type: 'meta' },       body: '# Pending Questions', path: 'Meta/Pending Questions.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const neighborhood = makeInterveneNeighborhood([
+    { title: 'Carlos',            frontmatter: { confidence: 'high' } },
+    { title: 'Pending Questions', frontmatter: { type: 'meta' } },
+  ], 'Meta');
+
+  const assessment = {
+    contradictions: [],
+    stale: [
+      { page: 'Pending Questions', reason: 'No new entries in 90 days' },
+      { page: 'Carlos',            reason: 'Last verified 180 days ago' },
+    ],
+    gaps: [],
+  };
+
+  await steward._intervene('knowledge', assessment, neighborhood);
+
+  assert.ok(
+    !collectivesClient._writtenPages['Pending Questions'],
+    'structural page (type:meta) must not have confidence lowered'
+  );
+  assert.ok(
+    collectivesClient._writtenPages['Carlos'],
+    'content page should still have confidence lowered'
+  );
+  assert.strictEqual(
+    collectivesClient._writtenPages['Carlos'].frontmatter.confidence,
+    'medium',
+    'content page confidence stepped down high → medium'
+  );
+});
+
+// Test #59.10: guard does not interfere with normal content-page interventions
+asyncTest('_intervene: content pages are still processed normally when no structural page in neighborhood', async () => {
+  const pagesByTitle = {
+    'Carlos': { frontmatter: { confidence: 'high' }, body: 'Content.', path: 'People/Carlos.md' },
+    'Eelco':  { frontmatter: { confidence: 'high' }, body: 'Researcher.', path: 'People/Eelco.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const neighborhood = makeInterveneNeighborhood([
+    { title: 'Carlos', frontmatter: { confidence: 'high' } },
+    { title: 'Eelco',  frontmatter: {} /* untyped — still a content page */ },
+  ], 'People');
+
+  const assessment = {
+    missingLinks: [
+      { page: 'Carlos', shouldLinkTo: 'Eelco', relationship: 'works_with' },
+    ],
+    orphans: [],
+    nearDuplicates: [],
+  };
+
+  const result = await steward._intervene('connection', assessment, neighborhood);
+
+  assert.ok(result.linksAdded >= 1, 'untyped + high-confidence pages remain in scope');
+  assert.ok(
+    collectivesClient._writtenPages['Carlos'],
+    'content page (Carlos) should still be written'
+  );
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);
