@@ -14,6 +14,11 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
+// config.js requires NC_URL; supply a harmless test default so the suite
+// can load modules that transitively import config. The daemon's startup
+// boundary (webhook-server.js) still throws loudly when NC_URL is unset.
+process.env.NC_URL = process.env.NC_URL || 'https://test.example.com';
+
 const args = process.argv.slice(2);
 const runUnit = args.includes('--unit') || args.length === 0;
 const runIntegration = args.includes('--integration') || args.length === 0;

@@ -48,8 +48,14 @@ function loadConfigWithEnv(envOverrides = {}) {
     }
   }
 
+  // NC_URL is required by config.js; supply a test default unless the
+  // caller explicitly overrides it (including to '').
+  const envWithDefaults = Object.prototype.hasOwnProperty.call(envOverrides, 'NC_URL')
+    ? envOverrides
+    : { NC_URL: 'https://test.example.com', ...envOverrides };
+
   // Apply overrides
-  Object.assign(process.env, envOverrides);
+  Object.assign(process.env, envWithDefaults);
 
   // Clear require cache and reload
   delete require.cache[require.resolve('../../src/lib/config')];
@@ -64,10 +70,31 @@ console.log('\n=== Config Module Tests ===\n');
 
 // --- Default Values ---
 
-test('TC-CFG-001: Default nextcloud.url is set', () => {
-  const config = loadConfigWithEnv({});
-  assert.strictEqual(typeof config.nextcloud.url, 'string');
-  assert.ok(config.nextcloud.url.startsWith('https://'));
+test('TC-CFG-001: Missing NC_URL throws on config load', () => {
+  // Drop NC_URL out of env (loadConfigWithEnv would otherwise supply a test default).
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('NC_')) delete process.env[key];
+  }
+  delete require.cache[require.resolve('../../src/lib/config')];
+  assert.throws(
+    () => require('../../src/lib/config'),
+    /NC_URL/,
+    'config.js must refuse to load when NC_URL is not set'
+  );
+});
+
+test('TC-CFG-001a: Empty NC_URL throws on config load', () => {
+  const envOverrides = { NC_URL: '' };
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('NC_')) delete process.env[key];
+  }
+  Object.assign(process.env, envOverrides);
+  delete require.cache[require.resolve('../../src/lib/config')];
+  assert.throws(
+    () => require('../../src/lib/config'),
+    /NC_URL/,
+    'config.js must reject NC_URL=""'
+  );
 });
 
 test('TC-CFG-002: Default nextcloud.username is moltagent', () => {

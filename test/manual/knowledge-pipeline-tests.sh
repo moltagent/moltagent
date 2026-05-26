@@ -2,8 +2,17 @@
 # Knowledge Pipeline Test Suite — 5 probes to diagnose knowledge quality
 # Sends signed webhook requests to localhost:3000 and captures pipeline logs
 
+set -euo pipefail
+
 SECRET="7d02a6d8a79d17636424b73013900ed6ad8054a610843a905ae2b42a8834023039e256db2204056680c9bf438f821eb27dc6eabc875c6768c5ee7754bda51aaf"
-BACKEND="https://YOUR_NEXTCLOUD_URL"
+if [ -z "${NC_URL:-}" ]; then
+    echo "ERROR: NC_URL is not set." >&2
+    echo "       Export the Nextcloud base URL this test should target," >&2
+    echo "       e.g.  NC_URL=https://nc.example.com ./test/manual/knowledge-pipeline-tests.sh" >&2
+    echo "       It must match an entry in the webhook server's allowedBackends." >&2
+    exit 1
+fi
+BACKEND="$NC_URL"
 ROOM="strte9d4"
 PORT=3000
 LOG_DIR="/tmp/knowledge-tests-$(date +%Y%m%d-%H%M%S)"
