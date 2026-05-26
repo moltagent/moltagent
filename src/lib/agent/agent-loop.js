@@ -134,13 +134,14 @@ class AgentLoop {
     }
 
     // 3. Agent loop
-    const maxIter = options.maxIterations || this.maxIterations;
+    let maxIter = options.maxIterations || this.maxIterations;
     let iteration = 0;
     let lastResponse = null;
     const toolFailureCounts = {};  // toolName -> consecutive failure count
     let cumulativeToolResultChars = 0;
     const toolResultIndices = [];  // indices into messages[] of tool results
     const failedCallIds = new Set();  // tool_call_ids that returned errors
+    let actionGuardFired = false;  // once-per-turn re-prompt for tool-less action responses
 
     while (iteration < maxIter) {
       iteration++;
@@ -299,6 +300,35 @@ class AgentLoop {
         this.logger.info(`[AgentLoop] Iteration ${iteration} metadata: { toolsCalled: [${iterationToolsCalled.join(', ')}], cumulativeContextChars: ${cumulativeToolResultChars} }`);
 
         // Continue loop — LLM will process tool results
+        continue;
+      }
+
+      // Action-hallucination guard: when the classifier said this turn is an
+      // action but the LLM produced text without calling any tool, re-prompt
+      // once before letting the response reach the user. The check is
+      // structural (gate + tool-call history) — language-free.
+      //
+      // Skip when at least one tool has already executed this turn: that
+      // text response is the legitimate "summarize tool results" reply.
+      //
+      // Bounded to one re-prompt per turn via actionGuardFired so legitimate
+      // text-only refusals on the second pass ("I can't because…") are not
+      // re-prompted again. maxIter is bumped to guarantee at least one more
+      // iteration even when the short-message heuristic capped it at 2.
+      if (options.gate === 'action' && !actionGuardFired && toolResultIndices.length === 0) {
+        actionGuardFired = true;
+        maxIter = Math.max(maxIter, iteration + 1);
+
+        messages.push({
+          role: 'assistant',
+          content: response.content || ''
+        });
+        messages.push({
+          role: 'user',
+          content: '[SYSTEM] You were asked to perform an action but responded with text only — no tool was called. If you can perform the action, call the appropriate tool now. If you cannot perform it, explain what prevented you. Do not describe the result of an action you did not perform.'
+        });
+
+        this.logger.warn(`[AgentLoop] Action-hallucination guard fired at iteration ${iteration} — re-prompting (gate=action, zero tool calls)`);
         continue;
       }
 
