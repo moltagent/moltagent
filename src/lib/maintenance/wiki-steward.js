@@ -1606,13 +1606,9 @@ Here are the current wiki sections and their entities:
 
 ${sectionLines || '(No sections found yet.)'}
 
-Write the landing page in this format:
+Do NOT include frontmatter (no --- blocks). Write only the markdown body starting with the # heading.
 
----
-type: index
-confidence: high
-decay_days: -1
----
+Write the landing page in this format:
 
 # Moltagent Knowledge
 
@@ -1659,7 +1655,19 @@ Keep Level 0 under 100 lines total so it loads fast for every query.`;
       context: { trigger: 'wiki_steward_level0', internal: true },
     });
 
-    const landingBody = (routerResult?.result || routerResult?.content || '').trim();
+    let landingBody = (routerResult?.result || routerResult?.content || '').trim();
+
+    // Belt: strip code fences the LLM may wrap around the output despite the prompt
+    landingBody = landingBody
+      .replace(/^```(?:markdown|yaml|md)?\s*\n?/i, '')
+      .replace(/\n?```\s*$/i, '');
+
+    // Belt: strip any frontmatter block the LLM may still emit despite the instruction
+    landingBody = landingBody
+      .replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '');
+
+    landingBody = landingBody.trim();
+
     if (!landingBody) {
       this.logger.warn('[WikiSteward] _updateLandingPage: LLM returned empty body');
       return { clusters: 0 };
@@ -1668,20 +1676,32 @@ Keep Level 0 under 100 lines total so it loads fast for every query.`;
     // Count clusters for the return value
     const clusterMatches = landingBody.match(/^###\s+/gm) || [];
 
-    // Resolve any [[wikilinks]] the LLM emitted into live Nextcloud file links
-    // before writing. writePageContent is raw (no auto-resolve), so we must do
-    // this step explicitly here.
-    const resolvedBody = await this._resolveWikilinks(landingBody);
+    const landingFrontmatter = {
+      type: 'index',
+      confidence: 'high',
+      decay_days: -1,
+      auto_maintained: true,
+      compost: 'never',
+      last_refresh: new Date().toISOString().split('T')[0],
+    };
 
     // Write the landing page — it's the root page of the collective
+    // writePageWithFrontmatter resolves [[wikilinks]] internally; no explicit pre-resolve needed.
     try {
-      // Landing page typically lives at the collective root title
       const landingPageTitle = this.collectivesClient.collectiveName || 'Moltagent Knowledge';
-      await this.collectivesClient.writePageContent(`${landingPageTitle}.md`, resolvedBody);
+      await this.collectivesClient.writePageWithFrontmatter(
+        landingPageTitle,
+        landingFrontmatter,
+        landingBody
+      );
     } catch (err) {
-      // Fallback: try writing as plain path
+      // Fallback: try with the literal known title
       try {
-        await this.collectivesClient.writePageContent('Moltagent Knowledge.md', resolvedBody);
+        await this.collectivesClient.writePageWithFrontmatter(
+          'Moltagent Knowledge',
+          landingFrontmatter,
+          landingBody
+        );
       } catch (err2) {
         this.logger.warn(`[WikiSteward] _updateLandingPage write failed: ${err2.message}`);
         return { clusters: 0 };
