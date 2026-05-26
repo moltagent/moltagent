@@ -12,12 +12,19 @@
 #   ./scripts/test-talk-bot.sh 3000 my-secret     # Custom port/secret
 #
 
-set -e
+set -euo pipefail
 
 # Configuration
 PORT="${1:-3000}"
 SECRET="${2:-test-secret-for-webhook-testing-must-be-long-enough}"
-BACKEND="${NC_URL:-https://YOUR_NEXTCLOUD_URL}"
+if [ -z "${NC_URL:-}" ]; then
+    echo "ERROR: NC_URL is not set." >&2
+    echo "       Export the Nextcloud base URL this test should target," >&2
+    echo "       e.g.  NC_URL=https://nc.example.com ./scripts/test-talk-bot.sh" >&2
+    echo "       It must match an entry in the webhook server's allowedBackends." >&2
+    exit 1
+fi
+BACKEND="$NC_URL"
 BASE_URL="http://localhost:${PORT}"
 
 # Colors

@@ -67,6 +67,27 @@ function envStr(envVar, defaultValue) {
 }
 
 /**
+ * Read a required environment variable; throw if unset or empty.
+ * Use for values where a silent placeholder fallback would mask
+ * a misconfigured deployment (e.g. base URLs, credentials).
+ * @param {string} envVar - Environment variable name
+ * @param {string} [description] - Human-readable description shown in the error
+ * @returns {string}
+ */
+function envRequired(envVar, description) {
+  const value = process.env[envVar];
+  if (value === undefined || value === '') {
+    const what = description ? ` (${description})` : '';
+    throw new Error(
+      `[config] Required environment variable ${envVar} is not set${what}. ` +
+      `Refusing to start with an unconfigured ${envVar} — a placeholder default ` +
+      `would silently leak into outbound headers and audit logs.`
+    );
+  }
+  return value;
+}
+
+/**
  * Parse comma-separated list from environment variable
  * @param {string} envVar - Environment variable name
  * @param {string[]} defaultValue - Default if not set
@@ -211,7 +232,7 @@ const config = {
   // Nextcloud Connection
   // -------------------------------------------------------------------------
   nextcloud: {
-    url: envStr('NC_URL', 'https://YOUR_NEXTCLOUD_URL'),
+    url: envRequired('NC_URL', 'Nextcloud base URL, e.g. https://nc.example.com'),
     username: envStr('NC_USER', 'moltagent')
   },
 

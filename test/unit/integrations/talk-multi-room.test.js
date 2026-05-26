@@ -14,6 +14,10 @@
  * Run: node test/unit/integrations/talk-multi-room.test.js
  */
 
+// config.js requires NC_URL; supply a test default if not already set
+// (the central test runner does this too, but support direct invocation).
+process.env.NC_URL = process.env.NC_URL || 'https://test.example.com';
+
 const assert = require('assert');
 
 let testsPassed = 0;
