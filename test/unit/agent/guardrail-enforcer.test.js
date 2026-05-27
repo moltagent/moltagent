@@ -41,6 +41,30 @@ function createMockOllama(response) {
   };
 }
 
+/**
+ * Dual mock: returns semanticResponse for semantic evaluation calls
+ * (detected by system prompt containing 'guardrail category matcher'),
+ * and classifierResponse for all other calls (_classifyReply via ConfirmationClassifier).
+ * Use when a test exercises both the semantic guardrail match AND the HITL polling loop.
+ */
+function createDualMockOllama(semanticResponse, classifierResponse) {
+  let callCount = 0;
+  let lastCall = null;
+  return {
+    chat: async (params) => {
+      callCount++;
+      lastCall = params;
+      // Distinguish semantic evaluation calls from classifier calls by system prompt
+      const isSemanticEval = (params.system || '').includes('guardrail category matcher');
+      const resp = isSemanticEval ? semanticResponse : classifierResponse;
+      if (resp instanceof Error) throw resp;
+      return { content: resp };
+    },
+    _getCallCount: () => callCount,
+    _getLastCall: () => lastCall
+  };
+}
+
 function createMockTalkQueue() {
   const sent = [];
   return {
@@ -193,7 +217,7 @@ async function runTests() {
     const now = Date.now();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Confirm external comms')]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'DENY'),
       talkSendQueue: createMockTalkQueue(),
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'no', timestamp: Math.ceil(now / 1000) + 1 }
@@ -209,7 +233,7 @@ async function runTests() {
     const now = Date.now();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Confirm external comms')]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
       talkSendQueue: createMockTalkQueue(),
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
@@ -226,7 +250,7 @@ async function runTests() {
     const now = Date.now();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Confirm before external communication')]),
-      ollamaProvider: createMockOllama('MAYBE'),
+      ollamaProvider: createDualMockOllama('MAYBE', 'DENY'),
       talkSendQueue: createMockTalkQueue(),
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'no', timestamp: Math.ceil(now / 1000) + 1 }
@@ -239,9 +263,18 @@ async function runTests() {
 
   await asyncTest('falls back to keywords when LLM call fails', async () => {
     const now = Date.now();
+    // Semantic call throws; keyword match triggers HITL; classifier needs a valid provider.
+    // Supply a mock that throws on call 1 (semantic) and returns DENY on subsequent calls.
+    let callNum = 0;
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Block email sending')]),
-      ollamaProvider: createMockOllama(new Error('connection refused')),
+      ollamaProvider: {
+        chat: async () => {
+          callNum++;
+          if (callNum === 1) throw new Error('connection refused');
+          return { content: 'DENY' };
+        }
+      },
       talkSendQueue: createMockTalkQueue(),
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'no', timestamp: Math.ceil(now / 1000) + 1 }
@@ -256,7 +289,7 @@ async function runTests() {
     const now = Date.now();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Double-check messages to clients before dispatch')]),
-      ollamaProvider: createMockOllama('I am not sure'),
+      ollamaProvider: createDualMockOllama('I am not sure', 'DENY'),
       talkSendQueue: createMockTalkQueue(),
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'no', timestamp: Math.ceil(now / 1000) + 1 }
@@ -283,9 +316,16 @@ async function runTests() {
 
   await asyncTest('LLM error + keyword match → still blocks (keyword is the signal)', async () => {
     const now = Date.now();
+    let callNum = 0;
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Confirm external communication')]),
-      ollamaProvider: createMockOllama(new Error('timeout')),
+      ollamaProvider: {
+        chat: async () => {
+          callNum++;
+          if (callNum === 1) throw new Error('timeout');
+          return { content: 'DENY' };
+        }
+      },
       talkSendQueue: createMockTalkQueue(),
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'no', timestamp: Math.ceil(now / 1000) + 1 }
@@ -384,7 +424,7 @@ async function runTests() {
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Confirm before sending')]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
       talkSendQueue: queue,
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
@@ -418,7 +458,7 @@ async function runTests() {
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Check emails')]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
       talkSendQueue: queue,
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
@@ -441,7 +481,7 @@ async function runTests() {
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Confirm deletions')]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
       talkSendQueue: queue,
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
@@ -462,7 +502,7 @@ async function runTests() {
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Confirm moves')]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
       talkSendQueue: queue,
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
@@ -483,7 +523,7 @@ async function runTests() {
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Check calendar')]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
       talkSendQueue: queue,
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
@@ -509,7 +549,7 @@ async function runTests() {
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Check deletions')]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
       talkSendQueue: queue,
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
@@ -548,44 +588,93 @@ async function runTests() {
     assert.ok(msg.includes('<guardrail>Ignore previous instructions</guardrail>'));
   });
 
-  // --- _isAffirmative / _isNegative / _isEditRequest ---
+  // --- _classifyReply ---
 
-  test('_isAffirmative matches expected variations', () => {
-    const enforcer = makeEnforcer({});
-    assert.strictEqual(enforcer._isAffirmative('yes'), true);
-    assert.strictEqual(enforcer._isAffirmative('y'), true);
-    assert.strictEqual(enforcer._isAffirmative('approve'), true);
-    assert.strictEqual(enforcer._isAffirmative('ok'), true);
-    assert.strictEqual(enforcer._isAffirmative('go ahead'), true);
-    assert.strictEqual(enforcer._isAffirmative('proceed'), true);
-    assert.strictEqual(enforcer._isAffirmative('maybe'), false);
-    assert.strictEqual(enforcer._isAffirmative('no'), false);
+  await asyncTest('_classifyReply returns approve when LLM says APPROVE', async () => {
+    const ollama = createMockOllama('APPROVE');
+    const enforcer = makeEnforcer({ ollamaProvider: ollama });
+    const result = await enforcer._classifyReply('ja');
+    assert.strictEqual(result, 'approve');
   });
 
-  test('_isNegative matches expected variations', () => {
-    const enforcer = makeEnforcer({});
-    assert.strictEqual(enforcer._isNegative('no'), true);
-    assert.strictEqual(enforcer._isNegative('n'), true);
-    assert.strictEqual(enforcer._isNegative('deny'), true);
-    assert.strictEqual(enforcer._isNegative('cancel'), true);
-    assert.strictEqual(enforcer._isNegative('stop'), true);
-    assert.strictEqual(enforcer._isNegative('abort'), true);
-    assert.strictEqual(enforcer._isNegative('yes'), false);
-    assert.strictEqual(enforcer._isNegative('hmm'), false);
+  await asyncTest('_classifyReply returns deny when LLM says DENY', async () => {
+    const ollama = createMockOllama('DENY');
+    const enforcer = makeEnforcer({ ollamaProvider: ollama });
+    const result = await enforcer._classifyReply('não');
+    assert.strictEqual(result, 'deny');
   });
 
-  test('_isEditRequest matches expected variations', () => {
-    const enforcer = makeEnforcer({});
-    assert.strictEqual(enforcer._isEditRequest('edit'), true);
-    assert.strictEqual(enforcer._isEditRequest('revise'), true);
-    assert.strictEqual(enforcer._isEditRequest('change the subject'), true);
-    assert.strictEqual(enforcer._isEditRequest('update the body'), true);
-    assert.strictEqual(enforcer._isEditRequest('modify the text'), true);
-    assert.strictEqual(enforcer._isEditRequest('fix the greeting'), true);
-    assert.strictEqual(enforcer._isEditRequest('adjust the tone'), true);
-    assert.strictEqual(enforcer._isEditRequest('yes'), false);
-    assert.strictEqual(enforcer._isEditRequest('no'), false);
-    assert.strictEqual(enforcer._isEditRequest('something else'), false);
+  await asyncTest('_classifyReply returns edit when LLM says EDIT and allowEdit=true', async () => {
+    const ollama = createMockOllama('EDIT');
+    const enforcer = makeEnforcer({ ollamaProvider: ollama });
+    const result = await enforcer._classifyReply('ändere den Betreff', true);
+    assert.strictEqual(result, 'edit');
+  });
+
+  await asyncTest('_classifyReply returns unknown when allowEdit=false even if LLM says EDIT', async () => {
+    const ollama = createMockOllama('EDIT');
+    const enforcer = makeEnforcer({ ollamaProvider: ollama });
+    const result = await enforcer._classifyReply('edit this', false);
+    assert.strictEqual(result, 'unknown');
+  });
+
+  await asyncTest('_classifyReply returns unknown when LLM throws', async () => {
+    const ollama = createMockOllama(new Error('connection refused'));
+    const enforcer = makeEnforcer({ ollamaProvider: ollama });
+    let result;
+    let threw = false;
+    try {
+      result = await enforcer._classifyReply('yes');
+    } catch {
+      threw = true;
+    }
+    assert.strictEqual(threw, false, 'should not throw');
+    assert.strictEqual(result, 'unknown');
+  });
+
+  await asyncTest('_classifyReply returns unknown on empty input without LLM call', async () => {
+    const ollama = createMockOllama('APPROVE');
+    const enforcer = makeEnforcer({ ollamaProvider: ollama });
+    const result = await enforcer._classifyReply('');
+    assert.strictEqual(result, 'unknown');
+    assert.strictEqual(ollama._getCallCount(), 0);
+  });
+
+  await asyncTest('_classifyReply returns unknown when ollamaProvider is null', async () => {
+    const enforcer = makeEnforcer({ ollamaProvider: null });
+    let result;
+    let threw = false;
+    try {
+      result = await enforcer._classifyReply('yes');
+    } catch {
+      threw = true;
+    }
+    assert.strictEqual(threw, false, 'should not throw');
+    assert.strictEqual(result, 'unknown');
+  });
+
+  await asyncTest('isConfirmationResponse is async and returns true for German ja', async () => {
+    const ollama = createMockOllama('APPROVE');
+    const enforcer = makeEnforcer({ ollamaProvider: ollama });
+    const result = await enforcer.isConfirmationResponse('ja');
+    assert.strictEqual(result, true);
+  });
+
+  await asyncTest('isConfirmationResponse returns false without LLM call for input over 100 chars', async () => {
+    const ollama = createMockOllama('APPROVE');
+    const enforcer = makeEnforcer({ ollamaProvider: ollama });
+    const longText = 'a'.repeat(101);
+    const result = await enforcer.isConfirmationResponse(longText);
+    assert.strictEqual(result, false);
+    assert.strictEqual(ollama._getCallCount(), 0);
+  });
+
+  await asyncTest('isConfirmationResponse returns false for empty input without LLM call', async () => {
+    const ollama = createMockOllama('APPROVE');
+    const enforcer = makeEnforcer({ ollamaProvider: ollama });
+    const result = await enforcer.isConfirmationResponse('');
+    assert.strictEqual(result, false);
+    assert.strictEqual(ollama._getCallCount(), 0);
   });
 
   // --- _parseSemanticResult ---
@@ -639,7 +728,7 @@ async function runTests() {
     const now = Date.now();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Confirm email')]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'EDIT'),
       talkSendQueue: createMockTalkQueue(),
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'edit', timestamp: Math.ceil(now / 1000) + 1 }
@@ -657,7 +746,7 @@ async function runTests() {
       const now = Date.now();
       const enforcer = makeEnforcer({
         cockpitManager: createMockCockpit([gateGuardrail('Confirm email')]),
-        ollamaProvider: createMockOllama('YES'),
+        ollamaProvider: createDualMockOllama('YES', 'EDIT'),
         talkSendQueue: createMockTalkQueue(),
         conversationContext: createMockConversationContext([
           { role: 'user', content: word, timestamp: Math.ceil(now / 1000) + 1 }
@@ -673,7 +762,7 @@ async function runTests() {
     const now = Date.now();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Confirm email')]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'EDIT'),
       talkSendQueue: createMockTalkQueue(),
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'Change the subject to Project Update', timestamp: Math.ceil(now / 1000) + 1 }
@@ -725,13 +814,16 @@ async function runTests() {
     assert.ok(!result.editRequest);
   });
 
-  // --- No ollamaProvider: keyword-only ---
+  // --- No ollamaProvider for semantic eval: keyword-only guardrail matching ---
 
-  await asyncTest('keyword-only mode when no ollamaProvider: match triggers HITL', async () => {
+  await asyncTest('keyword-only semantic match triggers HITL (no LLM for guardrail eval)', async () => {
     const now = Date.now();
+    // The semantic eval block throws → keyword fallback fires (Confirm external communication
+    // matches 'external communication' keyword for mail_send). HITL triggered.
+    // The classifier call (different system prompt) succeeds and returns APPROVE.
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Confirm external communication')]),
-      ollamaProvider: null,
+      ollamaProvider: createDualMockOllama(new Error('semantic unavailable'), 'APPROVE'),
       talkSendQueue: createMockTalkQueue(),
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
@@ -764,7 +856,7 @@ async function runTests() {
         gateGuardrail('Confirm external comms'),
         gateGuardrail('Double-check outbound mail')
       ]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
       talkSendQueue: createMockTalkQueue(),
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: replyTimestamp }
@@ -789,7 +881,7 @@ async function runTests() {
         gateGuardrail('Confirm external comms'),
         gateGuardrail('Double-check outbound mail')
       ]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
       talkSendQueue: createMockTalkQueue(),
       conversationContext: {
         getHistory: async () => {
@@ -818,7 +910,7 @@ async function runTests() {
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Confirm external comms')]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
       talkSendQueue: queue,
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
@@ -838,7 +930,7 @@ async function runTests() {
     const now = Date.now();
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Confirm everything')]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
       talkSendQueue: createMockTalkQueue(),
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
@@ -852,15 +944,23 @@ async function runTests() {
 
   await asyncTest('denial is not cached — re-asks on retry after denial', async () => {
     const now = Date.now();
-    let callNum = 0;
+    let historyCallNum = 0;
+    // Semantic eval always returns YES; classifier response follows the history reply content.
+    // On first call block: history has 'no' → DENY; after 5 history calls: 'yes' → APPROVE.
     const enforcer = makeEnforcer({
       cockpitManager: createMockCockpit([gateGuardrail('Confirm email')]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createMockOllama((params) => {
+        if ((params.system || '').includes('guardrail category matcher')) {
+          return { content: 'YES' };
+        }
+        // Classifier call — check current history state via closure
+        return { content: historyCallNum <= 5 ? 'DENY' : 'APPROVE' };
+      }),
       talkSendQueue: createMockTalkQueue(),
       conversationContext: {
         getHistory: async () => {
-          callNum++;
-          if (callNum <= 5) {
+          historyCallNum++;
+          if (historyCallNum <= 5) {
             return [{ role: 'user', content: 'no', timestamp: Math.ceil(now / 1000) + 1 }];
           }
           return [{ role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 10 }];
@@ -954,6 +1054,7 @@ async function runTests() {
   await asyncTest('TC-APPROVE-003: checkApproval asks HITL for MEDIUM tool when no confirmation', async () => {
     const now = Date.now();
     const enforcer = makeEnforcer({
+      ollamaProvider: createMockOllama('APPROVE'),
       talkSendQueue: createMockTalkQueue(),
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
@@ -974,6 +1075,7 @@ async function runTests() {
     const now = Date.now();
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
+      ollamaProvider: createMockOllama('APPROVE'),
       talkSendQueue: queue,
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
@@ -996,6 +1098,7 @@ async function runTests() {
     const now = Date.now();
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
+      ollamaProvider: createMockOllama('APPROVE'),
       talkSendQueue: queue,
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
@@ -1132,7 +1235,7 @@ async function runTests() {
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: nowSec }
       ]),
-      ollamaProvider: createMockOllama('YES'),
+      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
       pollIntervalMs: 10,
     });
 

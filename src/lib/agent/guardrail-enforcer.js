@@ -1,5 +1,7 @@
 'use strict';
 
+const { classifyConfirmationReply } = require('../shared/confirmation-classifier');
+
 /**
  * GuardrailEnforcer - Runtime Guardrail Enforcement
  *
@@ -72,10 +74,6 @@ const KEYWORD_FALLBACK_MAP = {
 
 const MATCH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 const SEMANTIC_TIMEOUT_MS = 30000; // 30s — classification needs headroom
-
-const AFFIRMATIVE = new Set(['yes', 'y', 'approve', 'ok', 'go ahead', 'proceed']);
-const NEGATIVE = new Set(['no', 'n', 'deny', 'cancel', 'stop', 'abort']);
-const EDIT_WORDS = ['edit', 'revise', 'change', 'update', 'modify', 'fix', 'adjust'];
 
 // Severity classification for ToolGuard APPROVAL_REQUIRED tools
 const HIGH_SEVERITY_TOOLS = new Set([
@@ -423,22 +421,24 @@ class GuardrailEnforcer {
           if (msgTimestampMs <= searchAfter) continue;
           if (msg.role !== 'user') continue;
 
-          const content = (msg.content || '').trim().toLowerCase();
-          if (this._isAffirmative(content)) {
+          const content = (msg.content || '').trim();
+          const reply = await this._classifyReply(content, EDITABLE_TOOLS.has(toolName));
+          if (reply === 'approve') {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
             return { decision: 'yes' };
           }
-          if (this._isNegative(content)) {
+          if (reply === 'deny') {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
             return { decision: 'no' };
           }
-          if (this._isEditRequest(content) && EDITABLE_TOOLS.has(toolName)) {
+          if (reply === 'edit' && EDITABLE_TOOLS.has(toolName)) {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
-            return { decision: 'edit', message: (msg.content || '').trim() };
+            return { decision: 'edit', message: content };
           }
+          // 'unknown' → keep polling
         }
       } catch (err) {
         this.logger.warn(`[GuardrailEnforcer] Poll failed: ${err.message}`);
@@ -854,22 +854,24 @@ class GuardrailEnforcer {
           const msgTimestampMs = (msg.timestamp || 0) * 1000;
           if (msgTimestampMs <= searchAfter) continue;
           if (msg.role !== 'user') continue;
-          const content = (msg.content || '').trim().toLowerCase();
-          if (this._isAffirmative(content)) {
+          const content = (msg.content || '').trim();
+          const reply = await this._classifyReply(content, EDITABLE_TOOLS.has(toolName));
+          if (reply === 'approve') {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
             return { decision: 'yes' };
           }
-          if (this._isNegative(content)) {
+          if (reply === 'deny') {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
             return { decision: 'no' };
           }
-          if (this._isEditRequest(content) && EDITABLE_TOOLS.has(toolName)) {
+          if (reply === 'edit' && EDITABLE_TOOLS.has(toolName)) {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
-            return { decision: 'edit', message: (msg.content || '').trim() };
+            return { decision: 'edit', message: content };
           }
+          // 'unknown' → keep polling
         }
       } catch (err) {
         this.logger.warn(`[GuardrailEnforcer] Approval poll failed: ${err.message}`);
@@ -959,12 +961,15 @@ class GuardrailEnforcer {
    * Check if text looks like a HITL confirmation response (yes/no/edit).
    * Used by MessageProcessor to skip webhook-delivered duplicates.
    * @param {string} text - Raw message content
-   * @returns {boolean}
+   * @returns {Promise<boolean>}
    */
-  isConfirmationResponse(text) {
-    const trimmed = (text || '').trim().toLowerCase();
-    if (trimmed.length === 0 || trimmed.length > 50) return false;
-    return this._isAffirmative(trimmed) || this._isNegative(trimmed) || this._isEditRequest(trimmed);
+  async isConfirmationResponse(text) {
+    if (!text || typeof text !== 'string') return false;
+    const trimmed = text.trim();
+    if (!trimmed || trimmed.length > 100) return false;
+    // allowEdit=true: union of approve + deny + edit (matches former union of three checks)
+    const reply = await this._classifyReply(trimmed, true);
+    return reply === 'approve' || reply === 'deny' || reply === 'edit';
   }
 
   // ── Helpers ─────────────────────────────────────────────────────
@@ -975,19 +980,24 @@ class GuardrailEnforcer {
     return `${toolName}(${argStr})`;
   }
 
-  /** @param {string} text - Lowercased, trimmed */
-  _isAffirmative(text) {
-    return AFFIRMATIVE.has(text);
-  }
-
-  /** @param {string} text - Lowercased, trimmed */
-  _isNegative(text) {
-    return NEGATIVE.has(text);
-  }
-
-  /** @param {string} text - Lowercased, trimmed */
-  _isEditRequest(text) {
-    return EDIT_WORDS.some(word => text.startsWith(word));
+  /**
+   * Classify a human reply using the shared ConfirmationClassifier.
+   *
+   * @param {string} text - Raw reply text (not pre-normalised)
+   * @param {boolean} [allowEdit=false] - Whether to recognise 'edit' responses
+   * @returns {Promise<'approve'|'deny'|'edit'|'unknown'>}
+   * @private
+   */
+  async _classifyReply(text, allowEdit = false) {
+    if (typeof text !== 'string' || !text.trim() || text.length > 100) {
+      return 'unknown';
+    }
+    if (!this.ollamaProvider) return 'unknown';
+    return classifyConfirmationReply(text, this.ollamaProvider, {
+      allowEdit,
+      timeoutMs: 5000,
+      logger: this.logger
+    });
   }
 
   /**

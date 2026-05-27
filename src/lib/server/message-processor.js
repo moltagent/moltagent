@@ -376,7 +376,7 @@ class MessageProcessor {
 
     // Skip messages consumed by HITL guardrail confirmation polling
     const enforcer = this.agentLoop?.guardrailEnforcer;
-    if (enforcer?.isPendingConfirmation() && enforcer.isConfirmationResponse(extracted.content)) {
+    if (enforcer?.isPendingConfirmation() && await enforcer.isConfirmationResponse(extracted.content)) {
       console.log(`[Message] Skipping HITL confirmation response from ${extracted.user}`);
       this.statusIndicator?.setStatus('ready').catch(() => {});
       return { skipped: true, reason: 'hitl_confirmation' };
