@@ -34,7 +34,7 @@ async function buildProvider() {
     system: 'Reply with the single word: READY',
     messages: [{ role: 'user', content: 'Reply READY' }],
     tools: [],
-    timeout: 6000,
+    timeout: 15000,
     model: 'qwen2.5:3b',
     options: { temperature: 0 }
   });
