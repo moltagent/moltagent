@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { extractArtifact } = require('./artifact-extractor');
+const { HITL_PROMPT_MARKER } = require('./guardrail-enforcer');
 
 /**
  * AgentLoop - The Nervous System
@@ -304,18 +305,26 @@ class AgentLoop {
       }
 
       // Action-hallucination guard: when the classifier said this turn is an
-      // action but the LLM produced text without calling any tool, re-prompt
+      // action but the LLM produced text without doing the work, re-prompt
       // once before letting the response reach the user. The check is
-      // structural (gate + tool-call history) — language-free.
+      // structural (gate + tool-call history + HITL marker) — language-free.
       //
-      // Skip when at least one tool has already executed this turn: that
-      // text response is the legitimate "summarize tool results" reply.
+      // Two structural signals trigger the re-prompt:
+      //   (a) Zero tool calls this turn — the original PR #68 case.
+      //   (b) The response renders the HITL prompt marker (\u{1F510}) that
+      //       the GuardrailEnforcer reserves for its Talk surface. If the
+      //       agent emits that codepoint, it is staging a fake approval
+      //       ceremony instead of calling the destructive tool (#81). This
+      //       fires even when read-only tools were called (e.g. list-then-
+      //       narrate-approval).
       //
       // Bounded to one re-prompt per turn via actionGuardFired so legitimate
       // text-only refusals on the second pass ("I can't because…") are not
       // re-prompted again. maxIter is bumped to guarantee at least one more
       // iteration even when the short-message heuristic capped it at 2.
-      if (options.gate === 'action' && !actionGuardFired && toolResultIndices.length === 0) {
+      const responseStagesApproval = (response.content || '').includes(HITL_PROMPT_MARKER);
+      const noToolCallsYet = toolResultIndices.length === 0;
+      if (options.gate === 'action' && !actionGuardFired && (noToolCallsYet || responseStagesApproval)) {
         actionGuardFired = true;
         maxIter = Math.max(maxIter, iteration + 1);
 
@@ -325,10 +334,11 @@ class AgentLoop {
         });
         messages.push({
           role: 'user',
-          content: '[SYSTEM] You were asked to perform an action but responded with text only — no tool was called. If you can perform the action, call the appropriate tool now. If you cannot perform it, explain what prevented you. Do not describe the result of an action you did not perform.'
+          content: '[SYSTEM] You were asked to perform an action but did not issue the state-changing tool call. The guardrail system handles approval prompts on its own surface — do not stage them in your response. If you can perform the action, call the appropriate tool now. If you cannot, explain what prevented you. Do not describe a result the tool has not returned.'
         });
 
-        this.logger.warn(`[AgentLoop] Action-hallucination guard fired at iteration ${iteration} — re-prompting (gate=action, zero tool calls)`);
+        const reason = noToolCallsYet ? 'zero tool calls' : 'response staged HITL marker without destructive tool call';
+        this.logger.warn(`[AgentLoop] Action-hallucination guard fired at iteration ${iteration} — re-prompting (gate=action, ${reason})`);
         continue;
       }
 

@@ -112,6 +112,11 @@ const TOOL_APPROVAL_LABELS = {
 const DEFAULT_CONFIRMATION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_POLL_INTERVAL_MS = 3000;
 
+// Unicode marker the enforcer reserves for its HITL approval prompts on the
+// Talk surface (U+1F510, "closed lock with key"). Any other component emitting
+// this codepoint in a chat response is staging a fake ceremony — see #81.
+const HITL_PROMPT_MARKER = '\u{1F510}';
+
 class GuardrailEnforcer {
   /**
    * @param {Object} options
@@ -1116,4 +1121,4 @@ class GuardrailEnforcer {
   }
 }
 
-module.exports = { GuardrailEnforcer, HIGH_SEVERITY_TOOLS, TOOL_APPROVAL_LABELS };
+module.exports = { GuardrailEnforcer, HIGH_SEVERITY_TOOLS, TOOL_APPROVAL_LABELS, HITL_PROMPT_MARKER };
