@@ -1019,12 +1019,6 @@ class MessageProcessor {
           user: extracted.user
         };
 
-        // Bug 3 fix: Short confirmations shouldn't loop to max iterations
-        const trimmed = extracted.content.trim().toLowerCase();
-        if (trimmed.length <= 10 && /^(yes|no|ok|sure|yeah|nah|do it|go ahead|cancel|stop|yep|nope|y|n)$/.test(trimmed)) {
-          agentOpts.maxIterations = 2;
-        }
-
         response = await this.agentLoop.process(pipelineMessage, extracted.token, {
           ...agentOpts,
           systemSuffix: focusContext
