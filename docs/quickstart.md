@@ -131,6 +131,7 @@ chmod 600 /etc/credstore/moltagent-nc-password
 ### Configure the agent
 
 ```bash
+# From the repo root (/opt/moltagent if you followed the clone step above):
 # Edit the provider configuration with your Ollama VM IP and provider preferences
 nano config/moltagent-providers.yaml
 ```
@@ -224,16 +225,26 @@ Send a message in the Talk room. If the webhook is configured correctly, the bot
 
 Check the [public dashboard](https://public.moltagent.cloud) architecture view for a reference of what a healthy system looks like.
 
-## Single-VM Development Setup
+## Home-Lab and Single-Server Setup
 
-For development and testing, you can run everything on a single machine:
+The three-VM architecture is a production security measure (network isolation). For testing, development, or home-lab use, you can run Moltagent alongside an existing Nextcloud and Ollama installation.
 
-1. Install Ollama locally
-2. Point the config at a Nextcloud instance (can be a test Storage Share or local Nextcloud)
-3. Run `npm test` to verify the test suite
-4. Run the agent directly with `node webhook-server.js`
+What changes:
 
-This skips network isolation and is not suitable for production, but it's sufficient for development and contribution testing.
+- Clone the repo on the same server as Nextcloud (or any machine that can reach your Nextcloud and Ollama instances)
+- In `config/moltagent-providers.yaml`, set the Ollama endpoint to your Ollama server's LAN IP (e.g. `http://192.168.1.50:11434`)
+- Set up the credential store and systemd service as described in Step 4 above
+- Skip the firewall rules — those are for the isolated VM setup
+
+To verify:
+
+```bash
+cd /path/to/moltagent
+npm test                      # Run the test suite
+node webhook-server.js        # Start the agent directly (foreground, useful for debugging)
+```
+
+This skips network isolation and is not suitable for production, but works for development, contribution testing, and home-lab exploration.
 
 ## Next Steps
 

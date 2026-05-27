@@ -1419,6 +1419,149 @@ asyncTest('system prompt defaults to UTC timezone', async () => {
 });
 
 // ============================================================
+// Action-hallucination guard (issue surfaced during PR #66 verification)
+// ============================================================
+
+asyncTest('action-hallucination guard: text-only response with gate=action triggers re-prompt then tool call', async () => {
+  // Iteration 1: LLM hallucinates success in text only.
+  // Iteration 2: After guard's re-prompt, LLM calls the tool.
+  // Iteration 3: LLM produces final text after tool result.
+  const provider = createMockProvider([
+    { content: '✅ Deleted both cards', toolCalls: null },
+    { content: null, toolCalls: [{ id: 'call_1', name: 'deck_delete_card', arguments: { card: '#42' } }] },
+    { content: 'Deleted card #42.', toolCalls: null }
+  ]);
+
+  let executedTool = null;
+  const registry = createMockToolRegistry({
+    deck_delete_card: async (args) => { executedTool = args; return { success: true, result: 'Deleted #42' }; }
+  });
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('delete card 42', 'room-abc', { gate: 'action' });
+  assert.deepStrictEqual(executedTool, { card: '#42' });
+  assert.strictEqual(response, 'Deleted card #42.');
+});
+
+asyncTest('action-hallucination guard fires at most once per turn (legitimate text-only refusal accepted)', async () => {
+  // Iteration 1: LLM responds text-only (claims failure).
+  // Iteration 2: After re-prompt, LLM still text-only (legitimate explanation).
+  //              Guard must NOT fire again — second text is the final answer.
+  const provider = createMockProvider([
+    { content: 'OK, I deleted it.', toolCalls: null },
+    { content: 'I cannot delete it — the board does not exist.', toolCalls: null }
+  ]);
+
+  const loop = new AgentLoop({
+    toolRegistry: createMockToolRegistry(),
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('delete card 42 on Imaginary board', 'room-abc', { gate: 'action' });
+  assert.strictEqual(response, 'I cannot delete it — the board does not exist.');
+  assert.strictEqual(provider._getCallCount(), 2);  // exactly 2 LLM calls, no infinite loop
+});
+
+asyncTest('action-hallucination guard bumps maxIter when capped at 2 (short-message heuristic case)', async () => {
+  // Simulates "delete both" — short message, message-processor sets maxIterations=2.
+  // Without the bump, the re-prompt would consume iteration 2 but the loop exits
+  // before the LLM can act. With the bump, the LLM gets one more shot.
+  const provider = createMockProvider([
+    { content: '✅ Done', toolCalls: null },
+    { content: null, toolCalls: [{ id: 'call_x', name: 'deck_delete_card', arguments: { card: '#1' } }] },
+    { content: 'Done.', toolCalls: null }
+  ]);
+
+  const registry = createMockToolRegistry({
+    deck_delete_card: async () => ({ success: true, result: 'ok' })
+  });
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('delete both', 'room-abc', { gate: 'action', maxIterations: 2 });
+  assert.strictEqual(response, 'Done.');
+  assert.strictEqual(provider._getCallCount(), 3);
+});
+
+asyncTest('action-hallucination guard does NOT fire for gate=knowledge', async () => {
+  // Knowledge responses are legitimately text-only — guard must not interfere.
+  const provider = createMockProvider([
+    { content: 'The wiki says X.', toolCalls: null }
+  ]);
+
+  const loop = new AgentLoop({
+    toolRegistry: createMockToolRegistry(),
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('what is X?', 'room-abc', { gate: 'knowledge' });
+  assert.strictEqual(response, 'The wiki says X.');
+  assert.strictEqual(provider._getCallCount(), 1);
+});
+
+asyncTest('action-hallucination guard does NOT fire when gate option is omitted (proactive/internal triggers)', async () => {
+  // ProactiveEvaluator and DeferralQueue call process() without a gate.
+  // Guard must not fire — there's no classifier signal to act on.
+  const provider = createMockProvider([
+    { content: 'Acknowledged.', toolCalls: null }
+  ]);
+
+  const loop = new AgentLoop({
+    toolRegistry: createMockToolRegistry(),
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('internal prompt', 'room-abc');
+  assert.strictEqual(response, 'Acknowledged.');
+  assert.strictEqual(provider._getCallCount(), 1);
+});
+
+asyncTest('action-hallucination guard does NOT fire when LLM calls a tool on iteration 1 (normal action flow)', async () => {
+  const provider = createMockProvider([
+    { content: null, toolCalls: [{ id: 'call_1', name: 'deck_create_card', arguments: { title: 'T' } }] },
+    { content: 'Card created.', toolCalls: null }
+  ]);
+
+  const registry = createMockToolRegistry({
+    deck_create_card: async () => ({ success: true, result: 'created' })
+  });
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('create card T', 'room-abc', { gate: 'action' });
+  assert.strictEqual(response, 'Card created.');
+  assert.strictEqual(provider._getCallCount(), 2);  // no re-prompt needed
+});
+
+// ============================================================
 // Cleanup & Summary
 // ============================================================
 

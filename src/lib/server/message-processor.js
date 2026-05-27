@@ -657,8 +657,8 @@ class MessageProcessor {
         // Smart-mix: three-path routing (local text / local tools / cloud)
         // Build live context ONCE — passed to classifier, probes, synthesis, guard
         const liveContext = earlyLiveContext || (session ? buildLiveContext(session, pipelineMessage) : null);
-        const { useLocal, useDomainTools, intent, compound } = await this._smartMixClassify(pipelineMessage, session, extracted.token, liveContext);
-        console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}${compound ? ' [COMPOUND]' : ''}`);
+        const { useLocal, useDomainTools, intent, compound, gate } = await this._smartMixClassify(pipelineMessage, session, extracted.token, liveContext);
+        console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}${compound ? ' [COMPOUND]' : ''}${gate ? ` (gate=${gate})` : ''}`);
 
         // Intent-specific feedback: acknowledge the user immediately (fire-and-forget)
         const lang = this._getLanguage();
@@ -678,6 +678,7 @@ class MessageProcessor {
             messageId: extracted.messageId,
             inputType: extracted._isVoice ? 'voice' : 'text',
             user: extracted.user,
+            gate,
             systemSuffix: focusContext ? (flushPrompt ? flushPrompt + '\n' + focusContext : focusContext) : flushPrompt,
             onArtifact
           });
@@ -743,6 +744,7 @@ class MessageProcessor {
                 messageId: extracted.messageId,
                 inputType: extracted._isVoice ? 'voice' : 'text',
                 user: extracted.user,
+                gate,
                 systemSuffix: focusContext || undefined,
                 onArtifact
               });
@@ -786,6 +788,7 @@ class MessageProcessor {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
               user: extracted.user,
+              gate,
               systemSuffix: focusContext || undefined,
               onArtifact
             });
@@ -817,6 +820,7 @@ class MessageProcessor {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
               user: extracted.user,
+              gate,
               systemSuffix: focusContext || undefined,
               onArtifact
             });
@@ -859,6 +863,7 @@ class MessageProcessor {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
               user: extracted.user,
+              gate,
               systemSuffix: focusContext
                 ? (flushPrompt ? flushPrompt + '\n' + focusContext : focusContext)
                 : flushPrompt,
@@ -902,6 +907,7 @@ class MessageProcessor {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
               user: extracted.user,
+              gate,
               systemSuffix: focusContext || undefined,
               onArtifact
             });
@@ -930,6 +936,7 @@ class MessageProcessor {
               messageId: extracted.messageId,
               inputType: extracted._isVoice ? 'voice' : 'text',
               user: extracted.user,
+              gate,
               systemSuffix: focusContext || undefined,
               onArtifact
             });
@@ -966,7 +973,8 @@ class MessageProcessor {
             messageId: extracted.messageId,
             inputType: extracted._isVoice ? 'voice' : 'text',
             voiceReplyEnabled,
-            user: extracted.user
+            user: extracted.user,
+            gate
           };
 
           // Bug 3 fix: Short confirmations shouldn't loop to max iterations
@@ -1746,7 +1754,7 @@ class MessageProcessor {
         }
       }
 
-      let { intent, domain, compound } = classification;
+      let { gate, intent, domain, compound } = classification;
 
       // Trust boundary: in smart-mix mode (cloud available), everything goes
       // through cloud except knowledge (dedicated probe pipeline) and compound
@@ -1754,24 +1762,24 @@ class MessageProcessor {
 
       // Confirmation/selection → cloud (needs full history)
       if (intent === 'confirmation' || intent === 'selection') {
-        return { useLocal: false, useDomainTools: false, intent, compound: false };
+        return { useLocal: false, useDomainTools: false, intent, compound: false, gate };
       }
       if (intent === 'confirmation_declined') {
-        return { useLocal: true, useDomainTools: false, intent: 'confirmation_declined', compound: false };
+        return { useLocal: true, useDomainTools: false, intent: 'confirmation_declined', compound: false, gate };
       }
       // Knowledge → dedicated handler (probes, deep reads, web fallback, synthesis)
       if (intent === 'knowledge') {
-        return { useLocal: true, useDomainTools: true, intent, compound: !!compound };
+        return { useLocal: true, useDomainTools: true, intent, compound: !!compound, gate };
       }
       // Compound + domain → compound handler (already cloud-powered)
       if (compound && DOMAIN_INTENTS.has(intent)) {
-        return { useLocal: true, useDomainTools: true, intent, compound: true };
+        return { useLocal: true, useDomainTools: true, intent, compound: true, gate };
       }
       // Everything else → cloud via AgentLoop (Haiku, full tools, web search)
-      return { useLocal: false, useDomainTools: false, intent: intent || 'complex', compound: !!compound };
+      return { useLocal: false, useDomainTools: false, intent: intent || 'complex', compound: !!compound, gate };
     } catch (err) {
       console.warn(`[Message] Smart-mix classification failed: ${err.message}`);
-      return { useLocal: false, useDomainTools: false, intent: 'error', compound: false };
+      return { useLocal: false, useDomainTools: false, intent: 'error', compound: false, gate: null };
     }
   }
 

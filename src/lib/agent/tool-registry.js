@@ -471,6 +471,114 @@ class ToolRegistry {
   }
 
   /**
+   * Resolve a card on either the default board (legacy behaviour, preserved
+   * for backward compatibility) or a named/ID-identified board. Returns one
+   * of four shapes so the caller can render an appropriate user-facing
+   * message without a second resolution pass.
+   *
+   * @private
+   * @param {Object} deck - DeckClient instance
+   * @param {string} cardIdentifier - Card title (partial match) or "#ID"
+   * @param {string} [boardParam] - Board name (partial match) or ID. If
+   *   omitted, walks the bot's default task board.
+   * @returns {Promise<
+   *     { found: true, card, boardId, stackId, stackTitle, isDefaultBoard, stackKey? }
+   *   | { found: false, reason: 'no_board', boardQuery }
+   *   | { found: false, reason: 'no_card', boardTitle, cardQuery }
+   *   | { found: false, reason: 'ambiguous', boardTitle, cardQuery, candidates }
+   * >}
+   */
+  async _resolveCardOnBoard(deck, cardIdentifier, boardParam) {
+    if (!boardParam) {
+      const resolved = await this._resolveCard(deck, cardIdentifier);
+      if (!resolved) return { found: false, reason: 'no_card', boardTitle: null, cardQuery: cardIdentifier };
+
+      const stackTitle = (deck.stackNames && deck.stackNames[resolved.stackKey]) || resolved.stackKey;
+      return {
+        found: true,
+        card: resolved.card,
+        boardId: null,
+        stackId: null,
+        stackTitle,
+        isDefaultBoard: true,
+        stackKey: resolved.stackKey
+      };
+    }
+
+    const board = await this._resolveBoard(deck, boardParam);
+    if (!board) return { found: false, reason: 'no_board', boardQuery: boardParam };
+
+    const stacks = await deck.getStacks(board.id);
+    const idStr = String(cardIdentifier).startsWith('#')
+      ? String(cardIdentifier).slice(1)
+      : null;
+    const titleLower = idStr ? null : String(cardIdentifier).toLowerCase();
+
+    const matches = [];
+    for (const stack of stacks || []) {
+      for (const card of stack.cards || []) {
+        const matchById = idStr && String(card.id) === idStr;
+        const matchByTitle = !idStr && card.title && card.title.toLowerCase().includes(titleLower);
+        if (matchById || matchByTitle) {
+          matches.push({ card, stackId: stack.id, stackTitle: stack.title });
+        }
+      }
+    }
+
+    if (matches.length === 0) {
+      return { found: false, reason: 'no_card', boardTitle: board.title, cardQuery: cardIdentifier };
+    }
+    if (matches.length > 1) {
+      return {
+        found: false,
+        reason: 'ambiguous',
+        boardTitle: board.title,
+        cardQuery: cardIdentifier,
+        candidates: matches.map(m => ({
+          id: m.card.id,
+          title: m.card.title,
+          stackTitle: m.stackTitle
+        }))
+      };
+    }
+
+    const m = matches[0];
+    return {
+      found: true,
+      card: m.card,
+      boardId: board.id,
+      stackId: m.stackId,
+      stackTitle: m.stackTitle,
+      isDefaultBoard: false
+    };
+  }
+
+  /**
+   * Render a non-found resolution as a user-facing string. Returns null
+   * if the resolution is `found: true` (caller should not invoke this).
+   * @private
+   */
+  _renderResolutionError(resolution, action = 'operate on') {
+    if (resolution.found) return null;
+    if (resolution.reason === 'no_board') {
+      return `No board found matching "${resolution.boardQuery}".`;
+    }
+    if (resolution.reason === 'no_card') {
+      return resolution.boardTitle
+        ? `No card found matching "${resolution.cardQuery}" on board "${resolution.boardTitle}".`
+        : `No card found matching "${resolution.cardQuery}".`;
+    }
+    if (resolution.reason === 'ambiguous') {
+      const list = resolution.candidates
+        .map(c => `  - #${c.id} "${c.title}" in ${c.stackTitle}`)
+        .join('\n');
+      return `Multiple cards on board "${resolution.boardTitle}" match "${resolution.cardQuery}". ` +
+        `Please specify which card to ${action} by passing the card ID (e.g. "#${resolution.candidates[0].id}"):\n${list}`;
+    }
+    return `Could not resolve card "${resolution.cardQuery}".`;
+  }
+
+  /**
    * Resolve cards across all accessible boards.
    * Returns flat array of { card, stackTitle, boardTitle, boardId }.
    * @private
@@ -607,7 +715,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_move_card',
-      description: 'Move a card to a different stack. Use this when asked to close, finish, start, or queue a task. The card can be identified by title (partial match) or ID.',
+      description: 'Move a card to a different stack. Use this when asked to close, finish, start, or queue a task. The card can be identified by title (partial match) or ID. Defaults to the task board; pass `board` to operate on a shared board.',
       parameters: {
         type: 'object',
         properties: {
@@ -617,33 +725,51 @@ class ToolRegistry {
           },
           target_stack: {
             type: 'string',
-            description: 'Destination stack',
-            enum: [DECK.stacks.inbox, DECK.stacks.queued, DECK.stacks.working, DECK.stacks.done, DECK.stacks.review]
+            description: 'Destination stack title. On the default task board: Inbox, Queued, Working, Done, Review. On a shared board: the stack title as it appears on that board (use deck_list_stacks to discover).'
+          },
+          board: {
+            type: 'string',
+            description: 'Board name (partial match) or board ID. If omitted, uses the task board.'
           }
         },
         required: ['card', 'target_stack']
       },
       handler: async (args) => {
         try {
-          const resolved = await this._resolveCard(deck, args.card);
-
-          if (!resolved) {
-            const allCards = await deck.getAllCards();
-            const available = Object.entries(allCards)
-              .flatMap(([k, cards]) => cards.map(c => `  - "${c.title}" in ${this._stackDisplayName(k, deck)}`))
-              .join('\n');
-            return `No card found matching "${args.card}".${available ? ` Available cards:\n${available}` : ''}`;
+          const resolution = await this._resolveCardOnBoard(deck, args.card, args.board);
+          if (!resolution.found) {
+            if (!args.board && resolution.reason === 'no_card') {
+              const allCards = await deck.getAllCards();
+              const available = Object.entries(allCards)
+                .flatMap(([k, cards]) => cards.map(c => `  - "${c.title}" in ${this._stackDisplayName(k, deck)}`))
+                .join('\n');
+              return `No card found matching "${args.card}".${available ? ` Available cards:\n${available}` : ''}`;
+            }
+            return this._renderResolutionError(resolution, 'move');
           }
 
-          const { card: foundCard, stackKey: fromStackKey } = resolved;
-          const toStackKey = this._stackKey(args.target_stack);
+          const { card: foundCard, boardId, stackId: fromStackId, stackTitle: fromStackTitle, isDefaultBoard, stackKey: fromStackKey } = resolution;
 
-          if (fromStackKey === toStackKey) {
-            return `Card "${foundCard.title}" is already in ${args.target_stack}.`;
+          if (isDefaultBoard) {
+            const toStackKey = this._stackKey(args.target_stack);
+            if (fromStackKey === toStackKey) {
+              return `Card "${foundCard.title}" is already in ${args.target_stack}.`;
+            }
+            await deck.moveCard(foundCard.id, fromStackKey, toStackKey);
+            return `Moved "${foundCard.title}" (card #${foundCard.id}) from ${this._stackDisplayName(fromStackKey, deck)} to ${args.target_stack}.`;
           }
 
-          await deck.moveCard(foundCard.id, fromStackKey, toStackKey);
-          return `Moved "${foundCard.title}" (card #${foundCard.id}) from ${this._stackDisplayName(fromStackKey, deck)} to ${args.target_stack}.`;
+          const stacks = await deck.getStacks(boardId);
+          const targetStack = (stacks || []).find(s => s.title.toLowerCase() === args.target_stack.toLowerCase());
+          if (!targetStack) {
+            const available = (stacks || []).map(s => `"${s.title}"`).join(', ');
+            return `No stack "${args.target_stack}" on this board. Available stacks: ${available || '(none)'}`;
+          }
+          if (targetStack.id === fromStackId) {
+            return `Card "${foundCard.title}" is already in "${targetStack.title}".`;
+          }
+          await deck.moveCardById(foundCard.id, targetStack.id, 0);
+          return `Moved "${foundCard.title}" (card #${foundCard.id}) from "${fromStackTitle}" to "${targetStack.title}".`;
         } catch (err) {
           this.logger.error(`[deck_move_card] ${err.message}`);
           return `Failed to move card: ${err.message}`;
@@ -860,24 +986,27 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_get_card',
-      description: 'Get full details of a card including description, due date, assigned users, labels, and comments. Card identified by title (partial match) or #ID.',
+      description: 'Get full details of a card including description, due date, assigned users, labels, and comments. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to read from a shared board.',
       parameters: {
         type: 'object',
         properties: {
-          card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' }
+          card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' },
+          board: { type: 'string', description: 'Board name (partial match) or board ID. If omitted, uses the task board.' }
         },
         required: ['card']
       },
       handler: async (args) => {
         try {
-          const resolved = await this._resolveCard(deck, args.card);
-          if (!resolved) return `No card found matching "${args.card}".`;
+          const resolution = await this._resolveCardOnBoard(deck, args.card, args.board);
+          if (!resolution.found) return this._renderResolutionError(resolution, 'read');
 
-          const { card: found, stackKey } = resolved;
-          const full = await deck.getCard(found.id, stackKey);
+          const { card: found, boardId, stackId, stackTitle, isDefaultBoard, stackKey } = resolution;
+          const full = isDefaultBoard
+            ? await deck.getCard(found.id, stackKey)
+            : await deck.getCardById(boardId, stackId, found.id);
           const comments = await deck.getComments(found.id);
 
-          let result = `Card #${full.id}: "${full.title}" in ${this._stackDisplayName(stackKey, deck)}\n`;
+          let result = `Card #${full.id}: "${full.title}" in ${stackTitle}\n`;
           if (full.description) result += `Description: ${full.description}\n`;
           if (full.duedate) result += `Due: ${full.duedate}\n`;
 
@@ -907,24 +1036,27 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_update_card',
-      description: 'Update a card\'s title, description, or due date. Card identified by title (partial match) or #ID.',
+      description: 'Update a card\'s title, description, or due date. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to update a card on a shared board.',
       parameters: {
         type: 'object',
         properties: {
           card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' },
           title: { type: 'string', description: 'New title' },
           description: { type: 'string', description: 'New description' },
-          duedate: { type: 'string', description: 'New due date (ISO format) or "none" to clear' }
+          duedate: { type: 'string', description: 'New due date (ISO format) or "none" to clear' },
+          board: { type: 'string', description: 'Board name (partial match) or board ID. If omitted, uses the task board.' }
         },
         required: ['card']
       },
       handler: async (args) => {
         try {
-          const resolved = await this._resolveCard(deck, args.card);
-          if (!resolved) return `No card found matching "${args.card}".`;
+          const resolution = await this._resolveCardOnBoard(deck, args.card, args.board);
+          if (!resolution.found) return this._renderResolutionError(resolution, 'update');
 
-          const { card: found, stackKey } = resolved;
-          const current = await deck.getCard(found.id, stackKey);
+          const { card: found, boardId, stackId, isDefaultBoard, stackKey } = resolution;
+          const current = isDefaultBoard
+            ? await deck.getCard(found.id, stackKey)
+            : await deck.getCardById(boardId, stackId, found.id);
 
           const updates = {
             title: args.title || current.title,
@@ -934,7 +1066,11 @@ class ToolRegistry {
             duedate: args.duedate === 'none' ? null : (args.duedate || current.duedate || null)
           };
 
-          await deck.updateCard(found.id, stackKey, updates);
+          if (isDefaultBoard) {
+            await deck.updateCard(found.id, stackKey, updates);
+          } else {
+            await deck.updateCardById(boardId, stackId, found.id, updates);
+          }
 
           const changes = [];
           if (args.title) changes.push(`title: "${args.title}"`);
@@ -951,22 +1087,27 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_delete_card',
-      description: 'Delete a card from the board. This is destructive and requires confirmation. Card identified by title (partial match) or #ID.',
+      description: 'Delete a card from the board. This is destructive and requires confirmation. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to delete a card on a shared board.',
       parameters: {
         type: 'object',
         properties: {
-          card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' }
+          card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' },
+          board: { type: 'string', description: 'Board name (partial match) or board ID. If omitted, uses the task board.' }
         },
         required: ['card']
       },
       handler: async (args) => {
         try {
-          const resolved = await this._resolveCard(deck, args.card);
-          if (!resolved) return `No card found matching "${args.card}".`;
+          const resolution = await this._resolveCardOnBoard(deck, args.card, args.board);
+          if (!resolution.found) return this._renderResolutionError(resolution, 'delete');
 
-          const { card: found, stackKey } = resolved;
-          await deck.deleteCard(found.id, stackKey);
-          return `Deleted card #${found.id} "${found.title}" from ${this._stackDisplayName(stackKey, deck)}.`;
+          const { card: found, boardId, stackId, stackTitle, isDefaultBoard, stackKey } = resolution;
+          if (isDefaultBoard) {
+            await deck.deleteCard(found.id, stackKey);
+          } else {
+            await deck.deleteCardById(boardId, stackId, found.id);
+          }
+          return `Deleted card #${found.id} "${found.title}" from ${stackTitle}.`;
         } catch (err) {
           this.logger.error(`[deck_delete_card] ${err.message}`);
           return `Failed to delete card: ${err.message}`;
@@ -976,61 +1117,76 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_assign_user',
-      description: 'Assign a user to a card. Card identified by title (partial match) or #ID.',
+      description: 'Assign a user to a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to assign on a shared board.',
       parameters: {
         type: 'object',
         properties: {
           card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' },
-          user: { type: 'string', description: 'NC username to assign' }
+          user: { type: 'string', description: 'NC username to assign' },
+          board: { type: 'string', description: 'Board name (partial match) or board ID. If omitted, uses the task board.' }
         },
         required: ['card', 'user']
       },
       handler: async (args) => {
-        const resolved = await this._resolveCard(deck, args.card);
-        if (!resolved) return `No card found matching "${args.card}".`;
+        const resolution = await this._resolveCardOnBoard(deck, args.card, args.board);
+        if (!resolution.found) return this._renderResolutionError(resolution, 'assign on');
 
-        const { card: found, stackKey } = resolved;
+        const { card: found, boardId, stackId, isDefaultBoard, stackKey } = resolution;
         if (isStructuralCard(found)) {
           return `Card #${found.id} "${found.title}" is a structural/config card, not a work item. Structural cards should not be assigned to users. If you need to modify this card, do so explicitly.`;
         }
-        const assignResult = await deck.assignUser(found.id, stackKey, args.user);
-        if (assignResult === undefined || assignResult === null) {
-          // assignUser returns undefined when user is not a board member
-          // Re-read card to verify assignment actually took effect
-          try {
-            const updated = await deck.getCard(found.id, stackKey);
-            const isAssigned = (updated.assignedUsers || []).some(
-              a => (a.participant?.uid || '').toLowerCase() === args.user.toLowerCase()
-            );
-            if (!isAssigned) return `Could not assign "${args.user}" to card #${found.id} — user may not be a member of this board.`;
-          } catch {
-            // If re-read fails, we can't confirm — report uncertainty
-            return `Assignment of "${args.user}" to card #${found.id} could not be confirmed. The user may not be a member of this board.`;
+
+        if (isDefaultBoard) {
+          const assignResult = await deck.assignUser(found.id, stackKey, args.user);
+          if (assignResult === undefined || assignResult === null) {
+            try {
+              const updated = await deck.getCard(found.id, stackKey);
+              const isAssigned = (updated.assignedUsers || []).some(
+                a => (a.participant?.uid || '').toLowerCase() === args.user.toLowerCase()
+              );
+              if (!isAssigned) return `Could not assign "${args.user}" to card #${found.id} — user may not be a member of this board.`;
+            } catch {
+              return `Assignment of "${args.user}" to card #${found.id} could not be confirmed. The user may not be a member of this board.`;
+            }
           }
+          return `Assigned "${args.user}" to card #${found.id} "${found.title}".`;
         }
-        return `Assigned "${args.user}" to card #${found.id} "${found.title}".`;
+
+        const matched = await deck.assignUserById(boardId, stackId, found.id, args.user);
+        if (matched === null) {
+          return `Could not assign "${args.user}" to card #${found.id} — user may not be a member of this board.`;
+        }
+        return `Assigned "${matched}" to card #${found.id} "${found.title}".`;
       }
     });
 
     this.register({
       name: 'deck_unassign_user',
-      description: 'Remove a user assignment from a card. Card identified by title (partial match) or #ID.',
+      description: 'Remove a user assignment from a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to unassign on a shared board.',
       parameters: {
         type: 'object',
         properties: {
           card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' },
-          user: { type: 'string', description: 'NC username to unassign' }
+          user: { type: 'string', description: 'NC username to unassign' },
+          board: { type: 'string', description: 'Board name (partial match) or board ID. If omitted, uses the task board.' }
         },
         required: ['card', 'user']
       },
       handler: async (args) => {
         try {
-          const resolved = await this._resolveCard(deck, args.card);
-          if (!resolved) return `No card found matching "${args.card}".`;
+          const resolution = await this._resolveCardOnBoard(deck, args.card, args.board);
+          if (!resolution.found) return this._renderResolutionError(resolution, 'unassign on');
 
-          const { card: found, stackKey } = resolved;
-          await deck.unassignUser(found.id, stackKey, args.user);
-          return `Unassigned "${args.user}" from card #${found.id} "${found.title}".`;
+          const { card: found, boardId, stackId, isDefaultBoard, stackKey } = resolution;
+          if (isDefaultBoard) {
+            await deck.unassignUser(found.id, stackKey, args.user);
+            return `Unassigned "${args.user}" from card #${found.id} "${found.title}".`;
+          }
+          const matched = await deck.unassignUserById(boardId, stackId, found.id, args.user);
+          if (matched === null) {
+            return `Could not unassign "${args.user}" from card #${found.id} — user is not a member of this board.`;
+          }
+          return `Unassigned "${matched}" from card #${found.id} "${found.title}".`;
         } catch (err) {
           this.logger.error(`[deck_unassign_user] ${err.message}`);
           return `Failed to unassign user: ${err.message}`;
@@ -1040,33 +1196,43 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_set_due_date',
-      description: 'Set or clear the due date on a card. Card identified by title (partial match) or #ID.',
+      description: 'Set or clear the due date on a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to update a card on a shared board.',
       parameters: {
         type: 'object',
         properties: {
           card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' },
-          duedate: { type: 'string', description: 'Due date in ISO format (e.g. 2026-02-15) or "none" to clear' }
+          duedate: { type: 'string', description: 'Due date in ISO format (e.g. 2026-02-15) or "none" to clear' },
+          board: { type: 'string', description: 'Board name (partial match) or board ID. If omitted, uses the task board.' }
         },
         required: ['card', 'duedate']
       },
       handler: async (args) => {
         try {
-          const resolved = await this._resolveCard(deck, args.card);
-          if (!resolved) return `No card found matching "${args.card}".`;
+          const resolution = await this._resolveCardOnBoard(deck, args.card, args.board);
+          if (!resolution.found) return this._renderResolutionError(resolution, 'update');
 
-          const { card: found, stackKey } = resolved;
+          const { card: found, boardId, stackId, isDefaultBoard, stackKey } = resolution;
           if (isStructuralCard(found)) {
             return `Card #${found.id} "${found.title}" is a structural/config card, not a work item. Structural cards should not have due dates. If you need to modify this card, do so explicitly.`;
           }
-          const current = await deck.getCard(found.id, stackKey);
+
+          const current = isDefaultBoard
+            ? await deck.getCard(found.id, stackKey)
+            : await deck.getCardById(boardId, stackId, found.id);
 
           const duedate = args.duedate.toLowerCase() === 'none' ? null : args.duedate;
-          await deck.updateCard(found.id, stackKey, {
+          const updates = {
             title: current.title,
             type: current.type || 'plain',
             owner: current.owner?.uid || current.owner || deck.username,
             duedate
-          });
+          };
+
+          if (isDefaultBoard) {
+            await deck.updateCard(found.id, stackKey, updates);
+          } else {
+            await deck.updateCardById(boardId, stackId, found.id, updates);
+          }
 
           return duedate
             ? `Set due date on card #${found.id} "${found.title}" to ${duedate}.`
@@ -1082,23 +1248,35 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_add_label',
-      description: 'Add a label to a card. Card identified by title (partial match) or #ID.',
+      description: 'Add a label to a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to operate on a shared board. The label must already exist on the target board (use deck_create_label first if needed).',
       parameters: {
         type: 'object',
         properties: {
           card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' },
-          label: { type: 'string', description: 'Label name (e.g. urgent, research, writing, admin, blocked)' }
+          label: { type: 'string', description: 'Label name (e.g. urgent, research, writing, admin, blocked)' },
+          board: { type: 'string', description: 'Board name (partial match) or board ID. If omitted, uses the task board.' }
         },
         required: ['card', 'label']
       },
       handler: async (args) => {
         try {
-          const resolved = await this._resolveCard(deck, args.card);
-          if (!resolved) return `No card found matching "${args.card}".`;
+          const resolution = await this._resolveCardOnBoard(deck, args.card, args.board);
+          if (!resolution.found) return this._renderResolutionError(resolution, 'label on');
 
-          const { card: found, stackKey } = resolved;
-          await deck.addLabel(found.id, stackKey, args.label);
-          return `Added label "${args.label}" to card #${found.id} "${found.title}".`;
+          const { card: found, boardId, stackId, isDefaultBoard, stackKey } = resolution;
+          if (isDefaultBoard) {
+            await deck.addLabel(found.id, stackKey, args.label);
+            return `Added label "${args.label}" to card #${found.id} "${found.title}".`;
+          }
+
+          const board = await deck.getBoard(boardId);
+          const labelDef = (board.labels || []).find(l => l.title.toLowerCase() === args.label.toLowerCase());
+          if (!labelDef) {
+            const available = (board.labels || []).map(l => `"${l.title}"`).join(', ');
+            return `No label "${args.label}" on board "${board.title}". Available labels: ${available || '(none)'}`;
+          }
+          await deck.assignLabelById(boardId, stackId, found.id, labelDef.id);
+          return `Added label "${labelDef.title}" to card #${found.id} "${found.title}".`;
         } catch (err) {
           this.logger.error(`[deck_add_label] ${err.message}`);
           return `Failed to add label: ${err.message}`;
@@ -1108,23 +1286,34 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_remove_label',
-      description: 'Remove a label from a card. Card identified by title (partial match) or #ID.',
+      description: 'Remove a label from a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to operate on a shared board.',
       parameters: {
         type: 'object',
         properties: {
           card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' },
-          label: { type: 'string', description: 'Label name to remove' }
+          label: { type: 'string', description: 'Label name to remove' },
+          board: { type: 'string', description: 'Board name (partial match) or board ID. If omitted, uses the task board.' }
         },
         required: ['card', 'label']
       },
       handler: async (args) => {
         try {
-          const resolved = await this._resolveCard(deck, args.card);
-          if (!resolved) return `No card found matching "${args.card}".`;
+          const resolution = await this._resolveCardOnBoard(deck, args.card, args.board);
+          if (!resolution.found) return this._renderResolutionError(resolution, 'unlabel on');
 
-          const { card: found, stackKey } = resolved;
-          await deck.removeLabel(found.id, stackKey, args.label);
-          return `Removed label "${args.label}" from card #${found.id} "${found.title}".`;
+          const { card: found, boardId, stackId, isDefaultBoard, stackKey } = resolution;
+          if (isDefaultBoard) {
+            await deck.removeLabel(found.id, stackKey, args.label);
+            return `Removed label "${args.label}" from card #${found.id} "${found.title}".`;
+          }
+
+          const board = await deck.getBoard(boardId);
+          const labelDef = (board.labels || []).find(l => l.title.toLowerCase() === args.label.toLowerCase());
+          if (!labelDef) {
+            return `No label "${args.label}" on board "${board.title}".`;
+          }
+          await deck.removeLabelById(boardId, stackId, found.id, labelDef.id);
+          return `Removed label "${labelDef.title}" from card #${found.id} "${found.title}".`;
         } catch (err) {
           this.logger.error(`[deck_remove_label] ${err.message}`);
           return `Failed to remove label: ${err.message}`;
@@ -1159,21 +1348,22 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_add_comment',
-      description: 'Add a comment to a card. Use this to leave notes, updates, or communicate about a task. Card identified by title (partial match) or #ID.',
+      description: 'Add a comment to a card. Use this to leave notes, updates, or communicate about a task. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to comment on a shared board.',
       parameters: {
         type: 'object',
         properties: {
           card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' },
-          message: { type: 'string', description: 'Comment text' }
+          message: { type: 'string', description: 'Comment text' },
+          board: { type: 'string', description: 'Board name (partial match) or board ID. If omitted, uses the task board.' }
         },
         required: ['card', 'message']
       },
       handler: async (args) => {
         try {
-          const resolved = await this._resolveCard(deck, args.card);
-          if (!resolved) return `No card found matching "${args.card}".`;
+          const resolution = await this._resolveCardOnBoard(deck, args.card, args.board);
+          if (!resolution.found) return this._renderResolutionError(resolution, 'comment on');
 
-          const { card: found } = resolved;
+          const { card: found } = resolution;
           await deck.addComment(found.id, args.message, 'STATUS', { prefix: false });
           return `Added comment to card #${found.id} "${found.title}".`;
         } catch (err) {
@@ -1185,20 +1375,21 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_list_comments',
-      description: 'List all comments on a card. Card identified by title (partial match) or #ID.',
+      description: 'List all comments on a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to read comments on a shared board.',
       parameters: {
         type: 'object',
         properties: {
-          card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' }
+          card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' },
+          board: { type: 'string', description: 'Board name (partial match) or board ID. If omitted, uses the task board.' }
         },
         required: ['card']
       },
       handler: async (args) => {
         try {
-          const resolved = await this._resolveCard(deck, args.card);
-          if (!resolved) return `No card found matching "${args.card}".`;
+          const resolution = await this._resolveCardOnBoard(deck, args.card, args.board);
+          if (!resolution.found) return this._renderResolutionError(resolution, 'read comments on');
 
-          const { card: found } = resolved;
+          const { card: found } = resolution;
           const comments = await deck.getComments(found.id);
 
           if (comments.length === 0) return `No comments on card #${found.id} "${found.title}".`;
@@ -1354,24 +1545,39 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_mark_done',
-      description: 'Mark a card as done by moving it to the Done stack. Card identified by title (partial match) or #ID.',
+      description: 'Mark a card as done by moving it to the Done stack. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to mark a card on a shared board (requires a stack titled "Done" on that board).',
       parameters: {
         type: 'object',
         properties: {
-          card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' }
+          card: { type: 'string', description: 'Card title (partial match) or card ID prefixed with #' },
+          board: { type: 'string', description: 'Board name (partial match) or board ID. If omitted, uses the task board.' }
         },
         required: ['card']
       },
       handler: async (args) => {
         try {
-          const resolved = await this._resolveCard(deck, args.card);
-          if (!resolved) return `No card found matching "${args.card}".`;
+          const resolution = await this._resolveCardOnBoard(deck, args.card, args.board);
+          if (!resolution.found) return this._renderResolutionError(resolution, 'mark done');
 
-          const { card: found, stackKey } = resolved;
-          if (stackKey === 'done') return `Card #${found.id} "${found.title}" is already in Done.`;
+          const { card: found, boardId, stackId, stackTitle, isDefaultBoard, stackKey } = resolution;
 
-          await deck.moveCard(found.id, stackKey, 'done');
-          return `Marked card #${found.id} "${found.title}" as done (moved from ${this._stackDisplayName(stackKey, deck)} to Done).`;
+          if (isDefaultBoard) {
+            if (stackKey === 'done') return `Card #${found.id} "${found.title}" is already in Done.`;
+            await deck.moveCard(found.id, stackKey, 'done');
+            return `Marked card #${found.id} "${found.title}" as done (moved from ${this._stackDisplayName(stackKey, deck)} to Done).`;
+          }
+
+          const stacks = await deck.getStacks(boardId);
+          const doneStack = (stacks || []).find(s => s.title.toLowerCase() === 'done');
+          if (!doneStack) {
+            const available = (stacks || []).map(s => `"${s.title}"`).join(', ');
+            return `No "Done" stack on this board. Available stacks: ${available || '(none)'}. Use deck_move_card with an explicit target_stack instead.`;
+          }
+          if (doneStack.id === stackId) {
+            return `Card #${found.id} "${found.title}" is already in "${doneStack.title}".`;
+          }
+          await deck.moveCardById(found.id, doneStack.id, 0);
+          return `Marked card #${found.id} "${found.title}" as done (moved from "${stackTitle}" to "${doneStack.title}").`;
         } catch (err) {
           this.logger.error(`[deck_mark_done] ${err.message}`);
           return `Failed to mark card as done: ${err.message}`;
