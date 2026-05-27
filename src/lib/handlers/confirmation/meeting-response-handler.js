@@ -36,6 +36,7 @@
 
 const { pendingEmailReplies } = require('../../pending-action-store');
 const { createErrorHandler } = require('../../errors/error-handler');
+const { classifyConfirmationReply } = require('../../shared/confirmation-classifier');
 
 // -----------------------------------------------------------------------------
 // Types
@@ -83,10 +84,18 @@ class MeetingResponseHandler {
   /**
    * @param {Object} options
    * @param {Function} [options.auditLog] - Audit logging function
+   * @param {Object} [options.ollamaProvider] - Ollama provider for LLM classification
+   * @param {Object} [options.logger] - Logger instance
    */
-  constructor(options = {}) {
+  constructor({ auditLog, ollamaProvider, logger } = {}) {
     /** @type {Function} */
-    this.auditLog = options.auditLog || (async () => {});
+    this.auditLog = auditLog || (async () => {});
+
+    /** @type {Object|null} */
+    this.ollamaProvider = ollamaProvider || null;
+
+    /** @type {Object} */
+    this.logger = logger || console;
 
     /** @type {import('../../errors/error-handler').ErrorHandler} */
     this.errorHandler = createErrorHandler({
@@ -113,24 +122,29 @@ class MeetingResponseHandler {
   }
 
   /**
-   * Determine which meeting action the message represents
+   * Determine which meeting action the message represents.
    *
-   * @param {string} message - The user's response message (lowercase, trimmed)
-   * @returns {MeetingAction|null} The action type or null if not a meeting action
+   * Uses the LLM-backed confirmation classifier so that replies in any language
+   * are understood correctly (Rule 1 compliance). The caller supplies explicit
+   * state flags so the classifier never sees label names for options that are
+   * not valid in this context (conditional prompt sections).
+   *
+   * @param {string} message - The user's response message
+   * @param {boolean} [hasConflict=false] - Whether the meeting has a calendar conflict
+   * @param {boolean} [hasAlternatives=false] - Whether alternative slots are available
+   * @returns {Promise<MeetingAction|null>} The action type or null for unknown intent
    */
-  classifyAction(message) {
-    if (/^accept anyway$/.test(message)) {
-      return 'accept_anyway';
-    }
-    if (/^(yes|yep|yeah|sure|ok|okay|confirm|send it|do it|go ahead|proceed|approved?|send|accept)$/.test(message)) {
-      return 'accept';
-    }
-    if (/^decline$/.test(message)) {
-      return 'decline';
-    }
-    if (/^(suggest|suggest alternatives?)$/.test(message)) {
-      return 'suggest';
-    }
+  async classifyAction(message, hasConflict = false, hasAlternatives = false) {
+    const intent = await classifyConfirmationReply(message, this.ollamaProvider, {
+      allowSuggest: hasConflict && hasAlternatives,
+      allowAcceptAnyway: hasConflict,
+      timeoutMs: 5000,
+      logger: this.logger
+    });
+    if (intent === 'approve') return 'accept';
+    if (intent === 'deny') return 'decline';
+    if (intent === 'suggest') return 'suggest';
+    if (intent === 'accept_anyway') return 'accept_anyway';
     return null;
   }
 
