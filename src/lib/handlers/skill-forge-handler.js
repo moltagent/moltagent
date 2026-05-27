@@ -39,6 +39,8 @@
 
 'use strict';
 
+const { classifyConfirmationReply } = require('../shared/confirmation-classifier');
+
 // -----------------------------------------------------------------------------
 // Types
 // -----------------------------------------------------------------------------
@@ -91,6 +93,9 @@ class SkillForgeHandler {
     this.skillActivator = skillActivator;
     this.auditLog = auditLog || (async () => {});
 
+    /** @type {Object|null} Injected post-construction via setOllamaProvider() */
+    this.ollamaProvider = null;
+
     /** @private @type {Map<string, ConversationState>} */
     this.userStates = new Map();
 
@@ -117,7 +122,7 @@ class SkillForgeHandler {
 
     try {
       // Classify sub-intent based on current state and message
-      const intent = this._classifyIntent(message, state);
+      const intent = await this._classifyIntent(message, state);
 
       console.log(`[SkillForge] Intent: ${intent}`);
 
@@ -192,26 +197,52 @@ class SkillForgeHandler {
     this.userStates.delete(user);
   }
 
+  /**
+   * Wire in the Ollama provider post-construction (called during server init).
+   * @param {Object|null} provider - OllamaToolsProvider instance or null
+   */
+  setOllamaProvider(provider) {
+    this.ollamaProvider = provider || null;
+  }
+
   // ---------------------------------------------------------------------------
   // Intent Classification
   // ---------------------------------------------------------------------------
 
   /**
-   * Classify user intent based on current state and message
+   * Classify user intent based on current state and message.
+   * Confirmation-shape replies (approve / deny / activate) are routed through
+   * the language-agnostic ConfirmationClassifier when an ollamaProvider is
+   * available. Structural / command patterns (numeric selection, skill_id
+   * format, status, list/browse) are handled by the fallback path below.
+   *
    * @private
    * @param {string} message - User's message
    * @param {ConversationState} state - Current conversation state
-   * @returns {string} Classified intent
+   * @returns {Promise<string>} Classified intent
    */
-  _classifyIntent(message, state) {
-    const lower = message.toLowerCase().trim();
+  async _classifyIntent(message, state) {
+    const trimmed = (message || '').trim();
+    const lower = trimmed.toLowerCase();
 
-    // Cancel is always available
-    if (lower === 'cancel' || lower === 'abort' || lower === 'stop' || lower === 'nevermind') {
-      return 'cancel';
+    // Confirmation-shape replies: delegate to LLM classifier when available.
+    // Only call for states that actually need a confirmation decision, and only
+    // for messages short enough to be a simple reply (MAX_TEXT_LENGTH = 100).
+    if (this.ollamaProvider && trimmed.length > 0 && trimmed.length <= 100) {
+      const isConfirmationState = state.state === 'preview' || state.state === 'pending';
+      // Also check cancel (deny) from any state — it is always structurally valid.
+      const reply = await classifyConfirmationReply(trimmed, this.ollamaProvider, {
+        allowActivate: state.state === 'pending',
+        timeoutMs: 5000
+      });
+
+      if (reply === 'deny') return 'cancel';
+      if (isConfirmationState && reply === 'approve') return 'approve';
+      if (state.state === 'pending' && reply === 'activate') return 'activate';
+      // 'unknown' falls through to structural / command patterns below
     }
 
-    // Status is always available
+    // Status is always available (out-of-scope command intent — not changed)
     if (lower.includes('status') || lower.includes('pending skills') || lower.includes("what's pending")) {
       return 'status';
     }
@@ -238,21 +269,13 @@ class SkillForgeHandler {
         return 'param_response';
 
       case 'preview':
-        // User is reviewing the assembled skill
-        if (lower === 'yes' || lower === 'approve' || lower.includes('looks good') ||
-            lower === 'confirm' || lower.includes('go ahead')) {
-          return 'approve';
-        }
-        if (lower === 'no' || lower === 'reject') {
-          return 'cancel';
-        }
+        // Classifier handled approve/cancel above when provider present.
+        // Without a provider, fall through to unknown — the test TC-SFH-074
+        // asserts that unknown input in preview shows the help message.
         return 'unknown';
 
       case 'pending':
-        // Waiting for activation
-        if (lower === 'activate' || lower === 'deploy' || lower.includes('go live')) {
-          return 'activate';
-        }
+        // Classifier handled activate/cancel above when provider present.
         return 'status'; // Show status if unclear
 
       default:
