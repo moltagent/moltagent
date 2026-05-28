@@ -44,7 +44,21 @@ This guide walks you through deploying Moltagent on Hetzner infrastructure. The 
 ## Step 2: Configure Nextcloud
 
 1. Log into your Nextcloud admin panel
-2. Install required apps: **Passwords**, **Deck**, **Collectives**, **Talk**, **Mail**, **Calendar**, **Contacts**
+2. Install the Nextcloud apps Moltagent uses.
+
+   **Required** — the agent will not start without these:
+   - **Passwords** — credential broker (API keys, secrets)
+   - **Deck** — Cockpit control plane and Workflow Engine
+   - **Collectives** — Living Memory / knowledge wiki
+   - **Talk** — chat interface and webhook pipeline
+
+   **Optional** — install only the features you want; the agent runs fine without any of them:
+   - **Mail** — email monitoring and drafting (IMAP/SMTP)
+   - **Calendar** — CalDAV scheduling and meeting awareness
+   - **Contacts** — contact resolution for email and meetings
+   - **News** — RSS feeds for content workflows
+
+   If you skip an optional app, the corresponding feature simply stays off. You will see a single log line at startup noting the feature is disabled, and nothing else.
 3. Create the `moltagent` user via the Nextcloud admin panel (Settings → Users). On a managed Storage Share, `occ` is not available — use the web interface instead.
 
 4. Create the agent's folder structure:
@@ -116,7 +130,7 @@ curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 apt-get install -y nodejs
 git clone https://github.com/moltagent/moltagent.git /opt/moltagent
 cd /opt/moltagent
-npm install --production
+npm install --omit=dev
 ```
 
 ### Configure credentials
@@ -142,6 +156,11 @@ nano config/moltagent-providers.yaml
 cp deploy/moltagent.service /etc/systemd/system/
 # Edit the service file to set your NC_URL, NC_USER, OLLAMA_URL
 nano /etc/systemd/system/moltagent.service
+```
+
+> **Note on `NC_USER`:** Use the Nextcloud **user ID**, not the display name. You can see the user ID in the Nextcloud admin Users panel (it is the value in the "Username" / account-name column, which may differ from the display name shown elsewhere). A mismatch here surfaces as a `401 Authentication error` against NC Passwords at startup.
+
+```bash
 systemctl daemon-reload
 systemctl enable moltagent
 systemctl start moltagent
@@ -235,6 +254,20 @@ What changes:
 - In `config/moltagent-providers.yaml`, set the Ollama endpoint to your Ollama server's LAN IP (e.g. `http://192.168.1.50:11434`)
 - Set up the credential store and systemd service as described in Step 4 above
 - Skip the firewall rules — those are for the isolated VM setup
+
+### Running fully local (no cloud LLM)
+
+If you want zero cloud calls, set every role to your local provider in `config/moltagent-providers.yaml`:
+
+```yaml
+roles:
+  sovereign: [ollama-local]
+  free: [ollama-local]
+  value: [ollama-local]
+  premium: [ollama-local]
+```
+
+Remove or comment out the cloud provider blocks (e.g. `anthropic-claude`, `claude-sonnet`). With no cloud provider in any role, the agent never attempts a cloud call and you will not see `credential_error` lines for keys you did not configure. This is equivalent to the **all-local** preset described in [LLM Providers](providers.md).
 
 To verify:
 
