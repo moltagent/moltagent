@@ -18,7 +18,7 @@
     "test:deck": "node scripts/test-deck-integration.js",
     "lint": "eslint src/ test/ webhook-server.js",
     "lint:fix": "eslint src/ test/ webhook-server.js --fix",
-    "prepare": "husky"
+    "prepare": "husky || true"
   },
   "keywords": [
     "sovereign-ai",
