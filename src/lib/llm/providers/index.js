@@ -12,6 +12,7 @@ const OllamaProvider = require('./ollama-provider');
 const OpenAICompatibleProvider = require('./openai-compatible-provider');
 const AnthropicProvider = require('./anthropic-provider');
 const GoogleProvider = require('./google-provider');
+const { resolveOllamaEndpoint } = require('../../shared/resolve-ollama-endpoint');
 
 /**
  * Provider adapter registry
@@ -201,6 +202,13 @@ function createProvider(adapterId, config) {
     ...config,
     costModel: config.costModel || adapter.defaults.costModel
   };
+
+  if (adapterId === 'ollama') {
+    mergedConfig.endpoint = resolveOllamaEndpoint(mergedConfig.endpoint, {
+      defaultUrl: adapter.defaults.endpoint,
+      source: `provider:${config.id || 'ollama'}`,
+    });
+  }
 
   return new adapter.class(mergedConfig);
 }
