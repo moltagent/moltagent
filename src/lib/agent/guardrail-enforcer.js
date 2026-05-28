@@ -112,6 +112,11 @@ const TOOL_APPROVAL_LABELS = {
 const DEFAULT_CONFIRMATION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_POLL_INTERVAL_MS = 3000;
 
+// Unicode marker the enforcer reserves for its HITL approval prompts on the
+// Talk surface (U+1F510, "closed lock with key"). Any other component emitting
+// this codepoint in a chat response is staging a fake ceremony — see #81.
+const HITL_PROMPT_MARKER = '\u{1F510}';
+
 class GuardrailEnforcer {
   /**
    * @param {Object} options
@@ -394,6 +399,11 @@ class GuardrailEnforcer {
     // Can't ask = fail closed
     if (!this.talkSendQueue || !this.conversationContext) {
       this.logger.warn('[GuardrailEnforcer] Cannot request confirmation — Talk unavailable, blocking');
+      this.logger.info(
+        `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=no classifier=no-channel reply="" ` +
+        `msgTs='' searchAfter='' lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+        `elapsedMs=0 pollIterations=0 guardrail="${guardrailTitle}"`
+      );
       return { decision: 'no' };
     }
 
@@ -406,36 +416,73 @@ class GuardrailEnforcer {
       this._pendingConfirmation = true;
     } catch (err) {
       this.logger.warn(`[GuardrailEnforcer] Failed to send confirmation: ${err.message}`);
+      this.logger.info(
+        `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=no classifier=enqueue-failed reply="" ` +
+        `msgTs='' searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+        `elapsedMs=${Date.now() - requestTimestamp} pollIterations=0 guardrail="${guardrailTitle}"`
+      );
       return { decision: 'no' };
     }
 
+    this.logger.info(
+      `[GuardrailEnforcer] HITL-enter-gate: tool=${toolName} guardrail="${guardrailTitle}" requestTs=${requestTimestamp} searchAfter=${searchAfter} lastConsumed(prior)=${this._lastConsumedTimestamp} pollIntervalMs=${this.pollIntervalMs} timeoutMs=${this.confirmationTimeoutMs}`
+    );
+
     // Poll for human response
+    let pollIterations = 0;
     const deadline = requestTimestamp + this.confirmationTimeoutMs;
     while (Date.now() < deadline) {
       await this._sleep(this.pollIntervalMs);
+      pollIterations++;
 
       try {
         const history = await this.conversationContext.getHistory(roomToken, { limit: 5 });
         for (const msg of history) {
           const msgTimestampMs = (msg.timestamp || 0) * 1000;
-          if (msgTimestampMs <= searchAfter) continue;
-          if (msg.role !== 'user') continue;
+          if (msgTimestampMs <= searchAfter) {
+            this.logger.info(
+              `[GuardrailEnforcer] poll-skip-ts: tool=${toolName} msgTs=${msgTimestampMs} searchAfter=${searchAfter} content="${(msg.content || '').slice(0, 40)}"`
+            );
+            continue;
+          }
+          if (msg.role !== 'user') {
+            this.logger.debug(`[GuardrailEnforcer] poll-skip-role: role=${msg.role}`);
+            continue;
+          }
 
           const content = (msg.content || '').trim();
           const reply = await this._classifyReply(content, EDITABLE_TOOLS.has(toolName));
+          this.logger.info(
+            `[GuardrailEnforcer] poll-classify: tool=${toolName} msgTs=${msgTimestampMs} role=${msg.role} content="${content.slice(0, 80)}" classifier=${reply}`
+          );
           if (reply === 'approve') {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
+            this.logger.info(
+              `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=yes classifier=approve reply="${content.slice(0, 80)}" ` +
+              `msgTs=${msgTimestampMs} searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+              `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} guardrail="${guardrailTitle}"`
+            );
             return { decision: 'yes' };
           }
           if (reply === 'deny') {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
+            this.logger.info(
+              `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=no classifier=deny reply="${content.slice(0, 80)}" ` +
+              `msgTs=${msgTimestampMs} searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+              `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} guardrail="${guardrailTitle}"`
+            );
             return { decision: 'no' };
           }
           if (reply === 'edit' && EDITABLE_TOOLS.has(toolName)) {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
+            this.logger.info(
+              `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=edit classifier=edit reply="${content.slice(0, 80)}" ` +
+              `msgTs=${msgTimestampMs} searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+              `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} guardrail="${guardrailTitle}"`
+            );
             return { decision: 'edit', message: content };
           }
           // 'unknown' → keep polling
@@ -447,6 +494,11 @@ class GuardrailEnforcer {
 
     this.logger.info('[GuardrailEnforcer] Confirmation timed out — blocking action');
     this._pendingConfirmation = false;
+    this.logger.info(
+      `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=timeout classifier=timeout reply="" ` +
+      `msgTs='' searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+      `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} guardrail="${guardrailTitle}"`
+    );
     return { decision: 'timeout' };
   }
 
@@ -829,6 +881,11 @@ class GuardrailEnforcer {
   async _requestToolApproval(label, toolName, toolArgs, roomToken) {
     if (!this.talkSendQueue || !this.conversationContext) {
       this.logger.warn('[GuardrailEnforcer] Cannot request tool approval — Talk unavailable');
+      this.logger.info(
+        `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=no classifier=no-channel reply="" ` +
+        `msgTs='' searchAfter='' lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+        `elapsedMs=0 pollIterations=0 label="${label}"`
+      );
       return { decision: 'no' };
     }
 
@@ -841,34 +898,71 @@ class GuardrailEnforcer {
       this._pendingConfirmation = true;
     } catch (err) {
       this.logger.warn(`[GuardrailEnforcer] Failed to send approval request: ${err.message}`);
+      this.logger.info(
+        `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=no classifier=enqueue-failed reply="" ` +
+        `msgTs='' searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+        `elapsedMs=${Date.now() - requestTimestamp} pollIterations=0 label="${label}"`
+      );
       return { decision: 'no' };
     }
 
+    this.logger.info(
+      `[GuardrailEnforcer] HITL-enter: tool=${toolName} label="${label}" requestTs=${requestTimestamp} searchAfter=${searchAfter} lastConsumed(prior)=${this._lastConsumedTimestamp} pollIntervalMs=${this.pollIntervalMs} timeoutMs=${this.confirmationTimeoutMs}`
+    );
+
     // Poll — identical to _requestConfirmation polling
+    let pollIterations = 0;
     const deadline = requestTimestamp + this.confirmationTimeoutMs;
     while (Date.now() < deadline) {
       await this._sleep(this.pollIntervalMs);
+      pollIterations++;
       try {
         const history = await this.conversationContext.getHistory(roomToken, { limit: 5 });
         for (const msg of history) {
           const msgTimestampMs = (msg.timestamp || 0) * 1000;
-          if (msgTimestampMs <= searchAfter) continue;
-          if (msg.role !== 'user') continue;
+          if (msgTimestampMs <= searchAfter) {
+            this.logger.info(
+              `[GuardrailEnforcer] poll-skip-ts: tool=${toolName} msgTs=${msgTimestampMs} searchAfter=${searchAfter} content="${(msg.content || '').slice(0, 40)}"`
+            );
+            continue;
+          }
+          if (msg.role !== 'user') {
+            this.logger.debug(`[GuardrailEnforcer] poll-skip-role: role=${msg.role}`);
+            continue;
+          }
           const content = (msg.content || '').trim();
           const reply = await this._classifyReply(content, EDITABLE_TOOLS.has(toolName));
+          this.logger.info(
+            `[GuardrailEnforcer] poll-classify: tool=${toolName} msgTs=${msgTimestampMs} role=${msg.role} content="${content.slice(0, 80)}" classifier=${reply}`
+          );
           if (reply === 'approve') {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
+            this.logger.info(
+              `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=yes classifier=approve reply="${content.slice(0, 80)}" ` +
+              `msgTs=${msgTimestampMs} searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+              `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} label="${label}"`
+            );
             return { decision: 'yes' };
           }
           if (reply === 'deny') {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
+            this.logger.info(
+              `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=no classifier=deny reply="${content.slice(0, 80)}" ` +
+              `msgTs=${msgTimestampMs} searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+              `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} label="${label}"`
+            );
             return { decision: 'no' };
           }
           if (reply === 'edit' && EDITABLE_TOOLS.has(toolName)) {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
+            this.logger.info(
+              `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=edit classifier=edit reply="${content.slice(0, 80)}" ` +
+              `msgTs=${msgTimestampMs} searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+              `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} label="${label}"`
+            );
             return { decision: 'edit', message: content };
           }
           // 'unknown' → keep polling
@@ -880,6 +974,11 @@ class GuardrailEnforcer {
 
     this.logger.info('[GuardrailEnforcer] Tool approval timed out — blocking action');
     this._pendingConfirmation = false;
+    this.logger.info(
+      `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=timeout classifier=timeout reply="" ` +
+      `msgTs='' searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+      `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} label="${label}"`
+    );
     return { decision: 'timeout' };
   }
 
@@ -1022,4 +1121,4 @@ class GuardrailEnforcer {
   }
 }
 
-module.exports = { GuardrailEnforcer, HIGH_SEVERITY_TOOLS, TOOL_APPROVAL_LABELS };
+module.exports = { GuardrailEnforcer, HIGH_SEVERITY_TOOLS, TOOL_APPROVAL_LABELS, HITL_PROMPT_MARKER };

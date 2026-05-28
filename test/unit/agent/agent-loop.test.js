@@ -1561,6 +1561,66 @@ asyncTest('action-hallucination guard does NOT fire when LLM calls a tool on ite
   assert.strictEqual(provider._getCallCount(), 2);  // no re-prompt needed
 });
 
+asyncTest('action-hallucination guard: response stages HITL marker after read-only tool → re-prompts then calls destructive tool (#81)', async () => {
+  // Reproduces the 2026-05-27 production bug:
+  //   Iter 1: agent calls deck_list_cards (read-only).
+  //   Iter 2: agent emits text "🔐 Delete Deck card — requires approval" without
+  //           calling deck_delete_card. Original PR #68 guard sees "1 tool call"
+  //           and stays silent. Extended guard detects the 🔐 codepoint and
+  //           re-prompts.
+  //   Iter 3: after re-prompt, agent calls deck_delete_card.
+  //   Iter 4: final text confirming the actual deletion.
+  const provider = createMockProvider([
+    { content: null, toolCalls: [{ id: 'call_1', name: 'deck_list_cards', arguments: {} }] },
+    { content: '\u{1F510} **Delete Deck card** — requires approval\n\nCard: **#42 "test"**', toolCalls: null },
+    { content: null, toolCalls: [{ id: 'call_2', name: 'deck_delete_card', arguments: { card: '#42' } }] },
+    { content: 'Deleted card #42.', toolCalls: null }
+  ]);
+
+  let destructiveCalled = false;
+  const registry = createMockToolRegistry({
+    deck_list_cards: async () => ({ success: true, result: '#42 "test"' }),
+    deck_delete_card: async () => { destructiveCalled = true; return { success: true, result: 'Deleted #42' }; }
+  });
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('delete card 42', 'room-abc', { gate: 'action' });
+  assert.strictEqual(destructiveCalled, true, 'destructive tool must run after re-prompt');
+  assert.strictEqual(response, 'Deleted card #42.');
+});
+
+asyncTest('action-hallucination guard does NOT fire when read-only tool runs and response has no HITL marker (legitimate summarize-result reply)', async () => {
+  // gate=action + one read-only tool + clean text response = legitimate.
+  // Common case: "how many cards" classified as action; list-then-summarize is right.
+  const provider = createMockProvider([
+    { content: null, toolCalls: [{ id: 'call_1', name: 'deck_list_cards', arguments: {} }] },
+    { content: 'There are 3 cards in Ideas.', toolCalls: null }
+  ]);
+
+  const registry = createMockToolRegistry({
+    deck_list_cards: async () => ({ success: true, result: '#1, #2, #3' })
+  });
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('list cards on the board', 'room-abc', { gate: 'action' });
+  assert.strictEqual(response, 'There are 3 cards in Ideas.');
+  assert.strictEqual(provider._getCallCount(), 2);  // no re-prompt
+});
+
 // ============================================================
 // Cleanup & Summary
 // ============================================================
