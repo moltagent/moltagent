@@ -139,6 +139,37 @@ class CredentialBroker {
   }
 
   /**
+   * Like get(), but returns null when the credential is genuinely not
+   * configured. Infrastructure failures (NC Passwords unreachable / auth)
+   * still throw. The primitive optional consumers (EmailMonitor, future
+   * CalDAV / SearXNG / etc.) should call to tolerate absence without a
+   * crash. See briefings/CC-Briefing-EmailOptional.md and issue #87.
+   *
+   * @param {string} name - Credential name
+   * @returns {Promise<string|Object|null>}
+   */
+  async tryGet(name) {
+    this.stats.totalRequests++;
+
+    try {
+      if (this.credentialCache) {
+        const value = await this.credentialCache.tryGet(name);
+        if (value !== null) {
+          await this.auditLog('credential_fetched', { name });
+        }
+        return value;
+      }
+
+      throw new Error('CredentialBroker requires CredentialCache in new architecture');
+
+    } catch (error) {
+      this.stats.errors++;
+      await this.auditLog('credential_error', { name, error: error.message });
+      throw error;
+    }
+  }
+
+  /**
    * Prefetch multiple credentials in a single API call
    * @param {string[]} names - List of credential names
    * @returns {Promise<Object>} - Map of name -> value

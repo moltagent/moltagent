@@ -36,6 +36,7 @@ class EmailMonitor {
     this._heartbeatTimer = null;
     this._isRunning = false;
     this._isChecking = false;
+    this._disabled = false;
 
     // Pending notifications (emails analyzed but couldn't notify due to missing room)
     this._pendingNotifications = [];
@@ -61,12 +62,16 @@ class EmailMonitor {
     console.log(`[EmailMonitor] Starting with ${this.heartbeatInterval / 1000}s interval`);
     this._isRunning = true;
 
-    // Initial check after delay (let system stabilize)
-    setTimeout(() => this.checkInbox(), appConfig.emailMonitor.initialDelayMs);
+    // Schedulers swallow unhandled rejections — a configured account's
+    // transient IMAP error must log, not crash the process.
+    setTimeout(() => {
+      this.checkInbox().catch(err =>
+        console.error('[EmailMonitor] Unhandled check error:', err.message));
+    }, appConfig.emailMonitor.initialDelayMs);
 
-    // Regular heartbeat
     this._heartbeatTimer = setInterval(() => {
-      this.checkInbox();
+      this.checkInbox().catch(err =>
+        console.error('[EmailMonitor] Unhandled check error:', err.message));
     }, this.heartbeatInterval);
   }
 
@@ -90,31 +95,51 @@ class EmailMonitor {
   }
 
   /**
-   * Check inbox for new emails
+   * Check inbox for new emails.
+   *
+   * Two distinct failure modes, both load-bearing:
+   *   - Permanent: no email-imap credential configured. tryGet returns null,
+   *     monitor disables itself and stops the heartbeat. No retry.
+   *   - Transient: credential present but IMAP/network hiccups. Caught,
+   *     logged, returned — monitor stays enabled and retries next heartbeat.
+   *
+   * The catch NEVER re-throws. Scheduler callbacks also wrap in .catch() as
+   * a belt for any rejection that escapes this method's own try/catch.
    */
   async checkInbox() {
+    if (this._disabled) {
+      return { checked: false, found: 0, processed: 0, disabled: true };
+    }
     if (this._isChecking) {
       console.log('[EmailMonitor] Already checking, skipping');
       return { checked: false, found: 0, processed: 0 };
     }
 
     this._isChecking = true;
-    console.log('[EmailMonitor] Checking inbox...');
     let processed = 0;
 
     try {
-      const emails = await this._fetchUnreadEmails();
+      // Optional feature: missing credential → clean disable, no retry.
+      const cred = await this.credentials.tryGet('email-imap');
+      if (!cred) {
+        console.log('[EmailMonitor] email-imap credential not configured — email monitoring disabled');
+        await this.auditLog('email_monitor_disabled', { reason: 'credential_not_configured' });
+        this._disabled = true;
+        this.stop();
+        return { checked: false, found: 0, processed: 0, disabled: true };
+      }
+
+      console.log('[EmailMonitor] Checking inbox...');
+      const emails = await this._fetchUnreadEmails(cred);
 
       if (emails.length === 0) {
         console.log('[EmailMonitor] No new emails');
-        this._isChecking = false;
         return { checked: true, found: 0, processed: 0 };
       }
 
       console.log(`[EmailMonitor] Found ${emails.length} unread email(s)`);
 
       for (const email of emails) {
-        // Skip if already processed
         if (this._isProcessed(email.messageId)) {
           console.log(`[EmailMonitor] Skipping already processed: ${email.messageId}`);
           continue;
@@ -128,23 +153,22 @@ class EmailMonitor {
       return { checked: true, found: emails.length, processed };
 
     } catch (error) {
+      // Transient IMAP/network/NC hiccup. Log, audit, skip this cycle.
+      // NEVER re-throw — would unhandled-reject the scheduler callback
+      // and exit the process on a configured-account network blip.
       console.error('[EmailMonitor] Error checking inbox:', error.message);
       await this.auditLog('email_monitor_error', { error: error.message });
-      throw error;
+      return { checked: false, found: 0, processed: 0, error: error.message };
     } finally {
       this._isChecking = false;
     }
   }
 
   /**
-   * Fetch unread emails from IMAP
+   * Fetch unread emails from IMAP.
+   * @param {Object} cred - email-imap credential (caller already resolved it)
    */
-  async _fetchUnreadEmails() {
-    const cred = await this.credentials.get('email-imap');
-    if (!cred) {
-      throw new Error('email-imap credential not configured');
-    }
-
+  async _fetchUnreadEmails(cred) {
     return new Promise((resolve, reject) => {
       const port = parseInt(cred.port) || appConfig.ports.imapDefault;
       const useDirectTls = cred.tls === true || cred.tls === 'true' || (port === appConfig.ports.imapDefault && cred.tls !== false && cred.tls !== 'false');
@@ -585,7 +609,7 @@ Respond with JSON only:
    * Mark email as seen in IMAP
    */
   async _markEmailSeen(seqno) {
-    const cred = await this.credentials.get('email-imap');
+    const cred = await this.credentials.tryGet('email-imap');
     if (!cred) return;
 
     return new Promise((resolve, reject) => {
