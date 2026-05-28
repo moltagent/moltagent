@@ -59,6 +59,8 @@ This guide walks you through deploying Moltagent on Hetzner infrastructure. The 
    - **News** — RSS feeds for content workflows
 
    If you skip an optional app, the corresponding feature simply stays off. You will see a single log line at startup noting the feature is disabled, and nothing else.
+
+   <!-- Maintainer: this required/optional split is mirrored in deployment.md ("Nextcloud Apps"). Keep both in sync in the same commit until the single-manifest fix lands — see #87. -->
 3. Create the `moltagent` user via the Nextcloud admin panel (Settings → Users). On a managed Storage Share, `occ` is not available — use the web interface instead.
 
 4. Create the agent's folder structure:

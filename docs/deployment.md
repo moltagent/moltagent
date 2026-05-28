@@ -34,6 +34,8 @@ The following apps must be installed on your Storage Share. Most are pre-install
 
 The agent probes each optional integration at startup. If the app or its credential is not present, that feature is disabled and the agent continues normally. You never need to install an optional app just to make the service boot.
 
+> **Maintainer note — keep this list in sync.** The required/optional split also appears in the [Quick Start](quickstart.md), Step 2. These two copies are hand-synchronized: change one, change the other in the same commit. Collapsing the split into a single declared manifest that both the startup preflight and the docs read from — so the two surfaces can no longer drift — is tracked in [#87](https://github.com/moltagent/moltagent/issues/87). When that lands, this note gets deleted.
+
 ## Credential Organization in NC Passwords
 
 Create the following entries in the Passwords app and share them with the `moltagent` user. The folder structure is optional but recommended for organization.
