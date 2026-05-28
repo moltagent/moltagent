@@ -77,6 +77,28 @@ const MOCK_TEMPLATE_NO_PARAMS = {
 // ============================================================
 
 /**
+ * Create a mock OllamaProvider that returns the given response string or throws
+ * the given Error for all chat() calls. Mirrors the pattern from guardrail-enforcer.test.js.
+ *
+ * @param {string|Error} response - Text to return as content, or Error to throw
+ */
+function createMockOllama(response) {
+  let callCount = 0;
+  let lastCall = null;
+  return {
+    chat: async (params) => {
+      callCount++;
+      lastCall = params;
+      if (typeof response === 'function') return response(params);
+      if (response instanceof Error) throw response;
+      return { content: response };
+    },
+    _getCallCount: () => callCount,
+    _getLastCall: () => lastCall
+  };
+}
+
+/**
  * Create a mock TemplateLoader
  */
 function createMockTemplateLoader(catalog, template) {
@@ -118,7 +140,8 @@ function createMockSkillActivator() {
 }
 
 /**
- * Create a test handler with mock dependencies
+ * Create a test handler with mock dependencies.
+ * Pass options.ollamaProvider to wire in a mock Ollama provider post-construction.
  */
 function createTestHandler(options = {}) {
   const templateLoader = options.templateLoader || createMockTemplateLoader(MOCK_CATALOG, MOCK_TEMPLATE);
@@ -128,6 +151,10 @@ function createTestHandler(options = {}) {
   const auditLog = options.auditLog || createMockAuditLog();
 
   const handler = new SkillForgeHandler(templateLoader, templateEngine, securityScanner, skillActivator, auditLog);
+
+  if (options.ollamaProvider !== undefined) {
+    handler.setOllamaProvider(options.ollamaProvider);
+  }
 
   return { handler, templateLoader, templateEngine, securityScanner, skillActivator, auditLog };
 }
@@ -174,76 +201,78 @@ test('TC-SFH-003: resetState clears to idle', () => {
 // --- Intent Classification Tests ---
 console.log('\n--- Intent Classification Tests ---\n');
 
-test('TC-SFH-010: List intent from idle state', () => {
+asyncTest('TC-SFH-010: List intent from idle state', async () => {
   const { handler } = createTestHandler();
   const state = handler.getState('user1');
 
-  const intent = handler._classifyIntent('list templates', state);
+  const intent = await handler._classifyIntent('list templates', state);
   assert.strictEqual(intent, 'list');
 });
 
-test('TC-SFH-011: Select intent by number from browsing state', () => {
+asyncTest('TC-SFH-011: Select intent by number from browsing state', async () => {
   const { handler } = createTestHandler();
   const state = handler.getState('user1');
   state.state = 'browsing';
   state.catalog = MOCK_CATALOG;
 
-  const intent = handler._classifyIntent('1', state);
+  const intent = await handler._classifyIntent('1', state);
   assert.strictEqual(intent, 'select');
 });
 
-test('TC-SFH-012: Param response intent from selected state', () => {
+asyncTest('TC-SFH-012: Param response intent from selected state', async () => {
   const { handler } = createTestHandler();
   const state = handler.getState('user1');
   state.state = 'selected';
   state.template = MOCK_TEMPLATE;
 
-  const intent = handler._classifyIntent('My Board Name', state);
+  const intent = await handler._classifyIntent('My Board Name', state);
   assert.strictEqual(intent, 'param_response');
 });
 
-test('TC-SFH-013: Approve intent from preview state', () => {
-  const { handler } = createTestHandler();
+asyncTest('TC-SFH-013: Approve intent from preview state', async () => {
+  const { handler } = createTestHandler({ ollamaProvider: createMockOllama('APPROVE') });
   const state = handler.getState('user1');
   state.state = 'preview';
 
-  const intent = handler._classifyIntent('yes', state);
+  const intent = await handler._classifyIntent('yes', state);
   assert.strictEqual(intent, 'approve');
 });
 
-test('TC-SFH-014: Activate intent from pending state', () => {
-  const { handler } = createTestHandler();
+asyncTest('TC-SFH-014: Activate intent from pending state', async () => {
+  const { handler } = createTestHandler({ ollamaProvider: createMockOllama('ACTIVATE') });
   const state = handler.getState('user1');
   state.state = 'pending';
 
-  const intent = handler._classifyIntent('activate', state);
+  const intent = await handler._classifyIntent('activate', state);
   assert.strictEqual(intent, 'activate');
 });
 
-test('TC-SFH-015: Cancel intent from any state', () => {
-  const { handler } = createTestHandler();
-  const state = handler.getState('user1');
+asyncTest('TC-SFH-015: Cancel intent from any state', async () => {
+  const { handler } = createTestHandler({ ollamaProvider: createMockOllama('DENY') });
 
   // From idle
-  let intent = handler._classifyIntent('cancel', state);
+  let state = handler.getState('user1');
+  let intent = await handler._classifyIntent('cancel', state);
   assert.strictEqual(intent, 'cancel');
 
   // From browsing
   state.state = 'browsing';
-  intent = handler._classifyIntent('cancel', state);
+  intent = await handler._classifyIntent('cancel', state);
   assert.strictEqual(intent, 'cancel');
 
   // From selected
   state.state = 'selected';
-  intent = handler._classifyIntent('cancel', state);
+  intent = await handler._classifyIntent('cancel', state);
   assert.strictEqual(intent, 'cancel');
 });
 
-test('TC-SFH-016: Status intent from any state', () => {
+asyncTest('TC-SFH-016: Status intent from any state', async () => {
+  // No ollamaProvider needed: 'status' is handled by the structural fallback
+  // after the classifier returns 'unknown' (or skips when provider is absent).
   const { handler } = createTestHandler();
   const state = handler.getState('user1');
 
-  const intent = handler._classifyIntent('status', state);
+  const intent = await handler._classifyIntent('status', state);
   assert.strictEqual(intent, 'status');
 });
 
@@ -424,7 +453,10 @@ asyncTest('TC-SFH-060: Approve saves to pending via activator', async () => {
     return originalSavePending(content, metadata);
   };
 
-  const { handler } = createTestHandler({ skillActivator: customActivator });
+  const { handler } = createTestHandler({
+    skillActivator: customActivator,
+    ollamaProvider: createMockOllama('APPROVE')
+  });
 
   // Setup: go through full flow to preview
   await handler.handle('list templates', { user: 'user1' });
@@ -443,7 +475,7 @@ asyncTest('TC-SFH-060: Approve saves to pending via activator', async () => {
 });
 
 asyncTest('TC-SFH-061: Approve transitions state to pending', async () => {
-  const { handler } = createTestHandler();
+  const { handler } = createTestHandler({ ollamaProvider: createMockOllama('APPROVE') });
 
   // Setup: go through full flow to preview
   await handler.handle('list templates', { user: 'user1' });
@@ -463,14 +495,19 @@ asyncTest('TC-SFH-061: Approve transitions state to pending', async () => {
 console.log('\n--- Activation Tests ---\n');
 
 asyncTest('TC-SFH-070: Activate returns requiresConfirmation', async () => {
-  const { handler } = createTestHandler();
+  const { handler } = createTestHandler({ ollamaProvider: createMockOllama('ACTIVATE') });
 
   // Setup: go through full flow to pending
+  // The approve step needs APPROVE; we swap mocks between calls by using a stateful mock
+  handler.setOllamaProvider(createMockOllama('APPROVE'));
   await handler.handle('list templates', { user: 'user1' });
   await handler.handle('1', { user: 'user1' });
   await handler.handle('My Board', { user: 'user1' });
   await handler.handle('abc12345', { user: 'user1' });
   await handler.handle('yes', { user: 'user1' });
+
+  // Switch to ACTIVATE mock for the activate step
+  handler.setOllamaProvider(createMockOllama('ACTIVATE'));
 
   // Activate
   const result = await handler.handle('activate', { user: 'user1' });
@@ -537,7 +574,8 @@ asyncTest('TC-SFH-073: confirmActivateSkill returns failure when activator throw
 });
 
 asyncTest('TC-SFH-074: Unknown input in preview state shows help', async () => {
-  const { handler } = createTestHandler();
+  // Mock returns UNKNOWN so classifier falls through to state-machine default
+  const { handler } = createTestHandler({ ollamaProvider: createMockOllama('UNKNOWN') });
 
   // Navigate to preview state
   const state = handler.getState('user1');
@@ -555,7 +593,7 @@ asyncTest('TC-SFH-074: Unknown input in preview state shows help', async () => {
 console.log('\n--- Cancel Tests ---\n');
 
 asyncTest('TC-SFH-080: Cancel resets state and returns confirmation', async () => {
-  const { handler } = createTestHandler();
+  const { handler } = createTestHandler({ ollamaProvider: createMockOllama('DENY') });
 
   // Set some state
   const state = handler.getState('user1');
@@ -810,6 +848,58 @@ asyncTest('TC-SFH-114: Select resolution works end-to-end in param collection', 
 
   // Should succeed with preview (not validation error)
   assert.ok(result.message.includes('Skill Preview'), `Expected preview, got: ${result.message}`);
+});
+
+// --- Multilingual Classifier Tests (Phase 4) ---
+console.log('\n--- Multilingual Classifier Tests ---\n');
+
+asyncTest('TC-SFH-130: DE preview approve — "ja" classified as approve', async () => {
+  const { handler } = createTestHandler({ ollamaProvider: createMockOllama('APPROVE') });
+  const state = handler.getState('user1');
+  state.state = 'preview';
+
+  const intent = await handler._classifyIntent('ja', state);
+  assert.strictEqual(intent, 'approve');
+});
+
+asyncTest('TC-SFH-131: PT pending activate — "ativa" classified as activate', async () => {
+  const { handler } = createTestHandler({ ollamaProvider: createMockOllama('ACTIVATE') });
+  const state = handler.getState('user1');
+  state.state = 'pending';
+
+  const intent = await handler._classifyIntent('ativa', state);
+  assert.strictEqual(intent, 'activate');
+});
+
+asyncTest('TC-SFH-132: DE cancel from preview — "abbrechen" classified as cancel', async () => {
+  const { handler } = createTestHandler({ ollamaProvider: createMockOllama('DENY') });
+  const state = handler.getState('user1');
+  state.state = 'preview';
+
+  const intent = await handler._classifyIntent('abbrechen', state);
+  assert.strictEqual(intent, 'cancel');
+});
+
+asyncTest('TC-SFH-133: Numeric selection still works — classifier UNKNOWN falls through to select', async () => {
+  // Mock returns UNKNOWN for "1" — classifier should not swallow the structural path
+  const { handler } = createTestHandler({ ollamaProvider: createMockOllama('UNKNOWN') });
+  const state = handler.getState('user1');
+  state.state = 'browsing';
+  state.catalog = MOCK_CATALOG;
+
+  const intent = await handler._classifyIntent('1', state);
+  assert.strictEqual(intent, 'select');
+});
+
+asyncTest('TC-SFH-134: No ollamaProvider gracefully degrades to structural path', async () => {
+  // No provider wired — classifier must be skipped entirely
+  const { handler } = createTestHandler(); // no ollamaProvider option
+  const state = handler.getState('user1');
+  state.state = 'idle';
+
+  // 'list' is handled by the existing structural keyword path
+  const intent = await handler._classifyIntent('list', state);
+  assert.strictEqual(intent, 'list');
 });
 
 // --- Summary ---

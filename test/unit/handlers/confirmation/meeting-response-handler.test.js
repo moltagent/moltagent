@@ -27,6 +27,26 @@ function createMockCalendarClient(responses = {}) {
 }
 
 // ============================================================
+// Helper: Create mock Ollama provider (mirrors guardrail-enforcer pattern)
+// ============================================================
+
+function createMockOllama(response) {
+  let callCount = 0;
+  let lastCall = null;
+  return {
+    chat: async (params) => {
+      callCount++;
+      lastCall = params;
+      if (typeof response === 'function') return response(params);
+      if (response instanceof Error) throw response;
+      return { content: response };
+    },
+    _getCallCount: () => callCount,
+    _getLastCall: () => lastCall
+  };
+}
+
+// ============================================================
 // Test Suites
 // ============================================================
 
@@ -37,43 +57,71 @@ async function runAllTests() {
 console.log('\n--- canHandle Tests ---\n');
 
 test('TC-CANHANDLE-001: Return true for meeting request', () => {
-  // TODO: Implement test
-  // const handler = new MeetingResponseHandler();
-  // const result = handler.canHandle({ data: { is_meeting_request: true } });
-  // assert.strictEqual(result, true);
+  const handler = new MeetingResponseHandler();
+  const result = handler.canHandle({ data: { is_meeting_request: true } });
+  assert.strictEqual(result, true);
 });
 
 test('TC-CANHANDLE-002: Return false for non-meeting email', () => {
-  // TODO: Implement test
+  const handler = new MeetingResponseHandler();
+  const result = handler.canHandle({ data: { is_meeting_request: false } });
+  assert.strictEqual(result, false);
 });
 
 // --- classifyAction Tests ---
 console.log('\n--- classifyAction Tests ---\n');
 
-test('TC-CLASSIFY-001: Classify "accept" as accept', () => {
-  // TODO: Implement test
-  // const handler = new MeetingResponseHandler();
-  // assert.strictEqual(handler.classifyAction('accept'), 'accept');
+// TC-CLASSIFY-001: 'sim' with mock returning 'APPROVE' → 'accept'
+await asyncTest('TC-CLASSIFY-001: Classify multilingual approve → accept', async () => {
+  const mockOllama = createMockOllama('APPROVE');
+  const handler = new MeetingResponseHandler({ ollamaProvider: mockOllama });
+  const result = await handler.classifyAction('sim', false, false);
+  assert.strictEqual(result, 'accept');
+  assert.strictEqual(mockOllama._getCallCount(), 1);
 });
 
-test('TC-CLASSIFY-002: Classify "yes" as accept', () => {
-  // TODO: Implement test
+// TC-CLASSIFY-002: 'nein, danke' with mock returning 'DENY' → 'decline'
+await asyncTest('TC-CLASSIFY-002: Classify multilingual deny → decline', async () => {
+  const mockOllama = createMockOllama('DENY');
+  const handler = new MeetingResponseHandler({ ollamaProvider: mockOllama });
+  const result = await handler.classifyAction('nein, danke', true, true);
+  assert.strictEqual(result, 'decline');
 });
 
-test('TC-CLASSIFY-003: Classify "decline" as decline', () => {
-  // TODO: Implement test
+// TC-CLASSIFY-003: 'vorschlagen' with mock returning 'SUGGEST' → 'suggest'
+await asyncTest('TC-CLASSIFY-003: Classify multilingual suggest → suggest', async () => {
+  const mockOllama = createMockOllama('SUGGEST');
+  const handler = new MeetingResponseHandler({ ollamaProvider: mockOllama });
+  const result = await handler.classifyAction('vorschlagen', true, true);
+  assert.strictEqual(result, 'suggest');
 });
 
-test('TC-CLASSIFY-004: Classify "suggest" as suggest', () => {
-  // TODO: Implement test
+// TC-CLASSIFY-004: 'trotzdem annehmen' with mock returning 'ACCEPT_ANYWAY' → 'accept_anyway'
+await asyncTest('TC-CLASSIFY-004: Classify accept_anyway intent → accept_anyway', async () => {
+  const mockOllama = createMockOllama('ACCEPT_ANYWAY');
+  const handler = new MeetingResponseHandler({ ollamaProvider: mockOllama });
+  const result = await handler.classifyAction('trotzdem annehmen', true, false);
+  assert.strictEqual(result, 'accept_anyway');
 });
 
-test('TC-CLASSIFY-005: Classify "accept anyway" as accept_anyway', () => {
-  // TODO: Implement test
+// TC-CLASSIFY-005: Structural prompt assertion — SUGGEST and ACCEPT_ANYWAY absent when flags false
+await asyncTest('TC-CLASSIFY-005: Prompt excludes SUGGEST and ACCEPT_ANYWAY when flags are false', async () => {
+  const mockOllama = createMockOllama('UNKNOWN');
+  const handler = new MeetingResponseHandler({ ollamaProvider: mockOllama });
+  await handler.classifyAction('whatever', false, false);
+  const lastCall = mockOllama._getLastCall();
+  assert.ok(lastCall, 'Ollama should have been called');
+  const systemPrompt = lastCall.system || '';
+  assert.ok(!systemPrompt.includes('SUGGEST'), 'SUGGEST label must not appear when hasConflict/hasAlternatives are false');
+  assert.ok(!systemPrompt.includes('ACCEPT_ANYWAY'), 'ACCEPT_ANYWAY label must not appear when hasConflict is false');
 });
 
-test('TC-CLASSIFY-006: Return null for unrecognized message', () => {
-  // TODO: Implement test
+// TC-CLASSIFY-006: 'what time is it' with mock returning 'UNKNOWN' → null
+await asyncTest('TC-CLASSIFY-006: Unknown intent returns null', async () => {
+  const mockOllama = createMockOllama('UNKNOWN');
+  const handler = new MeetingResponseHandler({ ollamaProvider: mockOllama });
+  const result = await handler.classifyAction('what time is it', true, true);
+  assert.strictEqual(result, null);
 });
 
 // --- handleAccept Tests ---

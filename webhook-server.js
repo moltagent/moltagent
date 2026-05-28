@@ -1826,6 +1826,12 @@ async function initialize() {
         }
       }
 
+      // Wire ollamaProvider into SkillForgeHandler for language-agnostic confirmation replies
+      if (skillForgeHandler && ollamaProvider) {
+        skillForgeHandler.setOllamaProvider(ollamaProvider);
+        console.log('[INIT] ollamaProvider wired into SkillForgeHandler');
+      }
+
       // Instantiate security guards
       const secretsGuard = SecretsGuard ? new SecretsGuard() : null;
       const toolGuard = ToolGuard ? new ToolGuard() : null;

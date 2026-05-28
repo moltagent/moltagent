@@ -24,6 +24,22 @@ const PendingActionHandler = require('../../../../src/lib/handlers/confirmation/
 async function runAllTests() {
   console.log('\n=== PendingActionHandler Tests ===\n');
 
+// --- Constructor Tests ---
+console.log('\n--- Constructor Tests ---\n');
+
+test('TC-CTOR-001: Initialize with default options', () => {
+  const handler = new PendingActionHandler();
+  assert.ok(handler.auditLog);
+  assert.ok(handler.errorHandler);
+  assert.strictEqual(handler.ollamaProvider, null);
+});
+
+test('TC-CTOR-002: Initialize with ollamaProvider', () => {
+  const mockOllama = { chat: async () => ({ content: 'APPROVE' }) };
+  const handler = new PendingActionHandler({ ollamaProvider: mockOllama });
+  assert.strictEqual(handler.ollamaProvider, mockOllama);
+});
+
 // --- findForUser Tests ---
 console.log('\n--- findForUser Tests ---\n');
 

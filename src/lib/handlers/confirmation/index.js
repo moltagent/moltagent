@@ -50,80 +50,17 @@ const PendingActionHandler = require('./pending-action-handler');
  *
  * @param {Object} options
  * @param {Function} [options.auditLog] - Audit logging function (shared)
+ * @param {Object} [options.ollamaProvider] - Ollama provider for LLM classification
  * @returns {ConfirmationHandlers}
  */
 function createConfirmationHandlers(options = {}) {
-  const { auditLog } = options;
+  const { auditLog, ollamaProvider } = options;
 
   return {
-    emailReply: new EmailReplyHandler({ auditLog }),
-    meetingResponse: new MeetingResponseHandler({ auditLog }),
-    pendingAction: new PendingActionHandler({ auditLog })
+    emailReply: new EmailReplyHandler({ auditLog, ollamaProvider }),
+    meetingResponse: new MeetingResponseHandler({ auditLog, ollamaProvider }),
+    pendingAction: new PendingActionHandler({ auditLog, ollamaProvider })
   };
-}
-
-// -----------------------------------------------------------------------------
-// Response Pattern Matchers (shared utilities)
-// -----------------------------------------------------------------------------
-
-/**
- * Check if message is an approval response
- *
- * @param {string} message - Lowercase, trimmed message
- * @returns {boolean}
- */
-function isApprovalResponse(message) {
-  return /^(yes|yep|yeah|sure|ok|okay|confirm|send it|do it|go ahead|proceed|approved?|send|accept)$/.test(message);
-}
-
-/**
- * Check if message is a rejection/ignore response
- *
- * @param {string} message - Lowercase, trimmed message
- * @returns {boolean}
- */
-function isRejectionResponse(message) {
-  return /^(no|nope|nah|cancel|don't|abort|stop|never mind|ignore)$/.test(message);
-}
-
-/**
- * Check if message is an edit request
- *
- * @param {string} message - Lowercase, trimmed message
- * @returns {boolean}
- */
-function isEditResponse(message) {
-  return /^edit$/.test(message);
-}
-
-/**
- * Check if message is a meeting decline
- *
- * @param {string} message - Lowercase, trimmed message
- * @returns {boolean}
- */
-function isDeclineResponse(message) {
-  return /^decline$/.test(message);
-}
-
-/**
- * Check if message is a suggest alternatives request
- *
- * @param {string} message - Lowercase, trimmed message
- * @returns {boolean}
- */
-function isSuggestResponse(message) {
-  return /^(suggest|suggest alternatives?)$/.test(message);
-}
-
-/**
- * Check if message is an "accept anyway" (with conflict)
- *
- * @param {string} message - Lowercase, trimmed message
- * @returns {boolean}
- */
-function isAcceptAnywayResponse(message) {
-  return /^accept anyway$/.test(message);
 }
 
 // -----------------------------------------------------------------------------
@@ -131,19 +68,8 @@ function isAcceptAnywayResponse(message) {
 // -----------------------------------------------------------------------------
 
 module.exports = {
-  // Classes
   EmailReplyHandler,
   MeetingResponseHandler,
   PendingActionHandler,
-
-  // Factory
-  createConfirmationHandlers,
-
-  // Matchers
-  isApprovalResponse,
-  isRejectionResponse,
-  isEditResponse,
-  isDeclineResponse,
-  isSuggestResponse,
-  isAcceptAnywayResponse
+  createConfirmationHandlers
 };
