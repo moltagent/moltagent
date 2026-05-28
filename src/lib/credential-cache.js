@@ -33,42 +33,58 @@ class CredentialCache {
   }
 
   /**
-   * Fetch a single credential by name
+   * Fetch a single credential by name. Returns null when the credential is
+   * genuinely not configured (not present in NC Passwords / not shared with
+   * moltagent). Infrastructure failures (NC Passwords unreachable, auth
+   * errors) still throw — those are real problems, not "feature off."
+   *
+   * This is the primitive optional consumers should call. Required consumers
+   * call get() (below), which delegates here and throws on null.
+   *
    * @param {string} name - Credential name/label
-   * @returns {Promise<string|Object>} Credential value
+   * @returns {Promise<string|Object|null>}
    */
-  async get(name) {
-    // Check local cache first
+  async tryGet(name) {
     const cached = this._cache.get(name);
     if (cached && Date.now() < cached.expiry) {
       await this.auditLog('credential_cache_hit', { name });
       return cached.value;
     }
 
-    // Need to fetch - use the all-credentials list
+    // _fetchAllCredentials throws on infra failure — let that propagate.
     const credentials = await this._fetchAllCredentials();
 
-    // Find the credential
     const found = credentials.find(p =>
       p.label === name ||
       p.username === name ||
       p.label?.toLowerCase() === name.toLowerCase()
     );
 
-    if (!found) {
-      throw new Error(`Credential '${name}' not found in NC Passwords`);
-    }
+    if (!found) return null;
 
-    // Process credential (simple vs complex)
     const value = this._processCredential(name, found);
 
-    // Cache it
     this._cache.set(name, {
       value,
       expiry: Date.now() + this.cacheTTL
     });
 
     await this.auditLog('credential_fetched', { name });
+    return value;
+  }
+
+  /**
+   * Fetch a single credential by name. Throws if not configured.
+   * Preserves the historical contract; existing callers behave identically.
+   *
+   * @param {string} name - Credential name/label
+   * @returns {Promise<string|Object>} Credential value
+   */
+  async get(name) {
+    const value = await this.tryGet(name);
+    if (value === null) {
+      throw new Error(`Credential '${name}' not found in NC Passwords`);
+    }
     return value;
   }
 
