@@ -774,6 +774,7 @@ class MessageProcessor {
               userName: extracted.user,
               roomToken: extracted.token,
               warmMemory: focusContext || '',
+              gate,
               onArtifact,
               getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
               getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
