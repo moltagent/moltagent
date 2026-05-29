@@ -28,12 +28,19 @@ async function runAllTests() {
     const handler = new EmailReplyHandler();
     assert.ok(handler.auditLog);
     assert.ok(handler.errorHandler);
+    assert.strictEqual(handler.ollamaProvider, null);
   });
 
   test('TC-CTOR-002: Initialize with custom auditLog', () => {
     const mockAuditLog = createMockAuditLog();
     const handler = new EmailReplyHandler({ auditLog: mockAuditLog });
     assert.strictEqual(handler.auditLog, mockAuditLog);
+  });
+
+  test('TC-CTOR-003: Initialize with ollamaProvider', () => {
+    const mockOllama = { chat: async () => ({ content: 'APPROVE' }) };
+    const handler = new EmailReplyHandler({ ollamaProvider: mockOllama });
+    assert.strictEqual(handler.ollamaProvider, mockOllama);
   });
 
   // --- canHandle Tests ---

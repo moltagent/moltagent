@@ -1,5 +1,7 @@
 'use strict';
 
+const { classifyConfirmationReply } = require('../shared/confirmation-classifier');
+
 /**
  * GuardrailEnforcer - Runtime Guardrail Enforcement
  *
@@ -73,10 +75,6 @@ const KEYWORD_FALLBACK_MAP = {
 const MATCH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 const SEMANTIC_TIMEOUT_MS = 30000; // 30s — classification needs headroom
 
-const AFFIRMATIVE = new Set(['yes', 'y', 'approve', 'ok', 'go ahead', 'proceed']);
-const NEGATIVE = new Set(['no', 'n', 'deny', 'cancel', 'stop', 'abort']);
-const EDIT_WORDS = ['edit', 'revise', 'change', 'update', 'modify', 'fix', 'adjust'];
-
 // Severity classification for ToolGuard APPROVAL_REQUIRED tools
 const HIGH_SEVERITY_TOOLS = new Set([
   'send_email', 'send_message_external', 'webhook_call',
@@ -113,6 +111,11 @@ const TOOL_APPROVAL_LABELS = {
 
 const DEFAULT_CONFIRMATION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_POLL_INTERVAL_MS = 3000;
+
+// Unicode marker the enforcer reserves for its HITL approval prompts on the
+// Talk surface (U+1F510, "closed lock with key"). Any other component emitting
+// this codepoint in a chat response is staging a fake ceremony — see #81.
+const HITL_PROMPT_MARKER = '\u{1F510}';
 
 class GuardrailEnforcer {
   /**
@@ -396,6 +399,11 @@ class GuardrailEnforcer {
     // Can't ask = fail closed
     if (!this.talkSendQueue || !this.conversationContext) {
       this.logger.warn('[GuardrailEnforcer] Cannot request confirmation — Talk unavailable, blocking');
+      this.logger.info(
+        `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=no classifier=no-channel reply="" ` +
+        `msgTs='' searchAfter='' lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+        `elapsedMs=0 pollIterations=0 guardrail="${guardrailTitle}"`
+      );
       return { decision: 'no' };
     }
 
@@ -408,37 +416,76 @@ class GuardrailEnforcer {
       this._pendingConfirmation = true;
     } catch (err) {
       this.logger.warn(`[GuardrailEnforcer] Failed to send confirmation: ${err.message}`);
+      this.logger.info(
+        `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=no classifier=enqueue-failed reply="" ` +
+        `msgTs='' searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+        `elapsedMs=${Date.now() - requestTimestamp} pollIterations=0 guardrail="${guardrailTitle}"`
+      );
       return { decision: 'no' };
     }
 
+    this.logger.info(
+      `[GuardrailEnforcer] HITL-enter-gate: tool=${toolName} guardrail="${guardrailTitle}" requestTs=${requestTimestamp} searchAfter=${searchAfter} lastConsumed(prior)=${this._lastConsumedTimestamp} pollIntervalMs=${this.pollIntervalMs} timeoutMs=${this.confirmationTimeoutMs}`
+    );
+
     // Poll for human response
+    let pollIterations = 0;
     const deadline = requestTimestamp + this.confirmationTimeoutMs;
     while (Date.now() < deadline) {
       await this._sleep(this.pollIntervalMs);
+      pollIterations++;
 
       try {
         const history = await this.conversationContext.getHistory(roomToken, { limit: 5 });
         for (const msg of history) {
           const msgTimestampMs = (msg.timestamp || 0) * 1000;
-          if (msgTimestampMs <= searchAfter) continue;
-          if (msg.role !== 'user') continue;
+          if (msgTimestampMs <= searchAfter) {
+            this.logger.info(
+              `[GuardrailEnforcer] poll-skip-ts: tool=${toolName} msgTs=${msgTimestampMs} searchAfter=${searchAfter} content="${(msg.content || '').slice(0, 40)}"`
+            );
+            continue;
+          }
+          if (msg.role !== 'user') {
+            this.logger.debug(`[GuardrailEnforcer] poll-skip-role: role=${msg.role}`);
+            continue;
+          }
 
-          const content = (msg.content || '').trim().toLowerCase();
-          if (this._isAffirmative(content)) {
+          const content = (msg.content || '').trim();
+          const reply = await this._classifyReply(content, EDITABLE_TOOLS.has(toolName));
+          this.logger.info(
+            `[GuardrailEnforcer] poll-classify: tool=${toolName} msgTs=${msgTimestampMs} role=${msg.role} content="${content.slice(0, 80)}" classifier=${reply}`
+          );
+          if (reply === 'approve') {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
+            this.logger.info(
+              `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=yes classifier=approve reply="${content.slice(0, 80)}" ` +
+              `msgTs=${msgTimestampMs} searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+              `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} guardrail="${guardrailTitle}"`
+            );
             return { decision: 'yes' };
           }
-          if (this._isNegative(content)) {
+          if (reply === 'deny') {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
+            this.logger.info(
+              `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=no classifier=deny reply="${content.slice(0, 80)}" ` +
+              `msgTs=${msgTimestampMs} searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+              `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} guardrail="${guardrailTitle}"`
+            );
             return { decision: 'no' };
           }
-          if (this._isEditRequest(content) && EDITABLE_TOOLS.has(toolName)) {
+          if (reply === 'edit' && EDITABLE_TOOLS.has(toolName)) {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
-            return { decision: 'edit', message: (msg.content || '').trim() };
+            this.logger.info(
+              `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=edit classifier=edit reply="${content.slice(0, 80)}" ` +
+              `msgTs=${msgTimestampMs} searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+              `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} guardrail="${guardrailTitle}"`
+            );
+            return { decision: 'edit', message: content };
           }
+          // 'unknown' → keep polling
         }
       } catch (err) {
         this.logger.warn(`[GuardrailEnforcer] Poll failed: ${err.message}`);
@@ -447,6 +494,11 @@ class GuardrailEnforcer {
 
     this.logger.info('[GuardrailEnforcer] Confirmation timed out — blocking action');
     this._pendingConfirmation = false;
+    this.logger.info(
+      `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=timeout classifier=timeout reply="" ` +
+      `msgTs='' searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+      `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} guardrail="${guardrailTitle}"`
+    );
     return { decision: 'timeout' };
   }
 
@@ -829,6 +881,11 @@ class GuardrailEnforcer {
   async _requestToolApproval(label, toolName, toolArgs, roomToken) {
     if (!this.talkSendQueue || !this.conversationContext) {
       this.logger.warn('[GuardrailEnforcer] Cannot request tool approval — Talk unavailable');
+      this.logger.info(
+        `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=no classifier=no-channel reply="" ` +
+        `msgTs='' searchAfter='' lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+        `elapsedMs=0 pollIterations=0 label="${label}"`
+      );
       return { decision: 'no' };
     }
 
@@ -841,35 +898,74 @@ class GuardrailEnforcer {
       this._pendingConfirmation = true;
     } catch (err) {
       this.logger.warn(`[GuardrailEnforcer] Failed to send approval request: ${err.message}`);
+      this.logger.info(
+        `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=no classifier=enqueue-failed reply="" ` +
+        `msgTs='' searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+        `elapsedMs=${Date.now() - requestTimestamp} pollIterations=0 label="${label}"`
+      );
       return { decision: 'no' };
     }
 
+    this.logger.info(
+      `[GuardrailEnforcer] HITL-enter: tool=${toolName} label="${label}" requestTs=${requestTimestamp} searchAfter=${searchAfter} lastConsumed(prior)=${this._lastConsumedTimestamp} pollIntervalMs=${this.pollIntervalMs} timeoutMs=${this.confirmationTimeoutMs}`
+    );
+
     // Poll — identical to _requestConfirmation polling
+    let pollIterations = 0;
     const deadline = requestTimestamp + this.confirmationTimeoutMs;
     while (Date.now() < deadline) {
       await this._sleep(this.pollIntervalMs);
+      pollIterations++;
       try {
         const history = await this.conversationContext.getHistory(roomToken, { limit: 5 });
         for (const msg of history) {
           const msgTimestampMs = (msg.timestamp || 0) * 1000;
-          if (msgTimestampMs <= searchAfter) continue;
-          if (msg.role !== 'user') continue;
-          const content = (msg.content || '').trim().toLowerCase();
-          if (this._isAffirmative(content)) {
+          if (msgTimestampMs <= searchAfter) {
+            this.logger.info(
+              `[GuardrailEnforcer] poll-skip-ts: tool=${toolName} msgTs=${msgTimestampMs} searchAfter=${searchAfter} content="${(msg.content || '').slice(0, 40)}"`
+            );
+            continue;
+          }
+          if (msg.role !== 'user') {
+            this.logger.debug(`[GuardrailEnforcer] poll-skip-role: role=${msg.role}`);
+            continue;
+          }
+          const content = (msg.content || '').trim();
+          const reply = await this._classifyReply(content, EDITABLE_TOOLS.has(toolName));
+          this.logger.info(
+            `[GuardrailEnforcer] poll-classify: tool=${toolName} msgTs=${msgTimestampMs} role=${msg.role} content="${content.slice(0, 80)}" classifier=${reply}`
+          );
+          if (reply === 'approve') {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
+            this.logger.info(
+              `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=yes classifier=approve reply="${content.slice(0, 80)}" ` +
+              `msgTs=${msgTimestampMs} searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+              `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} label="${label}"`
+            );
             return { decision: 'yes' };
           }
-          if (this._isNegative(content)) {
+          if (reply === 'deny') {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
+            this.logger.info(
+              `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=no classifier=deny reply="${content.slice(0, 80)}" ` +
+              `msgTs=${msgTimestampMs} searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+              `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} label="${label}"`
+            );
             return { decision: 'no' };
           }
-          if (this._isEditRequest(content) && EDITABLE_TOOLS.has(toolName)) {
+          if (reply === 'edit' && EDITABLE_TOOLS.has(toolName)) {
             this._lastConsumedTimestamp = msgTimestampMs;
             this._pendingConfirmation = false;
-            return { decision: 'edit', message: (msg.content || '').trim() };
+            this.logger.info(
+              `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=edit classifier=edit reply="${content.slice(0, 80)}" ` +
+              `msgTs=${msgTimestampMs} searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+              `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} label="${label}"`
+            );
+            return { decision: 'edit', message: content };
           }
+          // 'unknown' → keep polling
         }
       } catch (err) {
         this.logger.warn(`[GuardrailEnforcer] Approval poll failed: ${err.message}`);
@@ -878,6 +974,11 @@ class GuardrailEnforcer {
 
     this.logger.info('[GuardrailEnforcer] Tool approval timed out — blocking action');
     this._pendingConfirmation = false;
+    this.logger.info(
+      `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=timeout classifier=timeout reply="" ` +
+      `msgTs='' searchAfter=${searchAfter} lastConsumed(now)=${this._lastConsumedTimestamp} ` +
+      `elapsedMs=${Date.now() - requestTimestamp} pollIterations=${pollIterations} label="${label}"`
+    );
     return { decision: 'timeout' };
   }
 
@@ -959,12 +1060,15 @@ class GuardrailEnforcer {
    * Check if text looks like a HITL confirmation response (yes/no/edit).
    * Used by MessageProcessor to skip webhook-delivered duplicates.
    * @param {string} text - Raw message content
-   * @returns {boolean}
+   * @returns {Promise<boolean>}
    */
-  isConfirmationResponse(text) {
-    const trimmed = (text || '').trim().toLowerCase();
-    if (trimmed.length === 0 || trimmed.length > 50) return false;
-    return this._isAffirmative(trimmed) || this._isNegative(trimmed) || this._isEditRequest(trimmed);
+  async isConfirmationResponse(text) {
+    if (!text || typeof text !== 'string') return false;
+    const trimmed = text.trim();
+    if (!trimmed || trimmed.length > 100) return false;
+    // allowEdit=true: union of approve + deny + edit (matches former union of three checks)
+    const reply = await this._classifyReply(trimmed, true);
+    return reply === 'approve' || reply === 'deny' || reply === 'edit';
   }
 
   // ── Helpers ─────────────────────────────────────────────────────
@@ -975,19 +1079,24 @@ class GuardrailEnforcer {
     return `${toolName}(${argStr})`;
   }
 
-  /** @param {string} text - Lowercased, trimmed */
-  _isAffirmative(text) {
-    return AFFIRMATIVE.has(text);
-  }
-
-  /** @param {string} text - Lowercased, trimmed */
-  _isNegative(text) {
-    return NEGATIVE.has(text);
-  }
-
-  /** @param {string} text - Lowercased, trimmed */
-  _isEditRequest(text) {
-    return EDIT_WORDS.some(word => text.startsWith(word));
+  /**
+   * Classify a human reply using the shared ConfirmationClassifier.
+   *
+   * @param {string} text - Raw reply text (not pre-normalised)
+   * @param {boolean} [allowEdit=false] - Whether to recognise 'edit' responses
+   * @returns {Promise<'approve'|'deny'|'edit'|'unknown'>}
+   * @private
+   */
+  async _classifyReply(text, allowEdit = false) {
+    if (typeof text !== 'string' || !text.trim() || text.length > 100) {
+      return 'unknown';
+    }
+    if (!this.ollamaProvider) return 'unknown';
+    return classifyConfirmationReply(text, this.ollamaProvider, {
+      allowEdit,
+      timeoutMs: 5000,
+      logger: this.logger
+    });
   }
 
   /**
@@ -1012,4 +1121,4 @@ class GuardrailEnforcer {
   }
 }
 
-module.exports = { GuardrailEnforcer, HIGH_SEVERITY_TOOLS, TOOL_APPROVAL_LABELS };
+module.exports = { GuardrailEnforcer, HIGH_SEVERITY_TOOLS, TOOL_APPROVAL_LABELS, HITL_PROMPT_MARKER };

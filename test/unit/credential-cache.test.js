@@ -287,6 +287,73 @@ test('handles non-JSON notes gracefully', () => {
   assert.deepStrictEqual(extras, {});
 });
 
+// ============================================================
+// tryGet() — non-throwing primitive for optional consumers
+// ============================================================
+// See briefings/CC-Briefing-EmailOptional.md and issue #87. The
+// distinction "credential not configured" vs "NC Passwords unreachable"
+// is load-bearing — the first must return null, the second must throw.
+
+asyncTest('tryGet returns value when credential exists', async () => {
+  const nc = new MockNCRequestManager();
+  const cache = new CredentialCache(nc);
+
+  const value = await cache.tryGet('claude-api-key');
+
+  assert.strictEqual(value, 'sk-test-123');
+});
+
+asyncTest('tryGet returns null when credential is not configured', async () => {
+  const nc = new MockNCRequestManager();
+  const cache = new CredentialCache(nc);
+
+  const value = await cache.tryGet('email-imap-missing-from-list');
+
+  assert.strictEqual(value, null);
+});
+
+asyncTest('tryGet propagates infrastructure errors (NC unreachable)', async () => {
+  // Simulate _fetchAllCredentials throwing — this models a network
+  // outage or 401 against NC Passwords, which is a real problem and
+  // must not be silently swallowed as "feature off."
+  const nc = new MockNCRequestManager();
+  nc.request = async () => { throw new Error('NC Passwords unreachable: ECONNREFUSED'); };
+  const cache = new CredentialCache(nc);
+
+  let threw = false;
+  try {
+    await cache.tryGet('any-credential');
+  } catch (error) {
+    threw = true;
+    assert.ok(error.message.includes('NC Passwords unreachable'));
+  }
+  assert.strictEqual(threw, true, 'tryGet must propagate infra errors');
+});
+
+asyncTest('get() still throws via tryGet delegation (contract preserved)', async () => {
+  const nc = new MockNCRequestManager();
+  const cache = new CredentialCache(nc);
+
+  let threw = false;
+  try {
+    await cache.get('does-not-exist');
+  } catch (error) {
+    threw = true;
+    assert.ok(error.message.includes('not found'));
+  }
+  assert.strictEqual(threw, true, 'get() must throw for not-configured');
+});
+
+asyncTest('tryGet uses cache on second call (same path as get)', async () => {
+  const nc = new MockNCRequestManager();
+  const cache = new CredentialCache(nc);
+
+  await cache.tryGet('claude-api-key');
+  await cache.tryGet('claude-api-key');
+
+  assert.strictEqual(nc.requestCalls.length, 1, 'should only fetch once');
+});
+
 // Summary
 setTimeout(() => {
   console.log('\n=================================');

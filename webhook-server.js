@@ -27,6 +27,7 @@ const { createErrorHandler } = require('./src/lib/errors/error-handler');
 const { TalkSendQueue } = require('./src/lib/talk/talk-send-queue');
 const appConfig = require('./src/lib/config');
 const { createServerComponents } = require('./src/lib/server/index');
+const { resolveOllamaEndpoint } = require('./src/lib/shared/resolve-ollama-endpoint');
 
 // Knowledge modules for agent memory context
 let ContextLoader, LearningLog;
@@ -1487,22 +1488,31 @@ async function initialize() {
       const { OpenAIToolsProvider } = require('./src/lib/agent/providers/openai-tools');
       const getCredential = credentialBroker.createGetter();
 
+      // Resolve Ollama endpoint once: OLLAMA_URL env > providers.json > localhost.
+      // The candidate-then-CONFIG.ollama.url chain previously propagated the
+      // YOUR_OLLAMA_IP placeholder from both the JSON template and config.js's
+      // own env-var default. The resolver strips placeholders at every layer.
+      const ollamaEndpoint = resolveOllamaEndpoint(
+        ollamaConfig.endpoint || CONFIG.ollama.url,
+        { source: 'webhook-server' }
+      );
+
       let ollamaProvider = null;
       if (OllamaToolsProvider) {
         ollamaProvider = new OllamaToolsProvider({
-          endpoint: ollamaConfig.endpoint || CONFIG.ollama.url,
+          endpoint: ollamaEndpoint,
           model: ollamaConfig.model || CONFIG.ollama.model,
           timeout: CONFIG.ollama.timeout,
           toolTimeout: CONFIG.ollama.toolTimeout
         });
-        console.log(`[INIT] OllamaToolsProvider ready (${ollamaConfig.endpoint || CONFIG.ollama.url}, ${ollamaConfig.model || CONFIG.ollama.model})`);
+        console.log(`[INIT] OllamaToolsProvider ready (${ollamaEndpoint}, ${ollamaConfig.model || CONFIG.ollama.model})`);
       }
 
       let ollamaCredentialProvider = null;
       if (OllamaToolsProvider && CONFIG.ollama.modelCredential &&
           CONFIG.ollama.modelCredential !== (ollamaConfig.model || CONFIG.ollama.model)) {
         ollamaCredentialProvider = new OllamaToolsProvider({
-          endpoint: ollamaConfig.endpoint || CONFIG.ollama.url,
+          endpoint: ollamaEndpoint,
           model: CONFIG.ollama.modelCredential,
           timeout: CONFIG.ollama.timeout,
           toolTimeout: CONFIG.ollama.toolTimeout
@@ -1516,7 +1526,7 @@ async function initialize() {
       let ollamaFastProvider = null;
       if (OllamaToolsProvider && fastModel !== (ollamaConfig.model || CONFIG.ollama.model)) {
         ollamaFastProvider = new OllamaToolsProvider({
-          endpoint: ollamaConfig.endpoint || CONFIG.ollama.url,
+          endpoint: ollamaEndpoint,
           model: fastModel,
           timeout: 30000,
           toolTimeout: 30000
@@ -1824,6 +1834,12 @@ async function initialize() {
         } catch (err) {
           console.warn(`[INIT] ToolActivator failed: ${err.message}`);
         }
+      }
+
+      // Wire ollamaProvider into SkillForgeHandler for language-agnostic confirmation replies
+      if (skillForgeHandler && ollamaProvider) {
+        skillForgeHandler.setOllamaProvider(ollamaProvider);
+        console.log('[INIT] ollamaProvider wired into SkillForgeHandler');
       }
 
       // Instantiate security guards

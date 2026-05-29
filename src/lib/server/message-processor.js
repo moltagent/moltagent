@@ -376,10 +376,19 @@ class MessageProcessor {
 
     // Skip messages consumed by HITL guardrail confirmation polling
     const enforcer = this.agentLoop?.guardrailEnforcer;
-    if (enforcer?.isPendingConfirmation() && enforcer.isConfirmationResponse(extracted.content)) {
-      console.log(`[Message] Skipping HITL confirmation response from ${extracted.user}`);
-      this.statusIndicator?.setStatus('ready').catch(() => {});
-      return { skipped: true, reason: 'hitl_confirmation' };
+    const _hitlPending = !!enforcer?.isPendingConfirmation();
+    if (_hitlPending) {
+      const _isConfirm = await enforcer.isConfirmationResponse(extracted.content);
+      console.info(
+        `[Message] HITL-gate: pending=true isConfirmationResponse=${_isConfirm} ` +
+        `content="${(extracted.content || '').slice(0, 80)}" user=${extracted.user}`
+      );
+      if (_isConfirm) {
+        console.log(`[Message] Skipping HITL confirmation response from ${extracted.user}`);
+        this.statusIndicator?.setStatus('ready').catch(() => {});
+        return { skipped: true, reason: 'hitl_confirmation' };
+      }
+      // Pending but not a confirmation reply → fall through (preserves current behavior).
     }
 
     // OOO auto-responder: reply with away notice, skip processing
@@ -1018,12 +1027,6 @@ class MessageProcessor {
           voiceReplyEnabled,
           user: extracted.user
         };
-
-        // Bug 3 fix: Short confirmations shouldn't loop to max iterations
-        const trimmed = extracted.content.trim().toLowerCase();
-        if (trimmed.length <= 10 && /^(yes|no|ok|sure|yeah|nah|do it|go ahead|cancel|stop|yep|nope|y|n)$/.test(trimmed)) {
-          agentOpts.maxIterations = 2;
-        }
 
         response = await this.agentLoop.process(pipelineMessage, extracted.token, {
           ...agentOpts,

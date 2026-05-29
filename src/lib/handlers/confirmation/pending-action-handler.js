@@ -84,10 +84,14 @@ class PendingActionHandler {
   /**
    * @param {Object} options
    * @param {Function} [options.auditLog] - Audit logging function
+   * @param {Object} [options.ollamaProvider] - Ollama provider for LLM classification
    */
   constructor(options = {}) {
     /** @type {Function} */
     this.auditLog = options.auditLog || (async () => {});
+
+    /** @type {Object|null} */
+    this.ollamaProvider = options.ollamaProvider || null;
 
     /** @type {import('../../errors/error-handler').ErrorHandler} */
     this.errorHandler = createErrorHandler({

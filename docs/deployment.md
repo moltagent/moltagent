@@ -13,7 +13,7 @@ This guide covers the complete Moltagent deployment in detail. For a quick overv
 
 The following apps must be installed on your Storage Share. Most are pre-installed on Hetzner Storage Share. Check via Settings > Apps.
 
-**Required:**
+**Required** — the agent will not start without these:
 
 | App | Purpose |
 |-----|---------|
@@ -21,16 +21,20 @@ The following apps must be installed on your Storage Share. Most are pre-install
 | Deck | Kanban boards for Cockpit (agent control plane) and Workflow Engine |
 | Collectives | Wiki for Living Memory / knowledge system |
 | Talk | Chat interface, webhook pipeline, human-agent communication |
-| Mail | IMAP/SMTP integration for email workflows |
-| Calendar | CalDAV integration for smart meetings and scheduling |
-| Contacts | CardDAV contact resolution for meetings and email |
 
-**Optional:**
+**Optional** — each enables a feature; absence disables that feature cleanly with one log line, nothing more:
 
-| App | Purpose |
+| App | Feature enabled if present |
 |-----|---------|
+| Mail | Email monitoring, analysis, and draft replies (IMAP/SMTP) |
+| Calendar | CalDAV scheduling, meeting awareness, free/busy |
+| Contacts | CardDAV contact resolution for meetings and email |
 | News | RSS feeds for content discovery and editorial workflows |
 | Analytics | Data visualization (not used by the agent directly) |
+
+The agent probes each optional integration at startup. If the app or its credential is not present, that feature is disabled and the agent continues normally. You never need to install an optional app just to make the service boot.
+
+> **Maintainer note — keep this list in sync.** The required/optional split also appears in the [Quick Start](quickstart.md), Step 2. These two copies are hand-synchronized: change one, change the other in the same commit. Collapsing the split into a single declared manifest that both the startup preflight and the docs read from — so the two surfaces can no longer drift — is tracked in [#87](https://github.com/moltagent/moltagent/issues/87). When that lands, this note gets deleted.
 
 ## Credential Organization in NC Passwords
 
