@@ -78,9 +78,11 @@ for dir in Moltagent Moltagent/Inbox Moltagent/Outbox Moltagent/Logs Moltagent/M
 done
 ```
 
-5. Store your LLM API keys in NC Passwords:
-   - Create entries named `claude-api-key`, `deepseek-api-key`, etc.
+5. Store your credentials in NC Passwords:
+   - Create entries named `claude-api-key`, `deepseek-api-key`, etc. for your LLM API keys
+   - You will also create `nc-talk-secret` and `nc-talk-room` in Step 5 (Talk bot registration)
    - Share each entry with the `moltagent` user
+   - See the [Credential Format Reference](credentials.md) for the exact fields each credential needs — especially for complex credentials like `email-imap` and `email-smtp`, where the host and port live in specific fields
 
 ## Step 3: Set Up Ollama VM
 
@@ -231,7 +233,8 @@ Once Hetzner confirms the bot is registered:
 1. Create a new Talk room in Nextcloud (or use an existing one)
 2. Add the Moltagent bot to the room
 3. Note the room token from the URL (the part after `/call/`)
-4. Ensure your Bot VM firewall allows inbound connections from the Storage Share IP on port 3000
+4. Store the room token as an `nc-talk-room` entry in NC Passwords (put the token in the Password field) and share it with the `moltagent` user. This tells the agent which conversation to listen in.
+5. Ensure your Bot VM firewall allows inbound connections from the Storage Share IP on port 3000
 
 ### Test
 
