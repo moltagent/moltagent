@@ -40,6 +40,8 @@ The agent probes each optional integration at startup. If the app or its credent
 
 Create the following entries in the Passwords app and share them with the `moltagent` user. The folder structure is optional but recommended for organization.
 
+For the exact field-by-field mapping of every credential — which NC Passwords fields the code reads and how — see the [Credential Format Reference](credentials.md). Read it before configuring `email-imap`, `email-smtp`, or `oauth`: the host and port do not go where you might expect, and `key=value` lines in the Notes field are silently ignored.
+
 **LLM Providers (share with moltagent):**
 
 | Entry name | Value | Notes |
@@ -54,8 +56,9 @@ Add entries for any additional providers you want to use (OpenAI, Mistral, Groq,
 | Entry name | Value | Notes |
 |-----------|-------|-------|
 | `nc-talk-secret` | The 128-char hex secret from Talk bot registration | Generated during setup |
-| `email-imap` | Your IMAP credentials | See Email Setup below |
-| `email-smtp` | Your SMTP credentials | See Email Setup below |
+| `nc-talk-room` | The Talk room token (the string after `/call/` in the room URL) | Tells the agent which conversation to listen in |
+| `email-imap` | Your IMAP credentials | See Email Setup below and the [Credential Format Reference](credentials.md#email-imap) |
+| `email-smtp` | Your SMTP credentials | See Email Setup below and the [Credential Format Reference](credentials.md#email-smtp) |
 
 **Never share with moltagent:**
 
@@ -281,36 +284,30 @@ engines:
 
 Moltagent can read and manage email via IMAP/SMTP. Store credentials in NC Passwords.
 
+> **Field placement matters.** The host goes in the **Website** field, and the port goes in a **custom field** named `port` (or as valid JSON in Notes). Plain `key=value` lines in the Notes field are **ignored** by the code — this is the most common email-setup mistake. The full field-by-field mapping is in the [Credential Format Reference](credentials.md#email-imap).
+
 ### Option A: Shared access (read your existing mailbox)
 
 Create two entries in NC Passwords:
 
 **Entry: `email-imap`**
-- Username: your email address
+- Username: your email address (e.g. `you@example.com`)
 - Password: your email password (or app password for Gmail/Outlook)
-- In the Notes field:
-  ```
-  host=imap.gmail.com
-  port=993
-  tls=true
-  ```
+- Website: `imap.example.com` (e.g. `imap.gmail.com` — the protocol is stripped automatically)
+- Custom field `port`: `993` (TLS is automatic on 993; use `143` with a custom field `starttls` = `true` for STARTTLS)
 
 **Entry: `email-smtp`**
 - Username: your email address
 - Password: same password
-- In the Notes field:
-  ```
-  host=smtp.gmail.com
-  port=587
-  tls=true
-  from=Your Name <you@gmail.com>
-  ```
+- Website: `smtp.example.com` (e.g. `smtp.gmail.com`)
+- Custom field `port`: `587` (STARTTLS) or `465` (implicit TLS)
+- Custom field `from` (optional): `Your Name <you@example.com>`
 
 Share both entries with the `moltagent` user.
 
-**Gmail users:** Create an app password at Google Account > Security > 2-Step Verification > App passwords.
+**Gmail users:** host `imap.gmail.com` / `smtp.gmail.com`. Create an app password at Google Account > Security > 2-Step Verification > App passwords.
 
-**Outlook users:** Use `outlook.office365.com` (IMAP) and `smtp.office365.com` (SMTP).
+**Outlook users:** Use `outlook.office365.com` (IMAP) and `smtp.office365.com` (SMTP), port `993` / `587`.
 
 ### Option B: Dedicated email for the agent
 
