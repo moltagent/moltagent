@@ -162,6 +162,12 @@ class GuardrailEnforcer {
     // True while waiting for a HITL confirmation reply — used by
     // MessageProcessor to skip webhook-delivered duplicates of the reply
     this._pendingConfirmation = false;
+
+    // The `searchAfter` watermark of the currently-pending poll: messages with
+    // a timestamp greater than this are inside the active poll's watch window,
+    // i.e. the poll owns the decision on them. Used by MessageProcessor to
+    // defer in-window messages to the poll (single decision point).
+    this._pendingSearchAfter = 0;
   }
 
   /**
@@ -414,6 +420,7 @@ class GuardrailEnforcer {
     try {
       this.talkSendQueue.enqueue(roomToken, message);
       this._pendingConfirmation = true;
+      this._pendingSearchAfter = searchAfter;
     } catch (err) {
       this.logger.warn(`[GuardrailEnforcer] Failed to send confirmation: ${err.message}`);
       this.logger.info(
@@ -896,6 +903,7 @@ class GuardrailEnforcer {
     try {
       this.talkSendQueue.enqueue(roomToken, message);
       this._pendingConfirmation = true;
+      this._pendingSearchAfter = searchAfter;
     } catch (err) {
       this.logger.warn(`[GuardrailEnforcer] Failed to send approval request: ${err.message}`);
       this.logger.info(
@@ -1054,6 +1062,42 @@ class GuardrailEnforcer {
    */
   isPendingConfirmation() {
     return this._pendingConfirmation === true;
+  }
+
+  /**
+   * Whether a message with the given timestamp has already been consumed by
+   * the HITL confirmation poll. Deterministic dedup signal: once the poll
+   * consumes a reply it records its timestamp (_lastConsumedTimestamp, ms),
+   * so any inbound copy of that same message — e.g. the webhook-delivered
+   * duplicate that races the poll — is already spent, regardless of what a
+   * later classifier call decides. Matches the poll's `<=` watermark
+   * semantics (same Talk-second granularity). Returns false for missing or
+   * non-positive timestamps so the caller falls through to its normal path.
+   * @param {number} timestampMs - Inbound message timestamp in milliseconds
+   * @returns {boolean}
+   */
+  isMessageConsumed(timestampMs) {
+    return typeof timestampMs === 'number'
+      && timestampMs > 0
+      && timestampMs <= this._lastConsumedTimestamp;
+  }
+
+  /**
+   * Whether a message falls inside the currently-pending poll's watch window
+   * (its timestamp is newer than the pending `searchAfter`). When true, the
+   * HITL poll is actively watching for exactly this message and owns the
+   * decision on it — the webhook path should defer rather than independently
+   * reprocess it. This closes the gate-before-consume race: the poll may not
+   * have consumed the reply yet (so isMessageConsumed is still false), but the
+   * message is already claimed by the poll. Returns false when no confirmation
+   * is pending, or for non-positive/unknown timestamps (caller falls through).
+   * @param {number} timestampMs - Inbound message timestamp in milliseconds
+   * @returns {boolean}
+   */
+  isWithinPendingWindow(timestampMs) {
+    return this._pendingConfirmation === true
+      && typeof timestampMs === 'number'
+      && timestampMs > this._pendingSearchAfter;
   }
 
   /**

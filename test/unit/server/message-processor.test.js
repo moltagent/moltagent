@@ -179,6 +179,94 @@ test('TC-VOICE-008: _extractMessage keeps rich-object error for non-voice {objec
   assert.ok(extracted.content.includes('rich object'), 'Should have rich object error');
 });
 
+// --- timestampMs extraction (#108 HITL dedup watermark basis) ---
+console.log('\n--- timestampMs extraction (#108) ---\n');
+
+test('TC-TS-001: _extractMessage derives timestampMs from rich object unix-seconds', () => {
+  const processor = createProcessor();
+  const data = {
+    object: { content: 'ja', id: 'msg-1', message: { timestamp: 1780323388 } },
+    actor: { id: 'users/alice', type: 'users' },
+    target: { id: 'room-abc' }
+  };
+  // matches the poll watermark basis: Talk seconds × 1000
+  assert.strictEqual(processor._extractMessage(data).timestampMs, 1780323388000);
+});
+
+test('TC-TS-002: _extractMessage falls back to AS2 published ISO', () => {
+  const processor = createProcessor();
+  const iso = '2026-06-01T14:16:28.000Z';
+  const data = {
+    object: { content: 'ja', id: 'msg-1', published: iso },
+    actor: { id: 'users/alice', type: 'users' },
+    target: { id: 'room-abc' }
+  };
+  assert.strictEqual(processor._extractMessage(data).timestampMs, Date.parse(iso));
+});
+
+test('TC-TS-003: _extractMessage yields 0 when no timestamp present (unknown → safe)', () => {
+  const processor = createProcessor();
+  const data = {
+    object: { content: 'ja', id: 'msg-1' },
+    actor: { id: 'users/alice', type: 'users' },
+    target: { id: 'room-abc' }
+  };
+  assert.strictEqual(processor._extractMessage(data).timestampMs, 0);
+});
+
+// --- HITL-gate dedup (#108): acceptance — exactly one execution on classifier timeout ---
+console.log('\n--- HITL-gate dedup (#108) ---\n');
+
+// Stub enforcer with explicit gate verdicts; counts classifier calls so we can
+// prove the deterministic layers short-circuit BEFORE the (timeout-prone) LLM.
+function makeGateEnforcer(over = {}) {
+  let classifyCalls = 0;
+  return {
+    isPendingConfirmation: () => over.pending !== false,
+    isMessageConsumed: () => over.consumed === true,
+    isWithinPendingWindow: () => over.inWindow === true,
+    isConfirmationResponse: async () => {
+      classifyCalls++;
+      if (over.classifierThrows) throw new Error('Ollama request timed out after 5000ms');
+      return over.isConfirm === true;
+    },
+    _classifyCalls: () => classifyCalls
+  };
+}
+
+const jaData = () => createActivityStreamsData('ja', { user: 'alice', message: { timestamp: 1780323388 } });
+
+asyncTest('TC-HITL-108-A: in-window reply deferred to poll without calling the classifier (timeout-proof)', async () => {
+  // The proven repro: pending, NOT yet consumed, classifier would time out.
+  // Layer A must short-circuit deterministically → no double-processing.
+  const enforcer = makeGateEnforcer({ pending: true, consumed: false, inWindow: true, classifierThrows: true });
+  const processor = createProcessor({ agentLoop: { guardrailEnforcer: enforcer } });
+  const result = await processor.process(jaData());
+  assert.strictEqual(result.skipped, true);
+  assert.strictEqual(result.reason, 'hitl_deferred_to_poll');
+  assert.strictEqual(enforcer._classifyCalls(), 0, 'classifier must NOT be consulted for in-window messages');
+});
+
+asyncTest('TC-HITL-108-consumed: already-consumed duplicate skipped (watermark defense-in-depth)', async () => {
+  const enforcer = makeGateEnforcer({ pending: true, consumed: true, inWindow: false });
+  const processor = createProcessor({ agentLoop: { guardrailEnforcer: enforcer } });
+  const result = await processor.process(jaData());
+  assert.strictEqual(result.skipped, true);
+  assert.strictEqual(result.reason, 'hitl_already_consumed');
+  assert.strictEqual(enforcer._classifyCalls(), 0);
+});
+
+asyncTest('TC-HITL-108-ambiguous: out-of-window message still routed through the classifier', async () => {
+  // A message predating the pending window is NOT the poll's — preserve the
+  // existing ambiguous-case behavior (classifier consulted).
+  const enforcer = makeGateEnforcer({ pending: true, consumed: false, inWindow: false, isConfirm: true });
+  const processor = createProcessor({ agentLoop: { guardrailEnforcer: enforcer } });
+  const result = await processor.process(jaData());
+  assert.strictEqual(enforcer._classifyCalls(), 1, 'classifier IS consulted for the out-of-window case');
+  assert.strictEqual(result.skipped, true);
+  assert.strictEqual(result.reason, 'hitl_confirmation');
+});
+
 // --- Address Detection Tests (Session 37) ---
 console.log('\n--- Address Detection (Session 37) ---\n');
 
