@@ -1244,6 +1244,39 @@ async function runTests() {
     assert.strictEqual(enforcer.isPendingConfirmation(), false);
   });
 
+  // ── isMessageConsumed (#108 Layer B: id-based consumed-watermark) ──
+  // The webhook carries no timestamp; the Talk message id is the only field
+  // shared by webhook (object.id) and poll (m.id), and ids are monotonic.
+  test('TC-CONSUMED-001: defaults to false when nothing consumed', () => {
+    const enforcer = makeEnforcer();
+    assert.strictEqual(enforcer._lastConsumedMessageId, 0);
+    assert.strictEqual(enforcer.isMessageConsumed(16895), false);
+  });
+
+  test('TC-CONSUMED-002: true for the consumed id (id === watermark) and older ids', () => {
+    const enforcer = makeEnforcer();
+    enforcer._lastConsumedMessageId = 16895;
+    // Exact match — a redelivered webhook copy of the consumed "ja"
+    assert.strictEqual(enforcer.isMessageConsumed(16895), true);
+    // Anything at/under the watermark is spent
+    assert.strictEqual(enforcer.isMessageConsumed(16800), true);
+  });
+
+  test('TC-CONSUMED-003: false for a newer id (genuine new request after watermark)', () => {
+    const enforcer = makeEnforcer();
+    enforcer._lastConsumedMessageId = 16895;
+    assert.strictEqual(enforcer.isMessageConsumed(16896), false);
+  });
+
+  test('TC-CONSUMED-004: false for missing/invalid ids (safe fall-through)', () => {
+    const enforcer = makeEnforcer();
+    enforcer._lastConsumedMessageId = 16895;
+    assert.strictEqual(enforcer.isMessageConsumed(0), false);
+    assert.strictEqual(enforcer.isMessageConsumed(undefined), false);
+    assert.strictEqual(enforcer.isMessageConsumed(NaN), false);
+    assert.strictEqual(enforcer.isMessageConsumed(-1), false);
+  });
+
   const { passed, failed } = summary();
   exitWithCode();
 }

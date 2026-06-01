@@ -374,21 +374,35 @@ class MessageProcessor {
     // Fire-and-forget: never blocks the pipeline.
     this.statusIndicator?.setStatus('processing').catch(() => {});
 
-    // Skip messages consumed by HITL guardrail confirmation polling
+    // #108: deterministic dedup of the HITL confirmation reply, keyed on the
+    // Talk message id (the only field both the webhook and the poll share —
+    // the webhook carries no timestamp). Two layers cover both race orderings;
+    // neither calls the (timeout-prone) classifier, which is what caused the
+    // double-execution when it timed out and the reply fell through as a turn.
     const enforcer = this.agentLoop?.guardrailEnforcer;
-    const _hitlPending = !!enforcer?.isPendingConfirmation();
-    if (_hitlPending) {
-      const _isConfirm = await enforcer.isConfirmationResponse(extracted.content);
-      console.info(
-        `[Message] HITL-gate: pending=true isConfirmationResponse=${_isConfirm} ` +
-        `content="${(extracted.content || '').slice(0, 80)}" user=${extracted.user}`
-      );
-      if (_isConfirm) {
-        console.log(`[Message] Skipping HITL confirmation response from ${extracted.user}`);
+    if (enforcer) {
+      // Layer A — defer while pending: any message reaching the gate during a
+      // pending confirmation arrived after the request, so it is the poll's to
+      // decide. Defer rather than independently reprocess (closes the
+      // gate-before-consume race). Accepted trade: a genuine NEW request sent
+      // mid-confirmation is dropped (user re-sends) until the single-consumer
+      // queue lands (#104).
+      if (enforcer.isPendingConfirmation()) {
+        console.info(`[Message] HITL-gate: pending — deferring to poll, user=${extracted.user}`);
         this.statusIndicator?.setStatus('ready').catch(() => {});
-        return { skipped: true, reason: 'hitl_confirmation' };
+        return { skipped: true, reason: 'hitl_deferred_to_poll' };
       }
-      // Pending but not a confirmation reply → fall through (preserves current behavior).
+      // Layer B — consumed watermark: covers the other ordering (poll consumed
+      // the reply and cleared pending before this webhook copy reached the
+      // gate). The consumed message id is spent; drop any redelivery at/under it.
+      if (enforcer.isMessageConsumed(Number(extracted.messageId))) {
+        console.info(
+          `[Message] HITL-gate: already-consumed (id=${extracted.messageId} ≤ watermark) — ` +
+          `skipping reprocess, user=${extracted.user}`
+        );
+        this.statusIndicator?.setStatus('ready').catch(() => {});
+        return { skipped: true, reason: 'hitl_already_consumed' };
+      }
     }
 
     // OOO auto-responder: reply with away notice, skip processing

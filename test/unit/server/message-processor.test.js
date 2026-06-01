@@ -179,6 +179,57 @@ test('TC-VOICE-008: _extractMessage keeps rich-object error for non-voice {objec
   assert.ok(extracted.content.includes('rich object'), 'Should have rich object error');
 });
 
+// --- HITL-gate dedup (#108): id-keyed, classifier-free, timeout-proof ---
+console.log('\n--- HITL-gate dedup (#108) ---\n');
+
+// Stub enforcer with explicit gate verdicts. The new gate never calls the
+// classifier; isConfirmationResponse is a spy that fails loudly if invoked, to
+// prove the dedup is fully deterministic (timeout-proof by construction).
+function makeGateEnforcer(over = {}) {
+  let classifyCalls = 0;
+  return {
+    isPendingConfirmation: () => over.pending === true,
+    isMessageConsumed: (id) => over.consumed === true && Number.isFinite(id) && id > 0,
+    isConfirmationResponse: async () => { classifyCalls++; return true; },
+    _classifyCalls: () => classifyCalls
+  };
+}
+
+const jaData = (id = '16895') => createActivityStreamsData('ja', { user: 'alice', messageId: id });
+
+asyncTest('TC-HITL-108-A: pending → deferred to poll, classifier never called (timeout-proof)', async () => {
+  // The proven repro: a confirmation is pending and the reply arrives. The gate
+  // defers deterministically — no classifier, so no double-fire on timeout.
+  const enforcer = makeGateEnforcer({ pending: true, consumed: false });
+  const processor = createProcessor({ agentLoop: { guardrailEnforcer: enforcer } });
+  const result = await processor.process(jaData());
+  assert.strictEqual(result.skipped, true);
+  assert.strictEqual(result.reason, 'hitl_deferred_to_poll');
+  assert.strictEqual(enforcer._classifyCalls(), 0, 'gate must not call the classifier');
+});
+
+asyncTest('TC-HITL-108-consumed: not pending but id ≤ watermark → already-consumed skip', async () => {
+  // The other ordering: poll consumed the reply and cleared pending before this
+  // webhook copy reached the gate. Layer B drops the redelivery by id.
+  const enforcer = makeGateEnforcer({ pending: false, consumed: true });
+  const processor = createProcessor({ agentLoop: { guardrailEnforcer: enforcer } });
+  const result = await processor.process(jaData());
+  assert.strictEqual(result.skipped, true);
+  assert.strictEqual(result.reason, 'hitl_already_consumed');
+  assert.strictEqual(enforcer._classifyCalls(), 0);
+});
+
+asyncTest('TC-HITL-108-passthrough: not pending and not consumed → gate does not skip', async () => {
+  // A fresh message with no pending confirmation must NOT be swallowed by the
+  // gate. Use OOO mode for a clean, network-free early return just past the
+  // gate — reaching it proves the gate let the message through.
+  const enforcer = makeGateEnforcer({ pending: false, consumed: false });
+  const processor = createProcessor({ agentLoop: { guardrailEnforcer: enforcer } });
+  processor.setMode('out-of-office');
+  const result = await processor.process(jaData());
+  assert.strictEqual(result.reason, 'ooo_auto_reply', 'gate let the message through to OOO handling');
+});
+
 // --- Address Detection Tests (Session 37) ---
 console.log('\n--- Address Detection (Session 37) ---\n');
 
