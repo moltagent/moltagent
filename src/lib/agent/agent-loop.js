@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { extractArtifact } = require('./artifact-extractor');
-const { HITL_PROMPT_MARKER } = require('./guardrail-enforcer');
+const { stagesApprovalCeremony, stripApprovalMarker, ACTION_REPROMPT_DIRECTIVE } = require('./action-guard');
 
 /**
  * AgentLoop - The Nervous System
@@ -322,9 +322,14 @@ class AgentLoop {
       // text-only refusals on the second pass ("I can't because…") are not
       // re-prompted again. maxIter is bumped to guarantee at least one more
       // iteration even when the short-message heuristic capped it at 2.
-      const responseStagesApproval = (response.content || '').includes(HITL_PROMPT_MARKER);
-      const noToolCallsYet = toolResultIndices.length === 0;
-      if (options.gate === 'action' && !actionGuardFired && (noToolCallsYet || responseStagesApproval)) {
+      // Marker staging is illegitimate at ANY gate — the 🔐 codepoint belongs to
+      // GuardrailEnforcer's Talk surface, never a model response. A confirmation
+      // follow-up ("lösch den dritten") classifies as gate=confirmation, so gating
+      // this on action would miss the #85 leak. The no-tool-call signal stays
+      // gate=action (a knowledge turn legitimately produces no tool call).
+      const responseStagesApproval = stagesApprovalCeremony(response.content);
+      const actionWithoutToolCall = options.gate === 'action' && toolResultIndices.length === 0;
+      if (!actionGuardFired && (actionWithoutToolCall || responseStagesApproval)) {
         actionGuardFired = true;
         maxIter = Math.max(maxIter, iteration + 1);
 
@@ -334,11 +339,13 @@ class AgentLoop {
         });
         messages.push({
           role: 'user',
-          content: '[SYSTEM] You were asked to perform an action but did not issue the state-changing tool call. The guardrail system handles approval prompts on its own surface — do not stage them in your response. If you can perform the action, call the appropriate tool now. If you cannot, explain what prevented you. Do not describe a result the tool has not returned.'
+          content: ACTION_REPROMPT_DIRECTIVE
         });
 
-        const reason = noToolCallsYet ? 'zero tool calls' : 'response staged HITL marker without destructive tool call';
-        this.logger.warn(`[AgentLoop] Action-hallucination guard fired at iteration ${iteration} — re-prompting (gate=action, ${reason})`);
+        const reason = responseStagesApproval
+          ? 'response staged HITL marker without destructive tool call'
+          : 'zero tool calls (gate=action)';
+        this.logger.warn(`[AgentLoop] Action-hallucination guard fired at iteration ${iteration} — re-prompting (${reason})`);
         continue;
       }
 
@@ -387,6 +394,15 @@ class AgentLoop {
         this.logger.warn(`[AgentLoop] SecretsGuard redacted ${scanResult.findings.length} finding(s)`);
         lastResponse = scanResult.sanitized;
       }
+    }
+
+    // Terminal HITL-marker strip: the re-prompt guard is bounded to one pass, so
+    // if a misbehaving model stages the 🔐 marker again afterward it would fall
+    // through. Strip it here so the reserved codepoint never reaches the user —
+    // the structural invariant the marker contract relies on (#85).
+    if (stagesApprovalCeremony(lastResponse)) {
+      this.logger.warn('[AgentLoop] HITL marker survived the re-prompt — stripping from final response (model staged ceremony twice)');
+      lastResponse = stripApprovalMarker(lastResponse);
     }
 
     const elapsed = Date.now() - startTime;

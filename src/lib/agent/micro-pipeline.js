@@ -15,6 +15,7 @@
 
 const { buildMicroContext } = require('./micro-pipeline-context');
 const { extractArtifact } = require('./artifact-extractor');
+const { stagesApprovalCeremony } = require('./action-guard');
 
 const INTENTS = Object.freeze({
   QUESTION: 'question',
@@ -181,6 +182,20 @@ class MicroPipeline {
         } else {
           result = { response: result, enrichmentBlock: _enrichmentBlock };
         }
+      }
+
+      // Action-hallucination guard (shared with AgentLoop): the 🔐 marker is
+      // reserved for GuardrailEnforcer's Talk surface and must never appear in a
+      // returned response. If a local handler staged the approval ceremony in
+      // prose instead of executing, escalate to AgentLoop — which has the real
+      // tool-calling loop and the same guard — rather than leaking the fake
+      // ceremony to the user (#85).
+      const responseText = (typeof result === 'object' && result !== null) ? result.response : result;
+      if (stagesApprovalCeremony(responseText)) {
+        this.logger.warn('[MicroPipeline] Action-hallucination guard fired — response staged HITL marker without executing; escalating to AgentLoop');
+        const escalateErr = new Error('Response staged HITL approval marker without executing the action');
+        escalateErr.code = 'DOMAIN_ESCALATE';
+        throw escalateErr;
       }
 
       return result;
