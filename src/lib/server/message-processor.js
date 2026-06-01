@@ -374,52 +374,35 @@ class MessageProcessor {
     // Fire-and-forget: never blocks the pipeline.
     this.statusIndicator?.setStatus('processing').catch(() => {});
 
-    // Skip messages consumed by HITL guardrail confirmation polling
+    // #108: deterministic dedup of the HITL confirmation reply, keyed on the
+    // Talk message id (the only field both the webhook and the poll share —
+    // the webhook carries no timestamp). Two layers cover both race orderings;
+    // neither calls the (timeout-prone) classifier, which is what caused the
+    // double-execution when it timed out and the reply fell through as a turn.
     const enforcer = this.agentLoop?.guardrailEnforcer;
-    const _hitlPending = !!enforcer?.isPendingConfirmation();
-    if (_hitlPending) {
-      // #108: deterministic dedup at the consumption point. If the HITL poll
-      // already consumed this exact message (its timestamp is at/under the
-      // consumed watermark), it is spent — skip reprocessing regardless of the
-      // classifier. This closes the double-execution that occurred when the
-      // ConfirmationClassifier timed out (returned false) and the consumed reply
-      // fell through as a fresh turn. isConfirmationResponse() is kept only for
-      // messages AFTER the watermark — the genuinely ambiguous "pending, but is
-      // this a new request?" case.
-      if (enforcer.isMessageConsumed(extracted.timestampMs)) {
+    if (enforcer) {
+      // Layer A — defer while pending: any message reaching the gate during a
+      // pending confirmation arrived after the request, so it is the poll's to
+      // decide. Defer rather than independently reprocess (closes the
+      // gate-before-consume race). Accepted trade: a genuine NEW request sent
+      // mid-confirmation is dropped (user re-sends) until the single-consumer
+      // queue lands (#104).
+      if (enforcer.isPendingConfirmation()) {
+        console.info(`[Message] HITL-gate: pending — deferring to poll, user=${extracted.user}`);
+        this.statusIndicator?.setStatus('ready').catch(() => {});
+        return { skipped: true, reason: 'hitl_deferred_to_poll' };
+      }
+      // Layer B — consumed watermark: covers the other ordering (poll consumed
+      // the reply and cleared pending before this webhook copy reached the
+      // gate). The consumed message id is spent; drop any redelivery at/under it.
+      if (enforcer.isMessageConsumed(Number(extracted.messageId))) {
         console.info(
-          `[Message] HITL-gate: already-consumed (ts=${extracted.timestampMs} ≤ watermark) — ` +
+          `[Message] HITL-gate: already-consumed (id=${extracted.messageId} ≤ watermark) — ` +
           `skipping reprocess, user=${extracted.user}`
         );
         this.statusIndicator?.setStatus('ready').catch(() => {});
         return { skipped: true, reason: 'hitl_already_consumed' };
       }
-      // Layer A (#108, primary): the message is inside the active poll's watch
-      // window — the poll owns the decision and will consume it. Defer rather
-      // than independently reprocess. This closes the gate-before-consume race
-      // the watermark layer alone misses (gate ran ~7s before the poll set the
-      // watermark in the live repro). Known trade: a genuine NEW request sent
-      // mid-confirmation is deferred here too (user re-sends) — the full fix
-      // that distinguishes them is the single-consumer queue tracked in #104.
-      if (enforcer.isWithinPendingWindow(extracted.timestampMs)) {
-        console.info(
-          `[Message] HITL-gate: deferred-to-poll (ts=${extracted.timestampMs} in pending window) — ` +
-          `skipping reprocess, user=${extracted.user}`
-        );
-        this.statusIndicator?.setStatus('ready').catch(() => {});
-        return { skipped: true, reason: 'hitl_deferred_to_poll' };
-      }
-      const _isConfirm = await enforcer.isConfirmationResponse(extracted.content);
-      console.info(
-        `[Message] HITL-gate: pending=true isConfirmationResponse=${_isConfirm} ` +
-        `content="${(extracted.content || '').slice(0, 80)}" user=${extracted.user}`
-      );
-      if (_isConfirm) {
-        console.log(`[Message] Skipping HITL confirmation response from ${extracted.user}`);
-        this.statusIndicator?.setStatus('ready').catch(() => {});
-        return { skipped: true, reason: 'hitl_confirmation' };
-      }
-      // Pending but not a confirmation reply → fall through (preserves current behavior).
     }
 
     // OOO auto-responder: reply with away notice, skip processing
@@ -1302,24 +1285,11 @@ class MessageProcessor {
       typedContent = messageContent;  // preserve the user's typed text
     }
 
-    // Talk message timestamp → ms, on the same basis as the HITL poll's
-    // watermark (conversation-context uses Talk's unix-second `timestamp`).
-    // Rich Talk object carries `timestamp` (seconds); the AS2 fallback carries
-    // an ISO `published`. 0 when neither is present (caller treats as unknown).
-    let timestampMs = 0;
-    if (typeof messageObj.timestamp === 'number' && messageObj.timestamp > 0) {
-      timestampMs = messageObj.timestamp * 1000;
-    } else if (data.object?.published) {
-      const parsed = Date.parse(data.object.published);
-      if (Number.isFinite(parsed)) timestampMs = parsed;
-    }
-
     return {
       content: messageContent,
       user,
       token,
       messageId,
-      timestampMs,
       actorType,
       isBotMessage: this._isBotMessage(user, actorType),
       _rawMessage: messageObj,

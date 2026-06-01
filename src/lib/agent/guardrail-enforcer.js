@@ -155,19 +155,20 @@ class GuardrailEnforcer {
     // key: `${guardrailTitle}:${toolName}` → timestamp of approval
     this.approvalCache = new Map();
 
-    // Tracks the timestamp of the last consumed HITL response so subsequent
-    // polls don't re-match the same message
+    // Tracks the timestamp of the last consumed HITL response so the poll
+    // doesn't re-match the same message (poll reads the Talk API, which carries
+    // timestamps).
     this._lastConsumedTimestamp = 0;
 
-    // True while waiting for a HITL confirmation reply — used by
-    // MessageProcessor to skip webhook-delivered duplicates of the reply
-    this._pendingConfirmation = false;
+    // Tracks the Talk message id of the last consumed HITL response. The id is
+    // the only field shared by the webhook (object.id) and the poll (m.id) —
+    // the webhook carries no timestamp — so MessageProcessor uses it to drop a
+    // redelivered copy of a reply the poll already consumed (#108 Layer B).
+    this._lastConsumedMessageId = 0;
 
-    // The `searchAfter` watermark of the currently-pending poll: messages with
-    // a timestamp greater than this are inside the active poll's watch window,
-    // i.e. the poll owns the decision on them. Used by MessageProcessor to
-    // defer in-window messages to the poll (single decision point).
-    this._pendingSearchAfter = 0;
+    // True while waiting for a HITL confirmation reply — used by
+    // MessageProcessor to defer messages to the poll (#108 Layer A)
+    this._pendingConfirmation = false;
   }
 
   /**
@@ -420,7 +421,6 @@ class GuardrailEnforcer {
     try {
       this.talkSendQueue.enqueue(roomToken, message);
       this._pendingConfirmation = true;
-      this._pendingSearchAfter = searchAfter;
     } catch (err) {
       this.logger.warn(`[GuardrailEnforcer] Failed to send confirmation: ${err.message}`);
       this.logger.info(
@@ -464,6 +464,7 @@ class GuardrailEnforcer {
           );
           if (reply === 'approve') {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._lastConsumedMessageId = Number(msg.id) || this._lastConsumedMessageId;
             this._pendingConfirmation = false;
             this.logger.info(
               `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=yes classifier=approve reply="${content.slice(0, 80)}" ` +
@@ -474,6 +475,7 @@ class GuardrailEnforcer {
           }
           if (reply === 'deny') {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._lastConsumedMessageId = Number(msg.id) || this._lastConsumedMessageId;
             this._pendingConfirmation = false;
             this.logger.info(
               `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=no classifier=deny reply="${content.slice(0, 80)}" ` +
@@ -484,6 +486,7 @@ class GuardrailEnforcer {
           }
           if (reply === 'edit' && EDITABLE_TOOLS.has(toolName)) {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._lastConsumedMessageId = Number(msg.id) || this._lastConsumedMessageId;
             this._pendingConfirmation = false;
             this.logger.info(
               `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=edit classifier=edit reply="${content.slice(0, 80)}" ` +
@@ -903,7 +906,6 @@ class GuardrailEnforcer {
     try {
       this.talkSendQueue.enqueue(roomToken, message);
       this._pendingConfirmation = true;
-      this._pendingSearchAfter = searchAfter;
     } catch (err) {
       this.logger.warn(`[GuardrailEnforcer] Failed to send approval request: ${err.message}`);
       this.logger.info(
@@ -945,6 +947,7 @@ class GuardrailEnforcer {
           );
           if (reply === 'approve') {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._lastConsumedMessageId = Number(msg.id) || this._lastConsumedMessageId;
             this._pendingConfirmation = false;
             this.logger.info(
               `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=yes classifier=approve reply="${content.slice(0, 80)}" ` +
@@ -955,6 +958,7 @@ class GuardrailEnforcer {
           }
           if (reply === 'deny') {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._lastConsumedMessageId = Number(msg.id) || this._lastConsumedMessageId;
             this._pendingConfirmation = false;
             this.logger.info(
               `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=no classifier=deny reply="${content.slice(0, 80)}" ` +
@@ -965,6 +969,7 @@ class GuardrailEnforcer {
           }
           if (reply === 'edit' && EDITABLE_TOOLS.has(toolName)) {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._lastConsumedMessageId = Number(msg.id) || this._lastConsumedMessageId;
             this._pendingConfirmation = false;
             this.logger.info(
               `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=edit classifier=edit reply="${content.slice(0, 80)}" ` +
@@ -1065,39 +1070,21 @@ class GuardrailEnforcer {
   }
 
   /**
-   * Whether a message with the given timestamp has already been consumed by
-   * the HITL confirmation poll. Deterministic dedup signal: once the poll
-   * consumes a reply it records its timestamp (_lastConsumedTimestamp, ms),
-   * so any inbound copy of that same message — e.g. the webhook-delivered
-   * duplicate that races the poll — is already spent, regardless of what a
-   * later classifier call decides. Matches the poll's `<=` watermark
-   * semantics (same Talk-second granularity). Returns false for missing or
-   * non-positive timestamps so the caller falls through to its normal path.
-   * @param {number} timestampMs - Inbound message timestamp in milliseconds
+   * Whether a message id has already been consumed by the HITL confirmation
+   * poll. Deterministic dedup signal: once the poll consumes a reply it records
+   * its Talk message id (_lastConsumedMessageId), so a redelivered copy of that
+   * same message — at or under the watermark — is spent, regardless of what a
+   * later classifier call would decide. The id is the only field shared by the
+   * webhook (object.id) and the poll (m.id); ids are monotonic. Returns false
+   * for missing/non-positive ids so the caller falls through to its normal path.
+   * @param {number} messageId - Inbound Talk message id (numeric)
    * @returns {boolean}
    */
-  isMessageConsumed(timestampMs) {
-    return typeof timestampMs === 'number'
-      && timestampMs > 0
-      && timestampMs <= this._lastConsumedTimestamp;
-  }
-
-  /**
-   * Whether a message falls inside the currently-pending poll's watch window
-   * (its timestamp is newer than the pending `searchAfter`). When true, the
-   * HITL poll is actively watching for exactly this message and owns the
-   * decision on it — the webhook path should defer rather than independently
-   * reprocess it. This closes the gate-before-consume race: the poll may not
-   * have consumed the reply yet (so isMessageConsumed is still false), but the
-   * message is already claimed by the poll. Returns false when no confirmation
-   * is pending, or for non-positive/unknown timestamps (caller falls through).
-   * @param {number} timestampMs - Inbound message timestamp in milliseconds
-   * @returns {boolean}
-   */
-  isWithinPendingWindow(timestampMs) {
-    return this._pendingConfirmation === true
-      && typeof timestampMs === 'number'
-      && timestampMs > this._pendingSearchAfter;
+  isMessageConsumed(messageId) {
+    return typeof messageId === 'number'
+      && Number.isFinite(messageId)
+      && messageId > 0
+      && messageId <= this._lastConsumedMessageId;
   }
 
   /**

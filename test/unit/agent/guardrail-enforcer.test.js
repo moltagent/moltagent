@@ -1244,69 +1244,37 @@ async function runTests() {
     assert.strictEqual(enforcer.isPendingConfirmation(), false);
   });
 
-  // ── isMessageConsumed (#108 deterministic dedup at consumption point) ──
+  // ── isMessageConsumed (#108 Layer B: id-based consumed-watermark) ──
+  // The webhook carries no timestamp; the Talk message id is the only field
+  // shared by webhook (object.id) and poll (m.id), and ids are monotonic.
   test('TC-CONSUMED-001: defaults to false when nothing consumed', () => {
     const enforcer = makeEnforcer();
-    assert.strictEqual(enforcer._lastConsumedTimestamp, 0);
-    assert.strictEqual(enforcer.isMessageConsumed(1780323388000), false);
+    assert.strictEqual(enforcer._lastConsumedMessageId, 0);
+    assert.strictEqual(enforcer.isMessageConsumed(16895), false);
   });
 
-  test('TC-CONSUMED-002: true for the consumed message (ts === watermark)', () => {
+  test('TC-CONSUMED-002: true for the consumed id (id === watermark) and older ids', () => {
     const enforcer = makeEnforcer();
-    enforcer._lastConsumedTimestamp = 1780323388000;
-    // Exact match — the duplicate webhook copy of the consumed "ja"
-    assert.strictEqual(enforcer.isMessageConsumed(1780323388000), true);
+    enforcer._lastConsumedMessageId = 16895;
+    // Exact match — a redelivered webhook copy of the consumed "ja"
+    assert.strictEqual(enforcer.isMessageConsumed(16895), true);
     // Anything at/under the watermark is spent
-    assert.strictEqual(enforcer.isMessageConsumed(1780323387000), true);
+    assert.strictEqual(enforcer.isMessageConsumed(16800), true);
   });
 
-  test('TC-CONSUMED-003: false for a newer message (genuine new request after watermark)', () => {
+  test('TC-CONSUMED-003: false for a newer id (genuine new request after watermark)', () => {
     const enforcer = makeEnforcer();
-    enforcer._lastConsumedTimestamp = 1780323388000;
-    assert.strictEqual(enforcer.isMessageConsumed(1780323389000), false);
+    enforcer._lastConsumedMessageId = 16895;
+    assert.strictEqual(enforcer.isMessageConsumed(16896), false);
   });
 
-  test('TC-CONSUMED-004: false for missing/invalid timestamps (safe fall-through)', () => {
+  test('TC-CONSUMED-004: false for missing/invalid ids (safe fall-through)', () => {
     const enforcer = makeEnforcer();
-    enforcer._lastConsumedTimestamp = 1780323388000;
+    enforcer._lastConsumedMessageId = 16895;
     assert.strictEqual(enforcer.isMessageConsumed(0), false);
     assert.strictEqual(enforcer.isMessageConsumed(undefined), false);
     assert.strictEqual(enforcer.isMessageConsumed(NaN), false);
     assert.strictEqual(enforcer.isMessageConsumed(-1), false);
-  });
-
-  // ── isWithinPendingWindow (#108 layer A: defer in-window msgs to the poll) ──
-  test('TC-WINDOW-001: false when no confirmation pending', () => {
-    const enforcer = makeEnforcer();
-    enforcer._pendingSearchAfter = 1780323375102;
-    assert.strictEqual(enforcer._pendingConfirmation, false);
-    assert.strictEqual(enforcer.isWithinPendingWindow(1780323388000), false);
-  });
-
-  test('TC-WINDOW-002: true for a message after searchAfter while pending (poll owns it)', () => {
-    const enforcer = makeEnforcer();
-    enforcer._pendingConfirmation = true;
-    enforcer._pendingSearchAfter = 1780323375102;
-    // The repro case: reply arrives in-window; poll has NOT consumed yet
-    // (isMessageConsumed still false) but the poll is watching → defer.
-    assert.strictEqual(enforcer.isMessageConsumed(1780323388000), false);
-    assert.strictEqual(enforcer.isWithinPendingWindow(1780323388000), true);
-  });
-
-  test('TC-WINDOW-003: false for a message at/before searchAfter (predates the request)', () => {
-    const enforcer = makeEnforcer();
-    enforcer._pendingConfirmation = true;
-    enforcer._pendingSearchAfter = 1780323375102;
-    assert.strictEqual(enforcer.isWithinPendingWindow(1780323375102), false);
-    assert.strictEqual(enforcer.isWithinPendingWindow(1780323370000), false);
-  });
-
-  test('TC-WINDOW-004: false for non-numeric timestamp (safe fall-through)', () => {
-    const enforcer = makeEnforcer();
-    enforcer._pendingConfirmation = true;
-    enforcer._pendingSearchAfter = 1780323375102;
-    assert.strictEqual(enforcer.isWithinPendingWindow(undefined), false);
-    assert.strictEqual(enforcer.isWithinPendingWindow(NaN), false);
   });
 
   const { passed, failed } = summary();
