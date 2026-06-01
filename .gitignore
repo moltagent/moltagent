@@ -51,7 +51,8 @@ Thumbs.db
 # But ignore ephemeral Claude state
 .claude/agent-memory/
 .claude/*.jsonl
-.claude/settings.local.json
+# Machine-local CC permission state — ignore at any depth (nested dirs get their own)
+**/.claude/settings.local.json
 
 # --- Test & Coverage ---
 coverage/

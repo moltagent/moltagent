@@ -243,6 +243,7 @@ Moltagent runs on a box in your office, workshop or farm. Or on a virtual server
 | [Deployment Guide](docs/deployment.md)   | SearXNG, Speaches, email, credentials, full setup    |
 | [Architecture](docs/architecture.md)     | Three-VM isolation, network segmentation             |
 | [Security Model](docs/security-model.md) | Trust boundaries, credential brokering, threat model |
+| [Credentials](docs/credentials.md)       | NC Passwords field mapping for every credential      |
 | [Configuration](docs/configuration.md)   | Full reference for config.yaml                       |
 | [LLM Providers](docs/providers.md)       | 13 adapters, job routing, cost optimization          |
 

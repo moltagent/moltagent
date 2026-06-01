@@ -1621,6 +1621,58 @@ asyncTest('action-hallucination guard does NOT fire when read-only tool runs and
   assert.strictEqual(provider._getCallCount(), 2);  // no re-prompt
 });
 
+asyncTest('action-hallucination guard: HITL marker fires at gate=confirmation (#85 — destructive intent via follow-up turn)', async () => {
+  // #85: a destructive follow-up ("lösch den dritten") classifies as
+  // gate=confirmation, NOT gate=action. The original guard gated the 🔐 marker
+  // check on gate==='action', so the staged ceremony leaked. The marker is
+  // reserved for GuardrailEnforcer's surface and is illegitimate at ANY gate —
+  // the check must fire here and re-prompt into a real tool call.
+  const provider = createMockProvider([
+    { content: '\u{1F510} **Delete Deck card** — requires approval\n\nCard: **#3 "third"**', toolCalls: null },
+    { content: null, toolCalls: [{ id: 'call_1', name: 'deck_delete_card', arguments: { card: '#3' } }] },
+    { content: 'Deleted card #3.', toolCalls: null }
+  ]);
+
+  let destructiveCalled = false;
+  const registry = createMockToolRegistry({
+    deck_delete_card: async () => { destructiveCalled = true; return { success: true, result: 'Deleted #3' }; }
+  });
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('lösch den dritten', 'room-abc', { gate: 'confirmation' });
+  assert.strictEqual(destructiveCalled, true, 'marker guard must fire at gate=confirmation and re-prompt into the tool call');
+  assert.strictEqual(response, 'Deleted card #3.');
+});
+
+asyncTest('terminal strip: 🔐 marker never reaches the user even if staged twice (re-prompt exhausted)', async () => {
+  // Worst case: the model stages the ceremony, gets re-prompted once, then stages
+  // it AGAIN. The guard is bounded to one re-prompt, so the second marker falls
+  // through — the terminal sanitizer must strip it so the codepoint never ships.
+  const marker = '\u{1F510}';
+  const provider = createMockProvider([
+    { content: `${marker} **Delete Deck card** — requires approval`, toolCalls: null },
+    { content: `${marker} Still waiting for your approval to delete.`, toolCalls: null }
+  ]);
+
+  const loop = new AgentLoop({
+    toolRegistry: createMockToolRegistry(),
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('delete card 3', 'room-abc', { gate: 'action' });
+  assert.ok(!response.includes(marker), 'final response must not contain the reserved HITL marker');
+});
+
 // ============================================================
 // Cleanup & Summary
 // ============================================================
