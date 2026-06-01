@@ -128,6 +128,7 @@ class BaseExecutor {
       const guardResult = this.toolGuard.evaluate(toolName);
       if (!guardResult.allowed) {
         if (guardResult.level === 'APPROVAL_REQUIRED' && this.guardrailEnforcer) {
+          this.logger.info(`[${this.constructor.name}] ToolGuard APPROVAL_REQUIRED → HITL: ${toolName}`);
           const approvalResult = await this.guardrailEnforcer.checkApproval(
             toolName, toolArgs, roomToken, []
           );
@@ -136,6 +137,7 @@ class BaseExecutor {
           }
           // Approved — fall through to GuardrailEnforcer.check()
         } else {
+          this.logger.warn(`[${this.constructor.name}] ToolGuard blocked: ${toolName} — ${guardResult.reason}`);
           return { allowed: false, reason: guardResult.reason || 'Blocked by security policy' };
         }
       }
