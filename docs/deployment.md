@@ -7,7 +7,7 @@ This guide covers the complete Moltagent deployment in detail. For a quick overv
 - Three Hetzner VMs provisioned (see [Quick Start](quickstart.md) steps 1-4)
 - Moltagent service running on the Bot VM
 - Nextcloud Storage Share with the `moltagent` user created
-- Talk bot registered via Hetzner support
+- Talk bot installed and enabled in a conversation — self-hosted via `occ`, or managed via Hetzner support (see [Talk Bot Registration](#talk-bot-registration) below)
 
 ## Nextcloud Apps
 
@@ -63,6 +63,59 @@ Add entries for any additional providers you want to use (OpenAI, Mistral, Groq,
 **Never share with moltagent:**
 
 Keep sensitive credentials (banking, admin passwords, HR systems) in separate folders that are NOT shared with the moltagent user. The agent cannot access what isn't shared with it.
+
+## Talk Bot Registration
+
+The bot reaches Nextcloud Talk through a registered webhook bot. There are two distinct actions, and both are mandatory:
+
+1. **Install** — registers the bot on the server (`talk:bot:install`). Makes it *available*.
+2. **Enable** — activates the bot in a specific conversation (`talk:bot:setup`). Makes it *listen*.
+
+A bot that is installed but not enabled in any conversation receives no webhooks at all — the error count stays at zero and the room stays silent. This is the most common "the bot does nothing" cause. How you install depends on your deployment; the secret and the enable step are identical for both.
+
+### Shared secret alignment
+
+The webhook is authenticated with a 128-character hex secret that must be **byte-identical** in two places: the `talk:bot:install` command (stored by Nextcloud) and the `nc-talk-secret` entry in NC Passwords (read by the bot at runtime). Mismatched bytes — a stray newline, a truncated paste — surface only as `signature_verification_failed`. Generate the secret once to a file so both sides read the same bytes instead of copying 128 characters by hand:
+
+```bash
+# On the Bot VM
+openssl rand -hex 64 | tr -d '\n' > /tmp/moltagent-talk-secret.txt
+cat /tmp/moltagent-talk-secret.txt
+```
+
+Store the value as `nc-talk-secret` in NC Passwords (Password field, no quotes or whitespace) and share it with the `moltagent` user.
+
+### Install — self-hosted Nextcloud
+
+```bash
+sudo -u www-data php occ talk:bot:install \
+  --feature=webhook \
+  --feature=response \
+  "Moltagent" \
+  "$(cat /tmp/moltagent-talk-secret.txt)" \
+  "http://<bot-vm-ip>:3000/webhook/nctalk" \
+  "Moltagent AI Assistant"
+```
+
+Record the bot ID from the output (`Bot installed with id N`).
+
+### Install — Hetzner Storage Share (managed)
+
+Storage Share does not expose `talk:bot:install`. File a support ticket asking Hetzner to run the command above on your behalf, including your secret, the webhook URL, and the line `Ich akzeptiere die Bedingungen.` Ask them to return the bot ID. Response time is typically a few hours.
+
+### Enable in a conversation (both deployment types)
+
+Create or choose the Talk room, take its room token (the string after `/call/` in the URL), store it as `nc-talk-room` in NC Passwords, and share it with `moltagent`. Then:
+
+```bash
+sudo -u www-data php occ talk:bot:setup <bot-id> <room-token>
+```
+
+If `talk:bot:setup` is not present on your version, run `sudo -u www-data php occ list | grep talk:bot` to find the equivalent. In newer Talk versions you can instead enable the bot from the room's conversation settings → **Bots** → **Enable**.
+
+### Verify and clean up
+
+Tail the bot log (`journalctl -u moltagent -f`) and send a message in the room; webhook activity should appear and the bot should reply. A `signature_verification_failed` line means the two secret copies differ — realign them with the file-based method above. Once confirmed, remove the secret file: `rm /tmp/moltagent-talk-secret.txt`.
 
 ## Ollama VM: Models
 
