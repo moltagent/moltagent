@@ -286,6 +286,9 @@ This skips network isolation and is not suitable for production, but works for d
 
 ## Next Steps
 
+Now that Moltagent is running, see [Getting Started](getting-started.md) for your first steps — your first conversation, sharing your data, and real tasks to try.
+
+- [Getting Started](getting-started.md) - your first hour with Moltagent
 - [Deployment Guide](deployment.md) - SearXNG, Speaches, email, credentials, full setup
 - [Architecture](architecture.md) - understand the three-VM isolation model
 - [Security Model](security-model.md) - trust boundaries and credential brokering
