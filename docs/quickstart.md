@@ -137,6 +137,16 @@ cd /opt/moltagent
 npm install --omit=dev
 ```
 
+**If the install fails, or you previously ran `npm audit fix --force`:** that command can introduce breaking major-version upgrades and leave `node_modules` in a state that no longer matches the project's pinned versions. The safest recovery is a clean slate:
+
+```bash
+cd /opt/moltagent
+rm -rf node_modules package-lock.json
+npm install --omit=dev
+```
+
+This rebuilds the dependency tree from the project's declared versions.
+
 ### Configure credentials
 
 ```bash
@@ -189,24 +199,47 @@ ufw enable
 
 ## Step 5: Register the Talk Bot
 
-Hetzner Storage Share does not allow running arbitrary OCC commands. You need to file a support ticket.
+Registering the bot has two distinct parts, and both are required:
 
-### Generate the bot secret
+1. **Install** — registers the bot on the Nextcloud server. Makes it *available*.
+2. **Enable** — activates the bot in a specific conversation. Makes it *listen*.
 
-On the Bot VM:
+Skipping the second part is the most common reason a freshly installed bot stays silent: it is registered, but Nextcloud never delivers webhooks to it, the error count stays at zero, and you see nothing but silence with no clue why.
+
+How you install the bot depends on your deployment. If you **self-host Nextcloud** with shell access, you run one OCC command. If you use a **managed Hetzner Storage Share**, OCC is not exposed and you file a support ticket. The secret generation and the per-conversation enable step are the same for both — follow the path that matches your setup.
+
+### Generate the shared secret
+
+The bot authenticates every webhook with a 128-character hex secret. That secret must be **byte-identical** in two places: the `talk:bot:install` command (which Nextcloud stores) and the `nc-talk-secret` entry in NC Passwords (which the bot reads at runtime). Copy-pasting 128 characters by hand across a terminal and a web form is the single most error-prone step in this guide — a stray newline or a truncated character produces `signature_verification_failed` at runtime with no other clue. Generate the secret once to a file and let both sides read from that file.
 
 ```bash
-# Generate 128-character hex secret
-openssl rand -hex 64
+# On the Bot VM — generate the secret and strip the trailing newline
+openssl rand -hex 64 | tr -d '\n' > /tmp/moltagent-talk-secret.txt
+cat /tmp/moltagent-talk-secret.txt
 ```
 
-Save this output. You will need it in two places:
-- Store it as `nc-talk-secret` in NC Passwords and share with the `moltagent` user
-- Include it in the Hetzner support ticket below
+Store this value as `nc-talk-secret` in NC Passwords (Password field only — no quotes, no surrounding whitespace) and share the entry with the `moltagent` user.
 
-### Request bot registration from Hetzner
+### Install the bot — self-hosted Nextcloud
 
-File a support ticket at Hetzner with the following:
+If you run your own Nextcloud and have shell access, install the bot with one command:
+
+```bash
+# On your Nextcloud server
+sudo -u www-data php occ talk:bot:install \
+  --feature=webhook \
+  --feature=response \
+  "Moltagent" \
+  "$(cat /tmp/moltagent-talk-secret.txt)" \
+  "http://<bot-vm-ip>:3000/webhook/nctalk" \
+  "Moltagent AI Assistant"
+```
+
+Note the bot ID in the output (e.g. `Bot installed with id 3`) — you need it for the enable step below. The `$(cat ...)` reads the secret from the same file you stored in NC Passwords, so both sides get identical bytes with no human copying.
+
+### Install the bot — Hetzner Storage Share (managed Nextcloud)
+
+Storage Share does not expose `talk:bot:install` in the OCC dropdown, so you cannot run it yourself. File a support ticket asking Hetzner to run it for you:
 
 ```
 Subject: Enable NC Talk Bot for Storage Share nxXXXXX
@@ -218,36 +251,59 @@ sudo -u www-data php occ talk:bot:install \
   --feature=response \
   "Moltagent" \
   "<YOUR_128_CHAR_SECRET>" \
-  "http://<BOT_VM_IP>:3000/webhook/nctalk" \
+  "http://<bot-vm-ip>:3000/webhook/nctalk" \
   "Moltagent AI Assistant"
+
+Ich akzeptiere die Bedingungen.
 
 Thank you.
 ```
 
-Replace `<YOUR_128_CHAR_SECRET>` with the secret you generated and `<BOT_VM_IP>` with your Bot VM's IPv4 address. Hetzner support typically responds within a few hours.
+Replace `<YOUR_128_CHAR_SECRET>` with the value from your secret file and `<bot-vm-ip>` with your Bot VM's IPv4 address. Ask Hetzner to send back the bot ID from the command output — you need it for the enable step. Support typically responds within a few hours.
 
-### Configure the Talk room
+### Enable the bot in your conversation
 
-Once Hetzner confirms the bot is registered:
+**This step is required regardless of deployment type, and it is the one most setups miss.** Installing the bot makes it *available* on the server; enabling it in a specific conversation makes it *listen*. Until you do this, the bot is registered but deaf.
 
-1. Create a new Talk room in Nextcloud (or use an existing one)
-2. Add the Moltagent bot to the room
-3. Note the room token from the URL (the part after `/call/`)
-4. Store the room token as an `nc-talk-room` entry in NC Passwords (put the token in the Password field) and share it with the `moltagent` user. This tells the agent which conversation to listen in.
-5. Ensure your Bot VM firewall allows inbound connections from the Storage Share IP on port 3000
+First, create (or choose) the Talk room the agent should live in, and note its **room token** — the short string after `/call/` in the room's URL. Store that token as an `nc-talk-room` entry in NC Passwords (token in the Password field) and share it with the `moltagent` user. This tells the agent which conversation to listen in.
 
-### Test
+Then enable the bot in that room:
 
-Check that the service is running:
+```bash
+# On your Nextcloud server (self-hosted) or via a support ticket (managed)
+sudo -u www-data php occ talk:bot:setup <bot-id> <room-token>
+```
+
+`<bot-id>` is the ID from the install step; `<room-token>` is the same token you just stored in `nc-talk-room`.
+
+> The exact command name can vary between Talk versions. If `talk:bot:setup` is not found, run `sudo -u www-data php occ list | grep talk:bot` to see the bot commands your version provides.
+
+Alternatively, in newer Talk versions you can skip the command line: open the room's conversation settings (the `···` menu), go to the **Bots** section, and click **Enable** next to Moltagent.
+
+### Verify the webhook is wired
+
+With the bot enabled, tail the bot's log on the Bot VM and send a message in the room:
 
 ```bash
 systemctl status moltagent
 journalctl -u moltagent -f
 ```
 
-Send a message in the Talk room. If the webhook is configured correctly, the bot will respond.
+You should see webhook activity appear in the log as you send messages, and the bot should reply in the room. If you see `signature_verification_failed`, the two copies of the secret do not match — regenerate with the file-based method above and re-run `talk:bot:install` (self-hosted) or re-file the ticket (managed) so both sides read identical bytes.
 
 Check the [public dashboard](https://public.moltagent.cloud) architecture view for a reference of what a healthy system looks like.
+
+### Clean up the secret file
+
+Once the bot responds, delete the secret file from any machine it touched:
+
+```bash
+rm /tmp/moltagent-talk-secret.txt   # on the Bot VM (and the NC server, if you copied it there)
+```
+
+### Share your calendar with Moltagent
+
+For Molti to see your appointments, share your calendar with the `moltagent` user. In the NC Calendar app, click the share icon next to each calendar you want the agent to access and add `moltagent` as a viewer. Without this, calendar queries come back empty even when you have events. The same pattern applies to files and Deck boards — the agent only sees what is shared with it.
 
 ## Home-Lab and Single-Server Setup
 
