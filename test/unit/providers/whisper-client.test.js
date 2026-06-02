@@ -20,9 +20,12 @@ console.log('\n=== WhisperClient Tests ===\n');
 // --- Constructor Tests ---
 console.log('\n--- Constructor Tests ---\n');
 
-test('TC-CTOR-001: Default config values', () => {
+test('TC-CTOR-001: Default config values (no placeholder fallback)', () => {
+  // #100: the class carries no YOUR_* default. An unconfigured client yields
+  // an empty baseUrl; construction is gated upstream so this state is never
+  // reached in production. timeout/model defaults still apply.
   const client = new WhisperClient();
-  assert.strictEqual(client.baseUrl, 'http://YOUR_OLLAMA_IP:8014');
+  assert.strictEqual(client.baseUrl, '');
   assert.strictEqual(client.timeout, 60000);
   assert.strictEqual(client.model, 'small');
 });

@@ -27,7 +27,7 @@ const { createErrorHandler } = require('./src/lib/errors/error-handler');
 const { TalkSendQueue } = require('./src/lib/talk/talk-send-queue');
 const appConfig = require('./src/lib/config');
 const { createServerComponents } = require('./src/lib/server/index');
-const { resolveOllamaEndpoint } = require('./src/lib/shared/resolve-ollama-endpoint');
+const { resolveOllamaEndpoint, _isPlaceholder } = require('./src/lib/shared/resolve-ollama-endpoint');
 
 // Knowledge modules for agent memory context
 let ContextLoader, LearningLog;
@@ -873,8 +873,14 @@ async function initialize() {
     }
   }
 
-  // Session 37: Initialize Voice Pipeline (WhisperClient + AudioConverter)
-  if (WhisperClient && AudioConverter && appConfig.voice?.enabled !== false) {
+  // Session 37: Initialize Voice Pipeline (WhisperClient + AudioConverter).
+  // Voice is an optional dependency: a placeholder/unset WHISPER_URL means
+  // "voice not deployed" — skip construction entirely rather than build a
+  // client pointed at a YOUR_* literal that fails on first use. Mirrors the
+  // heald skip (SelfHealClient, below). LLM endpoints fall back to localhost;
+  // optional voice endpoints disable. See #100.
+  const whisperConfigured = appConfig.voice?.whisperUrl && !_isPlaceholder(appConfig.voice.whisperUrl);
+  if (WhisperClient && AudioConverter && appConfig.voice?.enabled !== false && whisperConfigured) {
     try {
       whisperClient = new WhisperClient({
         whisperUrl: appConfig.voice.whisperUrl,
@@ -890,10 +896,15 @@ async function initialize() {
       whisperClient = null;
       audioConverter = null;
     }
+  } else if (WhisperClient && AudioConverter && appConfig.voice?.enabled !== false && !whisperConfigured) {
+    console.log('[INIT] Voice disabled — WHISPER_URL not configured (placeholder/unset). Set WHISPER_URL to enable speech-to-text.');
   }
 
-  // Session V2: Initialize VoiceManager (Speaches-backed voice orchestration)
-  if (SpeachesClient && VoiceManager && appConfig.voice?.enabled !== false) {
+  // Session V2: Initialize VoiceManager (Speaches-backed voice orchestration).
+  // Same optional-dependency treatment as the Whisper block above: a
+  // placeholder/unset SPEACHES_URL disables voice orchestration cleanly. See #100.
+  const speachesConfigured = appConfig.voice?.speachesUrl && !_isPlaceholder(appConfig.voice.speachesUrl);
+  if (SpeachesClient && VoiceManager && appConfig.voice?.enabled !== false && speachesConfigured) {
     try {
       const speachesClient = new SpeachesClient({
         endpoint: appConfig.voice.speachesUrl,
@@ -916,6 +927,8 @@ async function initialize() {
       console.warn(`[INIT] VoiceManager failed: ${err.message}`);
       voiceManager = null;
     }
+  } else if (SpeachesClient && VoiceManager && appConfig.voice?.enabled !== false && !speachesConfigured) {
+    console.log('[INIT] Voice orchestration disabled — SPEACHES_URL not configured (placeholder/unset). Set SPEACHES_URL to enable Speaches voice.');
   }
 
   if (NCSearchClient && ncRequestManager) {
@@ -1490,7 +1503,7 @@ async function initialize() {
 
       // Resolve Ollama endpoint once: OLLAMA_URL env > providers.json > localhost.
       // The candidate-then-CONFIG.ollama.url chain previously propagated the
-      // YOUR_OLLAMA_IP placeholder from both the JSON template and config.js's
+      // unconfigured placeholder from both the JSON template and config.js's
       // own env-var default. The resolver strips placeholders at every layer.
       const ollamaEndpoint = resolveOllamaEndpoint(
         ollamaConfig.endpoint || CONFIG.ollama.url,
