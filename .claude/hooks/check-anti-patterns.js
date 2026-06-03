@@ -1,24 +1,83 @@
 #!/usr/bin/env node
 
 /**
- * PostToolUse hook: scans edited/written files for anti-patterns
- * that violate Moltagent dev rules.
+ * PostToolUse hook: scans edited/written .js files for anti-patterns that can be
+ * detected mechanically and unambiguously.
  *
- * Runs after every Edit or Write tool call.
- * Exits 0 (pass) or 1 (fail with message).
+ * Wiring (.claude/settings.json): PostToolUse, matcher "Edit|Write".
+ * Claude Code passes the tool call as JSON on stdin; the edited file's path is
+ * at tool_input.file_path. For manual testing the path may be passed as argv[2].
+ *
+ * Exit codes (per the Claude Code hook contract):
+ *   0 — clean, or nothing to check.
+ *   2 — violation. PostToolUse cannot retroactively block an edit that already
+ *       ran, but exit 2 is the only code that feeds this hook's stderr back to
+ *       Claude as a correction signal. Any other non-zero code only surfaces the
+ *       first stderr line as a passive transcript notice. We want Claude to read
+ *       the full violation and reconsider, so violations exit 2.
+ *
+ * Scope — why this hook checks exactly one fixed string:
+ *   A mechanical hook can only enforce a rule whose violation has a STRUCTURAL
+ *   signature distinct from correct code. `role: 'sovereign'` qualifies: it
+ *   loosens trust toward the cloud from outside the roster, which is never
+ *   legitimate (JOBS.CREDENTIALS is key material, not a role override).
+ *
+ *   `forceLocal: true` does NOT qualify, despite looking like a fixed string.
+ *   It is a trust-*tightening* primitive (pin a call to local for sensitive
+ *   data) used pervasively and correctly — the roster mapper derives it from
+ *   MODEL directives, and components set it to keep client data off the cloud.
+ *   It can only narrow the boundary, never widen it, so it is not a Rule 6
+ *   violation; flagging it false-positives on correct code. See issue #32 and
+ *   the trust-boundary section of the dev-rules skill (tightening vs loosening).
+ *
+ *   A "natural-language word list" (Rule 1) does NOT qualify either. Its structural
+ *   signature — three or more short bare-token strings in a collection — is
+ *   shared by config enums (`new Set(['aggressive','balanced','relaxed'])`),
+ *   intent-gate enums (`new Set(['greeting','chitchat','selection'])`, the
+ *   CORRECT Rule 1 pattern), sentinels (`['null','none','undefined']`), unit
+ *   symbols, and object-property values. Telling a word list apart from an enum
+ *   requires knowing whether the tokens are matched against user language — a
+ *   SEMANTIC judgment, the same interpretive call that keeps message-content
+ *   matching out of this hook. Encoding it would require a list of allowed words
+ *   inside the Rule 1 enforcer, i.e. the very anti-pattern it exists to catch.
+ *   So the Rule 1 / Rule 8 word-list check lives in the human pre-commit
+ *   checklist (the Anti-Pattern Checklist in the dev-rules skill), not here.
+ *   Do not re-add a content-based word-list detector: it false-positives on
+ *   correct code and trains its reader to ignore it. See issue #32.
  */
 
 const fs = require('fs');
-const path = require('path');
 
-const filePath = process.argv[2];
+// ── Resolve the target file path: argv[2] (manual) or stdin JSON (real hook) ──
+function resolveFilePath() {
+  if (process.argv[2]) return process.argv[2];
+  let raw;
+  try {
+    raw = fs.readFileSync(0, 'utf-8');
+  } catch {
+    return null; // no stdin available
+  }
+  try {
+    const payload = JSON.parse(raw);
+    return payload?.tool_input?.file_path || null;
+  } catch {
+    return null; // not JSON we understand
+  }
+}
+
+const filePath = resolveFilePath();
 if (!filePath) process.exit(0);
 
-// Only check JS files
+// Only check JS files.
 if (!filePath.endsWith('.js')) process.exit(0);
 
-// Don't check test files (they may legitimately contain anti-patterns as test data)
+// Don't check test files (they legitimately contain anti-patterns as test data).
 if (filePath.includes('/test/') || filePath.includes('.test.')) process.exit(0);
+
+// Don't check the CC tooling itself. Hook scripts carry the marker strings as
+// detection logic and documentation, not as live trust decisions; the enforcer
+// must not enforce against the enforcement tooling.
+if (/(?:^|\/)\.claude\//.test(filePath)) process.exit(0);
 
 let content;
 try {
@@ -29,65 +88,17 @@ try {
 
 const violations = [];
 
-// ── RULE 1: No natural language Sets/Arrays/Maps ──
-// Detect: new Set(['word', 'word', ...]) with 3+ short string entries
-const setPattern = /new\s+Set\(\[([^\]]{20,})\]\)/g;
-let match;
-while ((match = setPattern.exec(content)) !== null) {
-  const inner = match[1];
-  const strings = inner.match(/'[^']{1,20}'/g) || [];
-  if (strings.length >= 3) {
-    // Check if entries look like natural language words (short, lowercase)
-    const nlWords = strings.filter(s => {
-      const word = s.replace(/'/g, '');
-      return word.length <= 15 && /^[a-züöäéèêàáãñç]+$/i.test(word);
-    });
-    if (nlWords.length >= 3) {
-      violations.push(
-        `⛔ ANTI-PATTERN: Set of natural language words detected at "${match[0].substring(0, 60)}...".\n` +
-        `   The LLM is the language layer: Use the LLM for language tasks, not word lists.\n` +
-        `   File: ${filePath}`
-      );
-    }
-  }
-}
-
-// ── RULE 1: No regex on user messages ──
-// Detect: message.match(/.../) or message.includes('...')
-const msgRegex = /(?:message|msg|text|input|content)\.(?:match|includes|startsWith)\(/g;
-while ((match = msgRegex.exec(content)) !== null) {
-  // Get surrounding context
-  const lineStart = content.lastIndexOf('\n', match.index) + 1;
-  const lineEnd = content.indexOf('\n', match.index);
-  const line = content.substring(lineStart, lineEnd).trim();
-
-  // Skip if it's clearly plumbing (JSON, URL, path checks)
-  if (line.includes('application/json') || line.includes('http') || line.includes('/')) continue;
-
-  violations.push(
-    `⚠️ WARNING: Possible natural language matching on user input.\n` +
-    `   "${line.substring(0, 80)}"\n` +
-    `   The LLM is the language layer: Use the LLM for language understanding, not string matching.\n` +
-    `   File: ${filePath}`
-  );
-}
-
-// ── RULE 6: No hardcoded sovereignty overrides ──
+// ── Trust boundary: no per-component override that loosens trust toward cloud ──
+// `role: 'sovereign'` routes to cloud from outside the roster. It is never
+// legitimate (JOBS.CREDENTIALS is key material, not a role). Fixed string, no
+// interpretation. Trust-tightening (`forceLocal: true`) is deliberately NOT
+// checked here — see the header note.
 const sovereignPattern = /role:\s*['"]sovereign['"]/g;
-while ((match = sovereignPattern.exec(content)) !== null) {
+while (sovereignPattern.exec(content) !== null) {
   violations.push(
     `⛔ ANTI-PATTERN: Hardcoded role: 'sovereign' detected.\n` +
-    `   Trust boundary is the single control: Use the trust boundary (roster chain), not per-component overrides.\n` +
-    `   The ONLY exception is JOBS.CREDENTIALS.\n` +
-    `   File: ${filePath}`
-  );
-}
-
-const forceLocalPattern = /forceLocal:\s*true/g;
-while ((match = forceLocalPattern.exec(content)) !== null) {
-  violations.push(
-    `⛔ ANTI-PATTERN: Hardcoded forceLocal: true detected.\n` +
-    `   Trust boundary is the single control: Use the trust boundary, not per-component overrides.\n` +
+    `   Trust boundary is the single control: a per-component override that loosens trust toward cloud\n` +
+    `   bypasses the roster chain. The ONLY exception is JOBS.CREDENTIALS.\n` +
     `   File: ${filePath}`
   );
 }
@@ -99,11 +110,11 @@ if (violations.length > 0) {
   console.error('='.repeat(60));
   violations.forEach(v => console.error('\n' + v));
   console.error('\n' + '='.repeat(60));
-  console.error('Read .moltagent-dev-rules.md for full details.');
+  console.error('Read .claude/skills/moltagent-dev-rules/SKILL.md for full details.');
   console.error('='.repeat(60) + '\n');
 
-  // Exit 1 to block the edit (CC will see the error and reconsider)
-  process.exit(1);
+  // Exit 2: surface the violation to Claude as a correction signal (see header).
+  process.exit(2);
 }
 
 // All clear
