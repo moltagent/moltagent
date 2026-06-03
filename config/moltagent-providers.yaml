@@ -4,9 +4,11 @@
 # Provider definitions
 providers:
   # Local - always available (sovereign/free)
+  # Default points at a same-box Ollama. For a separate Ollama host, set the
+  # OLLAMA_URL env var (it overrides this value) or edit the endpoint below.
   ollama-local:
     adapter: ollama
-    endpoint: http://YOUR_OLLAMA_IP:11434
+    endpoint: http://localhost:11434
     model: phi4-mini
 
   # Premium tier - Claude Opus (deep reasoning, complex writing)

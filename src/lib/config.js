@@ -248,6 +248,9 @@ const config = {
   // Ollama LLM
   // -------------------------------------------------------------------------
   ollama: {
+    // The YOUR_* default is deliberate: it documents the env var for the
+    // deployer. At runtime resolveOllamaEndpoint() treats it as "unset" and
+    // falls back to localhost:11434, so the placeholder never reaches a client.
     url: envStr('OLLAMA_URL', 'http://YOUR_OLLAMA_IP:11434'),
     model: envStr('OLLAMA_MODEL', 'phi4-mini'),
     modelCredential: envStr('OLLAMA_MODEL_CREDENTIAL', null) || envStr('OLLAMA_MODEL', 'phi4-mini'),
@@ -547,6 +550,11 @@ const config = {
   // Voice Pipeline (Whisper STT + call-aware routing)
   // -------------------------------------------------------------------------
   voice: {
+    // The YOUR_* voice defaults are deliberate env-var documentation. Unlike
+    // the LLM endpoint, voice is an optional dependency: webhook-server gates
+    // VoiceManager/WhisperClient construction on a configured URL, so a
+    // placeholder/unset value disables voice cleanly rather than building a
+    // client that fails on first use. See #100.
     whisperUrl: envStr('WHISPER_URL', 'http://YOUR_OLLAMA_IP:8014'),
     whisperTimeout: envInt('WHISPER_TIMEOUT', 60000),
     whisperModel: envStr('WHISPER_MODEL', 'small'),

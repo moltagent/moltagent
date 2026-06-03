@@ -85,6 +85,7 @@ function _resetWarnedForTests() {
 
 module.exports = {
   resolveOllamaEndpoint,
+  _isPlaceholder,
   _resetWarnedForTests,
   DEFAULT_FALLBACK,
   PLACEHOLDER_MARKER,
