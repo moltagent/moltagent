@@ -45,7 +45,7 @@ A reported behavior bug (hallucinated roles, overconfidence under sparse data) a
 
 2. **Analysis before fix.** What class of problem is this? What generates it? Fix the generator, not the instance. Two instances of the same pattern mean stop patching. When the generator sits above the current scope, surface it as an issue rather than patching around it.
 
-3. **Trust boundary is the single control.** `trust: local-only` or `cloud-ok` decides every cloud-touching call, and the router is the only place that decision is made. A second trust flag on a component is the failure mode, not a feature.
+3. **Trust boundary is the single control.** `trust: local-only` or `cloud-ok` decides every cloud-touching call, and the router is the only place that decision is made. A per-component override that *loosens* trust toward cloud (`role: 'sovereign'`, a flag routing to cloud outside the roster) is the failure mode, not a feature. Trust-*tightening* overrides (`forceLocal: true`, pinning to local for sensitive data) are legitimate — they can only narrow the boundary, never widen it. `JOBS.CREDENTIALS` is exempt either way: key material never leaves the box.
 
 4. **BUILT ≠ VERIFIED.** A feature is complete only after its behavior is confirmed in production. Green tests are necessary, not sufficient. Close each session with a marker stating what you confirmed and how. See the Verification Gate in the dev-rules skill.
 

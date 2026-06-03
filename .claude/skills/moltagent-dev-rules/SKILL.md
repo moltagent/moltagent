@@ -71,7 +71,9 @@ In practice:
 
 `trust: local-only` or `trust: cloud-ok` is the one setting that decides what touches the cloud. The user sets it, and every component inherits it through the roster chain. That is the only place the decision lives.
 
-A per-component override (`role: 'sovereign'`, `forceLocal: true`, a module-level trust flag) is the failure mode, not a feature. The single exception is `JOBS.CREDENTIALS`: key material never leaves the box, regardless of the trust setting.
+Direction is everything. A per-component override that *loosens* trust toward the cloud — `role: 'sovereign'`, or any flag that routes to cloud outside the roster — is the failure mode, not a feature: it widens the boundary the user set, from a place that isn't the single control. Trust-*tightening* overrides are legitimate: `forceLocal: true` (pinning a call to local for sensitive data) can only narrow the boundary, never widen it, so it cannot violate the user's choice. The rule forbids widening, not narrowing.
+
+The single exception, independent of direction, is `JOBS.CREDENTIALS`: key material never leaves the box, regardless of the trust setting.
 
 ## The anti-pattern checklist
 
@@ -81,7 +83,7 @@ This is the checklist form of the rules above. Run it before every commit. Each 
 - [ ] A regex that matches message content? → The LLM is the language layer.
 - [ ] Code that only works in English? → Multilingual by default.
 - [ ] A post-classify guard that overrides the model? → Prompt updates, not code guards.
-- [ ] A hardcoded `role: 'sovereign'` or `forceLocal: true`? → Trust boundary is the single control.
+- [ ] A per-component override that loosens trust toward cloud (`role: 'sovereign'`, a flag routing to cloud outside the roster)? → Trust boundary is the single control. (Trust-*tightening* like `forceLocal: true` is fine.)
 - [ ] A commit that adds more lines than it removes? → Analysis before code (the altitude check).
 - [ ] Code that compensates for a weak model? → Strengthen the component instead.
 - [ ] Code that has to change when you add a language? → The LLM is the language layer.
