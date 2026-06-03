@@ -45,7 +45,7 @@ while ((match = setPattern.exec(content)) !== null) {
     if (nlWords.length >= 3) {
       violations.push(
         `⛔ ANTI-PATTERN: Set of natural language words detected at "${match[0].substring(0, 60)}...".\n` +
-        `   Rule 1: Use the LLM for language tasks, not word lists.\n` +
+        `   The LLM is the language layer: Use the LLM for language tasks, not word lists.\n` +
         `   File: ${filePath}`
       );
     }
@@ -67,7 +67,7 @@ while ((match = msgRegex.exec(content)) !== null) {
   violations.push(
     `⚠️ WARNING: Possible natural language matching on user input.\n` +
     `   "${line.substring(0, 80)}"\n` +
-    `   Rule 1: Use the LLM for language understanding, not string matching.\n` +
+    `   The LLM is the language layer: Use the LLM for language understanding, not string matching.\n` +
     `   File: ${filePath}`
   );
 }
@@ -77,7 +77,7 @@ const sovereignPattern = /role:\s*['"]sovereign['"]/g;
 while ((match = sovereignPattern.exec(content)) !== null) {
   violations.push(
     `⛔ ANTI-PATTERN: Hardcoded role: 'sovereign' detected.\n` +
-    `   Rule 6: Use the trust boundary (roster chain), not per-component overrides.\n` +
+    `   Trust boundary is the single control: Use the trust boundary (roster chain), not per-component overrides.\n` +
     `   The ONLY exception is JOBS.CREDENTIALS.\n` +
     `   File: ${filePath}`
   );
@@ -87,7 +87,7 @@ const forceLocalPattern = /forceLocal:\s*true/g;
 while ((match = forceLocalPattern.exec(content)) !== null) {
   violations.push(
     `⛔ ANTI-PATTERN: Hardcoded forceLocal: true detected.\n` +
-    `   Rule 6: Use the trust boundary, not per-component overrides.\n` +
+    `   Trust boundary is the single control: Use the trust boundary, not per-component overrides.\n` +
     `   File: ${filePath}`
   );
 }

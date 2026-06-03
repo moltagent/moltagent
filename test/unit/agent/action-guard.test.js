@@ -29,7 +29,7 @@ test('stagesApprovalCeremony() is false for non-string inputs', () => {
 // -- Test 4: marker detection is language-free — only the codepoint matters --
 test('stagesApprovalCeremony() keys on the codepoint, not phrasing', () => {
   // English ceremony phrasing WITHOUT the marker → not flagged (the marker, not
-  // the words, is the signal; word-matching would be a Rule 1 violation).
+  // the words, is the signal; word-matching would be a language-layer rule violation).
   assert.strictEqual(stagesApprovalCeremony('This requires approval. Reply approve to allow.'), false);
   // Marker with no surrounding ceremony words → still flagged.
   assert.strictEqual(stagesApprovalCeremony(`x ${HITL_PROMPT_MARKER} y`), true);
