@@ -47,6 +47,7 @@ class HeartbeatManager {
     this.config = config;
     this.llmRouter = config.llmRouter;
     this.routerChatBridge = config.routerChatBridge || null;
+    this.modelResolver = config.modelResolver || null;
     this.notifyUser = config.notifyUser || (async () => {});
     this.auditLog = config.auditLog || (async () => {});
     this.credentialBroker = config.credentialBroker;
@@ -734,6 +735,14 @@ class HeartbeatManager {
                 this.llmRouter.setRoster(mc.roster);
               } else if (mc.preset) {
                 this.llmRouter.setPreset(mc.preset);
+              }
+
+              // The Models card is the resolver's hormonal input (trust + any
+              // explicit local model). Re-resolve so the change propagates to the
+              // conversational trust check on the next call — not just to the
+              // router roster (issue #123).
+              if (this.modelResolver && mc !== null && mc.changed !== false) {
+                this.modelResolver.refresh();
               }
             }
           }

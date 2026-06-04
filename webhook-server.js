@@ -39,13 +39,15 @@ try {
 }
 
 // Optional modules - gracefully handle if not present
-let LLMRouter, AuditLogger, CalendarHandler, EmailHandler, CalDAVClient;
+let LLMRouter, ModelResolver, AuditLogger, CalendarHandler, EmailHandler, CalDAVClient;
 try {
   const llmModule = require('./src/lib/llm');
   LLMRouter = llmModule.LLMRouter;
+  ModelResolver = llmModule.ModelResolver;
 } catch {
   console.warn('[WARN] LLM Router not available, using stub');
   LLMRouter = null;
+  ModelResolver = null;
 }
 
 try {
@@ -502,6 +504,7 @@ let contextLoader = null;
 let learningLog = null;
 let agentLoop = null; // Session 14: AgentLoop instance
 let routerChatBridge = null; // Session B2: RouterChatBridge for dynamic provider registration
+let modelResolver = null; // Single source of truth for per-job model + trust (issue #123)
 let costTracker = null; // Cost metering: per-call audit + enriched cost reporting
 let dailyBriefing = null; // First-message-of-day briefing
 let cockpitManager = null; // Session 27: Cockpit (Deck as control plane)
@@ -772,13 +775,17 @@ async function initialize() {
     console.log('[INIT] Setting up LLM Router...');
     const { loadConfig: loadLLMConfig } = require('./src/lib/llm');
     const llmConfig = loadLLMConfig({ getCredential: credentialBroker.createGetter() });
-    // Apply runtime Ollama overrides from CONFIG
+    // Apply runtime Ollama endpoint override from CONFIG.
     if (llmConfig.providers?.['ollama-local'] && CONFIG.ollama?.url) {
       llmConfig.providers['ollama-local'].endpoint = CONFIG.ollama.url;
     }
-    if (llmConfig.providers?.['ollama-local'] && CONFIG.ollama?.model) {
-      llmConfig.providers['ollama-local'].model = CONFIG.ollama.model;
-    }
+    // NOTE: the env var (OLLAMA_MODEL) no longer mutates the router provider's
+    // model here. That mutation was a primary source of the model chimerism in
+    // issue #123 — it overwrote the YAML/providers.json genome with the env mark,
+    // so the router provider and the chat provider could name different models.
+    // The per-job model is now decided in one place — ModelResolver, which reads
+    // the env mark as one input among several (env-override precedence). The
+    // router provider keeps its config-declared model only as a static fallback.
     llmConfig.auditLog = auditLogger ? auditLogger.log.bind(auditLogger) : consoleAuditLog;
     llmConfig.proactiveDailyBudget = appConfig.proactive.dailyCloudBudget;
     llmProviderConfigs = llmConfig.providers || {};
@@ -1695,10 +1702,29 @@ async function initialize() {
             }
           }
 
+          // ModelResolver: the single source of truth for the per-job model and
+          // trust level (issue #123). Built here with ModelScout still null —
+          // section 7g assigns it and calls refresh() once discovery completes,
+          // at which point ModelScout's picks win over the static config. Reading
+          // process.env.OLLAMA_MODEL directly (not CONFIG.ollama.model) so an env
+          // var sitting at its phi4-mini code default is NOT mistaken for an
+          // explicit operator override.
+          if (ModelResolver) {
+            modelResolver = new ModelResolver({
+              deployerConfig: ollamaConfig,
+              envModel: process.env.OLLAMA_MODEL || null,
+              modelScout: null,
+              cockpitManager,
+              fallbackModel: null,
+              logger: console
+            });
+          }
+
           llmProvider = new RouterChatBridge({
             router: llmRouter,
             chatProviders,
             costTracker,
+            modelResolver,
             logger: console,
             defaultJob: 'tools'
           });
@@ -1943,6 +1969,23 @@ async function initialize() {
         if (localRoster && llmRouter) {
           llmRouter.setLocalRoster(localRoster);
           console.log(`[INIT] Local roster: ${modelScout.getSummary()}`);
+        }
+
+        // Feed the sensed environment into the resolver and re-resolve. Until
+        // now the resolver only saw the static config; ModelScout's discovery
+        // (reality) now wins. This — not the discovery summary above — is the
+        // ground truth the operator should read: the model that ACTUALLY serves
+        // each conversational job, with the source that decided it. CostTracker
+        // logs the same per-job model, so the log can no longer name a model
+        // that never ran (the chimerism in issue #123).
+        if (modelResolver) {
+          modelResolver.modelScout = modelScout;
+          modelResolver.refresh();
+          const { summary, divergences } = modelResolver.describe(['tools', 'thinking', 'quick']);
+          console.log(`[INIT] Model resolver: ${summary}`);
+          for (const d of divergences) {
+            console.warn(`[WARN] ${d}`);
+          }
         }
       }).catch(err => {
         console.warn(`[INIT] ModelScout discovery failed: ${err.message}`);
@@ -2239,6 +2282,7 @@ async function initialize() {
         },
         llmRouter,
         routerChatBridge,
+        modelResolver,
         notifyUser,
         auditLog: auditFn,
         knowledgeLog: learningLog,
