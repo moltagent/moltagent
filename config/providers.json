@@ -5,7 +5,7 @@
       "name": "Ollama (Local)",
       "type": "local",
       "endpoint": "http://localhost:11434",
-      "model": "phi4-mini",
+      "model": "qwen3:8b",
       "costModel": { "type": "fixed", "monthlyFixed": 15 }
     },
     "claude": {

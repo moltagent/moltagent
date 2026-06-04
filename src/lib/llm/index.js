@@ -16,6 +16,7 @@ const LoopDetector = require('./loop-detector');
 const OutputVerifier = require('../output-verifier');
 const providers = require('./providers');
 const configLoader = require('./config-loader');
+const { ModelResolver } = require('./model-resolver');
 
 module.exports = {
   LLMRouter,
@@ -27,6 +28,7 @@ module.exports = {
   OutputVerifier,
   providers,
   configLoader,
+  ModelResolver,
   createProvider: providers.createProvider,
   getAvailableAdapters: providers.getAvailableAdapters,
   loadConfig: configLoader.loadConfig,

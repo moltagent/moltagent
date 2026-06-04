@@ -9,7 +9,7 @@ providers:
   ollama-local:
     adapter: ollama
     endpoint: http://localhost:11434
-    model: phi4-mini
+    model: qwen3:8b
 
   # Premium tier - Claude Opus (deep reasoning, complex writing)
   anthropic-claude:

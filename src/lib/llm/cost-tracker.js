@@ -252,6 +252,7 @@ class CostTracker {
     this._buffer.push({
       timestamp: new Date().toISOString(),
       model: entry.model,
+      source: entry.source || null,
       provider: entry.provider || null,
       job: entry.job || 'unknown',
       trigger: entry.trigger || 'unknown',

@@ -856,6 +856,138 @@ const silentLogger = { info: () => {}, warn: () => {} };
     assert.strictEqual(typeof r.job, 'string');
   });
 
+  // --- ModelResolver wiring + trust enforcement (#123) ---
+  console.log('\n--- ModelResolver wiring + trust enforcement (#123) ---\n');
+
+  // Minimal resolver stub: returns a fixed phenotype for any job.
+  const makeResolver = (model, trust, source) => ({
+    resolve: () => ({ model, trust, source: source || 'model-scout', provider: 'ollama-local', derivation: {}, fellBack: null })
+  });
+
+  await asyncTest('TC-BRIDGE-RESOLVE-001: passes resolved model to a local provider', async () => {
+    let receivedModel = 'UNSET';
+    const router = createMockRouter({
+      buildProviderChain: () => ({ chain: [{ id: 'ollama-local', provider: { type: 'local' } }], skipped: [] })
+    });
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([['ollama-local', createMockChatProvider({
+        chat: async (p) => { receivedModel = p.model; return { content: 'ok', toolCalls: null }; }
+      })]]),
+      modelResolver: makeResolver('qwen3:8b', 'cloud-ok'),
+      logger: silentLogger
+    });
+    await bridge.chat({ system: 't', messages: [], tools: [], job: 'tools' });
+    assert.strictEqual(receivedModel, 'qwen3:8b');
+  });
+
+  await asyncTest('TC-BRIDGE-RESOLVE-002: cloud provider never receives the local resolved model', async () => {
+    let cloudModel = 'UNSET';
+    const router = createMockRouter({
+      buildProviderChain: () => ({ chain: [
+        { id: 'anthropic-claude', provider: { type: 'remote' } },
+        { id: 'ollama-local', provider: { type: 'local' } }
+      ], skipped: [] })
+    });
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([
+        ['anthropic-claude', createMockChatProvider({ chat: async (p) => { cloudModel = p.model; return { content: 'cloud', toolCalls: null }; } })],
+        ['ollama-local', createMockChatProvider()]
+      ]),
+      modelResolver: makeResolver('qwen3:8b', 'cloud-ok'),
+      logger: silentLogger
+    });
+    await bridge.chat({ system: 't', messages: [], tools: [], job: 'tools' });
+    assert.strictEqual(cloudModel, undefined, 'cloud params.model must be undefined — resolved model is local-only');
+  });
+
+  await asyncTest('TC-BRIDGE-RESOLVE-003: CostTracker records the resolved model + source', async () => {
+    const recorded = [];
+    const router = createMockRouter({
+      buildProviderChain: () => ({ chain: [{ id: 'ollama-local', provider: { type: 'local', model: 'phi4-mini' } }], skipped: [] })
+    });
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([['ollama-local', createMockChatProvider({ content: 'ok' })]]),
+      costTracker: { record: (e) => recorded.push(e) },
+      modelResolver: makeResolver('qwen3:8b', 'cloud-ok', 'model-scout'),
+      logger: silentLogger
+    });
+    await bridge.chat({ system: 't', messages: [], tools: [], job: 'tools' });
+    assert.strictEqual(recorded.length, 1);
+    assert.strictEqual(recorded[0].model, 'qwen3:8b', 'must log the resolved model, not the static provider default');
+    assert.strictEqual(recorded[0].source, 'model-scout');
+  });
+
+  await asyncTest('TC-BRIDGE-TRUST-001: local-only trust forces local — cloud is not built', async () => {
+    let forcedLocal = null;
+    const router = createMockRouter({
+      buildProviderChain: (job, ctx) => {
+        forcedLocal = ctx.forceLocal;
+        return { chain: [{ id: 'ollama-local', provider: { type: 'local' } }], skipped: [] };
+      }
+    });
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([['ollama-local', createMockChatProvider({ content: 'ok' })]]),
+      modelResolver: makeResolver('qwen3:8b', 'local-only'),
+      logger: silentLogger
+    });
+    await bridge.chat({ system: 't', messages: [], tools: [], job: 'tools' });
+    assert.strictEqual(forcedLocal, true, 'trust local-only must force the chain local');
+  });
+
+  await asyncTest('TC-BRIDGE-TRUST-002: local-only trust overrides a per-call allowCloud (trust can only narrow)', async () => {
+    let ctxSeen = null;
+    const router = createMockRouter({
+      buildProviderChain: (job, ctx) => { ctxSeen = ctx; return { chain: [{ id: 'ollama-local', provider: { type: 'local' } }], skipped: [] }; }
+    });
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([['ollama-local', createMockChatProvider({ content: 'ok' })]]),
+      modelResolver: makeResolver('qwen3:8b', 'local-only'),
+      logger: silentLogger
+    });
+    await bridge.chat({ system: 't', messages: [], tools: [], job: 'tools', allowCloud: true });
+    assert.strictEqual(ctxSeen.forceLocal, true);
+    assert.strictEqual(ctxSeen.allowCloud, false, 'allowCloud must not widen past local-only trust');
+  });
+
+  await asyncTest('TC-BRIDGE-TRUST-003: cloud-ok trust leaves routing untouched', async () => {
+    let ctxSeen = null;
+    const router = createMockRouter({
+      buildProviderChain: (job, ctx) => { ctxSeen = ctx; return { chain: [{ id: 'anthropic-claude', provider: { type: 'remote' } }], skipped: [] }; }
+    });
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([['anthropic-claude', createMockChatProvider({ content: 'ok' })]]),
+      modelResolver: makeResolver('qwen3:8b', 'cloud-ok'),
+      logger: silentLogger
+    });
+    await bridge.chat({ system: 't', messages: [], tools: [], job: 'tools' });
+    assert.strictEqual(ctxSeen.forceLocal, false);
+  });
+
+  await asyncTest('TC-BRIDGE-RESOLVE-004: no resolver → backward-compatible (no model injected, static logged)', async () => {
+    let hadModelKey = true;
+    const recorded = [];
+    const router = createMockRouter({
+      buildProviderChain: () => ({ chain: [{ id: 'ollama-local', provider: { type: 'local', model: 'phi4-mini' } }], skipped: [] })
+    });
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([['ollama-local', createMockChatProvider({
+        chat: async (p) => { hadModelKey = ('model' in p); return { content: 'ok', toolCalls: null }; }
+      })]]),
+      costTracker: { record: (e) => recorded.push(e) },
+      logger: silentLogger
+    });
+    await bridge.chat({ system: 't', messages: [], tools: [], job: 'tools' });
+    assert.strictEqual(hadModelKey, false, 'without a resolver, no model key is injected');
+    assert.strictEqual(recorded[0].model, 'phi4-mini', 'falls back to the provider static model');
+  });
+
   // --- Run ---
   summary();
   exitWithCode();
