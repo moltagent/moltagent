@@ -67,6 +67,6 @@ The asymmetry dictates the default: when uncertain, abstract. The cost of abstra
 
 ## Cross-reference
 
-- Rule 7 in `moltagent-dev-rules.md` (Prompt Updates, Not Code Guards) — this skill applies that rule one layer up: when drafts leak information, the fix is better discipline at drafting time, not a post-publication filter. The privacy pass IS the prompt update for public-content generation.
+- the Prompt-Updates rule in the moltagent-dev-rules skill — this skill applies that rule one layer up: when drafts leak information, the fix is better discipline at drafting time, not a post-publication filter. The privacy pass IS the prompt update for public-content generation.
 - `moltagent-dev-rules.md` § Verification Gate — adjacent discipline. Both follow the pattern "before declaring X done, run check Y." One for code, one for public content.
 - Issue #36 — the near-miss that prompted this skill. A full list of real names from the knowledge base almost went into the issue body; caught before publication by the human operator. This skill exists so the catch doesn't depend on the human every time.

@@ -27,7 +27,7 @@ const { createErrorHandler } = require('./src/lib/errors/error-handler');
 const { TalkSendQueue } = require('./src/lib/talk/talk-send-queue');
 const appConfig = require('./src/lib/config');
 const { createServerComponents } = require('./src/lib/server/index');
-const { resolveOllamaEndpoint } = require('./src/lib/shared/resolve-ollama-endpoint');
+const { resolveOllamaEndpoint, _isPlaceholder } = require('./src/lib/shared/resolve-ollama-endpoint');
 
 // Knowledge modules for agent memory context
 let ContextLoader, LearningLog;
@@ -39,13 +39,15 @@ try {
 }
 
 // Optional modules - gracefully handle if not present
-let LLMRouter, AuditLogger, CalendarHandler, EmailHandler, CalDAVClient;
+let LLMRouter, ModelResolver, AuditLogger, CalendarHandler, EmailHandler, CalDAVClient;
 try {
   const llmModule = require('./src/lib/llm');
   LLMRouter = llmModule.LLMRouter;
+  ModelResolver = llmModule.ModelResolver;
 } catch {
   console.warn('[WARN] LLM Router not available, using stub');
   LLMRouter = null;
+  ModelResolver = null;
 }
 
 try {
@@ -502,6 +504,7 @@ let contextLoader = null;
 let learningLog = null;
 let agentLoop = null; // Session 14: AgentLoop instance
 let routerChatBridge = null; // Session B2: RouterChatBridge for dynamic provider registration
+let modelResolver = null; // Single source of truth for per-job model + trust (issue #123)
 let costTracker = null; // Cost metering: per-call audit + enriched cost reporting
 let dailyBriefing = null; // First-message-of-day briefing
 let cockpitManager = null; // Session 27: Cockpit (Deck as control plane)
@@ -513,6 +516,7 @@ let warmMemory = null; // Session M1: warm memory layer (WARM.md)
 let sessionCleanupTimer = null; // Periodic SessionManager cleanup
 let webhookErrorHandler = null;
 let serverComponents = null; // Decomposed server components (webhook, command, health, message processor)
+let initComplete = false; // #97: true once initialize() resolves. The open port carries reachability; this flag carries readiness.
 let heartbeatManager = null; // HeartbeatManager instance (proactive operations)
 let oauthBroker = null; // OAuth 2.0 broker for SkillForge token lifecycle
 let knowledgeBoard = null; // KnowledgeBoard for verification tracking
@@ -771,13 +775,17 @@ async function initialize() {
     console.log('[INIT] Setting up LLM Router...');
     const { loadConfig: loadLLMConfig } = require('./src/lib/llm');
     const llmConfig = loadLLMConfig({ getCredential: credentialBroker.createGetter() });
-    // Apply runtime Ollama overrides from CONFIG
+    // Apply runtime Ollama endpoint override from CONFIG.
     if (llmConfig.providers?.['ollama-local'] && CONFIG.ollama?.url) {
       llmConfig.providers['ollama-local'].endpoint = CONFIG.ollama.url;
     }
-    if (llmConfig.providers?.['ollama-local'] && CONFIG.ollama?.model) {
-      llmConfig.providers['ollama-local'].model = CONFIG.ollama.model;
-    }
+    // NOTE: the env var (OLLAMA_MODEL) no longer mutates the router provider's
+    // model here. That mutation was a primary source of the model chimerism in
+    // issue #123 — it overwrote the YAML/providers.json genome with the env mark,
+    // so the router provider and the chat provider could name different models.
+    // The per-job model is now decided in one place — ModelResolver, which reads
+    // the env mark as one input among several (env-override precedence). The
+    // router provider keeps its config-declared model only as a static fallback.
     llmConfig.auditLog = auditLogger ? auditLogger.log.bind(auditLogger) : consoleAuditLog;
     llmConfig.proactiveDailyBudget = appConfig.proactive.dailyCloudBudget;
     llmProviderConfigs = llmConfig.providers || {};
@@ -873,8 +881,14 @@ async function initialize() {
     }
   }
 
-  // Session 37: Initialize Voice Pipeline (WhisperClient + AudioConverter)
-  if (WhisperClient && AudioConverter && appConfig.voice?.enabled !== false) {
+  // Session 37: Initialize Voice Pipeline (WhisperClient + AudioConverter).
+  // Voice is an optional dependency: a placeholder/unset WHISPER_URL means
+  // "voice not deployed" — skip construction entirely rather than build a
+  // client pointed at a YOUR_* literal that fails on first use. Mirrors the
+  // heald skip (SelfHealClient, below). LLM endpoints fall back to localhost;
+  // optional voice endpoints disable. See #100.
+  const whisperConfigured = appConfig.voice?.whisperUrl && !_isPlaceholder(appConfig.voice.whisperUrl);
+  if (WhisperClient && AudioConverter && appConfig.voice?.enabled !== false && whisperConfigured) {
     try {
       whisperClient = new WhisperClient({
         whisperUrl: appConfig.voice.whisperUrl,
@@ -890,10 +904,15 @@ async function initialize() {
       whisperClient = null;
       audioConverter = null;
     }
+  } else if (WhisperClient && AudioConverter && appConfig.voice?.enabled !== false && !whisperConfigured) {
+    console.log('[INIT] Voice disabled — WHISPER_URL not configured (placeholder/unset). Set WHISPER_URL to enable speech-to-text.');
   }
 
-  // Session V2: Initialize VoiceManager (Speaches-backed voice orchestration)
-  if (SpeachesClient && VoiceManager && appConfig.voice?.enabled !== false) {
+  // Session V2: Initialize VoiceManager (Speaches-backed voice orchestration).
+  // Same optional-dependency treatment as the Whisper block above: a
+  // placeholder/unset SPEACHES_URL disables voice orchestration cleanly. See #100.
+  const speachesConfigured = appConfig.voice?.speachesUrl && !_isPlaceholder(appConfig.voice.speachesUrl);
+  if (SpeachesClient && VoiceManager && appConfig.voice?.enabled !== false && speachesConfigured) {
     try {
       const speachesClient = new SpeachesClient({
         endpoint: appConfig.voice.speachesUrl,
@@ -916,6 +935,8 @@ async function initialize() {
       console.warn(`[INIT] VoiceManager failed: ${err.message}`);
       voiceManager = null;
     }
+  } else if (SpeachesClient && VoiceManager && appConfig.voice?.enabled !== false && !speachesConfigured) {
+    console.log('[INIT] Voice orchestration disabled — SPEACHES_URL not configured (placeholder/unset). Set SPEACHES_URL to enable Speaches voice.');
   }
 
   if (NCSearchClient && ncRequestManager) {
@@ -1490,7 +1511,7 @@ async function initialize() {
 
       // Resolve Ollama endpoint once: OLLAMA_URL env > providers.json > localhost.
       // The candidate-then-CONFIG.ollama.url chain previously propagated the
-      // YOUR_OLLAMA_IP placeholder from both the JSON template and config.js's
+      // unconfigured placeholder from both the JSON template and config.js's
       // own env-var default. The resolver strips placeholders at every layer.
       const ollamaEndpoint = resolveOllamaEndpoint(
         ollamaConfig.endpoint || CONFIG.ollama.url,
@@ -1681,10 +1702,29 @@ async function initialize() {
             }
           }
 
+          // ModelResolver: the single source of truth for the per-job model and
+          // trust level (issue #123). Built here with ModelScout still null —
+          // section 7g assigns it and calls refresh() once discovery completes,
+          // at which point ModelScout's picks win over the static config. Reading
+          // process.env.OLLAMA_MODEL directly (not CONFIG.ollama.model) so an env
+          // var sitting at its phi4-mini code default is NOT mistaken for an
+          // explicit operator override.
+          if (ModelResolver) {
+            modelResolver = new ModelResolver({
+              deployerConfig: ollamaConfig,
+              envModel: process.env.OLLAMA_MODEL || null,
+              modelScout: null,
+              cockpitManager,
+              fallbackModel: null,
+              logger: console
+            });
+          }
+
           llmProvider = new RouterChatBridge({
             router: llmRouter,
             chatProviders,
             costTracker,
+            modelResolver,
             logger: console,
             defaultJob: 'tools'
           });
@@ -1929,6 +1969,23 @@ async function initialize() {
         if (localRoster && llmRouter) {
           llmRouter.setLocalRoster(localRoster);
           console.log(`[INIT] Local roster: ${modelScout.getSummary()}`);
+        }
+
+        // Feed the sensed environment into the resolver and re-resolve. Until
+        // now the resolver only saw the static config; ModelScout's discovery
+        // (reality) now wins. This — not the discovery summary above — is the
+        // ground truth the operator should read: the model that ACTUALLY serves
+        // each conversational job, with the source that decided it. CostTracker
+        // logs the same per-job model, so the log can no longer name a model
+        // that never ran (the chimerism in issue #123).
+        if (modelResolver) {
+          modelResolver.modelScout = modelScout;
+          modelResolver.refresh();
+          const { summary, divergences } = modelResolver.describe(['tools', 'thinking', 'quick']);
+          console.log(`[INIT] Model resolver: ${summary}`);
+          for (const d of divergences) {
+            console.warn(`[WARN] ${d}`);
+          }
         }
       }).catch(err => {
         console.warn(`[INIT] ModelScout discovery failed: ${err.message}`);
@@ -2225,6 +2282,7 @@ async function initialize() {
         },
         llmRouter,
         routerChatBridge,
+        modelResolver,
         notifyUser,
         auditLog: auditFn,
         knowledgeLog: learningLog,
@@ -2429,12 +2487,15 @@ async function handleRequest(req, res) {
       serverComponents.healthHandler.handleHealth(req, res);
     } else {
       // Fallback if not initialized
+      // #97: the listener now binds before initialize(), so this fallback can be
+      // hit before signatureVerifier exists — guard the deref.
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         status: 'ok',
         service: 'moltagent-webhook',
         version: '2.0.0',
-        verifications: signatureVerifier.getStats().totalVerifications
+        initComplete,
+        verifications: signatureVerifier ? signatureVerifier.getStats().totalVerifications : 0
       }));
     }
     return;
@@ -2445,9 +2506,9 @@ async function handleRequest(req, res) {
     if (serverComponents && serverComponents.healthHandler) {
       serverComponents.healthHandler.handleStats(req, res);
     } else {
-      // Fallback if not initialized
+      // Fallback if not initialized (#97: may run before signatureVerifier exists)
       const stats = {
-        verifier: signatureVerifier.getStats(),
+        verifier: signatureVerifier ? signatureVerifier.getStats() : null,
         ncRequestManager: ncRequestManager ? ncRequestManager.getMetrics() : null
       };
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2519,9 +2580,10 @@ async function handleRequest(req, res) {
     if (serverComponents && serverComponents.webhookHandler) {
       await serverComponents.webhookHandler.handle(req, res);
     } else {
-      // Fallback if not initialized
+      // #97: listener is up but init is still settling (e.g. under NC backoff).
+      // The null-guard owns correctness; this body just tells the caller to retry.
       res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Server not ready' }));
+      res.end(JSON.stringify({ error: 'Server starting up — initialization in progress, retry shortly' }));
     }
     return;
   }
@@ -2633,9 +2695,12 @@ async function shutdown(signal) {
     console.log('[SHUTDOWN] Email Monitor stopped');
   }
 
-  // Log final stats
-  const stats = signatureVerifier.getStats();
-  console.log(`[SHUTDOWN] Final stats: ${stats.totalVerifications} verifications, ${stats.successRate} success rate`);
+  // Log final stats (#97: shutdown may run before signatureVerifier exists if a
+  // signal arrives during the pre-init window the listener-first reorder opens)
+  if (signatureVerifier) {
+    const stats = signatureVerifier.getStats();
+    console.log(`[SHUTDOWN] Final stats: ${stats.totalVerifications} verifications, ${stats.successRate} success rate`);
+  }
 
   // Log NCRequestManager metrics
   if (ncRequestManager) {
@@ -2685,11 +2750,21 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
  */
 async function start() {
   try {
-    await initialize();
-
+    // #97: Bind the HTTP listener BEFORE running initialize(). Reachability must
+    // not be coupled to full initialisation — a rate-limiting NC can stall init
+    // in backoff for a long time, and the port must open regardless so /health
+    // answers and /webhook returns a clean 503 (not a dead port). handleRequest
+    // already tolerates the uninitialised state (serverComponents === null).
     const server = http.createServer(handleRequest);
 
-    server.listen(CONFIG.port, '0.0.0.0', async () => {
+    // A genuine bind failure (port in use, EACCES) is fatal and distinct from an
+    // init stall: there is no listener to keep up, so log and exit.
+    server.on('error', (err) => {
+      console.error(`[FATAL] HTTP listener bind failed on :${CONFIG.port}: ${err.code || err.message}`);
+      process.exit(1);
+    });
+
+    server.listen(CONFIG.port, '0.0.0.0', () => {
       console.log('');
       console.log('======================================================================');
       console.log('           Moltagent Webhook Server Running!                          ');
@@ -2699,51 +2774,59 @@ async function start() {
       console.log(`Health check: http://0.0.0.0:${CONFIG.port}/health`);
       console.log(`Stats: http://0.0.0.0:${CONFIG.port}/stats`);
       console.log('');
-      console.log('Ready to receive NC Talk messages');
+      console.log(`[INIT] HTTP listener bound on :${CONFIG.port} — init in progress; /webhook returns 503 until ready`);
       console.log('Press Ctrl+C to stop');
       console.log('');
-
-      // Start HeartbeatManager after server is listening (NC API clients ready)
-      if (heartbeatManager) {
-        try {
-          console.log('[INIT] Starting heartbeat...');
-          await heartbeatManager.start();
-          console.log(`[INIT] Heartbeat running (interval: ${CONFIG.heartbeat.intervalMs / 1000}s, initiative: ${appConfig.proactive.initiativeLevel})`);
-        } catch (err) {
-          console.error(`[INIT] Heartbeat start failed: ${err.message}`);
-        }
-      }
-
-      // Start RoomMonitor (after heartbeat, so BotEnroller has initial data)
-      if (roomMonitor) {
-        try {
-          await roomMonitor.start();
-          console.log('[INIT] RoomMonitor started');
-        } catch (err) {
-          console.warn(`[INIT] RoomMonitor start failed: ${err.message}`);
-        }
-      }
-
-      // Start NC Flow modules
-      if (ncFlowWebhookReceiver) {
-        try {
-          await ncFlowWebhookReceiver.start();
-          console.log('[INIT] NC Flow WebhookReceiver started');
-        } catch (err) {
-          console.warn(`[INIT] NC Flow WebhookReceiver start failed: ${err.message}`);
-        }
-      }
-      if (ncFlowActivityPoller) {
-        ncFlowActivityPoller.start();
-        console.log('[INIT] NC Flow ActivityPoller started');
-      }
-
-      // Set status to ready after all initialization complete
-      if (ncStatusIndicator) {
-        await ncStatusIndicator.setStatus('ready');
-        console.log('[INIT] Status set to Ready');
-      }
     });
+
+    // Run the full NC init handshake AFTER the listener is up. If this stalls
+    // under backoff, the port stays open returning 503 — that is the whole point
+    // of #97. A hard throw still falls through to the fatal catch below.
+    await initialize();
+    initComplete = true;
+    console.log('[INIT] Initialization complete — webhook ready');
+
+    // Post-init starts: these depend on initialised NC clients, so they run only
+    // after initialize() resolves (previously nested in the listen callback).
+    if (heartbeatManager) {
+      try {
+        console.log('[INIT] Starting heartbeat...');
+        await heartbeatManager.start();
+        console.log(`[INIT] Heartbeat running (interval: ${CONFIG.heartbeat.intervalMs / 1000}s, initiative: ${appConfig.proactive.initiativeLevel})`);
+      } catch (err) {
+        console.error(`[INIT] Heartbeat start failed: ${err.message}`);
+      }
+    }
+
+    // Start RoomMonitor (after heartbeat, so BotEnroller has initial data)
+    if (roomMonitor) {
+      try {
+        await roomMonitor.start();
+        console.log('[INIT] RoomMonitor started');
+      } catch (err) {
+        console.warn(`[INIT] RoomMonitor start failed: ${err.message}`);
+      }
+    }
+
+    // Start NC Flow modules
+    if (ncFlowWebhookReceiver) {
+      try {
+        await ncFlowWebhookReceiver.start();
+        console.log('[INIT] NC Flow WebhookReceiver started');
+      } catch (err) {
+        console.warn(`[INIT] NC Flow WebhookReceiver start failed: ${err.message}`);
+      }
+    }
+    if (ncFlowActivityPoller) {
+      ncFlowActivityPoller.start();
+      console.log('[INIT] NC Flow ActivityPoller started');
+    }
+
+    // Set status to ready after all initialization complete
+    if (ncStatusIndicator) {
+      await ncStatusIndicator.setStatus('ready');
+      console.log('[INIT] Status set to Ready');
+    }
 
   } catch (error) {
     console.error('[FATAL] Failed to start:', error);

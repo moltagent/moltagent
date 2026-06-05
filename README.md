@@ -193,6 +193,8 @@ This is not a one-click install. You'll need to be comfortable with server admin
 
 → [Setup guide](docs/quickstart.md) - Nextcloud configuration, VM deployment, firewall rules, credential store
 
+→ [Getting Started](docs/getting-started.md) - once it's running, what to actually do in your first hour
+
 ---
 
 ## How This Gets Built
@@ -240,6 +242,7 @@ Moltagent runs on a box in your office, workshop or farm. Or on a virtual server
 |                                          |                                                      |
 | ---------------------------------------- | ---------------------------------------------------- |
 | [Start](docs/quickstart.md)              | Get running in 30 minutes                            |
+| [Getting Started](docs/getting-started.md) | Your first hour: first conversation, sharing data, real tasks |
 | [Deployment Guide](docs/deployment.md)   | SearXNG, Speaches, email, credentials, full setup    |
 | [Architecture](docs/architecture.md)     | Three-VM isolation, network segmentation             |
 | [Security Model](docs/security-model.md) | Trust boundaries, credential brokering, threat model |

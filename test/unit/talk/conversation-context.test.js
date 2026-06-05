@@ -120,6 +120,21 @@ asyncTest('TC-CC-011: getHistory returns chronological messages', async () => {
   assert.strictEqual(history[2].role, 'assistant');
 });
 
+asyncTest('TC-CC-011b: getHistory exposes the message id (HITL dedup key, #108)', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const nc = createMockNC([
+    makeMessage(16895, 'jordan', 'Jordan', 'ja', now - 5),
+    makeMessage(16894, 'moltagent', 'Moltagent', '🔐 requires approval', now - 10),
+  ]);
+  const ctx = new ConversationContext({ enabled: true, maxMessages: 20, maxTokenEstimate: 2000, maxMessageAge: 3600000 }, nc);
+
+  const history = await ctx.getHistory('room-abc');
+  // The poll records _lastConsumedMessageId from msg.id — it must be present.
+  const reply = history.find(m => m.content === 'ja');
+  assert.ok(reply, 'reply present');
+  assert.strictEqual(Number(reply.id), 16895);
+});
+
 asyncTest('TC-CC-012: getHistory filters system messages', async () => {
   const now = Math.floor(Date.now() / 1000);
   const nc = createMockNC([

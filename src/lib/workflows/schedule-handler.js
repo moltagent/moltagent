@@ -297,6 +297,8 @@ class ScheduleHandler {
     console.log(`[Schedule] Parsed ${schedules.length} schedule(s) from "${wb.board.title}"`);
     if (schedules.length === 0) return result;
 
+    // PAUSED always wins: a PAUSED label on a stack's CONFIG card suppresses
+    // all scheduled actions on the board.
     // PAUSED chokepoint (#28, same generator as #13/#17/#22): if any stack
     // on this board has a CONFIG card with the PAUSED label, no schedule
     // on the board fires. The structural guard at DeckClient.createCardOnBoard

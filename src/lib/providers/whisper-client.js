@@ -18,7 +18,10 @@ class WhisperClient {
    * @param {string} [config.whisperModel] - Model name to request
    */
   constructor(config = {}) {
-    this.baseUrl = (config.whisperUrl || 'http://YOUR_OLLAMA_IP:8014').replace(/\/+$/, '');
+    // No placeholder fallback: the caller (webhook-server) gates construction
+    // on a configured WHISPER_URL, so an unconfigured client is never built.
+    // See #100.
+    this.baseUrl = (config.whisperUrl || '').replace(/\/+$/, '');
     this.timeout = config.whisperTimeout || 60000;
     this.model = config.whisperModel || 'small';
   }

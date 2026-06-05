@@ -155,12 +155,19 @@ class GuardrailEnforcer {
     // key: `${guardrailTitle}:${toolName}` → timestamp of approval
     this.approvalCache = new Map();
 
-    // Tracks the timestamp of the last consumed HITL response so subsequent
-    // polls don't re-match the same message
+    // Tracks the timestamp of the last consumed HITL response so the poll
+    // doesn't re-match the same message (poll reads the Talk API, which carries
+    // timestamps).
     this._lastConsumedTimestamp = 0;
 
+    // Tracks the Talk message id of the last consumed HITL response. The id is
+    // the only field shared by the webhook (object.id) and the poll (m.id) —
+    // the webhook carries no timestamp — so MessageProcessor uses it to drop a
+    // redelivered copy of a reply the poll already consumed (#108 Layer B).
+    this._lastConsumedMessageId = 0;
+
     // True while waiting for a HITL confirmation reply — used by
-    // MessageProcessor to skip webhook-delivered duplicates of the reply
+    // MessageProcessor to defer messages to the poll (#108 Layer A)
     this._pendingConfirmation = false;
   }
 
@@ -457,6 +464,7 @@ class GuardrailEnforcer {
           );
           if (reply === 'approve') {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._lastConsumedMessageId = Number(msg.id) || this._lastConsumedMessageId;
             this._pendingConfirmation = false;
             this.logger.info(
               `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=yes classifier=approve reply="${content.slice(0, 80)}" ` +
@@ -467,6 +475,7 @@ class GuardrailEnforcer {
           }
           if (reply === 'deny') {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._lastConsumedMessageId = Number(msg.id) || this._lastConsumedMessageId;
             this._pendingConfirmation = false;
             this.logger.info(
               `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=no classifier=deny reply="${content.slice(0, 80)}" ` +
@@ -477,6 +486,7 @@ class GuardrailEnforcer {
           }
           if (reply === 'edit' && EDITABLE_TOOLS.has(toolName)) {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._lastConsumedMessageId = Number(msg.id) || this._lastConsumedMessageId;
             this._pendingConfirmation = false;
             this.logger.info(
               `[GuardrailEnforcer] HITL-exit-gate: tool=${toolName} decision=edit classifier=edit reply="${content.slice(0, 80)}" ` +
@@ -937,6 +947,7 @@ class GuardrailEnforcer {
           );
           if (reply === 'approve') {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._lastConsumedMessageId = Number(msg.id) || this._lastConsumedMessageId;
             this._pendingConfirmation = false;
             this.logger.info(
               `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=yes classifier=approve reply="${content.slice(0, 80)}" ` +
@@ -947,6 +958,7 @@ class GuardrailEnforcer {
           }
           if (reply === 'deny') {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._lastConsumedMessageId = Number(msg.id) || this._lastConsumedMessageId;
             this._pendingConfirmation = false;
             this.logger.info(
               `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=no classifier=deny reply="${content.slice(0, 80)}" ` +
@@ -957,6 +969,7 @@ class GuardrailEnforcer {
           }
           if (reply === 'edit' && EDITABLE_TOOLS.has(toolName)) {
             this._lastConsumedTimestamp = msgTimestampMs;
+            this._lastConsumedMessageId = Number(msg.id) || this._lastConsumedMessageId;
             this._pendingConfirmation = false;
             this.logger.info(
               `[GuardrailEnforcer] HITL-exit: tool=${toolName} decision=edit classifier=edit reply="${content.slice(0, 80)}" ` +
@@ -1054,6 +1067,24 @@ class GuardrailEnforcer {
    */
   isPendingConfirmation() {
     return this._pendingConfirmation === true;
+  }
+
+  /**
+   * Whether a message id has already been consumed by the HITL confirmation
+   * poll. Deterministic dedup signal: once the poll consumes a reply it records
+   * its Talk message id (_lastConsumedMessageId), so a redelivered copy of that
+   * same message — at or under the watermark — is spent, regardless of what a
+   * later classifier call would decide. The id is the only field shared by the
+   * webhook (object.id) and the poll (m.id); ids are monotonic. Returns false
+   * for missing/non-positive ids so the caller falls through to its normal path.
+   * @param {number} messageId - Inbound Talk message id (numeric)
+   * @returns {boolean}
+   */
+  isMessageConsumed(messageId) {
+    return typeof messageId === 'number'
+      && Number.isFinite(messageId)
+      && messageId > 0
+      && messageId <= this._lastConsumedMessageId;
   }
 
   /**

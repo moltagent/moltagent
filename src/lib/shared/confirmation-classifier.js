@@ -7,7 +7,7 @@
  * Problem:
  *   Human-in-the-loop confirmation prompts receive replies in any language.
  *   Code-side word lists (AFFIRMATIVE/NEGATIVE arrays) are English-only and
- *   violate Rule 1 (the LLM is the language layer). A multilingual user
+ *   violate the LLM is the language layer. A multilingual user
  *   typing "ja" or "sim" would not be recognised as an approval.
  *
  * Pattern:

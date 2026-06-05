@@ -21,6 +21,37 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/check-anti-patterns.js",
+            "description": "Flag hardcoded role: 'sovereign' trust-loosening overrides in edited .js files"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(rm *)",
+            "command": "echo '⚠️ Destructive command (rm). Confirm intent and target before proceeding.'",
+            "description": "Warn before rm; does not block (deny list already hard-blocks rm -rf)"
+          },
+          {
+            "type": "command",
+            "if": "Bash(sudo rm *)",
+            "command": "echo '⚠️ Destructive command (sudo rm). Confirm intent and target before proceeding.'",
+            "description": "Warn before sudo rm; does not block"
+          }
+        ]
+      }
     ]
   }
 }

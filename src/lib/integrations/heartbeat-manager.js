@@ -47,6 +47,7 @@ class HeartbeatManager {
     this.config = config;
     this.llmRouter = config.llmRouter;
     this.routerChatBridge = config.routerChatBridge || null;
+    this.modelResolver = config.modelResolver || null;
     this.notifyUser = config.notifyUser || (async () => {});
     this.auditLog = config.auditLog || (async () => {});
     this.credentialBroker = config.credentialBroker;
@@ -734,6 +735,14 @@ class HeartbeatManager {
                 this.llmRouter.setRoster(mc.roster);
               } else if (mc.preset) {
                 this.llmRouter.setPreset(mc.preset);
+              }
+
+              // The Models card is the resolver's hormonal input (trust + any
+              // explicit local model). Re-resolve so the change propagates to the
+              // conversational trust check on the next call — not just to the
+              // router roster (issue #123).
+              if (this.modelResolver && mc !== null && mc.changed !== false) {
+                this.modelResolver.refresh();
               }
             }
           }
@@ -1822,6 +1831,7 @@ class HeartbeatManager {
     const { OpenAIToolsProvider } = require('../agent/providers/openai-tools');
     const { ClaudeToolsProvider } = require('../agent/providers/claude-tools');
     const { OllamaToolsProvider } = require('../agent/providers/ollama-tools');
+    const { resolveOllamaEndpoint } = require('../shared/resolve-ollama-endpoint');
 
     // Track what we register for roster building
     const registeredIds = new Set();
@@ -1851,9 +1861,13 @@ class HeartbeatManager {
           }
         }
 
-        // For local providers (ollama), use the configured ollama URL
+        // For local providers (ollama), resolve the endpoint through the shared
+        // resolver: OLLAMA_URL env > player/config endpoint > localhost:11434,
+        // with YOUR_* placeholders stripped at every layer. This is an LLM
+        // endpoint, so it falls back to localhost (unlike optional voice, which
+        // disables on a placeholder). Same class as the #89-migrated sites; see #100.
         const effectiveEndpoint = isLocal
-          ? (endpoint || this.config?.heartbeat?.ollamaUrl || 'http://localhost:11434')
+          ? resolveOllamaEndpoint(endpoint || this.config?.heartbeat?.ollamaUrl, { source: 'heartbeat' })
           : endpoint;
 
         if (!isLocal && !effectiveEndpoint) {

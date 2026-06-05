@@ -125,7 +125,7 @@ class MeetingResponseHandler {
    * Determine which meeting action the message represents.
    *
    * Uses the LLM-backed confirmation classifier so that replies in any language
-   * are understood correctly (Rule 1 compliance). The caller supplies explicit
+   * are understood correctly (language-layer compliance). The caller supplies explicit
    * state flags so the classifier never sees label names for options that are
    * not valid in this context (conditional prompt sections).
    *

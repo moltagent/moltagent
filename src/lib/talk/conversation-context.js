@@ -17,7 +17,7 @@
  * Data Flow:
  * - MessageProcessor calls getHistory(token, {excludeMessageId})
  * - ConversationContext fetches from Talk API
- * - Returns formatted array [{role, name, content, timestamp}]
+ * - Returns formatted array [{id, role, name, content, timestamp}]
  * - MessageRouter calls formatForPrompt(history)
  * - Result injected into LLM prompt as <conversation_history> block
  *
@@ -57,7 +57,7 @@ class ConversationContext {
    * @param {Object} [options]
    * @param {number} [options.limit] - Max messages to fetch (default: config.maxMessages)
    * @param {number} [options.excludeMessageId] - Skip this message ID (the trigger message)
-   * @returns {Promise<Array<{role: string, name: string, content: string, timestamp: number}>>}
+   * @returns {Promise<Array<{id: number, role: string, name: string, content: string, timestamp: number}>>}
    */
   async getHistory(roomToken, options = {}) {
     if (!this.enabled) return [];
@@ -103,7 +103,7 @@ class ConversationContext {
    *
    * @param {Array} rawMessages - Raw messages from Talk API
    * @param {number} [excludeId] - Message ID to exclude
-   * @returns {Array<{role: string, name: string, content: string, timestamp: number}>}
+   * @returns {Array<{id: number, role: string, name: string, content: string, timestamp: number}>}
    * @private
    */
   _formatMessages(rawMessages, excludeId) {
@@ -122,6 +122,7 @@ class ConversationContext {
       .reverse()
       // Map to conversation format
       .map(m => ({
+        id: m.id,
         role: m.actorId === ncUser ? 'assistant' : 'user',
         name: m.actorDisplayName || m.actorId,
         content: m.message || '',

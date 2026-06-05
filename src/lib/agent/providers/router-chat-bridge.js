@@ -22,8 +22,12 @@ class RouterChatBridge {
    * @param {Object} [options.logger=console]
    * @param {string} [options.defaultJob='tools'] - Default job when none specified
    * @param {Object} [options.costTracker] - CostTracker instance for per-call audit logging
+   * @param {Object} [options.modelResolver] - ModelResolver: the single source of
+   *   truth for the per-job model and trust level. When present, the bridge runs
+   *   the resolved model on local providers, logs the resolved model to
+   *   CostTracker, and enforces `trust: local-only` at this execution chokepoint.
    */
-  constructor({ router, chatProviders, logger, defaultJob, costTracker } = {}) {
+  constructor({ router, chatProviders, logger, defaultJob, costTracker, modelResolver } = {}) {
     if (!router) throw new Error('RouterChatBridge requires a router instance');
     if (!chatProviders || chatProviders.size === 0) {
       throw new Error('RouterChatBridge requires at least one chatProvider');
@@ -34,6 +38,7 @@ class RouterChatBridge {
     this.logger = logger || console;
     this.defaultJob = defaultJob || 'tools';
     this.costTracker = costTracker || null;
+    this.modelResolver = modelResolver || null;
 
     // Public property — assigned post-construction (same pattern as ProviderChain)
     this.fallbackNotifier = null;
@@ -140,9 +145,27 @@ class RouterChatBridge {
    */
   async chat(params) {
     const job = params.job || this.defaultJob;
-    const forceLocal = !!params.forceLocal;
-    const allowCloud = !!params.allowCloud;
+    let forceLocal = !!params.forceLocal;
+    let allowCloud = !!params.allowCloud;
     const cloudTier = params.cloudTier || null;
+
+    // Resolve the model + trust for this job once. This is the phenotype: every
+    // downstream read (which model to run, what to log, whether cloud is allowed)
+    // comes from here, never from a raw config source.
+    const resolved = this.modelResolver ? this.modelResolver.resolve(job) : null;
+
+    // Trust boundary is the single control (dev rule 3) and guards belong where
+    // the pipe narrows (dev rule 5): this is the chokepoint every conversational
+    // call converges on, so enforcing local-only here covers all paths AND the
+    // boot window — not just the eventually-consistent heartbeat roster. trust
+    // can only narrow: a per-call allowCloud must not widen past local-only.
+    if (resolved && resolved.trust === 'local-only') {
+      if (allowCloud || !forceLocal) {
+        this.logger.info(`[RouterChatBridge] Trust local-only — forcing local for job ${job}`);
+      }
+      forceLocal = true;
+      allowCloud = false;
+    }
 
     // 1. Get chain from router
     const { chain, skipped } = this.router.buildProviderChain(job, { forceLocal, allowCloud, cloudTier });
@@ -213,8 +236,16 @@ class RouterChatBridge {
       const isLocal = providerObj.type === 'local';
       const isFallback = i > 0;
 
+      // For local providers, run the resolver's model for this job — the
+      // canonical per-job pick (ModelScout's discovery, else the deployer/env
+      // config), not the provider's static OLLAMA_MODEL default. Resolved
+      // per-candidate rather than by mutating shared params, so a cloud fallback
+      // never inherits a local model name.
+      const localModel = (isLocal && resolved && resolved.model) ? resolved.model : null;
+      const callParams = localModel ? { ...params, model: localModel } : params;
+
       try {
-        const result = await chatProvider.chat(params);
+        const result = await chatProvider.chat(callParams);
 
         // Record success with router
         this.router.recordOutcome(providerId, {
@@ -226,11 +257,15 @@ class RouterChatBridge {
           headers: result._headers || null
         });
 
-        // Record per-call audit with CostTracker
+        // Record per-call audit with CostTracker. The model logged is the one
+        // that ACTUALLY ran: the resolved model for local calls, the cloud
+        // provider's model otherwise. The cost line must never advertise a model
+        // the request never used (the chimerism this whole change fixes).
         if (this.costTracker) {
-          const model = providerObj.model || providerId;
+          const model = localModel || providerObj.model || providerId;
           this.costTracker.record({
             model,
+            source: (localModel && resolved) ? resolved.source : null,
             provider: providerId,
             job,
             trigger: params.trigger || 'user_message',

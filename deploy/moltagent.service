@@ -13,7 +13,7 @@
 
 [Unit]
 Description=Moltagent - Nextcloud AI Assistant
-Documentation=https://github.com/yourorg/moltagent
+Documentation=https://github.com/moltagent/moltagent
 After=network-online.target
 Wants=network-online.target
 
@@ -28,7 +28,10 @@ LoadCredential=nc-password:/etc/credstore/moltagent-nc-password
 # Run the bot
 ExecStart=/usr/bin/node /opt/moltagent/webhook-server.js
 
-# Environment (non-sensitive config only)
+# Environment (non-sensitive config only).
+# YOUR_* values below are deployment placeholders — replace each with your
+# own host before enabling the unit. WHISPER_URL/SPEACHES_URL may be left as
+# placeholders to run without voice (the service disables it cleanly).
 Environment=NODE_ENV=production
 Environment=NC_URL=https://YOUR_NEXTCLOUD_URL
 Environment=NC_USER=moltagent

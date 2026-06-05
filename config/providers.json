@@ -4,8 +4,8 @@
       "id": "ollama",
       "name": "Ollama (Local)",
       "type": "local",
-      "endpoint": "http://YOUR_OLLAMA_IP:11434",
-      "model": "phi4-mini",
+      "endpoint": "http://localhost:11434",
+      "model": "qwen3:8b",
       "costModel": { "type": "fixed", "monthlyFixed": 15 }
     },
     "claude": {
