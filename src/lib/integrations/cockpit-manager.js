@@ -396,6 +396,10 @@ class CockpitManager {
       }
 
       this._initialized = true;
+
+      if (!this.adminUser) {
+        console.warn('[CockpitManager] ADMIN_USER not set — Cockpit board is not shared with the instance owner. Set ADMIN_USER in .env to your Nextcloud username to see and control the Cockpit.');
+      }
     } catch (err) {
       throw new CockpitError(
         `Failed to initialize CockpitManager: ${err.message}`,
@@ -438,7 +442,7 @@ class CockpitManager {
         try {
           await this.deck.shareBoard(boardId, this.adminUser, 0, true, true, true);
         } catch (err) {
-          // Non-critical, continue
+          console.warn(`[CockpitManager] Could not share Cockpit board with ${this.adminUser}: ${err.message}`);
         }
       }
 
