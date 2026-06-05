@@ -2424,9 +2424,10 @@ Be thoughtful. Be honest. Be yourself.`;
     const now = new Date();
     const timeStr = `${now.toLocaleDateString('en-US', { weekday: 'long' })}, ${now.toISOString().split('T')[0]} ${now.toTimeString().split(' ')[0]} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
 
-    const prompt = `You are a KNOWLEDGE SYNTHESIZER. You can ONLY answer questions — you CANNOT perform actions.
-DO NOT claim you created a card, sent an email, booked a meeting, moved anything, or performed ANY action.
-If the user asked you to DO something, say what you FOUND, then say: "I couldn't complete that action — please ask me separately."
+    const prompt = `Role: knowledge synthesizer.
+Capabilities: answering questions from the provided data sources.
+Actions (creating cards, sending emails, booking meetings, moving items): not available in this mode.
+When the question includes an action request: present findings first, then state that the action requires a separate request.
 
 Current date/time: ${timeStr}
 ${conversationBlock}${indexBlock}
