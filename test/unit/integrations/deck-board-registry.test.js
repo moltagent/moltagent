@@ -19,12 +19,12 @@
  * Tests:
  * - TC-REG-001: ROLES exports all expected board roles
  * - TC-REG-002: resolveBoard returns null when no registry, no deckClient
- * - TC-REG-003: resolveBoard falls back to name match and registers
- * - TC-REG-004: resolveBoard returns cached ID on second call (no listBoards)
+ * - TC-REG-003: resolveBoard never scans live titles — null on miss, no listBoards
+ * - TC-REG-004: resolveBoard returns registered ID without touching the deck client
  * - TC-REG-005: registerBoard + getAll round-trip
  * - TC-REG-006: invalidateBoard removes entry
- * - TC-REG-007: resolveBoard does case-insensitive title matching
- * - TC-REG-008: resolveBoard returns null when title doesn't match
+ * - TC-REG-007: registry resolution ignores live Deck titles (#99 emoji-prefix)
+ * - TC-REG-008: resolveBoard returns null on a genuine miss, never scanning
  * - TC-REG-009: _reset clears all state
  *
  * Run: node test/unit/integrations/deck-board-registry.test.js
@@ -67,41 +67,41 @@ asyncTest('TC-REG-002: resolveBoard returns null when no registry, no deckClient
 });
 
 // ============================================================
-// TC-REG-003: resolveBoard falls back to name match and registers
+// TC-REG-003: resolveBoard never scans live titles — null on miss, no listBoards
 // ============================================================
 
-asyncTest('TC-REG-003: resolveBoard falls back to name match and registers', async () => {
+asyncTest('TC-REG-003: resolveBoard never scans live titles — null on miss, no listBoards', async () => {
   boardRegistry._reset();
 
-  const mockDeck = {
-    listBoards: async () => [{ id: 42, title: 'My Board' }],
+  // The registry is canonical: a cache miss returns null, it does NOT fall
+  // through to a live title scan.  A throwing deck client proves listBoards
+  // is never called.
+  const throwingDeck = {
+    listBoards: () => { throw new Error('listBoards must never be called — registry is canonical'); },
   };
 
-  // Use a unique role ('knowledge') so concurrent async tests targeting
-  // 'cockpit' (TC-REG-007) cannot collide with this one.
-  const id = await boardRegistry.resolveBoard(mockDeck, 'knowledge', 'My Board');
+  const id = await boardRegistry.resolveBoard(throwingDeck, 'knowledge', 'My Board');
 
-  assert.strictEqual(id, 42);
-  assert.strictEqual(boardRegistry.getAll().knowledge.boardId, 42);
+  assert.strictEqual(id, null);
+  assert.ok(
+    !Object.prototype.hasOwnProperty.call(boardRegistry.getAll(), 'knowledge'),
+    'a role must not be registered from a live title scan'
+  );
 });
 
 // ============================================================
-// TC-REG-004: resolveBoard returns cached ID on second call (no listBoards)
+// TC-REG-004: resolveBoard returns registered ID without touching the deck client
 // ============================================================
 
-asyncTest('TC-REG-004: resolveBoard returns cached ID on second call (no listBoards)', async () => {
+asyncTest('TC-REG-004: resolveBoard returns registered ID without touching the deck client', async () => {
   boardRegistry._reset();
 
-  // Seed the cache using the 'meetings' role to avoid collision with other
-  // async tests that use 'cockpit' or 'knowledge'.
-  const seedDeck = {
-    listBoards: async () => [{ id: 42, title: 'Cache Test Board' }],
-  };
-  await boardRegistry.resolveBoard(seedDeck, 'meetings', 'Cache Test Board');
+  // Seed via registerBoard (the canonical path) rather than a title scan.
+  boardRegistry.registerBoard('meetings', 42);
 
-  // Second call: deckClient throws if listBoards is ever reached
+  // The deck client throws if resolveBoard ever reaches for listBoards.
   const throwingDeck = {
-    listBoards: async () => { throw new Error('listBoards must not be called on cache hit'); },
+    listBoards: () => { throw new Error('listBoards must not be called on a registered role'); },
   };
 
   const id = await boardRegistry.resolveBoard(throwingDeck, 'meetings', 'Cache Test Board');
@@ -144,36 +144,42 @@ test('TC-REG-006: invalidateBoard removes entry', () => {
 });
 
 // ============================================================
-// TC-REG-007: resolveBoard does case-insensitive title matching
+// TC-REG-007: registry resolution ignores live Deck titles (#99 emoji-prefix)
 // ============================================================
 
-asyncTest('TC-REG-007: resolveBoard does case-insensitive title matching', async () => {
+asyncTest('TC-REG-007: registry resolution ignores live Deck titles (#99 emoji-prefix)', async () => {
   boardRegistry._reset();
 
-  const mockDeck = {
-    listBoards: async () => [{ id: 7, title: '⭐ Moltagent Cockpit' }],
+  // Board 14 is registered for 'cockpit'.  The live board carries an
+  // emoji-prefixed title ('⭐ Moltagent Cockpit') that the old exact-title scan
+  // missed (this was #99).  Resolution now comes from the registry and the
+  // title is never consulted, so the emoji prefix is irrelevant.
+  boardRegistry.registerBoard('cockpit', 14);
+
+  const throwingDeck = {
+    listBoards: () => { throw new Error('title scan must not run — registry is canonical'); },
   };
 
-  const id = await boardRegistry.resolveBoard(mockDeck, 'cockpit', '⭐ moltagent cockpit');
-  assert.strictEqual(id, 7);
+  const id = await boardRegistry.resolveBoard(throwingDeck, 'cockpit', 'Moltagent Cockpit');
+  assert.strictEqual(id, 14);
 });
 
 // ============================================================
-// TC-REG-008: resolveBoard returns null when title doesn't match
+// TC-REG-008: resolveBoard returns null on a genuine miss, never scanning
 // ============================================================
 
-asyncTest('TC-REG-008: resolveBoard returns null when title does not match', async () => {
+asyncTest('TC-REG-008: resolveBoard returns null on a genuine miss, never scanning', async () => {
   boardRegistry._reset();
 
-  const mockDeck = {
-    listBoards: async () => [{ id: 1, title: 'Unrelated Board' }],
+  const throwingDeck = {
+    listBoards: () => { throw new Error('listBoards must not be called on a miss'); },
   };
 
-  const result = await boardRegistry.resolveBoard(mockDeck, 'tasks', 'Moltagent Tasks');
+  const result = await boardRegistry.resolveBoard(throwingDeck, 'tasks', 'Moltagent Tasks');
   assert.strictEqual(result, null);
 
   const all = boardRegistry.getAll();
-  assert.ok(!Object.prototype.hasOwnProperty.call(all, 'tasks'), 'tasks entry should not be registered on title mismatch');
+  assert.ok(!Object.prototype.hasOwnProperty.call(all, 'tasks'), 'tasks entry must not be registered on a miss');
 });
 
 // ============================================================

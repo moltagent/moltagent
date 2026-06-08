@@ -15,6 +15,14 @@ const assert = require('assert');
 const MeetingComposer = require('../../src/lib/calendar/meeting-composer');
 const boardRegistry = require('../../src/lib/integrations/deck-board-registry');
 
+// The board registry is a collaborator here, not the unit under test (its own
+// resolution is covered in deck-board-registry.test.js).  Stub resolveBoard to
+// resolve deterministically from the per-deck mock so the concurrently-run
+// asyncTests below never contend on the shared registry singleton.  Set once at
+// load, so it is itself race-free.
+boardRegistry.resolveBoard = async (deck) =>
+  (deck && deck.__meetingsBoardId != null) ? deck.__meetingsBoardId : null;
+
 // ---------------------------------------------------------------------------
 // Mock factories
 // ---------------------------------------------------------------------------
@@ -54,7 +62,10 @@ function createMocks(overrides = {}) {
     deckClient: {
       listBoards:       overrides.listBoards       || (async () => []),
       getBoard:         overrides.getBoard         || (async () => ({ stacks: [] })),
-      createCardOnBoard: overrides.createCardOnBoard || (async () => ({ id: 42 }))
+      createCardOnBoard: overrides.createCardOnBoard || (async () => ({ id: 42 })),
+      // Consumed by the stubbed boardRegistry.resolveBoard above to pick the
+      // meetings board id for this composer (undefined => not registered => null).
+      __meetingsBoardId: overrides.meetingsBoardId
     },
     emailHandler: {
       sendWithIcal: overrides.sendWithIcal || (async () => ({ success: true }))
@@ -506,10 +517,9 @@ asyncTest('meeting proceeds normally when rsvpTracker is absent', async () => {
 // --- 17. Deck tracking card ---
 
 asyncTest('deck card created on Pending Meetings board after meeting creation', async () => {
-  boardRegistry._reset();
   const createCardCalls = [];
   const composer = createComposer({
-    listBoards: async () => [{ id: 7, title: 'Pending Meetings' }],
+    meetingsBoardId: 7, // resolved via the stubbed registry; no title scan
     getBoard: async () => ({
       stacks: [{ id: 20, title: 'Invited' }]
     }),
@@ -548,10 +558,9 @@ asyncTest('meeting creation succeeds even when deck board is not found', async (
 });
 
 asyncTest('deck card falls back to first stack when no Invited stack exists', async () => {
-  boardRegistry._reset();
   const createCardCalls = [];
   const composer = createComposer({
-    listBoards: async () => [{ id: 8, title: 'Pending Meetings' }],
+    meetingsBoardId: 8, // resolved via the stubbed registry; no title scan
     getBoard: async () => ({
       stacks: [{ id: 30, title: 'Backlog' }, { id: 31, title: 'In Progress' }]
     }),

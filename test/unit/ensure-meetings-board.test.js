@@ -15,6 +15,7 @@ const { test, asyncTest, summary, exitWithCode } = require('../helpers/test-runn
 
 const ensureMeetingsBoard = require('../../src/lib/calendar/ensure-meetings-board');
 const boardRegistry = require('../../src/lib/integrations/deck-board-registry');
+const { ROLES } = require('../../src/lib/integrations/deck-board-registry');
 
 // ============================================================
 // Test Fixtures
@@ -68,12 +69,13 @@ asyncTest('creates board when none exists — calls createNewBoard, createStack 
   assert.strictEqual(result.existed, false);
 });
 
-asyncTest('skips creation when board already exists — returns { existed: true }', async () => {
+asyncTest('skips creation when board is registered — returns { existed: true }', async () => {
   boardRegistry._reset();
+  // The registry is canonical: a registered role resolves without any title scan.
+  boardRegistry.registerBoard(ROLES.meetings, 42);
   let createNewBoardCalled = false;
 
   const deck = createMockDeck({
-    listBoards: async () => [{ id: 42, title: 'Pending Meetings' }],
     createNewBoard: async () => {
       createNewBoardCalled = true;
       return { id: 99, title: 'Pending Meetings' };
@@ -87,12 +89,16 @@ asyncTest('skips creation when board already exists — returns { existed: true 
   assert.strictEqual(result.boardId, 42);
 });
 
-asyncTest('case-insensitive matching — "pending meetings" matches', async () => {
+asyncTest('resolves a registered board regardless of its live title (#49 canonical)', async () => {
   boardRegistry._reset();
+  boardRegistry.registerBoard(ROLES.meetings, 77);
   let createNewBoardCalled = false;
 
+  // The live board carries a divergent/emoji-prefixed title that the old
+  // exact-title scan would miss (#99).  Resolution comes from the registry, so
+  // the live title is never consulted and creation is skipped.
   const deck = createMockDeck({
-    listBoards: async () => [{ id: 77, title: 'pending meetings' }],
+    listBoards: async () => [{ id: 77, title: '⭐ pending meetings' }],
     createNewBoard: async () => {
       createNewBoardCalled = true;
       return { id: 99, title: 'Pending Meetings' };
@@ -101,20 +107,15 @@ asyncTest('case-insensitive matching — "pending meetings" matches', async () =
 
   const result = await ensureMeetingsBoard(deck);
 
-  assert.strictEqual(createNewBoardCalled, false, 'should not create when lowercase match exists');
+  assert.strictEqual(createNewBoardCalled, false, 'registered board must not be re-created');
   assert.strictEqual(result.existed, true);
   assert.strictEqual(result.boardId, 77);
 });
 
-asyncTest('returns boardId from existing board', async () => {
+asyncTest('returns boardId from a registered board', async () => {
   boardRegistry._reset();
-  const deck = createMockDeck({
-    listBoards: async () => [
-      { id: 10, title: 'Some Other Board' },
-      { id: 55, title: 'Pending Meetings' },
-      { id: 20, title: 'Archive' }
-    ]
-  });
+  boardRegistry.registerBoard(ROLES.meetings, 55);
+  const deck = createMockDeck();
 
   const result = await ensureMeetingsBoard(deck);
 
@@ -176,8 +177,9 @@ asyncTest('workflow rules card has correct content', async () => {
 
 asyncTest('propagates errors thrown by DeckClient', async () => {
   boardRegistry._reset();
+  // Unregistered role → create path; the deck's create call is the failure point.
   const deck = createMockDeck({
-    listBoards: async () => { throw new Error('network failure'); }
+    createNewBoard: async () => { throw new Error('network failure'); }
   });
 
   let caught = null;
