@@ -666,9 +666,11 @@ class DeckClient {
 
   async updateCardById(boardId, stackId, cardId, updates) {
     if (!boardId || !stackId || !cardId) throw new DeckApiError('boardId, stackId, cardId are required');
-    return await this._request('PUT',
-      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`,
-      updates);
+    // Read-modify-write: GET the current card, then delegate to the single
+    // canonical body builder so partial `updates` never produce a partial PUT
+    // body (NC 34+ Deck rejects a PUT missing `order` with HTTP 400). See #139.
+    const card = await this.getCardById(boardId, stackId, cardId);
+    return await this.updateCardComplete(boardId, stackId, cardId, card, updates);
   }
 
   /**
@@ -693,7 +695,7 @@ class DeckClient {
    * @param {number} stackId
    * @param {number} cardId
    * @param {Object} card    - Current card from getStacks (carries real order + owner)
-   * @param {Object} [changes={}] - Fields to override (title, description, type, owner, order)
+   * @param {Object} [changes={}] - Fields to override (title, description, type, owner, order, done, duedate)
    * @returns {Promise<Object>} PUT response from the Deck API
    */
   async updateCardComplete(boardId, stackId, cardId, card, changes = {}) {
@@ -709,14 +711,32 @@ class DeckClient {
       title:       changes.title       ?? card.title,
       type:        changes.type        ?? card.type  ?? 'plain',
       description: changes.description ?? card.description ?? '',
-      owner:       resolvedOwner,
-      order:       changes.order       ?? card.order
+      owner:       resolvedOwner
+      // order: handled below (finite-number gate)
+      // done: handled below (present-only gate)
+      // duedate: handled below (present-only gate)
     };
 
-    // Omit order entirely when it is not a finite number (undefined, null, NaN).
-    // DO send order:0 — it is a valid top-of-stack position.
-    if (!Number.isFinite(body.order)) {
-      delete body.order;
+    // order: omit when not a finite number (undefined, null, NaN).
+    // DO send order:0 — valid top-of-stack position.
+    const resolvedOrder = changes.order ?? card.order;
+    if (Number.isFinite(resolvedOrder)) {
+      body.order = resolvedOrder;
+    }
+
+    // done: include only when explicitly set in changes or present on card.
+    // Omit entirely when undefined — not every PUT is setting done.
+    if ('done' in changes) {
+      body.done = changes.done;
+    } else if (card.done !== undefined && card.done !== null) {
+      body.done = card.done;
+    }
+
+    // duedate: same present-only pattern as done.
+    if ('duedate' in changes) {
+      body.duedate = changes.duedate;
+    } else if (card.duedate !== undefined) {
+      body.duedate = card.duedate;
     }
 
     return await this._request('PUT',
@@ -1079,17 +1099,9 @@ class DeckClient {
     const stackId = await this._resolveStackId(stackName);
     const card = await this.getCard(cardId, stackName);
 
-    await this._request(
-      'PUT',
-      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`,
-      {
-        title: card.title,
-        type: card.type || 'plain',
-        owner: card.owner?.uid || card.owner || this.username,
-        description: card.description || '',
-        done: new Date().toISOString()
-      }
-    );
+    await this.updateCardComplete(boardId, stackId, cardId, card, {
+      done: new Date().toISOString()
+    });
     console.log(`[Deck] Card ${cardId} marked done`);
   }
 
@@ -1119,12 +1131,9 @@ class DeckClient {
   async updateCard(cardId, stackName, updates) {
     const { boardId } = await this._getIds();
     const stackId = await this._resolveStackId(stackName);
-
-    return await this._request(
-      'PUT',
-      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`,
-      updates
-    );
+    // Read-modify-write through the canonical body builder — see #139.
+    const card = await this.getCard(cardId, stackName);
+    return await this.updateCardComplete(boardId, stackId, cardId, card, updates);
   }
 
   /**
@@ -1401,17 +1410,10 @@ class DeckClient {
     // Build new description with original task + response
     const newDescription = `## Original Task\n\n${originalDescription || '(No description provided)'}\n\n---\n\n## Moltagent Response\n\n${llmResponse}`;
 
-    // Update card description (must include title and owner)
-    await this._request(
-      'PUT',
-      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`,
-      {
-        title: currentCard.title,
-        type: currentCard.type || 'plain',
-        owner: currentCard.owner?.uid || currentCard.owner || this.username,
-        description: newDescription
-      }
-    );
+    // Update card description through the canonical body builder — see #139.
+    await this.updateCardComplete(boardId, stackId, cardId, currentCard, {
+      description: newDescription
+    });
 
     // Add review comment
     try {
