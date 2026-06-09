@@ -3608,33 +3608,45 @@ class ToolRegistry {
       },
       handler: async (args) => {
         try {
-          const apiPath = `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${args.stack_id}/cards/${args.card_id}`;
+          // GET current card so the PUT carries a complete body. See #139.
+          const card = deck
+            ? await deck.getCardById(args.board_id, args.stack_id, args.card_id)
+            : (await nc.request(
+                `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${args.stack_id}/cards/${args.card_id}`,
+                { method: 'GET' }
+              )).body || {};
 
-          // Fetch current card to preserve unchanged fields
-          const cardData = deck
-            ? await deck._request('GET', apiPath)
-            : (await nc.request(apiPath, { method: 'GET' })).body || {};
-
-          const updates = {
-            title: args.title || cardData.title,
-            type: cardData.type || 'plain',
-            owner: cardData.owner?.uid || cardData.owner || '',
-            description: args.description !== undefined ? args.description : (cardData.description || ''),
-            duedate: args.duedate !== undefined ? args.duedate : (cardData.duedate || null)
-          };
+          const changes = {};
+          if (args.title !== undefined) changes.title = args.title;
+          if (args.description !== undefined) changes.description = args.description;
+          if (args.duedate !== undefined) changes.duedate = args.duedate;
 
           if (deck) {
-            await deck._request('PUT', apiPath, updates);
+            await deck.updateCardComplete(args.board_id, args.stack_id, args.card_id, card, changes);
           } else {
-            await nc.request(apiPath, { method: 'PUT', body: updates });
+            // Fallback when no DeckClient is available: replicate the complete-body
+            // logic inline, including the finite-number `order` gate.
+            const body = {
+              title:       changes.title       ?? card.title,
+              type:        card.type           ?? 'plain',
+              owner:       card.owner?.uid     ?? card.owner ?? '',
+              description: changes.description ?? card.description ?? '',
+              duedate:     changes.duedate     ?? card.duedate ?? null
+            };
+            const resolvedOrder = card.order;
+            if (Number.isFinite(resolvedOrder)) body.order = resolvedOrder;
+            await nc.request(
+              `/index.php/apps/deck/api/v1.0/boards/${args.board_id}/stacks/${args.stack_id}/cards/${args.card_id}`,
+              { method: 'PUT', body }
+            );
           }
 
-          const changes = [];
-          if (args.title) changes.push(`title: "${args.title}"`);
-          if (args.description !== undefined) changes.push('description updated');
-          if (args.duedate !== undefined) changes.push(`due: ${args.duedate}`);
+          const changeList = [];
+          if (args.title) changeList.push(`title: "${args.title}"`);
+          if (args.description !== undefined) changeList.push('description updated');
+          if (args.duedate !== undefined) changeList.push(`due: ${args.duedate}`);
 
-          return `Updated card ${args.card_id}.${changes.length ? ' Changes: ' + changes.join(', ') + '.' : ''}`;
+          return `Updated card ${args.card_id}.${changeList.length ? ' Changes: ' + changeList.join(', ') + '.' : ''}`;
         } catch (err) {
           this.logger.error(`[workflow_deck_update_card] ${err.message}`);
           return `Failed to update card: ${err.message}`;
