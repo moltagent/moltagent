@@ -22,23 +22,22 @@
  * that does listBoards().find(b => b.title === name) is fragile.  A renamed
  * board becomes invisible until code is changed or a new board is created.
  *
- * Pattern: Role-to-ID registry persisted as a small JSON file.  On first
- * access per role the registry falls through: memory → disk → live name scan.
- * Once an ID is found it is stored and subsequent lookups are O(1) memory
- * reads, with no Deck API traffic at all.  Atomic writes (tmp + rename) keep
- * the file consistent even if the process crashes mid-write.
+ * Pattern: Role-to-ID registry persisted as a small JSON file, treated as the
+ * canonical source of truth.  resolveBoard falls through memory → disk → null;
+ * it never scans live Deck titles (#49), so an emoji-prefixed or renamed board
+ * cannot break resolution.  A cache miss re-reads disk, so a registerBoard run
+ * from a separate process is picked up without a restart.  Atomic writes (tmp +
+ * rename) keep the file consistent even if the process crashes mid-write.
  *
  * Key Dependencies:
  *   - fs (Node built-in) — file I/O, atomic rename
  *   - path (Node built-in) — cross-platform path resolution
- *   - DeckClient.listBoards() — fallback name scan (caller-supplied)
  *
  * Data Flow:
- *   resolveBoard(deckClient, role, fallbackTitle)
- *     -> _cache hit?          -> return boardId
- *     -> _loadFromDisk()      -> cache populated from file? -> return boardId
- *     -> deckClient.listBoards() -> name match? -> registerBoard() -> return boardId
- *     -> no match             -> return null
+ *   resolveBoard(role)
+ *     -> cold cache?          -> _loadFromDisk()
+ *     -> role still missing?  -> _loadFromDisk() again (picks up out-of-process writes)
+ *     -> return _cache[role]?.boardId ?? null   (no live title scan)
  *
  *   registerBoard(role, boardId)
  *     -> update _cache
@@ -81,53 +80,31 @@ class DeckBoardRegistry {
   // ---------------------------------------------------------------------------
 
   /**
-   * Resolve a board by role.  Falls through memory → disk → live name scan.
+   * Resolve a board by role.  The registry is canonical: memory → disk → null.
+   * It never scans live Deck titles (#49), so an emoji-prefixed or renamed board
+   * cannot break resolution.  An unregistered role returns null; the caller
+   * raises an actionable "register it" error.
    *
-   * @param {Object} deckClient - DeckClient instance (must expose listBoards())
+   * @param {Object} _deckClient - Unused; retained for signature stability (callers pass their DeckClient).
    * @param {string} role - One of ROLES.*
-   * @param {string} fallbackTitle - Board title used for the live name scan
-   * @returns {Promise<number|string|null>} boardId, or null if not found
+   * @param {string} _fallbackTitle - Unused; retained for signature stability (was the live-scan title).
+   * @returns {Promise<number|string|null>} boardId, or null if not registered
    */
-  async resolveBoard(deckClient, role, fallbackTitle) {
-    // 1. Memory hit
-    if (this._cache !== null && this._cache[role]) {
-      return this._cache[role].boardId;
-    }
-
-    // 2. Cold cache — load from disk first
+  // eslint-disable-next-line require-await -- async retained for the caller contract (callers await this); resolution is now a pure memory/disk read with no async work
+  async resolveBoard(_deckClient, role, _fallbackTitle) {
+    // Cold cache — load from disk once.
     if (this._cache === null) {
       this._loadFromDisk();
     }
 
-    if (this._cache[role]) {
-      return this._cache[role].boardId;
+    // Re-read disk on a miss so a registerBoard from a separate process is
+    // picked up without a restart (#49 Part B).  Skipped in test mode, where
+    // _reset() pins a clean in-memory slate and the disk must not be re-read.
+    if (!this._cache[role] && !this._testMode) {
+      this._loadFromDisk();
     }
 
-    // 3. First-boot migration: scan boards by name (runs once, then never again)
-    if (!deckClient || typeof deckClient.listBoards !== 'function') {
-      return null;
-    }
-
-    const boards = await deckClient.listBoards();
-    if (!Array.isArray(boards)) return null;
-
-    const needle = (fallbackTitle || '').trim().toLowerCase();
-    const match  = boards.find(b => (b.title || '').trim().toLowerCase() === needle);
-
-    if (match) {
-      this.registerBoard(role, match.id);
-      return match.id;
-    }
-
-    // No exact match — log what exists so the operator can resolve manually
-    const existing = boards.map(b => `  ${b.id}: "${b.title}"`).join('\n');
-    console.warn(
-      `[DeckBoardRegistry] No board matching "${fallbackTitle}" for role "${role}".\n` +
-      `Existing boards:\n${existing}\n` +
-      `If the board was renamed, register it manually:\n` +
-      `  node -e "require('./src/lib/integrations/deck-board-registry').registerBoard('${role}', BOARD_ID)"`
-    );
-    return null;
+    return this._cache[role]?.boardId ?? null;
   }
 
   /**

@@ -250,13 +250,15 @@ class CockpitManager {
    * @param {string} [options.config.boardTitle] - Board title override
    * @param {number} [options.config.cacheTTLMs] - Cache TTL in ms (default: 300000 = 5 min)
    * @param {Function} [options.auditLog] - Audit logging function
+   * @param {Object} [options.boardRegistry] - Board registry (defaults to the module singleton; injectable for tests)
    */
-  constructor({ deckClient, config = {}, auditLog } = {}) {
+  constructor({ deckClient, config = {}, auditLog, boardRegistry: injectedRegistry } = {}) {
     if (!deckClient) {
       throw new Error('CockpitManager requires a deckClient instance');
     }
 
     this.deck = deckClient;
+    this.boardRegistry = injectedRegistry || boardRegistry;
     this.adminUser = config.adminUser || appConfig.cockpit?.adminUser || '';
     this.boardTitle = config.boardTitle || appConfig.cockpit?.boardTitle || BOARD_TITLE;
     this.auditLog = auditLog || (async () => {});
@@ -316,8 +318,10 @@ class CockpitManager {
    */
   async initialize() {
     try {
-      // Find existing board by role (survives renames)
-      const boardId = await boardRegistry.resolveBoard(this.deck, ROLES.cockpit, this.boardTitle);
+      // Find existing board by role (survives renames). `let` because a stale
+      // entry is cleared to null below, converging both failure modes on the
+      // self-heal path.
+      let boardId = await this.boardRegistry.resolveBoard(this.deck, ROLES.cockpit, this.boardTitle);
       let board = null;
 
       if (boardId) {
@@ -326,43 +330,46 @@ class CockpitManager {
         } catch (err) {
           if (err.statusCode === 404 || err.statusCode === 403 ||
               /Authentication error:\s*(401|403)/.test(err.message)) {
-            boardRegistry.invalidateBoard(ROLES.cockpit);
+            // Stale or forbidden registry entry — clear it and fall through to
+            // the self-heal below (treat exactly like a missing entry).
+            this.boardRegistry.invalidateBoard(ROLES.cockpit);
+            boardId = null;
           } else {
             throw err;
           }
         }
       }
 
-      if (!board && boardId) {
-        // Registry had an ID but getBoard returned 404/403 — board was deleted.
-        // Do NOT auto-create a replacement. The operator needs to decide.
-        throw new CockpitError(
-          `Cockpit board ${boardId} not found (deleted?). ` +
-          `Remove stale registry entry or create a new board manually.`,
-          'initialize'
-        );
-      }
-
+      // Self-heal (cold path only): no valid registry entry, but a cockpit-titled
+      // board already exists → adopt and register it. Covers both the missing-entry
+      // case and the just-invalidated stale-ID case (#141). This one-time title
+      // match lives here, off the hot path — resolveBoard itself never title-scans,
+      // so #137's canonical-registry invariant is preserved.
       if (!board && !boardId) {
-        // No registry entry AND no name match — true first boot OR renamed board.
-        // Only bootstrap if no boards exist at all (prevents duplicates).
         const allBoards = await this.deck.listBoards();
-        const hasCockpitLike = allBoards.some(b =>
+        const cockpitBoard = allBoards.find(b =>
           (b.title || '').toLowerCase().includes('cockpit')
         );
-        if (hasCockpitLike) {
-          throw new CockpitError(
-            `No cockpit board in registry, but a board with "cockpit" in the title exists. ` +
-            `Register it manually: node -e "require('./src/lib/integrations/deck-board-registry').registerBoard('cockpit', BOARD_ID)"`,
-            'initialize'
-          );
+        if (cockpitBoard) {
+          try {
+            board = await this.deck.getBoard(cockpitBoard.id);
+          } catch (_err) {
+            // Board vanished between listBoards and getBoard — fall through to
+            // bootstrap (treat as "no cockpit board exists").
+            board = null;
+          }
+          if (board) {
+            this.boardRegistry.registerBoard(ROLES.cockpit, board.id);
+            console.log(
+              `[CockpitManager] Upgrade migration: registered cockpit board ${board.id} ` +
+              `(title: "${cockpitBoard.title}"). One-time — the registry is now canonical.`
+            );
+          }
         }
-        const bootstrapResult = await this.bootstrap();
-        this.boardId = bootstrapResult.boardId;
-        this.stacks = bootstrapResult.stacks;
-        this.labels = bootstrapResult.labels;
-      } else {
-        // Board exists, resolve IDs
+      }
+
+      if (board) {
+        // Board resolved (from registry or self-heal) — shared post-resolution logic.
         this.boardId = board.id;
 
         // board already has full details from getBoard() above
@@ -393,6 +400,14 @@ class CockpitManager {
 
         // Remove obsolete cards from status stack (e.g. Tasks This Week, Knowledge, Recent Actions)
         await this._removeObsoleteCards(stacks);
+      } else {
+        // True first boot — no cockpit board exists anywhere. Bootstrap creates
+        // and registers it (prevents duplicates: only reached when self-heal
+        // found no cockpit-titled board).
+        const bootstrapResult = await this.bootstrap();
+        this.boardId = bootstrapResult.boardId;
+        this.stacks = bootstrapResult.stacks;
+        this.labels = bootstrapResult.labels;
       }
 
       this._initialized = true;
@@ -435,7 +450,7 @@ class CockpitManager {
         color: BOARD_COLOR
       });
       const boardId = board.id;
-      boardRegistry.registerBoard(ROLES.cockpit, boardId);
+      this.boardRegistry.registerBoard(ROLES.cockpit, boardId);
 
       // 2. Share with admin user (if configured)
       if (this.adminUser) {
@@ -856,13 +871,9 @@ class CockpitManager {
           const hash = crypto.createHash('sha256').update(description).digest('hex');
           if (this._descriptionHashes.get(card.id) === hash) continue;
 
-          const updatePath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${this.stacks.status}/cards/${card.id}`;
-          await this.deck._request('PUT', updatePath, {
-            title: card.title,
-            description: description,
-            type: 'plain',
-            owner: card.owner || 'moltagent'
-          });
+          await this.deck.updateCardComplete(
+            this.boardId, this.stacks.status, card.id, card, { description }
+          );
           this._descriptionHashes.set(card.id, hash);
         } catch (err) {
           console.warn(`[CockpitManager] Failed to update ${card.title}:`, err.message);
@@ -1191,6 +1202,8 @@ class CockpitManager {
     // Store card metadata for heartbeat writeback
     result._cardId = card.id;
     result._cardDescription = card.description || '';
+    result._cardOrder = card.order;
+    result._cardOwner = card.owner;
     result._userConfig = configSection.trim() + '\n';
     result._cardLabels = (card.labels || []).map(l => l.title);
 
@@ -1711,13 +1724,9 @@ class CockpitManager {
     try {
       const stackId = this.stacks.system;
       if (stackId) {
-        const updatePath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${stackId}/cards/${card.id}`;
-        await this.deck._request('PUT', updatePath, {
-          title: card.title || 'Models',
-          description: newDescription,
-          type: 'plain',
-          owner: card.owner || 'moltagent'
-        });
+        await this.deck.updateCardComplete(
+          this.boardId, stackId, card.id, card, { description: newDescription }
+        );
         this._descriptionHashes.set(card.id, hash);
       }
     } catch (err) {
