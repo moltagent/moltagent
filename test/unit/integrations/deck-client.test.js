@@ -1570,6 +1570,112 @@ test('stackHasPausedConfig: leading whitespace on CONFIG title is tolerated', ()
   assert.strictEqual(DeckClient.stackHasPausedConfig(stack), true);
 });
 
+// --- updateCardComplete Tests (#135) ---
+console.log('\n--- updateCardComplete Tests ---\n');
+
+asyncTest('TC-UCC-001: owner object {uid} normalized to bare uid string, order and description passed through', async () => {
+  let capturedBody = null;
+  const mockNC = createDeckMockNC({
+    'PUT:/index.php/apps/deck/api/v1.0/boards/10/stacks/20/cards/30': (path, options) => {
+      capturedBody = options.body;
+      return { status: 200, body: {}, headers: {} };
+    }
+  });
+  const client = new DeckClient(mockNC);
+  const card = { id: 30, title: 'Original', type: 'plain', description: 'old', owner: { uid: 'botuser', displayName: 'Bot' }, order: 7 };
+
+  await client.updateCardComplete(10, 20, 30, card, { description: 'new desc' });
+
+  assert.strictEqual(capturedBody.owner, 'botuser', 'owner should be bare uid string');
+  assert.strictEqual(capturedBody.order, 7, 'order should be threaded from card');
+  assert.strictEqual(capturedBody.description, 'new desc', 'description from changes should win');
+  assert.strictEqual(capturedBody.title, 'Original', 'title from card used when not in changes');
+  assert.strictEqual(capturedBody.type, 'plain', 'type from card');
+});
+
+asyncTest('TC-UCC-002: owner missing in card and changes → falls back to this.username', async () => {
+  let capturedBody = null;
+  const mockNC = createDeckMockNC({
+    'PUT:/index.php/apps/deck/api/v1.0/boards/10/stacks/20/cards/31': (path, options) => {
+      capturedBody = options.body;
+      return { status: 200, body: {}, headers: {} };
+    }
+  });
+  const client = new DeckClient(mockNC);
+  const card = { id: 31, title: 'X', type: 'plain', description: '', owner: undefined, order: 1 };
+
+  await client.updateCardComplete(10, 20, 31, card, {});
+
+  assert.strictEqual(capturedBody.owner, 'testuser', 'should fall back to this.username (mockNC.ncUser)');
+});
+
+asyncTest('TC-UCC-003: owner already a bare string is passed through unchanged', async () => {
+  let capturedBody = null;
+  const mockNC = createDeckMockNC({
+    'PUT:/index.php/apps/deck/api/v1.0/boards/10/stacks/20/cards/32': (path, options) => {
+      capturedBody = options.body;
+      return { status: 200, body: {}, headers: {} };
+    }
+  });
+  const client = new DeckClient(mockNC);
+  const card = { id: 32, title: 'Y', type: 'plain', description: '', owner: 'stringowner', order: 2 };
+
+  await client.updateCardComplete(10, 20, 32, card, {});
+
+  assert.strictEqual(capturedBody.owner, 'stringowner', 'bare string owner should pass through');
+});
+
+asyncTest('TC-UCC-004: order:5 is sent; order:0 is also sent (valid top-of-stack)', async () => {
+  const bodies = [];
+  const mockNC = createDeckMockNC({
+    'PUT:/index.php/apps/deck/api/v1.0/boards/10/stacks/20/cards/33': (path, options) => {
+      bodies.push(options.body);
+      return { status: 200, body: {}, headers: {} };
+    }
+  });
+  const client = new DeckClient(mockNC);
+  const card5 = { id: 33, title: 'A', type: 'plain', description: '', owner: 'u', order: 5 };
+  const card0 = { id: 33, title: 'A', type: 'plain', description: '', owner: 'u', order: 0 };
+
+  await client.updateCardComplete(10, 20, 33, card5, {});
+  await client.updateCardComplete(10, 20, 33, card0, {});
+
+  assert.strictEqual(bodies[0].order, 5);
+  assert.strictEqual(bodies[1].order, 0, 'order:0 is a valid top-of-stack position and must be sent');
+  assert.ok('order' in bodies[1], 'order key must be present when value is 0');
+});
+
+asyncTest('TC-UCC-005: order absent on card (undefined) → key omitted entirely from body', async () => {
+  let capturedBody = null;
+  const mockNC = createDeckMockNC({
+    'PUT:/index.php/apps/deck/api/v1.0/boards/10/stacks/20/cards/34': (path, options) => {
+      capturedBody = options.body;
+      return { status: 200, body: {}, headers: {} };
+    }
+  });
+  const client = new DeckClient(mockNC);
+  const card = { id: 34, title: 'B', type: 'plain', description: '', owner: 'u' /* no order */ };
+
+  await client.updateCardComplete(10, 20, 34, card, {});
+
+  assert.ok(!('order' in capturedBody), 'order key must be absent when card.order is undefined');
+});
+
+asyncTest('TC-UCC-006: missing identifiers throw DeckApiError', async () => {
+  const mockNC = createDeckMockNC();
+  const client = new DeckClient(mockNC);
+  const card = { id: 1, title: 'X', owner: 'u' };
+
+  let threw = false;
+  try {
+    await client.updateCardComplete(null, 20, 30, card, {});
+  } catch (err) {
+    threw = true;
+    assert.ok(err.name === 'DeckApiError', 'should be DeckApiError');
+  }
+  assert.ok(threw, 'should throw when boardId is missing');
+});
+
 // --- Summary ---
 setTimeout(() => {
   summary();

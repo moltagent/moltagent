@@ -69,6 +69,16 @@ function createMockDeckClient(overrides = {}) {
       return overrides.shareBoard || { id: 1 };
     },
 
+    updateCardComplete: async (boardId, stackId, cardId, card, changes = {}) => {
+      calls.push({ method: 'updateCardComplete', boardId, stackId, cardId, card, changes });
+      if (overrides.updateCardComplete) {
+        return typeof overrides.updateCardComplete === 'function'
+          ? overrides.updateCardComplete(boardId, stackId, cardId, card, changes)
+          : overrides.updateCardComplete;
+      }
+      return { id: cardId, ...card, ...changes };
+    },
+
     _request: async (method, path, body) => {
       calls.push({ method: '_request', httpMethod: method, path, body });
       if (overrides._request) {
@@ -772,12 +782,13 @@ asyncTest('updateStatus() updates Health card description', async () => {
 
   await cm.updateStatus({ health: healthData });
 
+  // #135: writes now route through the canonical updateCardComplete helper
   const putCalls = deck._calls.filter(c =>
-    c.method === '_request' && c.httpMethod === 'PUT' && c.path.includes('/cards/')
+    c.method === 'updateCardComplete' && c.changes && 'description' in c.changes
   );
 
-  // Should have at least one PUT call for updating card description
-  assert.ok(putCalls.length > 0, 'Should call PUT to update card');
+  // Should have at least one update call for the card description
+  assert.ok(putCalls.length > 0, 'Should call updateCardComplete to update card');
 });
 
 asyncTest('updateStatus() updates Costs card with monthly data', async () => {
@@ -799,15 +810,15 @@ asyncTest('updateStatus() updates Costs card with monthly data', async () => {
 
   await cm.updateStatus({ costs: costData });
 
-  const putCalls = deck._calls.filter(c =>
-    c.method === '_request' && c.httpMethod === 'PUT' && c.path.includes('/cards/')
-  );
+  // #135: writes now route through the canonical updateCardComplete helper.
+  // Card identity is on call.card; the new body is in call.changes.description.
+  const putCalls = deck._calls.filter(c => c.method === 'updateCardComplete');
 
-  assert.ok(putCalls.length > 0, 'Should call PUT to update Costs card');
-  const costsPut = putCalls.find(c => c.body?.title === 'Costs');
+  assert.ok(putCalls.length > 0, 'Should call updateCardComplete to update Costs card');
+  const costsPut = putCalls.find(c => c.card?.title === 'Costs');
   assert.ok(costsPut, 'Should update the Costs card');
-  assert.ok(costsPut.body.description.includes('12.50'), 'Should include monthly cost');
-  assert.ok(costsPut.body.description.includes('Local ratio: 83%'), 'Should include local ratio');
+  assert.ok(costsPut.changes.description.includes('12.50'), 'Should include monthly cost');
+  assert.ok(costsPut.changes.description.includes('Local ratio: 83%'), 'Should include local ratio');
 });
 
 asyncTest('updateStatus() updates Model Usage card with router stats', async () => {
@@ -826,15 +837,14 @@ asyncTest('updateStatus() updates Model Usage card with router stats', async () 
 
   await cm.updateStatus({ routerStats });
 
-  const putCalls = deck._calls.filter(c =>
-    c.method === '_request' && c.httpMethod === 'PUT' && c.path.includes('/cards/')
-  );
+  // #135: writes now route through the canonical updateCardComplete helper.
+  const putCalls = deck._calls.filter(c => c.method === 'updateCardComplete');
 
-  assert.ok(putCalls.length > 0, 'Should call PUT to update Model Usage card');
-  const usagePut = putCalls.find(c => c.body?.title === 'Model Usage');
+  assert.ok(putCalls.length > 0, 'Should call updateCardComplete to update Model Usage card');
+  const usagePut = putCalls.find(c => c.card?.title === 'Model Usage');
   assert.ok(usagePut, 'Should update the Model Usage card');
-  assert.ok(usagePut.body.description.includes('100 requests'), 'Should include total requests');
-  assert.ok(usagePut.body.description.includes('ollama (local)'), 'Should label local providers');
+  assert.ok(usagePut.changes.description.includes('100 requests'), 'Should include total requests');
+  assert.ok(usagePut.changes.description.includes('ollama (local)'), 'Should label local providers');
 });
 
 // --- New formatter tests ---
@@ -1606,6 +1616,143 @@ asyncTest('_resolveCardValue() backward compat: Gen1 Option 1/2/3 labels still r
   assert.strictEqual(cm._resolveCardValue({ id: 2, labels: [opt2] }, PERSONA_VALUE_MAP.Humor).source, 'moderate');
   assert.strictEqual(cm._resolveCardValue({ id: 3, labels: [opt3] }, PERSONA_VALUE_MAP.Humor).value, 'playful');
   assert.strictEqual(cm._resolveCardValue({ id: 3, labels: [opt3] }, PERSONA_VALUE_MAP.Humor).source, 'on');
+});
+
+// ============================================================
+// updateCardComplete routing tests (#135)
+// ============================================================
+
+console.log('\n--- updateCardComplete Routing Tests (issue #135) ---\n');
+
+asyncTest('updateStatus: routes through updateCardComplete, NOT _request directly', async () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  // Manually initialize to bypass bootstrap
+  cm._initialized = true;
+  cm.boardId = 14;
+  cm.stacks = { status: 50 };
+  cm._statusPulseCount = 0;
+
+  // Provide a status stack with a Health card with a real order + owner
+  const healthCard = { id: 201, title: 'Health', description: 'old', type: 'plain', owner: { uid: 'moltagent' }, order: 3 };
+  deck.getStacks = async () => [{ id: 50, cards: [healthCard] }];
+
+  await cm.updateStatus({ health: null, costs: null, costTracker: null, routerStats: null });
+
+  const updateCalls = deck._calls.filter(c => c.method === 'updateCardComplete');
+  assert.ok(updateCalls.length >= 1, 'updateCardComplete should be called at least once for the Health card');
+
+  const requestCalls = deck._calls.filter(c => c.method === '_request' && c.httpMethod === 'PUT' && (c.path || '').includes('/cards/'));
+  assert.strictEqual(requestCalls.length, 0, 'direct _request PUT to card should NOT be called');
+});
+
+asyncTest('updateStatus: card.order is preserved from real card (not zeroed out)', async () => {
+  const updateCompleteCalls = [];
+  const deck = createMockDeckClient({
+    updateCardComplete: (boardId, stackId, cardId, card, changes) => {
+      updateCompleteCalls.push({ boardId, stackId, cardId, card, changes });
+      return {};
+    }
+  });
+  const cm = new CockpitManager({ deckClient: deck });
+
+  cm._initialized = true;
+  cm.boardId = 14;
+  cm.stacks = { status: 50 };
+  cm._statusPulseCount = 0;
+
+  // Health card with order:3 — this should be threaded through, not overridden
+  const healthCard = { id: 201, title: 'Health', description: '', type: 'plain', owner: { uid: 'moltagent' }, order: 3 };
+  deck.getStacks = async () => [{ id: 50, cards: [healthCard] }];
+
+  await cm.updateStatus({ health: null, costs: null, costTracker: null, routerStats: null });
+
+  const call = updateCompleteCalls.find(c => c.cardId === 201);
+  assert.ok(call, 'updateCardComplete should be called for the Health card');
+  assert.strictEqual(call.card.order, 3, 'original card.order=3 should be passed to helper, not 0');
+});
+
+asyncTest('updateStatus: unchanged description is skipped on repeat call (hash-skip intact)', async () => {
+  const updateCompleteCalls = [];
+  const deck = createMockDeckClient({
+    updateCardComplete: (boardId, stackId, cardId, card, changes) => {
+      updateCompleteCalls.push({ cardId, changes });
+      return {};
+    }
+  });
+  const cm = new CockpitManager({ deckClient: deck });
+
+  cm._initialized = true;
+  cm.boardId = 14;
+  cm.stacks = { status: 50 };
+  // Start at 0; first call (pulse 1) always writes, second call (pulse 2) throttle skips.
+  // Force _statusPulseCount so the 3rd pulse is "1 mod 3 == 1" which writes again.
+  // Easiest: just test within a single pulse and verify the hash-skip per-card.
+  cm._statusPulseCount = 0;
+
+  const healthCard = { id: 201, title: 'Health', description: '', type: 'plain', owner: 'moltagent', order: 1 };
+  deck.getStacks = async () => [{ id: 50, cards: [healthCard] }];
+
+  // First call — should write
+  await cm.updateStatus({ health: null, costs: null, costTracker: null, routerStats: null });
+  const firstWriteCount = updateCompleteCalls.length;
+  assert.ok(firstWriteCount >= 1, 'First pulse should write at least one card');
+
+  // Reset pulse count to 1 (bypass throttle) and call again — same content, hash-skip should fire
+  cm._statusPulseCount = 1;
+  await cm.updateStatus({ health: null, costs: null, costTracker: null, routerStats: null });
+  // 2nd pulse: throttle skips entirely (_statusPulseCount becomes 2, 2 % 3 !== 1)
+  // Total calls should not have increased for the throttled pulse
+  // The throttle fires at pulse 2 (count becomes 2, 2 > 1 and 2 % 3 != 1)
+  assert.strictEqual(updateCompleteCalls.length, firstWriteCount, 'Throttled pulse should not write additional cards');
+});
+
+asyncTest('_writeModelsCardDescription: routes through updateCardComplete with threaded order/owner', async () => {
+  const updateCompleteCalls = [];
+  const deck = createMockDeckClient({
+    updateCardComplete: (boardId, stackId, cardId, card, changes) => {
+      updateCompleteCalls.push({ boardId, stackId, cardId, card, changes });
+      return {};
+    }
+  });
+  const cm = new CockpitManager({ deckClient: deck });
+
+  cm._initialized = true;
+  cm.boardId = 14;
+  cm.stacks = { system: 60 };
+
+  // Card carries real order and owner (as threaded from _parseModelsCard)
+  const card = { id: 301, title: 'Models', description: 'old content', type: 'plain', owner: { uid: 'moltagent' }, order: 5 };
+
+  await cm._writeModelsCardDescription(card, 'new model description');
+
+  assert.strictEqual(updateCompleteCalls.length, 1, 'updateCardComplete should be called once');
+  assert.strictEqual(updateCompleteCalls[0].card.order, 5, 'original order should be threaded through');
+  assert.strictEqual(updateCompleteCalls[0].card.owner.uid, 'moltagent', 'owner object should be passed (helper normalizes it)');
+  assert.strictEqual(updateCompleteCalls[0].changes.description, 'new model description', 'new description should be in changes');
+
+  const requestCalls = deck._calls.filter(c => c.method === '_request' && c.httpMethod === 'PUT');
+  assert.strictEqual(requestCalls.length, 0, '_request PUT should not be called directly');
+});
+
+test('_parseModelsCard: sets _cardOrder and _cardOwner from real card', () => {
+  const deck = createMockDeckClient();
+  const cm = new CockpitManager({ deckClient: deck });
+
+  const card = {
+    id: 42,
+    description: `trust: cloud-ok\nprefer: speed\n\n---\n\nYour agent does six types of work.`,
+    labels: [],
+    order: 7,
+    owner: { uid: 'botuser', displayName: 'Bot User' }
+  };
+
+  const result = cm._parseModelsCard(card);
+
+  assert.strictEqual(result._cardId, 42, '_cardId should match card.id');
+  assert.strictEqual(result._cardOrder, 7, '_cardOrder should be set from card.order');
+  assert.deepStrictEqual(result._cardOwner, { uid: 'botuser', displayName: 'Bot User' }, '_cardOwner should be the full owner object');
 });
 
 // ============================================================
