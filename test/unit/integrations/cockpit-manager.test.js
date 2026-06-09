@@ -51,6 +51,7 @@ function createMockDeckClient(overrides = {}) {
 
     getBoard: async (boardId) => {
       calls.push({ method: 'getBoard', boardId });
+      if (typeof overrides.getBoard === 'function') return overrides.getBoard(boardId);
       return overrides.getBoard || { id: boardId, title: BOARD_TITLE, stacks: [], labels: [] };
     },
 
@@ -1753,6 +1754,128 @@ test('_parseModelsCard: sets _cardOrder and _cardOwner from real card', () => {
   assert.strictEqual(result._cardId, 42, '_cardId should match card.id');
   assert.strictEqual(result._cardOrder, 7, '_cardOrder should be set from card.order');
   assert.deepStrictEqual(result._cardOwner, { uid: 'botuser', displayName: 'Bot User' }, '_cardOwner should be the full owner object');
+});
+
+// ============================================================
+// initialize() self-heal / upgrade-migration tests (#141)
+// ============================================================
+
+console.log('\n--- initialize() Registry Self-Heal Tests (issue #141) ---\n');
+
+/**
+ * Minimal in-memory board registry, injected per test so the concurrent runner
+ * never races the module singleton. Records register/invalidate/resolve calls.
+ */
+function createFakeRegistry(initial = {}) {
+  const store = { ...initial };
+  const calls = { register: [], invalidate: [], resolve: [] };
+  return {
+    _store: store,
+    _calls: calls,
+    // eslint-disable-next-line require-await
+    resolveBoard: async (_deck, role) => {
+      calls.resolve.push(role);
+      return (role in store) ? store[role] : null;
+    },
+    registerBoard: (role, boardId) => { calls.register.push({ role, boardId }); store[role] = boardId; },
+    invalidateBoard: (role) => { calls.invalidate.push(role); delete store[role]; },
+  };
+}
+
+function notFoundError(id) {
+  const e = new Error(`Board ${id} not found`);
+  e.statusCode = 404;
+  return e;
+}
+
+const BOARD_POST_PATH = '/index.php/apps/deck/api/v1.0/boards';
+const boardCreatePosts = (deck) => deck._calls.filter(c =>
+  c.method === '_request' && c.httpMethod === 'POST' && c.path === BOARD_POST_PATH);
+
+asyncTest('initialize(): stale registry id self-heals — getBoard 404 → invalidate → adopt cockpit-titled board (#141)', async () => {
+  const reg = createFakeRegistry({ cockpit: 999 }); // stale: board 999 no longer exists
+  const deck = createMockDeckClient({
+    getBoard: (id) => {
+      if (id === 999) throw notFoundError(999);
+      return { id, title: BOARD_TITLE, labels: [] };
+    },
+    listBoards: [{ id: 14, title: BOARD_TITLE }],
+    getStacks: createSampleStacks()
+  });
+  const cm = new CockpitManager({ deckClient: deck, boardRegistry: reg });
+
+  await cm.initialize();
+
+  assert.strictEqual(cm.boardId, 14, 'should adopt the real cockpit board 14');
+  assert.strictEqual(reg._store.cockpit, 14, 'registry should be re-pointed to 14');
+  assert.deepStrictEqual(reg._calls.invalidate, ['cockpit'], 'stale entry invalidated exactly once');
+  assert.deepStrictEqual(reg._calls.register, [{ role: 'cockpit', boardId: 14 }], 'registers cockpit→14 exactly once (no duplicate)');
+  assert.strictEqual(boardCreatePosts(deck).length, 0, 'must NOT bootstrap a new board when one exists');
+});
+
+asyncTest('initialize(): missing registry entry self-heals — adopt cockpit-titled board (#141)', async () => {
+  const reg = createFakeRegistry({}); // no cockpit entry at all
+  const deck = createMockDeckClient({
+    listBoards: [{ id: 14, title: BOARD_TITLE }],
+    getBoard: { id: 14, title: BOARD_TITLE, labels: [] },
+    getStacks: createSampleStacks()
+  });
+  const cm = new CockpitManager({ deckClient: deck, boardRegistry: reg });
+
+  await cm.initialize();
+
+  assert.strictEqual(cm.boardId, 14, 'should adopt board 14');
+  assert.deepStrictEqual(reg._calls.register, [{ role: 'cockpit', boardId: 14 }], 'seeds cockpit→14 exactly once');
+  assert.strictEqual(reg._calls.invalidate.length, 0, 'nothing to invalidate when entry was already absent');
+  assert.strictEqual(boardCreatePosts(deck).length, 0, 'must NOT bootstrap');
+});
+
+asyncTest('initialize(): no cockpit board anywhere → bootstrap creates one (true first boot, unchanged) (#141)', async () => {
+  const reg = createFakeRegistry({});
+  const deck = createMockDeckClient({
+    listBoards: [{ id: 5, title: 'Personal Tasks' }], // exists, but none cockpit-titled
+    getStacks: createSampleStacks()
+  });
+  const cm = new CockpitManager({ deckClient: deck, boardRegistry: reg });
+
+  await cm.initialize();
+
+  assert.ok(boardCreatePosts(deck).length >= 1, 'should bootstrap a new board when no cockpit board exists');
+  assert.strictEqual(cm.boardId, 99, 'boardId comes from bootstrap (mock POST /boards → id 99)');
+  assert.deepStrictEqual(reg._calls.register, [{ role: 'cockpit', boardId: 99 }], 'bootstrap registered the new board');
+});
+
+asyncTest('initialize(): cockpit board vanishes between listBoards and getBoard → falls through to bootstrap (#141)', async () => {
+  const reg = createFakeRegistry({}); // no entry → self-heal path
+  const deck = createMockDeckClient({
+    listBoards: [{ id: 14, title: BOARD_TITLE }], // appears in the list…
+    getBoard: (id) => { throw notFoundError(id); }, // …but getBoard 404s (deleted mid-flight)
+    getStacks: createSampleStacks()
+  });
+  const cm = new CockpitManager({ deckClient: deck, boardRegistry: reg });
+
+  await cm.initialize(); // must not crash
+
+  assert.ok(boardCreatePosts(deck).length >= 1, 'should fall through to bootstrap when the found board vanished');
+  assert.strictEqual(cm.boardId, 99, 'boardId from bootstrap');
+  assert.deepStrictEqual(reg._calls.register, [{ role: 'cockpit', boardId: 99 }], 'only the bootstrapped board is registered');
+});
+
+asyncTest('initialize(): self-heal does NOT title-scan on the resolve hot path — only on the cold path (#141)', async () => {
+  // Registry resolves cleanly → listBoards must never be consulted (no title scan).
+  const reg = createFakeRegistry({ cockpit: 14 });
+  const deck = createMockDeckClient({
+    getBoard: { id: 14, title: BOARD_TITLE, labels: [] },
+    getStacks: createSampleStacks()
+  });
+  const cm = new CockpitManager({ deckClient: deck, boardRegistry: reg });
+
+  await cm.initialize();
+
+  assert.strictEqual(cm.boardId, 14);
+  assert.strictEqual(deck._calls.filter(c => c.method === 'listBoards').length, 0,
+    'listBoards (title scan) must NOT run when the registry resolves — canonical invariant preserved');
+  assert.strictEqual(reg._calls.register.length, 0, 'no re-register on the clean resolve path');
 });
 
 // ============================================================
