@@ -671,6 +671,59 @@ class DeckClient {
       updates);
   }
 
+  /**
+   * Build and PUT a complete, normalized card body — the single canonical
+   * card-update body builder for all CockpitManager writes.
+   *
+   * The Deck API rejects partial PUT bodies: every field must be present or the
+   * server clobbers missing fields with defaults. This helper resolves each
+   * required field from `changes` (caller intent) → `card` (current server
+   * state) → safe default, so callers never construct the body themselves.
+   *
+   * Key fix for #135: `owner` is normalized from an object (e.g. `{uid:'botuser'}`)
+   * to a bare uid string. Deck PUT rejects an owner-object in the body; the API
+   * only accepts the uid. Falls back to `this.username` (the deployment-aware bot
+   * uid read from NCRequestManager, never a hardcoded literal).
+   *
+   * `order` is included only when the resolved value is a finite number so that
+   * `order: undefined` / `order: null` are never serialized. `order: 0` is sent
+   * because 0 is a legitimate top-of-stack position.
+   *
+   * @param {number} boardId
+   * @param {number} stackId
+   * @param {number} cardId
+   * @param {Object} card    - Current card from getStacks (carries real order + owner)
+   * @param {Object} [changes={}] - Fields to override (title, description, type, owner, order)
+   * @returns {Promise<Object>} PUT response from the Deck API
+   */
+  async updateCardComplete(boardId, stackId, cardId, card, changes = {}) {
+    if (!boardId || !stackId || !cardId) throw new DeckApiError('boardId, stackId, cardId are required');
+
+    // Resolve owner: normalize object → uid string at every level of the chain
+    const resolvedOwner =
+      changes.owner?.uid ?? changes.owner ??
+      card.owner?.uid ?? card.owner ??
+      this.username;
+
+    const body = {
+      title:       changes.title       ?? card.title,
+      type:        changes.type        ?? card.type  ?? 'plain',
+      description: changes.description ?? card.description ?? '',
+      owner:       resolvedOwner,
+      order:       changes.order       ?? card.order
+    };
+
+    // Omit order entirely when it is not a finite number (undefined, null, NaN).
+    // DO send order:0 — it is a valid top-of-stack position.
+    if (!Number.isFinite(body.order)) {
+      delete body.order;
+    }
+
+    return await this._request('PUT',
+      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`,
+      body);
+  }
+
   async deleteCardById(boardId, stackId, cardId) {
     if (!boardId || !stackId || !cardId) throw new DeckApiError('boardId, stackId, cardId are required');
     await this._request('DELETE',

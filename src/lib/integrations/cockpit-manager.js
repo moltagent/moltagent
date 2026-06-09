@@ -856,13 +856,9 @@ class CockpitManager {
           const hash = crypto.createHash('sha256').update(description).digest('hex');
           if (this._descriptionHashes.get(card.id) === hash) continue;
 
-          const updatePath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${this.stacks.status}/cards/${card.id}`;
-          await this.deck._request('PUT', updatePath, {
-            title: card.title,
-            description: description,
-            type: 'plain',
-            owner: card.owner || 'moltagent'
-          });
+          await this.deck.updateCardComplete(
+            this.boardId, this.stacks.status, card.id, card, { description }
+          );
           this._descriptionHashes.set(card.id, hash);
         } catch (err) {
           console.warn(`[CockpitManager] Failed to update ${card.title}:`, err.message);
@@ -1191,6 +1187,8 @@ class CockpitManager {
     // Store card metadata for heartbeat writeback
     result._cardId = card.id;
     result._cardDescription = card.description || '';
+    result._cardOrder = card.order;
+    result._cardOwner = card.owner;
     result._userConfig = configSection.trim() + '\n';
     result._cardLabels = (card.labels || []).map(l => l.title);
 
@@ -1711,13 +1709,9 @@ class CockpitManager {
     try {
       const stackId = this.stacks.system;
       if (stackId) {
-        const updatePath = `/index.php/apps/deck/api/v1.0/boards/${this.boardId}/stacks/${stackId}/cards/${card.id}`;
-        await this.deck._request('PUT', updatePath, {
-          title: card.title || 'Models',
-          description: newDescription,
-          type: 'plain',
-          owner: card.owner || 'moltagent'
-        });
+        await this.deck.updateCardComplete(
+          this.boardId, stackId, card.id, card, { description: newDescription }
+        );
         this._descriptionHashes.set(card.id, hash);
       }
     } catch (err) {

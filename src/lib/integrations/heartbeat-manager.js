@@ -718,7 +718,7 @@ class HeartbeatManager {
                   const userConfig = mc._migratedConfig || mc._userConfig || `trust: ${mc.trust}\n`;
                   const newDesc = userConfig + this.cockpitManager._generateModelsCardDescription(mc.trust, mc.prefer || 'speed', infra);
                   this.cockpitManager._writeModelsCardDescription(
-                    { id: mc._cardId, description: mc._cardDescription, title: 'Models' },
+                    { id: mc._cardId, description: mc._cardDescription, title: 'Models', order: mc._cardOrder, owner: mc._cardOwner },
                     newDesc
                   ).catch(() => {});
                 }
