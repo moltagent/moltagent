@@ -4,6 +4,55 @@ const DECK = require('../../config/deck-names');
 const { isStructuralCard, hasLabel } = require('../integrations/deck-card-classifier');
 
 /**
+ * Migration seam for the success/error contract (#70).
+ *
+ * The target architecture (Option A) is that handlers THROW on failure and
+ * `execute()` is the single error chokepoint — its catch turns the throw into
+ * `{ success: false, error }`. But most handlers still swallow their own
+ * exceptions and RETURN a failure string (`catch (err) { return 'Failed to
+ * X: ${err.message}' }`). Such a string looks like a normal return, so
+ * `execute()` frames it as `{ success: true }` and the failure reaches the
+ * model wearing a success mask — the wound #70 documents (a 403 reported as a
+ * support lecture).
+ *
+ * Until every handler is converted to throw, this seam recognises the
+ * handlers' OWN failure-return convention at the chokepoint and re-frames it
+ * as a structured failure. These markers match code the registry itself
+ * emits — fixed English literals from `catch` blocks, invariant across the
+ * user's language — not user or model text. This is plumbing translating
+ * plumbing's legacy output, not the language layer (CLAUDE.md Rule 1): adding
+ * a language never edits this list.
+ *
+ * Scope is deliberately tight: the exception-swallow convention only.
+ *   - `Failed to …` — the 60+ `catch (err) { return 'Failed to …' }` sites.
+ *   - `… not found or inaccessible …` — the documented board-stack swallow
+ *     (tool-registry.js workflow_deck_create_card; see #70).
+ * Happy-path informational negatives ("No card found", "Could not assign —
+ * not a member") are NOT swept: they are business outcomes, not swallowed
+ * exceptions, and the model already reports them correctly. As handlers
+ * migrate to throwing, their markers retire from this list.
+ * @type {ReadonlyArray<RegExp>}
+ */
+const HANDLER_FAILURE_MARKERS = Object.freeze([
+  /^Failed to\b/,
+  /\bnot found or inaccessible\b/
+]);
+
+/**
+ * Detect a failure-shaped string returned by an unconverted handler.
+ * Inspects a raw string return, or the `.text` of a `{ text, ... }` return.
+ * @param {*} raw - the handler's return value
+ * @returns {string|null} the failure string if matched, else null
+ */
+function detectHandlerFailureString(raw) {
+  const text = typeof raw === 'string'
+    ? raw
+    : (raw && typeof raw === 'object' && typeof raw.text === 'string' ? raw.text : null);
+  if (!text) return null;
+  return HANDLER_FAILURE_MARKERS.some((re) => re.test(text)) ? text : null;
+}
+
+/**
  * ToolRegistry - Agent Tool Definition & Execution Layer
  *
  * Generates tool definitions (JSON schemas) from existing Moltagent clients
@@ -290,6 +339,18 @@ class ToolRegistry {
 
     try {
       const raw = await tool.handler(args || {});
+
+      // Migration seam (#70): an unconverted handler reports failure by
+      // RETURNING a failure string instead of throwing, so the catch below
+      // never fires and the failure would be framed as success. Re-frame it
+      // as a structured failure here, at the chokepoint, so the agent loop
+      // presents it as `Error: …` rather than a successful result.
+      const failureText = detectHandlerFailureString(raw);
+      if (failureText !== null) {
+        this.logger.warn(`[ToolRegistry] Tool ${name} returned a failure string (migration seam #70): ${failureText}`);
+        return { success: false, result: '', error: failureText };
+      }
+
       // Handlers may return {text, card} for structured data alongside the response.
       // The text goes to result (for display), the card object passes through directly.
       if (typeof raw === 'object' && raw !== null && raw.text) {
@@ -3817,4 +3878,4 @@ class ToolRegistry {
   }
 }
 
-module.exports = { ToolRegistry };
+module.exports = { ToolRegistry, detectHandlerFailureString, HANDLER_FAILURE_MARKERS };

@@ -166,8 +166,10 @@ asyncTest('calendar_schedule_meeting fails without organizer email', async () =>
     end: '2026-03-01T11:00:00',
     attendees: ['alice@example.com']
   });
-  assert.ok(result.success);
-  assert.ok(result.result.includes('could not resolve organizer email'));
+  // #70 contract: the handler's "Failed to schedule meeting: …" guard string
+  // is re-framed by the execute() seam as a structured failure.
+  assert.strictEqual(result.success, false);
+  assert.ok(result.error.includes('could not resolve organizer email'));
 });
 
 // ============================================================
