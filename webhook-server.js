@@ -28,6 +28,7 @@ const { TalkSendQueue } = require('./src/lib/talk/talk-send-queue');
 const appConfig = require('./src/lib/config');
 const { createServerComponents } = require('./src/lib/server/index');
 const { resolveOllamaEndpoint, _isPlaceholder } = require('./src/lib/shared/resolve-ollama-endpoint');
+const { ensureDeploymentConfig } = require('./src/lib/shared/ensure-deployment-config');
 
 // Knowledge modules for agent memory context
 let ContextLoader, LearningLog;
@@ -639,6 +640,12 @@ async function initialize() {
   console.log('           Moltagent Webhook Server Initializing...                   ');
   console.log('======================================================================');
   console.log('');
+
+  // 0. Ensure deployment config present (copy-on-missing from .example templates).
+  // CLAUDE.md Rule 5: single chokepoint, runs ONCE before any config reader
+  // (loadLLMConfig ~776, providers.json parse ~1502). True-absence only; never
+  // overwrites an existing file. The .service unit is not node-read and is excluded.
+  ensureDeploymentConfig({ rootDir: __dirname });
 
   // 1. Initialize NCRequestManager FIRST (new resilience layer)
   console.log('[INIT] Setting up NC Request Manager...');
@@ -1499,7 +1506,22 @@ async function initialize() {
     try {
       // Read providers.json for config
       const providersPath = path.join(__dirname, 'config', 'providers.json');
-      const providersConfig = JSON.parse(fs.readFileSync(providersPath, 'utf-8'));
+      let providersConfig;
+      try {
+        providersConfig = JSON.parse(fs.readFileSync(providersPath, 'utf-8'));
+      } catch (parseErr) {
+        // Decision 1: in-memory fallback, never on-disk. The broken file stays
+        // UNTOUCHED so the human can diff/repair it; overwriting would destroy
+        // their real endpoint config exactly when they need it. Copy-on-missing
+        // (ensureDeploymentConfig) handles TRUE absence; this handles corruption.
+        const examplePath = path.join(__dirname, 'config', 'providers.json.example');
+        console.error(
+          `[INIT] config/providers.json is unreadable (${parseErr.message}). ` +
+          'Check for merge conflict markers or invalid JSON. ' +
+          'Running on defaults from providers.json.example until the file is repaired.'
+        );
+        providersConfig = JSON.parse(fs.readFileSync(examplePath, 'utf-8'));
+      }
       const ollamaConfig = providersConfig.providers?.ollama || {};
       // claudeConfig: first anthropic-adapter provider found, for legacy ProviderChain fallback path
       const claudeConfig = Object.values(providersConfig.providers || {}).find(p => p.adapter === 'anthropic') || providersConfig.providers?.claude || {};
