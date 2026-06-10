@@ -1617,7 +1617,7 @@ asyncTest('omitting board parameter still routes to default-board legacy methods
 // Tests - 403 Permission Error Handling
 // ============================================================
 
-asyncTest('403 error returns friendly error message in result', async () => {
+asyncTest('403 swallowed by handler is re-framed as structured failure (#70)', async () => {
   const deck = createMockDeckClient({
     inbox: [{ id: 10, title: 'Shared Card' }]
   });
@@ -1633,13 +1633,16 @@ asyncTest('403 error returns friendly error message in result', async () => {
     title: 'New Title'
   });
 
-  // Inner try/catch catches the error and returns a human-readable string
-  assert.strictEqual(result.success, true);
-  assert.ok(result.result.includes('Failed to update card'));
-  assert.ok(result.result.includes('Forbidden'));
+  // #70 contract: the handler swallows the 403 into a "Failed to update card"
+  // string; the execute() migration seam re-frames it as a structured failure
+  // so the agent loop presents it as `Error: …`, not a successful result.
+  assert.strictEqual(result.success, false);
+  assert.ok(result.error.includes('Failed to update card'));
+  assert.ok(result.error.includes('Forbidden'));
+  assert.strictEqual(result.result, '');
 });
 
-asyncTest('non-403 error returns human-readable error in result', async () => {
+asyncTest('non-403 swallowed by handler is re-framed as structured failure (#70)', async () => {
   const deck = createMockDeckClient({
     inbox: [{ id: 10, title: 'Bad Card' }]
   });
@@ -1655,10 +1658,89 @@ asyncTest('non-403 error returns human-readable error in result', async () => {
     title: 'New Title'
   });
 
-  // Inner try/catch catches the error and returns a human-readable string
+  // #70 contract: swallowed non-403 failure is re-framed as structured failure.
+  assert.strictEqual(result.success, false);
+  assert.ok(result.error.includes('Failed to update card'));
+  assert.ok(result.error.includes('Server error'));
+  assert.strictEqual(result.result, '');
+});
+
+// ============================================================
+// Tests - success/error contract migration seam (#70)
+// ============================================================
+
+const { detectHandlerFailureString } = require('../../../src/lib/agent/tool-registry');
+
+test('detectHandlerFailureString matches the Failed-to convention', () => {
+  assert.strictEqual(
+    detectHandlerFailureString('Failed to delete card: Forbidden'),
+    'Failed to delete card: Forbidden'
+  );
+  assert.strictEqual(
+    detectHandlerFailureString('Failed to schedule: time slot not available or event creation failed.'),
+    'Failed to schedule: time slot not available or event creation failed.'
+  );
+});
+
+test('detectHandlerFailureString matches the not-found-or-inaccessible swallow', () => {
+  assert.strictEqual(
+    detectHandlerFailureString('Board 48 not found or inaccessible: Forbidden'),
+    'Board 48 not found or inaccessible: Forbidden'
+  );
+});
+
+test('detectHandlerFailureString inspects the .text of object returns', () => {
+  assert.strictEqual(
+    detectHandlerFailureString({ text: 'Failed to create card: 500', card: null }),
+    'Failed to create card: 500'
+  );
+});
+
+test('detectHandlerFailureString does NOT sweep happy-path informational negatives', () => {
+  // These are business outcomes, not swallowed exceptions — they stay success:true.
+  assert.strictEqual(detectHandlerFailureString('No card found matching "ghost".'), null);
+  assert.strictEqual(detectHandlerFailureString('No board found for "Nope".'), null);
+  assert.strictEqual(detectHandlerFailureString('Could not assign "alice" to card #5 — user may not be a member of this board.'), null);
+  assert.strictEqual(detectHandlerFailureString('Could not find the knowledge wiki collective.'), null);
+});
+
+test('detectHandlerFailureString does not false-positive on mid-string content', () => {
+  // A legitimate success result that merely mentions "failed" must NOT be swept;
+  // the marker is anchored to the handlers' own leading convention.
+  assert.strictEqual(detectHandlerFailureString('Your search for "failed login" returned 3 results.'), null);
+  assert.strictEqual(detectHandlerFailureString('Created card #7: "Investigate failed deploy".'), null);
+  assert.strictEqual(detectHandlerFailureString(''), null);
+  assert.strictEqual(detectHandlerFailureString(null), null);
+  assert.strictEqual(detectHandlerFailureString({ text: 'Created card', card: { id: 7 } }), null);
+});
+
+asyncTest('execute re-frames a custom handler failure string as success:false (#70)', async () => {
+  const registry = new ToolRegistry({ logger: silentLogger });
+  registry.register({
+    name: 'swallows_403',
+    description: 'Swallows its own 403 into a string',
+    parameters: { type: 'object', properties: {} },
+    handler: async () => 'Failed to delete card #12: Forbidden'
+  });
+
+  const result = await registry.execute('swallows_403', {});
+  assert.strictEqual(result.success, false);
+  assert.strictEqual(result.error, 'Failed to delete card #12: Forbidden');
+  assert.strictEqual(result.result, '');
+});
+
+asyncTest('execute leaves a genuine success string untouched (#70 no false-positive)', async () => {
+  const registry = new ToolRegistry({ logger: silentLogger });
+  registry.register({
+    name: 'reports_success',
+    description: 'Returns a normal success string',
+    parameters: { type: 'object', properties: {} },
+    handler: async () => 'Deleted card #12 from Inbox.'
+  });
+
+  const result = await registry.execute('reports_success', {});
   assert.strictEqual(result.success, true);
-  assert.ok(result.result.includes('Failed to update card'));
-  assert.ok(result.result.includes('Server error'));
+  assert.strictEqual(result.result, 'Deleted card #12 from Inbox.');
 });
 
 // ============================================================

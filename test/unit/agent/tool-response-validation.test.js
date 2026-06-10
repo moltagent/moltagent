@@ -140,8 +140,11 @@ asyncTest('deck_create_card: empty body {success:true} from board-targeted path 
     title: 'Test Card', board: DECK.boards.tasks
   });
 
-  assert.ok(result.result.includes('Failed'), `Should contain "Failed", got: ${result.result}`);
-  assert.ok(!result.result.includes('undefined'), `Should not contain "undefined", got: ${result.result}`);
+  // #70 contract: the handler's "Failed to create…" guard string is re-framed
+  // by the execute() seam as a structured failure.
+  assert.strictEqual(result.success, false);
+  assert.ok(result.error.includes('Failed'), `Should contain "Failed", got: ${result.error}`);
+  assert.ok(!result.error.includes('undefined'), `Should not contain "undefined", got: ${result.error}`);
 });
 
 asyncTest('deck_create_card: valid response with id returns success', async () => {
@@ -170,8 +173,10 @@ asyncTest('deck_create_card: null from default board path returns failure', asyn
 
   const result = await registry.execute('deck_create_card', { title: 'Test Card' });
 
-  assert.ok(result.result.includes('Failed'), `Should contain "Failed", got: ${result.result}`);
-  assert.ok(!result.result.includes('undefined'), `Should not contain "undefined", got: ${result.result}`);
+  // #70 contract: re-framed as structured failure.
+  assert.strictEqual(result.success, false);
+  assert.ok(result.error.includes('Failed'), `Should contain "Failed", got: ${result.error}`);
+  assert.ok(!result.error.includes('undefined'), `Should not contain "undefined", got: ${result.error}`);
 });
 
 asyncTest('deck_create_card: {success:true} without id from default board returns failure', async () => {
@@ -184,7 +189,9 @@ asyncTest('deck_create_card: {success:true} without id from default board return
 
   const result = await registry.execute('deck_create_card', { title: 'Test Card' });
 
-  assert.ok(result.result.includes('Failed'), `Should contain "Failed", got: ${result.result}`);
+  // #70 contract: re-framed as structured failure.
+  assert.strictEqual(result.success, false);
+  assert.ok(result.error.includes('Failed'), `Should contain "Failed", got: ${result.error}`);
 });
 
 // -- workflow_deck_create_card --
@@ -306,9 +313,11 @@ asyncTest('wiki_write: null from createPage returns failure', async () => {
     parent: 'Research'
   });
 
-  assert.ok(result.success);
-  assert.ok(result.result.includes('Failed'), `Should contain "Failed", got: ${result.result}`);
-  assert.ok(!result.result.includes('undefined'), `Should not contain "undefined", got: ${result.result}`);
+  // #70 contract: the wiki "Failed to create page…" guard string is re-framed
+  // as a structured failure.
+  assert.strictEqual(result.success, false);
+  assert.ok(result.error.includes('Failed'), `Should contain "Failed", got: ${result.error}`);
+  assert.ok(!result.error.includes('undefined'), `Should not contain "undefined", got: ${result.error}`);
 });
 
 asyncTest('wiki_write: response without id returns failure', async () => {
@@ -327,7 +336,9 @@ asyncTest('wiki_write: response without id returns failure', async () => {
     parent: 'Research'
   });
 
-  assert.ok(result.result.includes('Failed'), `Should contain "Failed", got: ${result.result}`);
+  // #70 contract: re-framed as structured failure.
+  assert.strictEqual(result.success, false);
+  assert.ok(result.error.includes('Failed'), `Should contain "Failed", got: ${result.error}`);
 });
 
 // -- mail_send --
@@ -345,9 +356,11 @@ asyncTest('mail_send: failed result returns failure message', async () => {
     to: 'test@example.com', subject: 'Hello', body: 'Test body'
   });
 
-  assert.ok(result.success, `execute should succeed, got: ${JSON.stringify(result)}`);
-  assert.ok(result.result.includes('Failed'), `Should contain "Failed", got: ${result.result}`);
-  assert.ok(result.result.includes('SMTP timeout'), `Should contain error detail, got: ${result.result}`);
+  // #70 contract: the handler's "Failed to send email: …" guard string is
+  // re-framed by the execute() seam as a structured failure.
+  assert.strictEqual(result.success, false);
+  assert.ok(result.error.includes('Failed'), `Should contain "Failed", got: ${result.error}`);
+  assert.ok(result.error.includes('SMTP timeout'), `Should contain error detail, got: ${result.error}`);
 });
 
 asyncTest('mail_send: null result returns failure message', async () => {
@@ -360,7 +373,9 @@ asyncTest('mail_send: null result returns failure message', async () => {
     to: 'test@example.com', subject: 'Hello', body: 'Test body'
   });
 
-  assert.ok(result.result.includes('Failed'), `Should contain "Failed", got: ${result.result}`);
+  // #70 contract: re-framed as structured failure.
+  assert.strictEqual(result.success, false);
+  assert.ok(result.error.includes('Failed'), `Should contain "Failed", got: ${result.error}`);
 });
 
 asyncTest('mail_send: success result returns success message', async () => {
