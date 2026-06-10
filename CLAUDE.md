@@ -1,3 +1,5 @@
+TAO.md is why these rules are shaped this way. Read it first.
+
 # Moltagent: Claude Code Context
 
 **Project:** Moltagent, a sovereign AI agent platform on Nextcloud.  
