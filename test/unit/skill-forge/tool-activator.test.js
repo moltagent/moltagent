@@ -281,6 +281,51 @@ asyncTest('activate: fires audit log with skill_forge_activation action', async 
 });
 
 // -----------------------------------------------------------------------------
+// activate() health gate — atomicity & rollback (#127)
+// -----------------------------------------------------------------------------
+
+asyncTest('activate: a build throw on a later operation registers NOTHING (#127)', async () => {
+  const registry = mockToolRegistry();
+  const activator = makeActivator({ toolRegistry: registry });
+
+  // Reproduce the credentialed-template failure: a later operation throws
+  // undefined.substring while building. With all-or-nothing build, the earlier
+  // operation must not be left live.
+  const realBuild = activator._buildOperationConfig.bind(activator);
+  activator._buildOperationConfig = (template, operation, params) => {
+    if (operation.name === 'create item') {
+      throw new TypeError("Cannot read properties of undefined (reading 'substring')");
+    }
+    return realBuild(template, operation, params);
+  };
+
+  await assert.rejects(() => activator.activate(sampleTemplate, {}), /substring/);
+  assert.strictEqual(registry._tools.size, 0, 'no operation may be left live when a later one fails to build');
+});
+
+asyncTest('reconcile: pulls live tools for skillIds in errorSkillIds, leaves others (#127)', async () => {
+  const registry = mockToolRegistry();
+  const activator = makeActivator({ toolRegistry: registry });
+
+  registry.register({ name: 'ghost_op', metadata: { source: 'skill-forge', skillId: 'ghost' }, handler: async () => {} });
+  registry.register({ name: 'keep_op', metadata: { source: 'skill-forge', skillId: 'keep' }, handler: async () => {} });
+
+  const quarantined = activator.reconcile({ errorSkillIds: ['ghost'] });
+
+  assert.deepStrictEqual(quarantined, [{ skillId: 'ghost', removed: ['ghost_op'] }]);
+  assert.ok(!registry.has('ghost_op'), 'failed-skill tools must be pulled');
+  assert.ok(registry.has('keep_op'), 'unrelated skill must be untouched');
+});
+
+asyncTest('reconcile: clean (empty) when failed skills left no live tools (#127)', async () => {
+  const registry = mockToolRegistry();
+  const activator = makeActivator({ toolRegistry: registry });
+
+  const quarantined = activator.reconcile({ errorSkillIds: ['brave-search', 'google-calendar'] });
+  assert.deepStrictEqual(quarantined, [], 'nothing to pull when nothing leaked');
+});
+
+// -----------------------------------------------------------------------------
 // deactivate() tests
 // -----------------------------------------------------------------------------
 
