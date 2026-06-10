@@ -1546,7 +1546,8 @@ async function initialize() {
           endpoint: ollamaEndpoint,
           model: ollamaConfig.model || CONFIG.ollama.model,
           timeout: CONFIG.ollama.timeout,
-          toolTimeout: CONFIG.ollama.toolTimeout
+          toolTimeout: CONFIG.ollama.toolTimeout,
+          keep_alive: ollamaConfig.keep_alive  // #124: per-provider knob; undefined → server governs
         });
         console.log(`[INIT] OllamaToolsProvider ready (${ollamaEndpoint}, ${ollamaConfig.model || CONFIG.ollama.model})`);
       }
@@ -1558,7 +1559,8 @@ async function initialize() {
           endpoint: ollamaEndpoint,
           model: CONFIG.ollama.modelCredential,
           timeout: CONFIG.ollama.timeout,
-          toolTimeout: CONFIG.ollama.toolTimeout
+          toolTimeout: CONFIG.ollama.toolTimeout,
+          keep_alive: ollamaConfig.keep_alive  // #124
         });
         console.log(`[INIT] OllamaToolsProvider (credential) ready (${CONFIG.ollama.modelCredential})`);
       }
@@ -1572,7 +1574,8 @@ async function initialize() {
           endpoint: ollamaEndpoint,
           model: fastModel,
           timeout: 30000,
-          toolTimeout: 30000
+          toolTimeout: 30000,
+          keep_alive: ollamaConfig.keep_alive  // #124
         });
         console.log(`[INIT] OllamaToolsProvider (fast) ready (${fastModel})`);
       }

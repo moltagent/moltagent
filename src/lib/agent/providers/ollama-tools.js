@@ -21,6 +21,11 @@ class OllamaToolsProvider {
     this.model = config.model || 'phi4-mini';
     this.timeout = config.timeout || 300000;
     this.toolTimeout = config.toolTimeout || 60000;
+    // Per-provider model-lifetime knob (#124). Default: undefined → the
+    // keep_alive field is omitted from the request, so the Ollama server's own
+    // setting governs (the client must not override the box's resource policy —
+    // a hardcoded '10m' evicted indefinitely-pinned models on the DGX host).
+    this.keepAlive = config.keep_alive;
     this.logger = logger || console;
     this._fetch = globalThis.fetch;
   }
@@ -93,12 +98,15 @@ class OllamaToolsProvider {
       messages: ollamaMessages,
       stream: false,
       think: false,
-      keep_alive: '10m',
       options: {
         num_predict: 1024,
         ...(options || {})
       }
     };
+    // Only send keep_alive when configured; otherwise the server's setting wins (#124).
+    if (this.keepAlive !== undefined && this.keepAlive !== null) {
+      body.keep_alive = this.keepAlive;
+    }
 
     if (tools && tools.length > 0) {
       body.tools = tools;
