@@ -10,7 +10,9 @@
  * All configuration flows from this module; consumers import and use directly.
  *
  * Key Dependencies:
- * - None (leaf module - no internal dependencies)
+ * - shared/placeholder (a leaf): the canonical `YOUR_*` placeholder check, so
+ *   envStr collapses deployer-documentation placeholders to '' once, at the
+ *   boundary, instead of letting them reach a client as if configured (#148).
  *
  * Data Flow:
  * - Environment variables -> defaults -> frozen config object
@@ -21,6 +23,8 @@
  */
 
 'use strict';
+
+const { isPlaceholder } = require('./shared/placeholder');
 
 // -----------------------------------------------------------------------------
 // Helper Functions
@@ -56,14 +60,25 @@ function envBool(envVar, defaultValue) {
 }
 
 /**
- * Parse string from environment variable with fallback
+ * Parse string from environment variable with fallback.
+ *
+ * Placeholder-aware (#148): a `YOUR_*` value — whether it arrives from the env
+ * (an unedited deployment copies the `.example` unit verbatim) or from a
+ * deliberate documentation default below — is deployer documentation, not
+ * configuration. It collapses to '' here, once, at the boundary, so a
+ * placeholder never reaches a client: no ghost share-ACL to a nonexistent
+ * `YOUR_NC_ADMIN_USER`, no `YOUR_OLLAMA_IP` endpoint. Downstream truthiness /
+ * `isPlaceholder` guards already treat '' as "unset", so this only tightens an
+ * existing contract (same primitive the voice path uses). See shared/placeholder.
+ *
  * @param {string} envVar - Environment variable name
  * @param {string} defaultValue - Default if not set
  * @returns {string}
  */
 function envStr(envVar, defaultValue) {
   const value = process.env[envVar];
-  return (value !== undefined && value !== '') ? value : defaultValue;
+  const resolved = (value !== undefined && value !== '') ? value : defaultValue;
+  return isPlaceholder(resolved) ? '' : resolved;
 }
 
 /**
@@ -248,9 +263,9 @@ const config = {
   // Ollama LLM
   // -------------------------------------------------------------------------
   ollama: {
-    // The YOUR_* default is deliberate: it documents the env var for the
-    // deployer. At runtime resolveOllamaEndpoint() treats it as "unset" and
-    // falls back to localhost:11434, so the placeholder never reaches a client.
+    // The YOUR_* literal documents the env var for the deployer; envStr now
+    // collapses it to '' at the boundary (#148), and resolveOllamaEndpoint()
+    // falls back to localhost:11434 — so the placeholder never reaches a client.
     url: envStr('OLLAMA_URL', 'http://YOUR_OLLAMA_IP:11434'),
     model: envStr('OLLAMA_MODEL', 'phi4-mini'),
     modelCredential: envStr('OLLAMA_MODEL_CREDENTIAL', null) || envStr('OLLAMA_MODEL', 'phi4-mini'),
@@ -550,11 +565,11 @@ const config = {
   // Voice Pipeline (Whisper STT + call-aware routing)
   // -------------------------------------------------------------------------
   voice: {
-    // The YOUR_* voice defaults are deliberate env-var documentation. Unlike
-    // the LLM endpoint, voice is an optional dependency: webhook-server gates
-    // VoiceManager/WhisperClient construction on a configured URL, so a
-    // placeholder/unset value disables voice cleanly rather than building a
-    // client that fails on first use. See #100.
+    // The YOUR_* voice literals document the env vars. Voice is an optional
+    // dependency: envStr collapses the placeholder to '' (#148) and
+    // webhook-server gates VoiceManager/WhisperClient on a configured (truthy,
+    // non-placeholder) URL, so a placeholder/unset value disables voice cleanly
+    // rather than building a client that fails on first use. See #100.
     whisperUrl: envStr('WHISPER_URL', 'http://YOUR_OLLAMA_IP:8014'),
     whisperTimeout: envInt('WHISPER_TIMEOUT', 60000),
     whisperModel: envStr('WHISPER_MODEL', 'small'),
@@ -589,10 +604,12 @@ const config = {
     selfHealEnabled: envBool('INFRA_SELF_HEAL', true),
     notifyOnFailure: envBool('INFRA_NOTIFY_ON_FAILURE', true),
     heald: {
-      // Default is the placeholder sentinel. Downstream (webhook-server.js)
-      // treats this sentinel as "heald not deployed" and skips SelfHealClient
-      // construction so we don't log a credential-missing error every probe.
-      // See #26.
+      // Unset means "heald not deployed": envStr now collapses the YOUR_*
+      // default to '' (#148), and downstream (webhook-server.js) skips
+      // SelfHealClient construction on the falsy URL — so we don't log a
+      // credential-missing error every probe. See #26. `urlPlaceholder` below
+      // is the pre-#148 sentinel comparison, now belt-and-suspenders (the
+      // truthiness guard already covers the collapsed '').
       url: envStr('HEALD_URL', 'http://YOUR_OLLAMA_IP:7867'),
       urlPlaceholder: 'http://YOUR_OLLAMA_IP:7867',
       tokenCredential: envStr('HEALD_TOKEN_CREDENTIAL', 'heald-token'),
