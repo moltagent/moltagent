@@ -79,3 +79,13 @@ __pycache__/
 
 # --- Internal development briefings ---
 briefings/
+
+# --- Deployment config (mutable per-box; templates are tracked as .example) ---
+# The real files are seeded from their .example at startup (issue #146).
+# Keep the .example templates tracked.
+config/providers.json
+config/moltagent-providers.yaml
+deploy/moltagent.service
+!config/providers.json.example
+!config/moltagent-providers.yaml.example
+!deploy/moltagent.service.example
