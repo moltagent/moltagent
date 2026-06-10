@@ -140,4 +140,38 @@ asyncTest('_fetchWithRetry does not retry HTTP errors (err.status set)', async (
   }
 });
 
+// --- keep_alive knob (#124) ---
+
+test('constructor: keepAlive is undefined by default', () => {
+  const provider = new OllamaProvider({ id: 'test', logger: silentLogger });
+  assert.strictEqual(provider.keepAlive, undefined);
+});
+
+test('constructor: keepAlive reads config.keep_alive', () => {
+  const provider = new OllamaProvider({ id: 'test', keep_alive: -1, logger: silentLogger });
+  assert.strictEqual(provider.keepAlive, -1);
+});
+
+asyncTest('generate: omits keep_alive when not configured (server governs)', async () => {
+  const provider = new OllamaProvider({ id: 'test', logger: silentLogger });
+  let capturedBody;
+  provider._fetch = async (url, opts) => {
+    capturedBody = JSON.parse(opts.body);
+    return { ok: true, json: async () => ({ message: { content: 'ok' }, prompt_eval_count: 1, eval_count: 1 }) };
+  };
+  await provider.generate('summarize', 'hello world', {});
+  assert.ok(!('keep_alive' in capturedBody), 'keep_alive must be absent so the Ollama server setting wins');
+});
+
+asyncTest('generate: sends configured keep_alive', async () => {
+  const provider = new OllamaProvider({ id: 'test', keep_alive: '2h', logger: silentLogger });
+  let capturedBody;
+  provider._fetch = async (url, opts) => {
+    capturedBody = JSON.parse(opts.body);
+    return { ok: true, json: async () => ({ message: { content: 'ok' }, prompt_eval_count: 1, eval_count: 1 }) };
+  };
+  await provider.generate('summarize', 'hello world', {});
+  assert.strictEqual(capturedBody.keep_alive, '2h');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

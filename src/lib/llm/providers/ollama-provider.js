@@ -25,6 +25,10 @@ class OllamaProvider extends BaseProvider {
       model: config.model || 'phi4-mini',
       costModel: { type: 'free' }
     });
+    // Per-provider model-lifetime knob (#124), flows in via the createProvider
+    // config spread (router.js → providers/index.js). Default: undefined → the
+    // keep_alive field is omitted so the Ollama server's own setting governs.
+    this.keepAlive = config.keep_alive;
     this._fetch = globalThis.fetch;
   }
 
@@ -68,12 +72,15 @@ class OllamaProvider extends BaseProvider {
             model: this.model,
             messages,
             stream: false,
-            keep_alive: '10m',
             options: {
               temperature: options.temperature ?? 0.7,
               num_predict: options.maxTokens || 1024
             }
           };
+        // Only send keep_alive when configured; otherwise the server's setting wins (#124).
+        if (this.keepAlive !== undefined && this.keepAlive !== null) {
+          requestBody.keep_alive = this.keepAlive;
+        }
         if (options.format) requestBody.format = options.format;
 
         // Disable thinking mode for structured extraction (temperature 0).

@@ -195,6 +195,53 @@ asyncTest('_fetchWithRetry does not retry HTTP errors (err.status set)', async (
 });
 
 // ============================================================
+// keep_alive knob (#124)
+// ============================================================
+
+console.log('\n--- keep_alive knob (#124) ---\n');
+
+// Override _fetch to capture the request body sent to /api/chat.
+function captureBody(provider) {
+  const captured = {};
+  provider._fetch = async (_url, opts) => {
+    captured.body = JSON.parse(opts.body);
+    return { ok: true, json: async () => ({ message: { role: 'assistant', content: 'ok' } }) };
+  };
+  return captured;
+}
+
+test('constructor: keepAlive is undefined by default', () => {
+  const provider = new OllamaToolsProvider({}, silentLogger);
+  assert.strictEqual(provider.keepAlive, undefined);
+});
+
+test('constructor: keepAlive reads config.keep_alive', () => {
+  const provider = new OllamaToolsProvider({ keep_alive: -1 }, silentLogger);
+  assert.strictEqual(provider.keepAlive, -1);
+});
+
+asyncTest('chat: omits keep_alive from the body when not configured (server governs)', async () => {
+  const provider = new OllamaToolsProvider({}, silentLogger);
+  const cap = captureBody(provider);
+  await provider.chat({ messages: [{ role: 'user', content: 'hi' }] });
+  assert.ok(!('keep_alive' in cap.body), 'keep_alive must be absent so the Ollama server setting wins');
+});
+
+asyncTest('chat: sends configured keep_alive (e.g. -1 = indefinite)', async () => {
+  const provider = new OllamaToolsProvider({ keep_alive: -1 }, silentLogger);
+  const cap = captureBody(provider);
+  await provider.chat({ messages: [{ role: 'user', content: 'hi' }] });
+  assert.strictEqual(cap.body.keep_alive, -1);
+});
+
+asyncTest('chat: sends a string keep_alive verbatim (e.g. "30m")', async () => {
+  const provider = new OllamaToolsProvider({ keep_alive: '30m' }, silentLogger);
+  const cap = captureBody(provider);
+  await provider.chat({ messages: [{ role: 'user', content: 'hi' }] });
+  assert.strictEqual(cap.body.keep_alive, '30m');
+});
+
+// ============================================================
 // Summary
 // ============================================================
 

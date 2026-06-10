@@ -10,6 +10,12 @@ providers:
     adapter: ollama
     endpoint: http://localhost:11434
     model: qwen3:8b
+    # keep_alive: how long Ollama keeps the model resident after a request.
+    # Omitted by default → the Ollama server's own setting governs (do not let
+    # the client override the box's resource policy). Set it only to pin a
+    # value: e.g. "30m", "2h", or -1 to keep the model loaded indefinitely
+    # (useful on a CPU-only host to avoid cold-start tool timeouts — see #124).
+    # keep_alive: -1
 
   # Premium tier - Claude Opus (deep reasoning, complex writing)
   anthropic-claude:
