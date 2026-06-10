@@ -221,6 +221,38 @@ test('TC-CFG-033: Ports config has standard values', () => {
   assert.strictEqual(config.ports.smtpDefault, 587);
 });
 
+// --- Placeholder-aware envStr (#148) ---
+
+test('TC-CFG-040: ADMIN_USER=YOUR_* placeholder collapses to empty (no ghost share)', () => {
+  const config = loadConfigWithEnv({ ADMIN_USER: 'YOUR_NC_ADMIN_USER', KNOWLEDGE_ADMIN_USER: '' });
+  assert.strictEqual(config.cockpit.adminUser, '', 'placeholder ADMIN_USER must read as empty');
+});
+
+test('TC-CFG-041: a real ADMIN_USER value is preserved', () => {
+  const config = loadConfigWithEnv({ ADMIN_USER: 'alice', KNOWLEDGE_ADMIN_USER: '' });
+  assert.strictEqual(config.cockpit.adminUser, 'alice');
+});
+
+test('TC-CFG-042: KNOWLEDGE_ADMIN_USER=YOUR_* placeholder collapses to empty', () => {
+  const config = loadConfigWithEnv({ KNOWLEDGE_ADMIN_USER: 'YOUR_NC_ADMIN_USER', ADMIN_USER: '' });
+  assert.strictEqual(config.knowledge.adminUser, '');
+});
+
+test('TC-CFG-043: OLLAMA_URL placeholder env value collapses to empty', () => {
+  const config = loadConfigWithEnv({ OLLAMA_URL: 'http://YOUR_OLLAMA_IP:11434' });
+  assert.strictEqual(config.ollama.url, '', 'placeholder endpoint must read as empty so the resolver falls back');
+});
+
+test('TC-CFG-044: unset OLLAMA_URL (deliberate YOUR_* default) also collapses to empty', () => {
+  const config = loadConfigWithEnv({});  // OLLAMA_ keys are cleared by the helper
+  assert.strictEqual(config.ollama.url, '');
+});
+
+test('TC-CFG-045: a real OLLAMA_URL is preserved', () => {
+  const config = loadConfigWithEnv({ OLLAMA_URL: 'http://10.0.0.5:11434' });
+  assert.strictEqual(config.ollama.url, 'http://10.0.0.5:11434');
+});
+
 // --- Cleanup ---
 
 // Restore original environment
