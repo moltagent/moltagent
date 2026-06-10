@@ -1881,6 +1881,16 @@ async function initialize() {
             }
             if (discovery.errors.length > 0) {
               console.warn(`[INIT] SkillForge discovery errors: ${discovery.errors.join('; ')}`);
+              // Reconciliation pass (#127): a skill that failed discovery must not
+              // leave live tools behind. Pull anything its failed activation left
+              // registered, so the failure signal reaches the registry instead of
+              // being logged and discarded.
+              const quarantined = toolActivator.reconcile(discovery);
+              if (quarantined.length > 0) {
+                console.warn(`[INIT] SkillForge reconciliation pulled live tools from failed skills: ${quarantined.map(q => `${q.skillId} (${q.removed.join(', ')})`).join('; ')}`);
+              } else {
+                console.log('[INIT] SkillForge reconciliation: failed skills left no live tools (clean)');
+              }
             }
           } catch (discErr) {
             console.warn(`[INIT] SkillForge auto-discovery failed: ${discErr.message}`);
