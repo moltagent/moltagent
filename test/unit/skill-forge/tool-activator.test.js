@@ -81,7 +81,9 @@ function mockNcFiles() {
 
 function mockAuditLog() {
   const entries = [];
-  const fn = async (entry) => { entries.push(entry); return entries; };
+  // Mirror the REAL consoleAuditLog(event, data) signature (#152). A mock that
+  // accepted a single object hid the activator's object-form bug.
+  const fn = async (event, data) => { entries.push({ event, data }); return entries; };
   fn._entries = entries;
   return fn;
 }
@@ -275,9 +277,9 @@ asyncTest('activate: fires audit log with skill_forge_activation action', async 
   assert.strictEqual(auditLog._entries.length, 1, 'exactly one audit entry must be written');
   const entry = auditLog._entries[0];
   assert.strictEqual(entry.event, 'skill_activated', 'audit event must be skill_activated');
-  assert.strictEqual(entry.skillId, 'test-skill');
-  assert.ok(Array.isArray(entry.toolsRegistered));
-  assert.ok(entry.timestamp, 'audit entry must have timestamp');
+  assert.strictEqual(entry.data.skillId, 'test-skill');
+  assert.ok(Array.isArray(entry.data.toolsRegistered));
+  assert.ok(entry.data.timestamp, 'audit entry must have timestamp');
 });
 
 // -----------------------------------------------------------------------------
@@ -391,9 +393,9 @@ asyncTest('deactivate: fires audit log with skill_forge_deactivation action', as
   assert.strictEqual(auditLog._entries.length, 1, 'exactly one audit entry for deactivation');
   const entry = auditLog._entries[0];
   assert.strictEqual(entry.event, 'skill_deactivated');
-  assert.strictEqual(entry.skillId, 'test-skill');
-  assert.ok(Array.isArray(entry.toolsRemoved));
-  assert.ok(entry.timestamp);
+  assert.strictEqual(entry.data.skillId, 'test-skill');
+  assert.ok(Array.isArray(entry.data.toolsRemoved));
+  assert.ok(entry.data.timestamp);
 });
 
 // -----------------------------------------------------------------------------
@@ -612,6 +614,31 @@ asyncTest('integration: full lifecycle — activate registers tools, handler exe
   assert.strictEqual(auditLog._entries.length, 2, 'must have one audit entry per lifecycle event');
   assert.strictEqual(auditLog._entries[0].event, 'skill_activated');
   assert.strictEqual(auditLog._entries[1].event, 'skill_deactivated');
+});
+
+// -----------------------------------------------------------------------------
+// Signature regression tests (#152)
+// -----------------------------------------------------------------------------
+
+asyncTest('activate: calls auditLog with two-arg (event, data) signature — not object-form (#152)', async () => {
+  const calls = [];
+  const auditLog = async (event, data) => { calls.push([event, data]); };
+  const activator = makeActivator({ auditLog });
+  await activator.activate(sampleTemplate, {});
+  assert.strictEqual(calls.length, 1, 'one audit call');
+  const [event, data] = calls[0];
+  assert.strictEqual(typeof event, 'string', 'first arg must be the event string, not an object');
+  assert.strictEqual(event, 'skill_activated');
+  assert.strictEqual(typeof data, 'object', 'second arg must be the data object');
+  assert.strictEqual(data.skillId, 'test-skill');
+});
+
+asyncTest('audit: a two-arg logger receiving undefined data must not throw (#152 chokepoint invariant)', async () => {
+  const safeLog = async (event, data) => {
+    const serialized = data === undefined ? '' : String(JSON.stringify(data)).substring(0, 200);
+    return `${event}:${serialized}`;
+  };
+  await assert.doesNotReject(() => safeLog('skill_activated', undefined));
 });
 
 // -----------------------------------------------------------------------------

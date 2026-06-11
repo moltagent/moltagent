@@ -546,8 +546,10 @@ let dailyDigest = null; // Episodic Memory: daily digest page generation
 
 // Simple console audit logger fallback
 async function consoleAuditLog(event, data) {
+  // Audit is observability; it must never throw and take down its caller (See #152, #127).
   const timestamp = new Date().toISOString();
-  console.log(`[AUDIT] ${timestamp} ${event}:`, JSON.stringify(data).substring(0, 200));
+  const serialized = data === undefined ? '' : String(JSON.stringify(data)).substring(0, 200);
+  console.log(`[AUDIT] ${timestamp} ${event}:`, serialized);
 }
 
 /**
