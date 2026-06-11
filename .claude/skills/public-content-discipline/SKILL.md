@@ -39,6 +39,8 @@ Screen the draft and any source material being quoted for:
 
 6. **Log excerpts with user content.** Command outputs, journald lines, stack traces may contain usernames, paths with personal names, query text with private information. Redact or abstract before including. CostTracker lines are typically safe (cost numbers, model names) — user-facing response logs are not.
 
+7. **Infrastructure addresses in commit messages and `[VERIFIED]` blocks.** A commit message is a public surface on `next`/`main`. Live verification evidence often names the host it ran against — write it as a placeholder (`[OLLAMA_HOST]`, `[NC_HOST]`), never a literal IP or hostname. A production IP in a public commit message is a permanent leak (commit `23a5496` carries one — history stays; the rule prevents the next).
+
 ## Response hierarchy when something is caught
 
 1. **Abstract.** Replace the specific with a placeholder that preserves the structural point. Prefer this — the diagnostic or narrative value usually survives abstraction.
