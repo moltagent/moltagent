@@ -318,18 +318,22 @@ class IntentRouter {
    * @param {Object} opts.provider - OllamaToolsProvider (uses .chat() with model override)
    * @param {Object} [opts.llmRouter] - LLMRouter instance for job-based routing
    * @param {Function} [opts.getLanguage] - Returns current cockpit language (e.g. 'EN', 'DE')
+   * @param {Function} [opts.getTrust] - Returns the trust verdict for classification
+   *   ('local-only' | 'cloud-ok'), sourced from the ModelResolver (the single
+   *   control). Null/undefined return → fall back to the provider census. See #132.
    * @param {Object} [opts.config]
    * @param {number} [opts.config.classifyTimeout=10000]
    * @param {string} [opts.config.fastModel='qwen2.5:3b'] - Fast model for explicit intents
    * @param {string} [opts.config.smartModel='qwen3:8b'] - Smart model for ambiguous intents
    */
-  constructor({ provider, config = {}, getLanguage, llmRouter } = {}) {
+  constructor({ provider, config = {}, getLanguage, getTrust, llmRouter } = {}) {
     this.provider = provider;
     this.llmRouter = llmRouter || null;
     this.timeout = config.classifyTimeout || 10000;
     this.fastModel = config.fastModel || 'qwen2.5:3b';
     this.smartModel = config.smartModel || 'qwen3:8b';
     this.getLanguage = getLanguage || (() => 'EN');
+    this.getTrust = getTrust || (() => null);
   }
 
   /**
@@ -348,9 +352,20 @@ class IntentRouter {
     message = message || '';
 
     try {
-      // Cloud-ok: Haiku classifies correctly every time. No escalation needed.
-      // Local-only: qwen3:8b first, qwen2.5:3b fallback, regex last resort.
-      const cloudOk = this.llmRouter?.hasCloudPlayers?.();
+      // The trust boundary is the single control (#132): the classification path
+      // follows the trust verdict, not the registered-provider census. Under
+      // trust:local-only the classifier is the local smart model (qwen3:8b)
+      // directly; a credential-less cloud entry in providers.json can no longer
+      // make hasCloudPlayers() true and degrade classification to qwen2.5:3b.
+      //   cloud-ok: Haiku via the router, classifies correctly every time.
+      //   local-only: qwen3:8b first, qwen2.5:3b fallback, regex last resort.
+      // The resolver is the trust authority; when it is absent (early boot or a
+      // direct test caller) fall back to the legacy provider census.
+      const trust = this.getTrust();
+      const cloudOk = trust
+        ? trust !== 'local-only'
+        : this.llmRouter?.hasCloudPlayers?.();
+      console.log(`[IntentRouter] Trust=${trust || 'census'} → classification path: ${cloudOk ? 'cloud/router (Haiku)' : 'local smart (qwen3:8b)'}`);
 
       if (cloudOk && this.llmRouter) {
         return await this._classifyViaRouter(message, recentContext);

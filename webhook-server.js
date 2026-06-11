@@ -1590,6 +1590,10 @@ async function initialize() {
         provider: intentProvider,
         llmRouter: llmRouter,
         getLanguage: () => cockpitManager?.cachedConfig?.persona?.language || 'EN',
+        // Trust is the single control for the classification path (#132). Lazy
+        // thunk: modelResolver is constructed later in this bootstrap, so read it
+        // at classify time, not now. Returns 'local-only' | 'cloud-ok' | null.
+        getTrust: () => modelResolver?.resolveTrust?.('classification') || null,
         config: {
           classifyTimeout: appConfig.ollama.classifyTimeout,
           fastModel: appConfig.ollama.classifyModel || 'qwen2.5:3b',
