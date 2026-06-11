@@ -433,7 +433,7 @@ class ToolActivator {
    * @param {Object} options.toolRegistry - ToolRegistry with .register() and .unregister()
    * @param {Object} options.httpExecutor - HttpToolExecutor with .execute(opConfig, params)
    * @param {Object} options.ncFiles - NC file client: async .write(path, content), .read(path), .delete(path), .list(dir)
-   * @param {Function} options.auditLog - async (entry) => Promise audit log function
+   * @param {Function} options.auditLog - async (event, data) => Promise audit log function (event string, data object)
    * @param {Object} [options.egressGuard] - EgressGuard with .addAllowedDomain() and .removeBySource()
    */
   constructor({ toolRegistry, httpExecutor, ncFiles, auditLog, egressGuard = null }) {
@@ -521,8 +521,7 @@ class ToolActivator {
     await this._persistConfig(skillId, template, resolvedParams);
 
     // Audit log the activation
-    await this.auditLog({
-      event: 'skill_activated',
+    await this.auditLog('skill_activated', {
       skillId,
       templateVersion,
       toolsRegistered,
@@ -569,8 +568,7 @@ class ToolActivator {
     await this._removeConfig(skillId);
 
     // Audit log the deactivation
-    await this.auditLog({
-      event: 'skill_deactivated',
+    await this.auditLog('skill_deactivated', {
       skillId,
       toolsRemoved,
       timestamp: new Date().toISOString(),
