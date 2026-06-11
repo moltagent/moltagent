@@ -64,6 +64,10 @@ const CLASSIFICATION_EXAMPLES = {
   "Move the onboarding card to Done" → action, domain: deck
   "Give it the due date tomorrow" → action, domain: deck
   "Set the deadline to Friday" → action, domain: deck
+  "Do I have any open tasks?" → action, domain: deck
+  "What's on my board?" → action, domain: deck
+  "Which boards do I have?" → action, domain: deck
+  "Show me overdue tasks" → action, domain: deck
   "Save this to the wiki" → action, domain: wiki
   "Upload the report" → action, domain: file`,
     compound: `
@@ -77,7 +81,6 @@ const CLASSIFICATION_EXAMPLES = {
   Examples (ALL factual questions are knowledge — "What is X?", "Who does X?", "How does X work?"):
   "Who is Alex?" → knowledge
   "What's the status of onboarding?" → knowledge
-  "What boards do I have?" → knowledge
   "What's the weather in Lisbon?" → knowledge
   "What is HeartbeatManager?" → knowledge
   "Who works on Moltagent?" → knowledge
@@ -110,6 +113,10 @@ const CLASSIFICATION_EXAMPLES = {
   "Verschiebe die Onboarding-Karte nach Erledigt" → action, domain: deck
   "Setze die Frist auf Freitag" → action, domain: deck
   "Gib ihr das Fälligkeitsdatum morgen" → action, domain: deck
+  "Habe ich offene Aufgaben?" → action, domain: deck
+  "Was ist auf meinem Board?" → action, domain: deck
+  "Welche Boards habe ich?" → action, domain: deck
+  "Zeig mir überfällige Aufgaben" → action, domain: deck
   "Speichere das im Wiki" → action, domain: wiki
   "Lade den Bericht hoch" → action, domain: file`,
     compound: `
@@ -122,7 +129,6 @@ const CLASSIFICATION_EXAMPLES = {
   Beispiele (ALLE Sachfragen sind knowledge — "Was ist X?", "Wer macht X?", "Wie funktioniert X?"):
   "Wer ist Alex?" → knowledge
   "Wie ist der Stand beim Onboarding?" → knowledge
-  "Welche Boards habe ich?" → knowledge
   "Wie ist das Wetter in Berlin?" → knowledge
   "Was ist der HeartbeatManager?" → knowledge
   "Wer arbeitet an Moltagent?" → knowledge
@@ -150,6 +156,10 @@ const CLASSIFICATION_EXAMPLES = {
   "Quando é a minha próxima reunião?" → action, domain: calendar
   "Move o cartão de onboarding para Concluído" → action, domain: deck
   "Define o prazo para sexta-feira" → action, domain: deck
+  "Tenho tarefas em aberto?" → action, domain: deck
+  "O que está no meu board?" → action, domain: deck
+  "Que boards é que tenho?" → action, domain: deck
+  "Mostra tarefas atrasadas" → action, domain: deck
   "Guarda isto no wiki" → action, domain: wiki
   "Carrega o relatório" → action, domain: file`,
     compound: `
@@ -162,7 +172,6 @@ const CLASSIFICATION_EXAMPLES = {
   Exemplos (TODAS as perguntas factuais são knowledge — "O que é X?", "Quem faz X?", "Como funciona X?"):
   "Quem é o Alex?" → knowledge
   "Qual é o estado do onboarding?" → knowledge
-  "Que boards é que tenho?" → knowledge
   "Como está o tempo em Lisboa?" → knowledge
   "O que é o HeartbeatManager?" → knowledge
   "Como funciona a ingestão de documentos?" → knowledge
@@ -291,6 +300,8 @@ THE CRITICAL TEST:
   "What is X?" "Who is X?" "How does X work?" → ALWAYS knowledge, NEVER thinking.
   4. Calendar questions (events today? free at X? next meeting? what's on my schedule?) → action, domain: calendar
      These READ the calendar — that's an action, not knowledge.
+  5. Deck/board questions (open tasks? what's on my board? overdue items? task progress? which boards?) → action, domain: deck
+     These READ the live board state — that's an action, not knowledge.
 
 CONTEXT-AWARE RULES:
 - Read the <conversation> block FIRST. The user's message usually continues the current topic.

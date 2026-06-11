@@ -49,7 +49,7 @@ function createRouter(providerResponse) {
 }
 
 // ============================================================
-// KNOWLEDGE GATE (default — 6 tests)
+// KNOWLEDGE GATE (default — 5 tests; TG-06 is now a deck-read action test, #134)
 // ============================================================
 
 asyncTest('TG-01: "What\'s Alex\'s email?" → knowledge (NOT email)', async () => {
@@ -90,11 +90,16 @@ asyncTest('TG-05: "Tell me about Paradiesgarten" → knowledge', async () => {
   assert.strictEqual(result.domain, null);
 });
 
-asyncTest('TG-06: "What boards do I have?" → knowledge (listing = knowing)', async () => {
-  const router = createRouter('{"gate":"knowledge","confidence":0.85}');
+// #134: reading the live board list is an action (domain deck), not knowledge.
+// This reverses the old "listing = knowing" premise — symmetric with the
+// calendar-read rule. "Status of onboarding" (a topic question) stays knowledge
+// (TG-02); the boundary is live board state vs. topic synthesis.
+asyncTest('TG-06: "What boards do I have?" → action, deck (reading live board state)', async () => {
+  const router = createRouter('{"gate":"action","domain":"deck","confidence":0.85}');
   const result = await router.classify("What boards do I have?");
-  assert.strictEqual(result.gate, 'knowledge');
-  assert.strictEqual(result.domain, null);
+  assert.strictEqual(result.gate, 'action');
+  assert.strictEqual(result.domain, 'deck');
+  assert.strictEqual(result.intent, 'deck');
 });
 
 // ============================================================
