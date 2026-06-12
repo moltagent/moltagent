@@ -50,6 +50,22 @@ const { parseFrontmatter } = require('../knowledge/frontmatter');
 /** Domain intents that can be handled locally with focused tool subsets. */
 const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search', 'knowledge', 'confirmation', 'confirmation_declined']);
 
+/**
+ * Knowledge-probe SOURCE tags that read the user's own workspace STATE (not the
+ * open web, and not stored knowledge). These are internal probe identifiers, not
+ * natural-language tokens. When a probe with one of these sources returns data,
+ * that data IS the answer to a workspace question — web results cannot contain
+ * the user's board, so the auto web fallback is suppressed (#136).
+ *
+ * Membership is the workspace-state sources that `_executeKnowledgeProbes`
+ * actually emits today — currently only `deck`. `wiki_unified` is intentionally
+ * absent: the wiki is stored *knowledge*, which the open web can legitimately
+ * augment, so a wiki hit must not suppress the fallback. As calendar / files /
+ * contacts / activity probes land (each with its own source tag), add them here
+ * — the gate is generic, but it only claims coverage it can verify.
+ */
+const WORKSPACE_KNOWLEDGE_SOURCES = new Set(['deck']);
+
 // -----------------------------------------------------------------------------
 // Types
 // -----------------------------------------------------------------------------
@@ -1806,6 +1822,34 @@ class MessageProcessor {
   // ---------------------------------------------------------------------------
 
   /**
+   * Decide whether the knowledge path may fall back to a web search. Pure — no
+   * I/O — so the egress policy is unit-testable on its own (#136).
+   *
+   * Two gates sit ahead of the searchPolicy preference. The count heuristic
+   * (wantsMore) alone used to escape to the web whenever the local result count
+   * was low; these gates stop it from overriding facts it has no business over-
+   * riding:
+   *   - trust:local-only → the web never auto-fires (the single control; web
+   *     egresses). searchPolicy can only narrow within cloud-ok, never widen
+   *     past trust.
+   *   - a workspace probe returned data → the workspace IS the answer; web
+   *     results cannot contain the user's board.
+   * Otherwise the Cockpit searchPolicy decides: research → fire, internal-first
+   * → offer, sovereign → suppress.
+   *
+   * @param {{wantsMore:boolean, trust:?string, workspaceAnswered:boolean, searchPolicy:string}} input
+   * @returns {{action:'fire'|'offer'|'suppress'|'none', reason:string}}
+   */
+  static decideWebFallback({ wantsMore, trust, workspaceAnswered, searchPolicy }) {
+    if (!wantsMore) return { action: 'none', reason: 'sufficient local knowledge' };
+    if (trust === 'local-only') return { action: 'suppress', reason: 'trust:local-only (no egress)' };
+    if (workspaceAnswered) return { action: 'suppress', reason: 'workspace probe returned data' };
+    if (searchPolicy === 'research') return { action: 'fire', reason: 'cloud-ok + research policy' };
+    if (searchPolicy === 'internal-first') return { action: 'offer', reason: 'internal-first policy' };
+    return { action: 'suppress', reason: 'sovereign policy' };
+  }
+
+  /**
    * Handle a knowledge query through multi-source probes + LLM synthesis.
    *
    * Instead of routing to a single domain executor:
@@ -1885,28 +1929,44 @@ class MessageProcessor {
     const contextSuggestsWeb = liveContext?.lastAssistantAction?.admittedIgnorance === true;
     let webSearchOffered = false;
 
-    if (substantiveResults < 2 || (contextSuggestsWeb && substantiveResults < 4)) {
-      if (searchPolicy === 'research') {
-        // Auto web fallback — current behavior
-        if (roomToken) {
-          this.sendTalkReply(roomToken, '\u{1F310} Also checking the web...').catch(() => {});
-        }
-        const webResults = await this._probeWeb(query);
-        if (webResults.length > 0) {
-          probeResults.push({
-            source: 'web',
-            results: webResults,
-            provenance: 'web_search'
-          });
-          console.log(`[Message] Knowledge insufficient (${substantiveResults} results) — web fallback added ${webResults.length} result(s)`);
-        }
-      } else if (searchPolicy === 'internal-first') {
-        webSearchOffered = true;
-        console.log(`[Message] Knowledge insufficient (${substantiveResults} results) — search policy: internal-first, web search available but not auto-fired`);
-      } else {
-        // sovereign — no web search
-        console.log(`[Message] Knowledge insufficient (${substantiveResults} results) — search policy: sovereign, no web search`);
+    // Web egress decision — two gates ahead of the searchPolicy preference (#136).
+    // The count heuristic alone escapes to the web whenever substantiveResults is
+    // low, ignoring two facts it has no business overriding:
+    //   Gate 1 — trust (the single control): under trust:local-only the auto web
+    //     fallback never fires. _probeWeb egresses (SearXNG proxies external
+    //     engines; WebReader fetches external URLs), so it is cloud, not local.
+    //     searchPolicy can only narrow within cloud-ok; it cannot widen past trust.
+    //   Gate 2 — workspace truth: when a workspace-source probe already returned
+    //     data, that IS the answer. Web results cannot contain the user's board.
+    //     This honors the probe signal the keyword-count heuristic dropped (the
+    //     "found 5 deck cards, escaped to web anyway" case).
+    const trust = this.intentRouter?.getTrust?.() || null;
+    const workspaceAnswered = probeResults.some(
+      p => WORKSPACE_KNOWLEDGE_SOURCES.has(p.source) && (p.results || []).length > 0
+    );
+    const wantsMore = substantiveResults < 2 || (contextSuggestsWeb && substantiveResults < 4);
+    const decision = MessageProcessor.decideWebFallback({ wantsMore, trust, workspaceAnswered, searchPolicy });
+    let webSuppressed = false;
+
+    if (decision.action === 'fire') {
+      if (roomToken) {
+        this.sendTalkReply(roomToken, '\u{1F310} Also checking the web...').catch(() => {});
       }
+      const webResults = await this._probeWeb(query);
+      if (webResults.length > 0) {
+        probeResults.push({
+          source: 'web',
+          results: webResults,
+          provenance: 'web_search'
+        });
+        console.log(`[Message] Knowledge insufficient (${substantiveResults} results) — web fallback added ${webResults.length} result(s)`);
+      }
+    } else if (decision.action === 'offer') {
+      webSearchOffered = true;
+      console.log(`[Message] Knowledge insufficient (${substantiveResults} results) — search policy: internal-first, web search available but not auto-fired`);
+    } else if (decision.action === 'suppress') {
+      webSuppressed = true;
+      console.log(`[Message] Knowledge thin (${substantiveResults} results) — web fallback suppressed: ${decision.reason}`);
     }
 
     // Tag provenance on all results
@@ -1924,12 +1984,15 @@ class MessageProcessor {
 
     console.log(`[Message] Knowledge probes: ${sourcesConsulted.length} sources consulted, ${sourcesWithResults.length} returned results (${sourcesWithResults.join(', ')})`);
 
-    // Step 4: Synthesis — one LLM call with policy-aware context
+    // Step 4: Synthesis — one LLM call with policy-aware context (#117 honest
+    // disclosure when the web was not consulted).
     let policyContext = '';
     if (webSearchOffered) {
       policyContext = '\n\nNote: Internal knowledge was limited. Offer to search the web for more information if the user would find that helpful.';
-    } else if (searchPolicy === 'sovereign' && substantiveResults < 2) {
-      policyContext = '\n\nNote: Search policy is sovereign — no web search. If internal knowledge is insufficient, state what you know and what gaps exist honestly. Do not offer to search the web.';
+    } else if (workspaceAnswered) {
+      policyContext = '\n\nNote: This is about the user\'s own workspace. Answer from the workspace data returned above. Do not search or offer to search the web.';
+    } else if (webSuppressed && substantiveResults < 2) {
+      policyContext = '\n\nNote: No web search was performed. State what you know from internal knowledge and the workspace, and name the gaps honestly. Do not offer to search the web.';
     }
     const response = await this._synthesizeKnowledge(query, aggregated, session, router, liveContext, policyContext + extraPolicy, knowledgeIndex);
 

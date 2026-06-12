@@ -1159,6 +1159,60 @@ asyncTest('TC-OOO-004: setMode() stores the active mode', async () => {
   assert.strictEqual(processor.activeMode, 'out-of-office', 'Should store out-of-office');
 });
 
+// --- Web-fallback egress decision (#136) ---
+// decideWebFallback is pure: it encodes the two gates that sit AHEAD of the
+// searchPolicy preference. The precedence is the point — trust and workspace
+// truth must beat searchPolicy, never the other way round. These cases pin that
+// ordering so a future searchPolicy tweak can't silently widen egress.
+console.log('\n--- Web-fallback egress decision (#136) ---\n');
+
+const decide = (over) => MessageProcessor.decideWebFallback({
+  wantsMore: true, trust: 'cloud-ok', workspaceAnswered: false, searchPolicy: 'research', ...over
+});
+
+test('TC-WEB-136-01: sufficient local knowledge → none (no egress considered)', () => {
+  const d = decide({ wantsMore: false });
+  assert.strictEqual(d.action, 'none');
+});
+
+test('TC-WEB-136-02: cloud-ok + research → fire', () => {
+  assert.strictEqual(decide({}).action, 'fire');
+});
+
+test('TC-WEB-136-03: internal-first → offer (never auto-fires)', () => {
+  assert.strictEqual(decide({ searchPolicy: 'internal-first' }).action, 'offer');
+});
+
+test('TC-WEB-136-04: sovereign → suppress', () => {
+  assert.strictEqual(decide({ searchPolicy: 'sovereign' }).action, 'suppress');
+});
+
+test('TC-WEB-136-05: trust:local-only suppresses even under research policy (trust is the single control)', () => {
+  // The gate that matters most: searchPolicy can only narrow within cloud-ok,
+  // it cannot widen past trust. local-only + research must NOT fire.
+  const d = decide({ trust: 'local-only', searchPolicy: 'research' });
+  assert.strictEqual(d.action, 'suppress');
+  assert.ok(d.reason.includes('local-only'), 'reason should name the trust gate');
+});
+
+test('TC-WEB-136-06: trust:local-only beats workspace gate too (ordering is deterministic)', () => {
+  assert.strictEqual(decide({ trust: 'local-only', workspaceAnswered: true }).action, 'suppress');
+});
+
+test('TC-WEB-136-07: workspace probe answered suppresses web even under research policy', () => {
+  // "found 5 deck cards, escaped to web anyway" — the case #136 closes.
+  const d = decide({ workspaceAnswered: true, searchPolicy: 'research' });
+  assert.strictEqual(d.action, 'suppress');
+  assert.ok(d.reason.includes('workspace'), 'reason should name the workspace gate');
+});
+
+test('TC-WEB-136-08: null trust falls through to searchPolicy (resolver-absent, no widening)', () => {
+  // trust unknown (resolver absent) must not be treated as cloud permission;
+  // it simply defers to searchPolicy. research → fire, sovereign → suppress.
+  assert.strictEqual(decide({ trust: null, searchPolicy: 'research' }).action, 'fire');
+  assert.strictEqual(decide({ trust: null, searchPolicy: 'sovereign' }).action, 'suppress');
+});
+
 // Summary
 setTimeout(() => {
   summary();
