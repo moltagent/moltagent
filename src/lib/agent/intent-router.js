@@ -599,7 +599,7 @@ class IntentRouter {
       } else if (gate === 'compound') {
         result = { gate: 'compound', domain: domain || null, needsHistory: false, confidence, compound: true };
       } else if (gate === 'knowledge') {
-        result = { gate: 'knowledge', domain: null, needsHistory: false, confidence, compound };
+        result = { gate: 'knowledge', domain: domain || null, needsHistory: false, confidence, compound };
       } else if (gate === 'confirmation' || gate === 'confirmation_declined' || gate === 'selection') {
         result = { gate, domain: null, needsHistory: gate === 'confirmation' || gate === 'selection', confidence, compound };
       } else if (gate === 'complex') {

@@ -122,7 +122,16 @@ class AgentLoop {
 
     // 2. Build initial messages array
     const systemPrompt = this._buildSystemPrompt(memoryContext, briefingContext, options, warmMemoryContext, history);
-    const tools = this.toolRegistry.getToolDefinitions();
+    // #133: scope the advertised tools to the verdict's domain when it is a single,
+    // known, non-compound domain. Null/unknown/compound → full registry. Execution
+    // is uncaged (ToolRegistry.execute reads the full map), so this guides the
+    // model's first choice without stranding the turn.
+    const scopeDomain = (options.domain && !options.compound && this.toolRegistry.hasDomainTools(options.domain))
+      ? options.domain
+      : null;
+    const tools = scopeDomain
+      ? this.toolRegistry.getToolSubset(scopeDomain)
+      : this.toolRegistry.getToolDefinitions();
 
     const messages = [
       ...history.map(m => ({ role: m.role, content: m.content })),
@@ -782,6 +791,15 @@ class AgentLoop {
 
     if (briefingContext) {
       prompt += `\n\n${briefingContext}`;
+    }
+
+    // Turn verdict (declarative register — name the subject, never forbid tools).
+    // The domain comes from the classification verdict carried in options (#133);
+    // scoping the advertised tools is handled at the tools-build site, this only
+    // tells the model what the turn is about. No domain → no line.
+    if (options.domain && this.toolRegistry.hasDomainTools(options.domain)) {
+      prompt += `\n\n## This Turn\n\nThe user's request is about ${options.domain}. `
+        + 'The tools you need for it are available; reach for them first.';
     }
 
     // Voice input context: help LLM interpret transcribed speech
