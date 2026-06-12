@@ -1213,6 +1213,107 @@ test('TC-WEB-136-08: null trust falls through to searchPolicy (resolver-absent, 
   assert.strictEqual(decide({ trust: null, searchPolicy: 'sovereign' }).action, 'suppress');
 });
 
+// --- #133: _smartMixClassify domain custody ---
+console.log('\n--- #133: _smartMixClassify domain custody ---\n');
+
+// Helper: build a smart-mix-capable processor with a stubbed intentRouter
+function createSmartMixProcessor(classifyResult) {
+  return createProcessor({
+    intentRouter: {
+      classify: async () => classifyResult
+    },
+    microPipeline: {
+      _classifyFallback: async () => ({ intent: 'chitchat' }),
+      memoryContextEnricher: null,
+      process: async () => 'local response'
+    },
+    agentLoop: {
+      llmProvider: {
+        resetConversation: function () {},
+        skipLocalForConversation: function () {},
+        chatProviders: new Map([['local', {}], ['cloud', {}]])
+      },
+      process: async () => 'agent response'
+    }
+  });
+}
+
+asyncTest('TC-D133-01: _smartMixClassify returns domain on confirmation path', async () => {
+  const proc = createSmartMixProcessor({ gate: 'confirmation', intent: 'confirmation', domain: null, needsHistory: true, confidence: 0.9, compound: false });
+  const result = await proc._smartMixClassify('yes', null, null, null);
+  assert.ok('domain' in result, '_smartMixClassify result must have domain key');
+});
+
+asyncTest('TC-D133-02: _smartMixClassify returns domain on confirmation_declined path', async () => {
+  const proc = createSmartMixProcessor({ gate: 'confirmation_declined', intent: 'confirmation_declined', domain: null, needsHistory: false, confidence: 0.9, compound: false });
+  const result = await proc._smartMixClassify('no', null, null, null);
+  assert.ok('domain' in result, '_smartMixClassify result must have domain key');
+});
+
+asyncTest('TC-D133-03: _smartMixClassify preserves domain on knowledge path (deck domain survives)', async () => {
+  const proc = createSmartMixProcessor({ gate: 'knowledge', intent: 'knowledge', domain: 'deck', needsHistory: false, confidence: 0.8, compound: false });
+  const result = await proc._smartMixClassify('what cards do I have', null, null, null);
+  assert.ok('domain' in result, 'domain key must be present');
+  assert.strictEqual(result.domain, 'deck', 'deck domain must survive the knowledge path');
+});
+
+asyncTest('TC-D133-04: _smartMixClassify returns domain on compound+domain path', async () => {
+  const proc = createSmartMixProcessor({ gate: 'compound', intent: 'deck', domain: 'deck', needsHistory: false, confidence: 0.8, compound: true });
+  const result = await proc._smartMixClassify('create a card and send an email', null, null, null);
+  assert.ok('domain' in result, 'domain key must be present');
+});
+
+asyncTest('TC-D133-05: _smartMixClassify catch-all cloud path — calendar action carries domain', async () => {
+  // Specimen: {gate:'action',intent:'calendar',domain:'calendar',compound:false}
+  // → domain==='calendar', useLocal===false
+  const proc = createSmartMixProcessor({ gate: 'action', intent: 'calendar', domain: 'calendar', needsHistory: false, confidence: 0.9, compound: false });
+  const result = await proc._smartMixClassify('book a meeting', null, null, null);
+  assert.ok('domain' in result, 'domain key must be present on catch-all cloud path');
+  assert.strictEqual(result.domain, 'calendar', 'domain must be calendar');
+  assert.strictEqual(result.useLocal, false, 'calendar action must route to cloud in smart-mix mode');
+});
+
+asyncTest('TC-D133-06: _smartMixClassify classify-throws → {gate:null, domain:null, intent:\'error\'} no crash', async () => {
+  const proc = createProcessor({
+    intentRouter: {
+      classify: async () => { throw new Error('classification failed'); }
+    },
+    microPipeline: {
+      _classifyFallback: async () => ({ intent: 'chitchat' }),
+      memoryContextEnricher: null,
+      process: async () => 'local response'
+    },
+    agentLoop: {
+      llmProvider: {
+        resetConversation: function () {},
+        chatProviders: new Map([['local', {}], ['cloud', {}]])
+      },
+      process: async () => 'fallback'
+    }
+  });
+  const result = await proc._smartMixClassify('anything', null, null, null);
+  assert.ok('domain' in result, 'domain key must be present even on error path');
+  assert.strictEqual(result.domain, null, 'error path domain must be null');
+  assert.strictEqual(result.gate, null, 'error path gate must be null');
+  assert.strictEqual(result.intent, 'error');
+});
+
+asyncTest('TC-D133-07: _smartMixClassify universal invariant — every path has domain key', async () => {
+  // Run all shaped inputs and assert 'domain' in result for each
+  const shapes = [
+    { gate: 'confirmation', intent: 'confirmation', domain: null, needsHistory: true, confidence: 0.9, compound: false },
+    { gate: 'confirmation_declined', intent: 'confirmation_declined', domain: null, needsHistory: false, confidence: 0.9, compound: false },
+    { gate: 'knowledge', intent: 'knowledge', domain: 'deck', needsHistory: false, confidence: 0.8, compound: false },
+    { gate: 'compound', intent: 'deck', domain: 'deck', needsHistory: false, confidence: 0.8, compound: true },
+    { gate: 'action', intent: 'calendar', domain: 'calendar', needsHistory: false, confidence: 0.9, compound: false }
+  ];
+  for (const shape of shapes) {
+    const proc = createSmartMixProcessor(shape);
+    const result = await proc._smartMixClassify('test', null, null, null);
+    assert.ok('domain' in result, `domain key missing for shape: ${JSON.stringify(shape)}`);
+  }
+});
+
 // Summary
 setTimeout(() => {
   summary();
