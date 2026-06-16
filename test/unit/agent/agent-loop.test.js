@@ -1905,6 +1905,80 @@ asyncTest('#133: system prompt — unknown domain (astrology) produces no ## Thi
 });
 
 // ============================================================
+// #164 — text-form tool call must be parsed (canonical "arguments" shape),
+// not shipped to Talk as the raw envelope.
+// ============================================================
+
+function makeParserLoop() {
+  const registry = createMockToolRegistry({
+    calendar_quick_schedule: async () => ({ success: true, result: 'Scheduled.' }),
+    deck_move_card: async () => ({ success: true, result: 'Moved.' })
+  });
+  return new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: createMockProvider({ content: '', toolCalls: null }),
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+}
+
+test('#164: parser recognizes canonical {"name","arguments"} JSON shape', () => {
+  const loop = makeParserLoop();
+  const parsed = loop._parseToolCallFromText(
+    '{"name": "deck_move_card", "arguments": {"card": "#44", "target_stack": "Done"}}'
+  );
+  assert.ok(parsed, 'arguments-shape call must parse (not null)');
+  assert.strictEqual(parsed.name, 'deck_move_card');
+  assert.strictEqual(parsed.arguments.card, '#44');
+});
+
+test('#164: parser recognizes a <tool_call>-wrapped arguments-shape call', () => {
+  const loop = makeParserLoop();
+  const parsed = loop._parseToolCallFromText(
+    '<tool_call>\n{"name": "calendar_quick_schedule", "arguments": {"title": "Check backend"}}\n</tool_call>'
+  );
+  assert.ok(parsed, '<tool_call>-wrapped call must parse');
+  assert.strictEqual(parsed.name, 'calendar_quick_schedule');
+  assert.strictEqual(parsed.arguments.title, 'Check backend');
+});
+
+test('#164: parser still recognizes the legacy {"name","parameters"} shape (regression)', () => {
+  const loop = makeParserLoop();
+  const parsed = loop._parseToolCallFromText(
+    '{"name": "deck_move_card", "parameters": {"card": "#7"}}'
+  );
+  assert.ok(parsed, 'parameters-shape call must still parse');
+  assert.strictEqual(parsed.name, 'deck_move_card');
+});
+
+asyncTest('#164: text-form call on a gate=action turn is invoked, reply is synthesized text (not the envelope)', async () => {
+  // Iteration 1 emits the call as TEXT (qwen3:8b shape); iteration 2 synthesizes.
+  // Pre-fix: parser missed it → action guard re-prompts once → envelope shipped.
+  const provider = createMockProvider([
+    { content: '<tool_call>\n{"name": "calendar_quick_schedule", "arguments": {"title": "Check backend", "start": "2026-06-17T19:00"}}\n</tool_call>', toolCalls: null },
+    { content: 'Scheduled "Check backend" for tomorrow at 19:00.', toolCalls: null }
+  ]);
+  let executed = false;
+  const registry = createDomainMockToolRegistry({
+    calendar_quick_schedule: async () => { executed = true; return { success: true, result: 'Scheduled.' }; }
+  });
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('Set up a task tomorrow 19:00', 'room-abc', { gate: 'action', domain: 'calendar', compound: false });
+  assert.ok(executed, 'the text-form call must be routed to execution');
+  assert.ok(!/<tool_call>|"arguments"\s*:|"name"\s*:\s*"/.test(response), 'reply must not contain the raw tool-call envelope');
+  assert.strictEqual(response, 'Scheduled "Check backend" for tomorrow at 19:00.');
+});
+
+// ============================================================
 // Cleanup & Summary
 // ============================================================
 
