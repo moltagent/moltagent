@@ -850,7 +850,7 @@ class AgentLoop {
   /**
    * Parse a tool call from LLM text output (resilience for smaller models).
    * Detects two formats:
-   *   JSON: {"name": "tool_name", "parameters": {...}}
+   *   JSON: {"name": "tool_name", "arguments": {...}} (also accepts "parameters")
    *   Function-style: tool_name({"key": "value"})
    *
    * Only returns a match if the tool name exists in the registry.
@@ -862,9 +862,13 @@ class AgentLoop {
   _parseToolCallFromText(text) {
     if (!text) return null;
 
-    // Pattern 1: JSON object with name + parameters
-    // e.g. {"name": "deck_move_card", "parameters": {"card": "#44", "target_stack": "Done"}}
-    const jsonMatch = text.match(/\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*(\{[^}]*\})\s*\}/);
+    // Pattern 1: JSON object with name + an args key.
+    // Accept BOTH "arguments" (the canonical OpenAI/Ollama shape qwen3:8b emits,
+    // optionally wrapped in <tool_call> tags — matched here via search) and the
+    // older "parameters" shape. Without "arguments", a text-form call sailed past
+    // the parser and the loop shipped the raw envelope to Talk as the reply (#164).
+    // e.g. {"name": "deck_move_card", "arguments": {"card": "#44", "target_stack": "Done"}}
+    const jsonMatch = text.match(/\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"(?:arguments|parameters)"\s*:\s*(\{[^}]*\})\s*\}/);
     if (jsonMatch) {
       const resolved = this._resolveToolName(jsonMatch[1]);
       if (resolved) {
