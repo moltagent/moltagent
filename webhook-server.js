@@ -1987,6 +1987,7 @@ async function initialize() {
         agentLoop,
         talkSendQueue: talkQueue,
         talkToken: defaultTalkToken,
+        emailHandler,
         budgetEnforcer: llmRouter?.router?.budget || null,
         config: { botUsername: CONFIG.nc.username, adminUser: appConfig.cockpit?.adminUser || appConfig.knowledge?.adminUser || '', dataDir: true }
       });
