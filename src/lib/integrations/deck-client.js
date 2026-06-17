@@ -408,8 +408,13 @@ class DeckClient {
         try {
           return await this.getBoard(boardId);
         } catch (err) {
-          // Board was deleted — invalidate and fall through to name scan
-          if (err.statusCode === 404) {
+          // A cached id can become unusable two ways: the board was deleted
+          // (404), or it is no longer reachable by this identity (403,
+          // "Permission denied" — a board recreated under a new id, trashed,
+          // or unshared). Both mean the registry entry is stale: invalidate
+          // and re-resolve by name scan. Other errors (instance-wide auth
+          // failure, 5xx) are real and propagate.
+          if (err.statusCode === 404 || err.statusCode === 403) {
             boardRegistry.invalidateBoard(this.role);
           } else {
             throw err;
