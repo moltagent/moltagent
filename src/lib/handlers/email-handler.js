@@ -426,6 +426,13 @@ Examples:
               struct: true
             });
 
+            // Collect a parse promise per message. simpleParser is async, so
+            // without awaiting these the fetch 'end' below resolves before any
+            // parse completes — returning an empty/partial list even when the
+            // search found messages. The EmailMonitor read loop guards the same
+            // way; this mirrors it. (resolve-before-async-parse race)
+            const parsePromises = [];
+
             fetch.on('message', (msg, seqno) => {
               let buffer = '';
               let attrs = null;
@@ -440,32 +447,38 @@ Examples:
                 attrs = a;
               });
 
-              msg.once('end', async () => {
-                try {
-                  const parsed = await simpleParser(buffer);
-                  emails.push({
-                    id: attrs.uid,
-                    seqno,
-                    messageId: parsed.messageId,
-                    from: parsed.from?.text || '',
-                    fromAddress: parsed.from?.value?.[0]?.address || '',
-                    to: parsed.to?.text || '',
-                    subject: parsed.subject || '(No subject)',
-                    date: parsed.date,
-                    snippet: this._getSnippet(parsed.text, 200),
-                    body: parsed.text || '',
-                    hasAttachments: (parsed.attachments?.length || 0) > 0,
-                    attachmentCount: parsed.attachments?.length || 0,
-                    isRead: attrs.flags.includes('\\Seen'),
-                    isStarred: attrs.flags.includes('\\Flagged')
-                  });
-                } catch (e) {
-                  console.error('[Email] Parse error:', e.message);
-                }
+              const parsePromise = new Promise((resolveMsg) => {
+                msg.once('end', async () => {
+                  try {
+                    const parsed = await simpleParser(buffer);
+                    emails.push({
+                      id: attrs.uid,
+                      seqno,
+                      messageId: parsed.messageId,
+                      from: parsed.from?.text || '',
+                      fromAddress: parsed.from?.value?.[0]?.address || '',
+                      to: parsed.to?.text || '',
+                      subject: parsed.subject || '(No subject)',
+                      date: parsed.date,
+                      snippet: this._getSnippet(parsed.text, 200),
+                      body: parsed.text || '',
+                      hasAttachments: (parsed.attachments?.length || 0) > 0,
+                      attachmentCount: parsed.attachments?.length || 0,
+                      isRead: attrs.flags.includes('\\Seen'),
+                      isStarred: attrs.flags.includes('\\Flagged')
+                    });
+                  } catch (e) {
+                    console.error('[Email] Parse error:', e.message);
+                  }
+                  resolveMsg();
+                });
               });
+              parsePromises.push(parsePromise);
             });
 
-            fetch.once('end', () => {
+            fetch.once('end', async () => {
+              // Wait for all in-flight parses before resolving (see parsePromises).
+              await Promise.all(parsePromises);
               imap.end();
               // Sort by date descending
               emails.sort((a, b) => new Date(b.date) - new Date(a.date));
