@@ -1,7 +1,8 @@
 'use strict';
 
-const fs   = require('fs');
-const path = require('path');
+const fs     = require('fs');
+const path   = require('path');
+const crypto = require('crypto');
 const GateDetector = require('./gate-detector');
 const { ScheduleHandler, parseScheduleBlock, findConfigCard, stripHtml } = require('./schedule-handler');
 const { isStructuralCard, hasLabel } = require('../integrations/deck-card-classifier');
@@ -34,9 +35,11 @@ class WorkflowEngine {
    * @param {import('../agent/agent-loop').AgentLoop} options.agentLoop
    * @param {import('../talk/talk-send-queue').TalkSendQueue} options.talkSendQueue
    * @param {string} options.talkToken - Primary Talk room token for notifications
+   * @param {Object} [options.emailHandler] - EmailHandler instance; when provided, boards with a
+   *   TRIGGER: email:<folder> line will have unread emails ingested as cards each pulse.
    * @param {Object} [options.config]
    */
-  constructor({ workflowDetector, deckClient, agentLoop, talkSendQueue, talkToken, config, budgetEnforcer }) {
+  constructor({ workflowDetector, deckClient, agentLoop, talkSendQueue, talkToken, emailHandler, config, budgetEnforcer }) {
     this.detector = workflowDetector;
     this.deck = deckClient;
     this.agent = agentLoop;
@@ -44,7 +47,8 @@ class WorkflowEngine {
     this.talkToken = talkToken || null;
     this.config = config || {};
     this.budgetEnforcer = budgetEnforcer || null;
-    this.botUsername = this.config.botUsername || 'moltagent';
+    this.botUsername    = this.config.botUsername || 'moltagent';
+    this.emailHandler   = emailHandler || null;
 
     // Resolve data directory. Disk persistence is only enabled when config.dataDir
     // is explicitly provided (or config.dataDir === true to use the default).
@@ -79,6 +83,16 @@ class WorkflowEngine {
       ? path.join(this._dataDir, 'workflow-notified-gates.json')
       : null;
     this._notifiedGates = this._loadNotifiedGates();
+
+    // Track emails already ingested as cards to guarantee idempotency.
+    // On-disk shape: { "<boardId>": ["<msgId>", ...] }
+    // In memory: Map<string, Set<string>>
+    // Keyed by Message-ID (or a sha1 fallback for emails that lack one).
+    // Persisted to disk so service restarts don't re-ingest.
+    this._ingestedEmailsFile = this._dataDir
+      ? path.join(this._dataDir, 'workflow-ingested-emails.json')
+      : null;
+    this._ingestedEmails = this._loadIngestedEmails(); // Map<boardId(string), Set<messageId>>
 
     // Reentrancy guard — prevents concurrent processAll() when a pulse
     // outlasts the heartbeat interval.
@@ -168,6 +182,15 @@ class WorkflowEngine {
     if (hasLabel(rulesCard, 'PAUSED')) {
       console.log(`[Workflow] Board "${board.title}" is PAUSED — skipping`);
       return result;
+    }
+
+    // External-event ingestion: a TRIGGER: line pulls emails from a folder into
+    // this board as cards, once per email (idempotent on Message-ID), before the
+    // per-card processing loop. Inherits the board PAUSED gate above.
+    try {
+      await this._ingestTriggerEmails(wb);
+    } catch (err) {
+      console.error('[Workflow] Email trigger ingestion error on "' + board.title + '": ' + err.message);
     }
 
     for (const stack of stacks) {
@@ -756,6 +779,217 @@ class WorkflowEngine {
     } catch (err) {
       console.error('[Workflow] Failed to persist notified gates:', err.message);
     }
+  }
+
+  // ===========================================================================
+  // Ingested Emails Persistence  (email-trigger-bridge)
+  // ===========================================================================
+
+  /**
+   * Load the per-board ingested-email sets from disk.
+   * On-disk shape: { "<boardId>": ["<msgId>", ...] }
+   * Returns Map<string, Set<string>>; starts fresh on missing/corrupt file.
+   * @private
+   */
+  _loadIngestedEmails() {
+    if (!this._ingestedEmailsFile) return new Map();
+    try {
+      const raw = fs.readFileSync(this._ingestedEmailsFile, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const map = new Map();
+        for (const [boardId, ids] of Object.entries(parsed)) {
+          map.set(boardId, new Set(Array.isArray(ids) ? ids : []));
+        }
+        return map;
+      }
+    } catch (_err) {
+      // Missing file or corrupt JSON — start fresh
+    }
+    return new Map();
+  }
+
+  /**
+   * Persist the ingested-emails Map to disk (atomic tmp + rename).
+   * @private
+   */
+  _saveIngestedEmails() {
+    if (!this._ingestedEmailsFile) return;
+    try {
+      if (!fs.existsSync(this._dataDir)) {
+        fs.mkdirSync(this._dataDir, { recursive: true });
+      }
+      const obj = {};
+      for (const [boardId, set] of this._ingestedEmails.entries()) {
+        obj[boardId] = [...set];
+      }
+      const tmp = this._ingestedEmailsFile + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8');
+      fs.renameSync(tmp, this._ingestedEmailsFile);
+    } catch (err) {
+      console.error('[Workflow] Failed to persist ingested emails:', err.message);
+    }
+  }
+
+  /**
+   * Check whether an email has already been ingested for a given board.
+   * @param {string|number} boardId
+   * @param {string} msgId
+   * @returns {boolean}
+   * @private
+   */
+  _isEmailIngested(boardId, msgId) {
+    const set = this._ingestedEmails.get(String(boardId));
+    return set ? set.has(msgId) : false;
+  }
+
+  /**
+   * Mark an email as ingested for a given board and persist to disk.
+   * Caps each board's set at 1000 most-recent entries (insertion-order).
+   * @param {string|number} boardId
+   * @param {string} msgId
+   * @private
+   */
+  _markEmailIngested(boardId, msgId) {
+    const key = String(boardId);
+    let set = this._ingestedEmails.get(key);
+    if (!set) {
+      set = new Set();
+      this._ingestedEmails.set(key, set);
+    }
+    set.add(msgId);
+    // Cap at 1000 most-recent entries to prevent unbounded growth
+    if (set.size > 1000) {
+      this._ingestedEmails.set(key, new Set([...set].slice(-1000)));
+    }
+    this._saveIngestedEmails();
+  }
+
+  // ===========================================================================
+  // Email Trigger Bridge  (email-trigger-bridge)
+  // ===========================================================================
+
+  /**
+   * Parse a TRIGGER: line from the board rules. Structured metadata, not NL.
+   * Form: TRIGGER: <kind>:<locator>  (optionally  -> <stack name>)
+   * The locator is a folder path (e.g. INBOX.INQUIRIES) for email triggers.
+   * The locator must be whitespace-free (dotted IMAP paths like INBOX.INQUIRIES);
+   * folder names containing spaces are not supported by this unquoted form, and
+   * the optional stack-target separator is ASCII "->" (not the Unicode arrow).
+   * Returns { kind, locator, stackName } or null.
+   * @private
+   */
+  _parseTrigger(wb) {
+    const desc = wb._plainDescription || stripHtml(wb.description || '');
+    const m = desc.match(/^TRIGGER:\s*(\w+):(\S+?)(?:\s*->\s*(.+?))?\s*$/im);
+    if (!m) return null;
+    return { kind: m[1].toLowerCase(), locator: m[2], stackName: m[3] ? m[3].trim() : null };
+  }
+
+  /**
+   * Compute a stable fallback dedup key for emails that lack a Message-ID.
+   * Uses a sha1 of folder|uid|date|from|subject so the same physical email
+   * always maps to the same key across pulses.
+   * @private
+   */
+  _fallbackEmailKey(folder, email) {
+    const parts = [
+      folder,
+      String(email.id ?? ''),
+      String(email.date ?? ''),
+      String(email.from ?? ''),
+      String(email.subject ?? '')
+    ].join('|');
+    return 'nomsgid:' + crypto.createHash('sha1').update(parts).digest('hex');
+  }
+
+  /**
+   * Ingest unread emails from a TRIGGER: email:<folder> declaration into this
+   * board as Deck cards. Idempotent on Message-ID; never mutates \Seen.
+   * @param {Object} wb - WorkflowBoard descriptor
+   * @returns {Promise<number>} Number of cards created this pulse
+   * @private
+   */
+  async _ingestTriggerEmails(wb) {
+    const trigger = this._parseTrigger(wb);
+    if (!trigger) return 0;
+
+    // Dispatch on kind — only 'email' is implemented; future kinds add here.
+    if (trigger.kind !== 'email') {
+      console.warn('[Workflow] Unsupported TRIGGER kind: ' + trigger.kind + ' — skipping');
+      return 0;
+    }
+
+    // Graceful no-op when emailHandler was not injected (e.g. unit tests).
+    if (!this.emailHandler) return 0;
+
+    // Resolve the entry stack: named target takes precedence; else first by order.
+    let stack;
+    if (trigger.stackName) {
+      stack = (wb.stacks || []).find(
+        s => s.title.toLowerCase() === trigger.stackName.toLowerCase()
+      );
+    } else {
+      const sorted = [...(wb.stacks || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      stack = sorted[0];
+    }
+
+    if (!stack) {
+      console.warn('[Workflow] Email trigger: no entry stack resolved for board "' + wb.board.title + '" (stackName=' + (trigger.stackName || 'null') + ')');
+      return 0;
+    }
+
+    // Fetch unread emails — opens the mailbox READ-ONLY (never mutates \Seen).
+    let emails;
+    try {
+      emails = await this.emailHandler._fetchEmails({
+        folder: trigger.locator,
+        unreadOnly: true,
+        limit: 50
+      });
+    } catch (err) {
+      console.error('[Workflow] Email trigger fetch failed for board "' + wb.board.title + '": ' + err.message);
+      return 0;
+    }
+
+    if (emails.length === 50) {
+      // Soft warning: a full fetch window may silently cap a backlog.
+      console.warn('[Workflow] Email trigger fetch hit the limit (50) for folder ' + trigger.locator + ' — older unread may wait for the next pulse');
+    }
+
+    // Process oldest-first so card order on the board reflects email arrival order.
+    // _fetchEmails returns newest-first (sorted descending); reverse to get oldest-first.
+    const orderedEmails = [...emails].reverse();
+
+    let ingested = 0;
+    for (const email of orderedEmails) {
+      const key = email.messageId || this._fallbackEmailKey(trigger.locator, email);
+
+      if (this._isEmailIngested(wb.boardId, key)) continue;
+
+      // Build the card title and description.
+      const title = email.subject || '(No subject)';
+      const bodyText = (email.body || '').slice(0, 2000);
+      const description = bodyText + '\n\n---\nFrom: ' + (email.from || '') +
+        '\nDate: ' + (email.date || '') +
+        '\nMessage-ID: ' + key;
+
+      const card = await this.deck.createCardOnBoard(wb.boardId, stack.id, title, { description });
+
+      if (card) {
+        // Only mark ingested after successful card creation.
+        // If createCardOnBoard returned null (entry stack is PAUSED) we do NOT
+        // mark, so the email is retried on the next pulse when unpaused.
+        this._markEmailIngested(wb.boardId, key);
+        ingested++;
+      }
+    }
+
+    if (ingested > 0) {
+      console.log('[Workflow] Email trigger ingested ' + ingested + ' card(s) into "' + wb.board.title + '" from ' + trigger.locator);
+    }
+
+    return ingested;
   }
 
   /**
