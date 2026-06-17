@@ -99,10 +99,28 @@ function makeMockNC({ listBoards, getBoard } = {}) {
   };
 }
 
-/** Create an error with an HTTP status code, as DeckClient._request produces */
+/**
+ * Create a generic HTTP error (matches DeckApiError / NCRequestManager 4xx/5xx shape).
+ * Used for non-auth errors (404, 500, 503) where the message varies.
+ */
 function makeHttpError(statusCode, message) {
   const err = new Error(message || `HTTP ${statusCode}`);
   err.statusCode = statusCode;
+  return err;
+}
+
+/**
+ * Create an auth error that EXACTLY mirrors NCRequestManager's rejection shape
+ * after the status-custody fix: message is "Authentication error: <status>"
+ * and .statusCode is set.  This is the single source of truth — if the
+ * chokepoint message ever changes, update here only.
+ *
+ * 403: nc.request() rejects → propagates through DeckClient._request (no wrapping)
+ *      → reaches findBoard()'s catch with this exact shape.
+ */
+function makeNcAuthError(status) {
+  const err = new Error(`Authentication error: ${status}`);
+  err.statusCode = status;
   return err;
 }
 
@@ -146,8 +164,8 @@ asyncTest('TC-403-002: 403 from getBoard() invalidates registry and falls throug
   boardRegistry.registerBoard(role, 99);
 
   const nc = makeMockNC({
-    // 403 — simulates a stale id (board recreated, trashed, or unshared)
-    getBoard: () => { throw makeHttpError(403, 'Permission denied'); },
+    // 403 — mirrors exact NCRequestManager rejection shape after custody fix
+    getBoard: () => { throw makeNcAuthError(403); },
     listBoards: () => ({ status: 200, body: [], headers: {} })
   });
 
@@ -203,7 +221,7 @@ asyncTest('TC-403-004: 403 fall-through + matching board in listBoards → retur
   boardRegistry.registerBoard(role, 200); // stale id
 
   const nc = makeMockNC({
-    getBoard: () => { throw makeHttpError(403, 'Permission denied'); },
+    getBoard: () => { throw makeNcAuthError(403); },
     listBoards: () => ({
       status: 200,
       body: [
@@ -236,7 +254,7 @@ asyncTest('TC-403-005: 403 fall-through + no match in listBoards → returns nul
   boardRegistry.registerBoard(role, 300);
 
   const nc = makeMockNC({
-    getBoard: () => { throw makeHttpError(403, 'Permission denied'); },
+    getBoard: () => { throw makeNcAuthError(403); },
     listBoards: () => ({
       status: 200,
       body: [

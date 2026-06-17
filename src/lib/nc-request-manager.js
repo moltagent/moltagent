@@ -536,14 +536,18 @@ class NCRequestManager {
 
         // Max retries exceeded
         this.metrics.failures++;
-        reject(new Error(`Rate limited after ${requestItem.retryCount} retries`));
+        const err = new Error(`Rate limited after ${requestItem.retryCount} retries`);
+        err.statusCode = 429;   // signal keeps custody
+        reject(err);
         return;
       }
 
       // Handle auth errors - NEVER retry 401/403
       if (response.status === 401 || response.status === 403) {
         this.metrics.failures++;
-        reject(new Error(`Authentication error: ${response.status}`));
+        const err = new Error(`Authentication error: ${response.status}`);
+        err.statusCode = response.status;   // signal keeps custody (#49/#123/#133 class)
+        reject(err);
         return;
       }
 
