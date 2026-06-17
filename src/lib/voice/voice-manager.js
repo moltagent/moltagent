@@ -77,10 +77,14 @@ class VoiceManager {
    * Process a voice message: download, convert, transcribe.
    *
    * @param {Object} message - NC Talk message object (raw)
+   * @param {Object} [options] - Optional processing hints
+   * @param {string} [options.language] - ISO 639-1 STT language hint (custody signal
+   *   derived once upstream in MessageProcessor; do NOT re-derive language here).
+   *   When absent, falls back to config.language, then to STT auto-detect.
    * @returns {Promise<{transcript: string, confidence: number|null, duration: number}|null>}
    *   Returns null if mode is off, transcription fails, or transcript is empty.
    */
-  async processVoiceMessage(message) {
+  async processVoiceMessage(message, options = {}) {
     if (this.mode === 'off') {
       return null;
     }
@@ -124,7 +128,10 @@ class VoiceManager {
       let transcriptText;
       let confidence = null;
       try {
-        const language = this.config.language || undefined;
+        // options.language is the room-language custody signal derived once upstream in
+        // MessageProcessor (_detectRoomLanguage). Absent → config.language → undefined
+        // (STT auto-detect). Signals keep custody (#49/#123/#133).
+        const language = options.language || this.config.language || undefined;
         const sttResult = await this.speachesClient.transcribe(wavBuffer, { language });
         // SpeachesClient returns { text, confidence }
         if (typeof sttResult === 'string') {

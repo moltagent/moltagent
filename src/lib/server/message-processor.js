@@ -476,13 +476,22 @@ class MessageProcessor {
 
     // Session V2: Voice message — transcribe via VoiceManager (preferred) or WhisperClient (fallback)
     if (extracted._isVoice && extracted._voiceFile) {
+      // STT language custody: derive the room's working language ONCE here (the
+      // chokepoint right before transcription) and pass it forward to STT. Signals
+      // keep custody (#49/#123/#133); null → STT auto-detect (today's behavior).
+      const roomLanguage = await this._detectRoomLanguage(
+        extracted.token, extracted.messageId
+      );
       if (this.voiceManager) {
         if (this.voiceManager.mode === 'off') {
           // Voice processing intentionally disabled via Cockpit — skip silently
           return { skipped: true, reason: 'voice_disabled' };
         }
         try {
-          const result = await this.voiceManager.processVoiceMessage(extracted._rawMessage);
+          const result = await this.voiceManager.processVoiceMessage(
+            extracted._rawMessage,
+            { language: roomLanguage }
+          );
           if (result && result.transcript) {
             extracted._transcript = result.transcript;
             extracted.content = this._tagVoiceTranscription(
@@ -1392,6 +1401,112 @@ class MessageProcessor {
       return `${typedContent}\n${tagged}`;
     }
     return tagged;
+  }
+
+  /**
+   * Detect the working language of a Talk room from its conversation history.
+   *
+   * Architecture Brief:
+   * -------------------
+   * Problem: Whisper STT auto-detects the spoken language and gets it wrong for
+   *   short utterances ("Delete this email" → mis-read as French). The room's
+   *   working language is already known — the bot's last reply is a reliable proxy,
+   *   because the agent matches the user's language naturally — but that signal
+   *   never reaches STT.
+   *
+   * Pattern: SIGNALS KEEP CUSTODY (#49/#123/#133, 4th instance). Compute the
+   *   language ONCE here, at the chokepoint right before voice transcription, and
+   *   pass it forward (mp → VoiceManager → SpeachesClient). VoiceManager must NOT
+   *   re-derive it. Detection is an LLM job (THE LLM IS THE LANGUAGE LAYER) on the
+   *   fast classifier model (`job: 'classification'` → qwen2.5:3b local), never a
+   *   regex / char-set / word list.
+   *
+   * Graceful fallback = preserve today's behavior (STT auto-detect). Return null
+   *   when: conversationContext is absent; no assistant message exists in history
+   *   (new room); the LLM call throws; or the returned token is not a plausible
+   *   2-letter ISO 639-1 code. The plausibility check is the ONE acceptable
+   *   post-LLM guard — it is structural (is it a 2-letter alpha code?), not
+   *   semantic.
+   *
+   * Data flow:
+   *   getHistory(token, {limit:5, excludeMessageId})  // oldest-first
+   *     → last element with role === 'assistant' → its .content
+   *     → LLM classification (ISO 639-1 of that content)
+   *     → structural validation → lowercase 2-letter code | null
+   *
+   * Multilingual by default: the detection prompt carries DE + EN + PT positive
+   *   examples; fr/es are accepted as plausible outputs (bonus), never special-cased.
+   *
+   * @param {string} token - Talk room token
+   * @param {number|string} [excludeMessageId] - Trigger message id to exclude from history
+   * @returns {Promise<string|null>} Lowercase ISO 639-1 code (e.g. 'en','de','pt','fr','es')
+   *   or null when no reliable signal exists (caller falls back to STT auto-detect).
+   * @private
+   */
+  async _detectRoomLanguage(token, excludeMessageId) {
+    // Guard: both deps required; absent → fall through to STT auto-detect.
+    if (!this.conversationContext || !token) return null;
+
+    // 1. Fetch a lightweight history sample (oldest-first array).
+    let history;
+    try {
+      history = await this.conversationContext.getHistory(token, {
+        limit: 5,
+        excludeMessageId
+      });
+    } catch (err) {
+      console.warn(`[Voice] _detectRoomLanguage: getHistory failed: ${err.message}`);
+      return null;
+    }
+
+    if (!Array.isArray(history) || history.length === 0) return null;
+
+    // 2. Language proxy = content of the MOST RECENT assistant message
+    //    (history is oldest-first, so scan from the end).
+    const lastAssistant = [...history].reverse()
+      .find(m => m.role === 'assistant' && m.content && m.content.trim());
+    if (!lastAssistant) return null; // new room → STT auto-detect (current behavior)
+
+    // 3. Resolve the router (same idiom as _extractSearchTermsLLM).
+    const router = this.microPipeline?.router;
+    if (!router) return null;
+
+    // 4. Ask the LLM — language detection is the model's job (Dev Rule 1).
+    //    job:'classification' routes to qwen2.5:3b local; maxTokens 8 → single token answer.
+    try {
+      const snippet = lastAssistant.content.substring(0, 300);
+      const result = await router.route({
+        job: 'classification',
+        task: 'detect_language',
+        content: `The following text was written by an AI assistant. Return ONLY the ISO 639-1 language code of the text (en, de, pt, fr, es). Nothing else.
+
+Examples:
+  "Hier ist eine Zusammenfassung der E-Mail." → de
+  "Here is a summary of the email." → en
+  "Aqui está um resumo do e-mail." → pt
+
+Text: "${snippet}"`,
+        requirements: { maxTokens: 8, temperature: 0.0 }
+      });
+
+      const raw = (result?.result || result?.content || '').trim().toLowerCase();
+
+      // 5. Structural post-LLM guard: accept a bare 2-letter code at the START of
+      //    the answer, optionally trailed by punctuation/whitespace ("en", "en.", "en\n").
+      //    Anchored + non-letter lookahead so prose ("the code is en" → "th") and full
+      //    words ("english") do NOT yield a confidently-wrong hint — they fall through to
+      //    null → STT auto-detect (the safe default). Structural only, NOT a semantic check:
+      //    any 2-letter alpha code passes; STT ignores unrecognised hints gracefully.
+      const m = raw.match(/^[a-z]{2}(?![a-z])/);
+      const code = m ? m[0] : null;
+      if (code) {
+        console.log(`[Voice] Room language custody → ${code} (from last assistant message)`);
+      }
+      return code;
+    } catch (err) {
+      console.warn(`[Voice] _detectRoomLanguage: LLM detection failed: ${err.message}`);
+      return null;
+    }
   }
 
   // ---------------------------------------------------------------------------
