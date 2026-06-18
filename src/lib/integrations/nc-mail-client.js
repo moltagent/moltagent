@@ -171,6 +171,42 @@ class NCMailClient {
   }
 
   /**
+   * Best-effort: ask NC Mail to sync a mailbox from IMAP into its database.
+   *
+   * The bridge ingests on a heartbeat (minutes) while NC Mail's own background
+   * SyncJob runs on a much slower per-account interval, so a just-arrived email
+   * is usually NOT yet in NC Mail's DB when we look it up — the lookup misses
+   * and the link can't be built. A sync here closes that race.
+   *
+   * Safe on \Seen: this syncs a mailbox the bridge already reads every pulse
+   * (warm), which fetches envelopes only and does NOT mark messages read.
+   * (A cold first-ever sync of a never-synced mailbox can mark pre-existing
+   * unread mail read; operators warm the trigger mailbox once by enabling its
+   * background sync — after that every sync here is incremental and safe.)
+   *
+   * Best-effort: returns false on any error and never throws; resolution
+   * continues regardless (the message may already be synced).
+   *
+   * @param {number} mailboxId - The mailbox databaseId to sync
+   * @returns {Promise<boolean>} true on a 2xx sync, false otherwise
+   */
+  async syncMailbox(mailboxId) {
+    try {
+      const response = await this.nc.request(
+        `/index.php/apps/mail/api/mailboxes/${encodeURIComponent(mailboxId)}/sync`,
+        {
+          method: 'POST',
+          headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: [], init: true })
+        }
+      );
+      return !!response && response.status >= 200 && response.status < 300;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
    * Best-effort: resolve a deep-link URL to a message thread in NC Mail.
    *
    * Returns null (never throws) on any error, missing account/mailbox, or
@@ -186,6 +222,11 @@ class NCMailClient {
     try {
       const mailbox = await this.resolveMailbox(folder);
       if (!mailbox) return null;
+
+      // Close the sync race: pull the mailbox into NC Mail's DB before lookup,
+      // so a just-ingested email is present. Best-effort — a failed sync does
+      // not block resolution (the message may already be synced).
+      await this.syncMailbox(mailbox.mailboxId);
 
       const databaseId = await this.resolveMessageDatabaseId(mailbox.mailboxId, messageId);
       if (databaseId == null) return null;
