@@ -1833,29 +1833,30 @@ class MessageProcessor {
   // ---------------------------------------------------------------------------
 
   /**
-   * Decide whether the knowledge path may fall back to a web search. Pure — no
-   * I/O — so the egress policy is unit-testable on its own (#136).
+   * Decide whether the knowledge path may fall back to a web search. Pure, no
+   * I/O, so the egress policy is unit-testable on its own (#136).
    *
-   * Two gates sit ahead of the searchPolicy preference. The count heuristic
-   * (wantsMore) alone used to escape to the web whenever the local result count
-   * was low; these gates stop it from overriding facts it has no business over-
-   * riding:
-   *   - trust:local-only → the web never auto-fires (the single control; web
-   *     egresses). searchPolicy can only narrow within cloud-ok, never widen
-   *     past trust.
-   *   - a workspace probe returned data → the workspace IS the answer; web
-   *     results cannot contain the user's board.
-   * Otherwise the Cockpit searchPolicy decides: research → fire, internal-first
-   * → offer, sovereign → suppress.
+   * Web access is governed by the Cockpit `searchPolicy`, not by the
+   * inference-trust axis. The two axes are independent: `trust` (local-only /
+   * cloud-ok) decides which model reasons over the content; `searchPolicy`
+   * decides whether the web is read at all. A local-only roster reads the
+   * public web through the self-hosted SearXNG and synthesizes locally, so the
+   * content never reaches a third-party model and the configuration stays
+   * sovereign. (`_probeWeb` is SearXNG-only; commercial providers are a
+   * separate, opt-in concern handled elsewhere.)
    *
-   * @param {{wantsMore:boolean, trust:?string, workspaceAnswered:boolean, searchPolicy:string}} input
+   * One gate sits ahead of the `searchPolicy` preference: a workspace probe
+   * that returned data IS the answer, since web results cannot contain the
+   * user's board. Otherwise `searchPolicy` decides: research fires,
+   * internal-first offers, sovereign suppresses.
+   *
+   * @param {{wantsMore:boolean, workspaceAnswered:boolean, searchPolicy:string}} input
    * @returns {{action:'fire'|'offer'|'suppress'|'none', reason:string}}
    */
-  static decideWebFallback({ wantsMore, trust, workspaceAnswered, searchPolicy }) {
+  static decideWebFallback({ wantsMore, workspaceAnswered, searchPolicy }) {
     if (!wantsMore) return { action: 'none', reason: 'sufficient local knowledge' };
-    if (trust === 'local-only') return { action: 'suppress', reason: 'trust:local-only (no egress)' };
     if (workspaceAnswered) return { action: 'suppress', reason: 'workspace probe returned data' };
-    if (searchPolicy === 'research') return { action: 'fire', reason: 'cloud-ok + research policy' };
+    if (searchPolicy === 'research') return { action: 'fire', reason: 'research policy' };
     if (searchPolicy === 'internal-first') return { action: 'offer', reason: 'internal-first policy' };
     return { action: 'suppress', reason: 'sovereign policy' };
   }
@@ -1940,23 +1941,18 @@ class MessageProcessor {
     const contextSuggestsWeb = liveContext?.lastAssistantAction?.admittedIgnorance === true;
     let webSearchOffered = false;
 
-    // Web egress decision — two gates ahead of the searchPolicy preference (#136).
-    // The count heuristic alone escapes to the web whenever substantiveResults is
-    // low, ignoring two facts it has no business overriding:
-    //   Gate 1 — trust (the single control): under trust:local-only the auto web
-    //     fallback never fires. _probeWeb egresses (SearXNG proxies external
-    //     engines; WebReader fetches external URLs), so it is cloud, not local.
-    //     searchPolicy can only narrow within cloud-ok; it cannot widen past trust.
-    //   Gate 2 — workspace truth: when a workspace-source probe already returned
-    //     data, that IS the answer. Web results cannot contain the user's board.
-    //     This honors the probe signal the keyword-count heuristic dropped (the
-    //     "found 5 deck cards, escaped to web anyway" case).
-    const trust = this.intentRouter?.getTrust?.() || null;
+    // Web egress decision — gated by workspace truth ahead of searchPolicy (#136).
+    // The count heuristic alone used to escape to the web whenever
+    // substantiveResults was low, ignoring a fact it has no business overriding:
+    // when a workspace-source probe already returned data, that IS the answer.
+    // Web results cannot contain the user's board. This honors the probe signal
+    // the keyword-count heuristic dropped (the "found 5 deck cards, escaped to
+    // web anyway" case). searchPolicy then decides among the remaining cases.
     const workspaceAnswered = probeResults.some(
       p => WORKSPACE_KNOWLEDGE_SOURCES.has(p.source) && (p.results || []).length > 0
     );
     const wantsMore = substantiveResults < 2 || (contextSuggestsWeb && substantiveResults < 4);
-    const decision = MessageProcessor.decideWebFallback({ wantsMore, trust, workspaceAnswered, searchPolicy });
+    const decision = MessageProcessor.decideWebFallback({ wantsMore, workspaceAnswered, searchPolicy });
     let webSuppressed = false;
 
     if (decision.action === 'fire') {
