@@ -95,6 +95,8 @@ try {
   NewsClient = null;
 }
 
+const NCMailClient = require('./src/lib/integrations/nc-mail-client');
+
 let NCFilesClient, NCSearchClient, TextExtractor;
 try {
   ({ NCFilesClient } = require('./src/lib/integrations/nc-files-client'));
@@ -1988,6 +1990,7 @@ async function initialize() {
         talkSendQueue: talkQueue,
         talkToken: defaultTalkToken,
         emailHandler,
+        ncMailClient: ncRequestManager ? new NCMailClient(ncRequestManager) : null,
         budgetEnforcer: llmRouter?.router?.budget || null,
         config: { botUsername: CONFIG.nc.username, adminUser: appConfig.cockpit?.adminUser || appConfig.knowledge?.adminUser || '', dataDir: true }
       });
