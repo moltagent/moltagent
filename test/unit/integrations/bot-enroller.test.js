@@ -214,7 +214,8 @@ asyncTest('enrollAll() handles 403 not-moderator gracefully', async () => {
     'GET:/ocs/v2.php/apps/spreed/api/v1/bot/room1': ocsResponse(SAMPLE_ROOM_BOTS),
     'POST:/ocs/v2.php/apps/spreed/api/v1/bot/': (path) => {
       if (path.includes('room1')) {
-        throw new Error('Authentication error: 403');
+        // Mirror the chokepoint contract: NCRequestManager attaches .statusCode (#176).
+        throw Object.assign(new Error('Authentication error: 403'), { statusCode: 403 });
       }
       return { status: 201, body: {}, headers: {} };
     }
@@ -240,7 +241,7 @@ asyncTest('enrollAll() handles 400 already-enabled gracefully', async () => {
       { token: 'room1', type: 2, name: 'Room 1' }
     ]),
     'GET:/ocs/v2.php/apps/spreed/api/v1/bot/room1': ocsResponse(SAMPLE_ROOM_BOTS),
-    'POST:/ocs/v2.php/apps/spreed/api/v1/bot/': new Error('HTTP 400: Bad Request')
+    'POST:/ocs/v2.php/apps/spreed/api/v1/bot/': Object.assign(new Error('HTTP 400: Bad Request'), { statusCode: 400 })
   });
 
   const enroller = new BotEnroller({ ncRequestManager: nc });
@@ -414,31 +415,25 @@ asyncTest('enrollAll() treats POST 200 as already-enabled (skip not enroll)', as
   assert.strictEqual(enroller.enrolledCount, 1);
 });
 
-// --- _extractStatusCode ---
+// --- enrollAll() propagates a non-403/400 status as an error (not a skip) ---
 
-test('_extractStatusCode parses Authentication error format', () => {
-  const nc = createMockNC();
+asyncTest('enrollAll() records a non-403/400 status rejection as an error', async () => {
+  // The catch path keys off err.statusCode (#176 chokepoint custody): only
+  // 400/403 are "expected" and skipped; any other status is a real error.
+  const nc = createMockNC({
+    'GET:/ocs/v2.php/apps/spreed/api/v4/room': ocsResponse([
+      { token: 'room1', type: 2, name: 'Room 1' }
+    ]),
+    'GET:/ocs/v2.php/apps/spreed/api/v1/bot/room1': ocsResponse(SAMPLE_ROOM_BOTS),
+    'POST:/ocs/v2.php/apps/spreed/api/v1/bot/':
+      Object.assign(new Error('HTTP 500: Internal Server Error'), { statusCode: 500 })
+  });
+
   const enroller = new BotEnroller({ ncRequestManager: nc });
+  const result = await enroller.enrollAll();
 
-  assert.strictEqual(enroller._extractStatusCode(new Error('Authentication error: 403')), 403);
-  assert.strictEqual(enroller._extractStatusCode(new Error('Authentication error: 401')), 401);
-});
-
-test('_extractStatusCode parses HTTP status format', () => {
-  const nc = createMockNC();
-  const enroller = new BotEnroller({ ncRequestManager: nc });
-
-  assert.strictEqual(enroller._extractStatusCode(new Error('HTTP 400: Bad Request')), 400);
-  assert.strictEqual(enroller._extractStatusCode(new Error('HTTP 500: Internal Server Error')), 500);
-});
-
-test('_extractStatusCode returns null for non-HTTP errors', () => {
-  const nc = createMockNC();
-  const enroller = new BotEnroller({ ncRequestManager: nc });
-
-  assert.strictEqual(enroller._extractStatusCode(new Error('Network error: timeout')), null);
-  assert.strictEqual(enroller._extractStatusCode(null), null);
-  assert.strictEqual(enroller._extractStatusCode(new Error('')), null);
+  assert.strictEqual(result.skipped, 0);
+  assert.strictEqual(result.errors.length, 1);
 });
 
 // --- Module export ---

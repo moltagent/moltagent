@@ -328,10 +328,11 @@ class CockpitManager {
         try {
           board = await this.deck.getBoard(boardId);
         } catch (err) {
-          if (err.statusCode === 404 || err.statusCode === 403 ||
-              /Authentication error:\s*(401|403)/.test(err.message)) {
+          if (err.statusCode === 404 || err.statusCode === 403) {
             // Stale or forbidden registry entry — clear it and fall through to
-            // the self-heal below (treat exactly like a missing entry).
+            // the self-heal below (treat exactly like a missing entry). The
+            // status now travels on the error (#176), so this matches the
+            // canonical findBoard contract; instance-wide 401 propagates.
             this.boardRegistry.invalidateBoard(ROLES.cockpit);
             boardId = null;
           } else {

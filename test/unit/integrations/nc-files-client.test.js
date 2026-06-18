@@ -173,7 +173,8 @@ asyncTest('writeFile sends PUT request', async () => {
 
 asyncTest('writeFile throws on 403', async () => {
   const nc = createMockNCRM();
-  nc.request = async () => { throw new Error('Authentication error: 403'); };
+  // Mirror the chokepoint contract: NCRequestManager attaches .statusCode (#176).
+  nc.request = async () => { throw Object.assign(new Error('Authentication error: 403'), { statusCode: 403 }); };
   const client = new NCFilesClient(nc);
   try {
     await client.writeFile('readonly/file.md', 'data');
