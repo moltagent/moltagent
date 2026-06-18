@@ -92,14 +92,15 @@ function makeWorkflowBoard({
 }
 
 /** Build a minimal WorkflowEngine without disk persistence. */
-function makeEngine({ emailHandler, deck } = {}) {
+function makeEngine({ emailHandler, deck, ncMailClient } = {}) {
   return new WorkflowEngine({
     workflowDetector: { getWorkflowBoards: async () => [], invalidateCache: () => {} },
     deckClient: deck || createMockDeck(),
     agentLoop: createMockAgentLoop(),
     talkSendQueue: createMockTalkQueue(),
     talkToken: 'tok',
-    emailHandler: emailHandler || null
+    emailHandler: emailHandler || null,
+    ncMailClient: ncMailClient || null
     // no config.dataDir → in-memory only
   });
 }
@@ -427,6 +428,103 @@ function makeEmail(overrides = {}) {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  // TC-TRIGGER-17: ncMailClient resolves a URL → description contains Markdown link AND
+  //               still contains the Message-ID: footer.
+  await asyncTest('TC-TRIGGER-17: ncMailClient resolves URL → description has link AND Message-ID footer', async () => {
+    const MAIL_URL = 'https://nc.example.com/apps/mail/box/99/thread/555';
+    const ncMailClient = {
+      resolveThreadUrl: async (_folder, _msgId) => MAIL_URL
+    };
+    const email = makeEmail({
+      messageId: '<link-test@example.com>',
+      from: 'Charlie <charlie@example.com>',
+      body: 'Mail body.'
+    });
+    const emailHandler = createMockEmailHandler([email]);
+    const deck = createMockDeck();
+    const engine = makeEngine({ emailHandler, deck, ncMailClient });
+    const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.INQUIRIES' });
+
+    await engine._ingestTriggerEmails(wb);
+
+    assert.strictEqual(deck._calls.length, 1, 'one card should be created');
+    const desc = deck._calls[0].description;
+    assert.ok(
+      desc.includes('[Open the original email in Mail](' + MAIL_URL + ')'),
+      'description should contain Markdown link to NC Mail'
+    );
+    assert.ok(
+      desc.includes('Message-ID: <link-test@example.com>'),
+      'description should still contain the Message-ID footer'
+    );
+  });
+
+  // TC-TRIGGER-18: ncMailClient.resolveThreadUrl returns null → description falls back to
+  //               Message-ID footer with NO Mail link; ingestion returns 1 card (no throw).
+  await asyncTest('TC-TRIGGER-18: ncMailClient returns null → Message-ID footer intact, no link, ingestion completes', async () => {
+    const ncMailClient = {
+      resolveThreadUrl: async (_folder, _msgId) => null
+    };
+    const email = makeEmail({ messageId: '<null-link-test@example.com>' });
+    const emailHandler = createMockEmailHandler([email]);
+    const deck = createMockDeck();
+    const engine = makeEngine({ emailHandler, deck, ncMailClient });
+    const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.INQUIRIES' });
+
+    let threw = false;
+    let result;
+    try {
+      result = await engine._ingestTriggerEmails(wb);
+    } catch (_) {
+      threw = true;
+    }
+
+    assert.strictEqual(threw, false, 'ingestion must not throw when resolveThreadUrl returns null');
+    assert.strictEqual(result, 1, 'should return 1 ingested card');
+    const desc = deck._calls[0].description;
+    assert.ok(
+      desc.includes('Message-ID: <null-link-test@example.com>'),
+      'Message-ID footer must be present'
+    );
+    assert.ok(
+      !desc.includes('[Open the original email in Mail]'),
+      'no Mail link should be present when resolveThreadUrl returned null'
+    );
+  });
+
+  // TC-TRIGGER-19: ncMailClient.resolveThreadUrl throws → ingestion still completes
+  //               (try/catch swallows it), footer is intact, returns 1 card.
+  await asyncTest('TC-TRIGGER-19: ncMailClient throws → ingestion completes, footer intact', async () => {
+    const ncMailClient = {
+      resolveThreadUrl: async () => { throw new Error('simulated NC Mail error'); }
+    };
+    const email = makeEmail({ messageId: '<throw-test@example.com>' });
+    const emailHandler = createMockEmailHandler([email]);
+    const deck = createMockDeck();
+    const engine = makeEngine({ emailHandler, deck, ncMailClient });
+    const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.INQUIRIES' });
+
+    let threw = false;
+    let result;
+    try {
+      result = await engine._ingestTriggerEmails(wb);
+    } catch (_) {
+      threw = true;
+    }
+
+    assert.strictEqual(threw, false, 'ingestion must not throw when resolveThreadUrl throws');
+    assert.strictEqual(result, 1, 'should return 1 ingested card');
+    const desc = deck._calls[0].description;
+    assert.ok(
+      desc.includes('Message-ID: <throw-test@example.com>'),
+      'Message-ID footer must be present after resolveThreadUrl threw'
+    );
+    assert.ok(
+      !desc.includes('[Open the original email in Mail]'),
+      'no Mail link should appear when resolveThreadUrl threw'
+    );
   });
 
   setTimeout(() => { summary(); exitWithCode(); }, 500);

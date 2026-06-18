@@ -37,9 +37,11 @@ class WorkflowEngine {
    * @param {string} options.talkToken - Primary Talk room token for notifications
    * @param {Object} [options.emailHandler] - EmailHandler instance; when provided, boards with a
    *   TRIGGER: email:<folder> line will have unread emails ingested as cards each pulse.
+   * @param {Object} [options.ncMailClient] - NCMailClient instance; when provided, ingested cards
+   *   receive a best-effort deep-link back to the original message in NC Mail.
    * @param {Object} [options.config]
    */
-  constructor({ workflowDetector, deckClient, agentLoop, talkSendQueue, talkToken, emailHandler, config, budgetEnforcer }) {
+  constructor({ workflowDetector, deckClient, agentLoop, talkSendQueue, talkToken, emailHandler, ncMailClient, config, budgetEnforcer }) {
     this.detector = workflowDetector;
     this.deck = deckClient;
     this.agent = agentLoop;
@@ -49,6 +51,7 @@ class WorkflowEngine {
     this.budgetEnforcer = budgetEnforcer || null;
     this.botUsername    = this.config.botUsername || 'moltagent';
     this.emailHandler   = emailHandler || null;
+    this.ncMailClient   = ncMailClient || null;
 
     // Resolve data directory. Disk persistence is only enabled when config.dataDir
     // is explicitly provided (or config.dataDir === true to use the default).
@@ -970,9 +973,25 @@ class WorkflowEngine {
       // Build the card title and description.
       const title = email.subject || '(No subject)';
       const bodyText = (email.body || '').slice(0, 2000);
-      const description = bodyText + '\n\n---\nFrom: ' + (email.from || '') +
+      let description = bodyText + '\n\n---\nFrom: ' + (email.from || '') +
         '\nDate: ' + (email.date || '') +
         '\nMessage-ID: ' + key;
+
+      // Best-effort: append a deep-link back to the original message in NC Mail.
+      // Only attempt resolution when the real Message-ID header is available
+      // (key may be a sha1 fallback when messageId is absent — not resolvable).
+      if (this.ncMailClient && email.messageId) {
+        try {
+          const mailUrl = await this.ncMailClient.resolveThreadUrl(trigger.locator, email.messageId);
+          if (mailUrl) {
+            description += '\n[Open the original email in Mail](' + mailUrl + ')';
+          } else {
+            console.log('[Workflow] NC Mail back-link: no match for Message-ID ' + email.messageId + ' (message may not yet be synced) — keeping Message-ID footer');
+          }
+        } catch (err) {
+          console.log('[Workflow] NC Mail back-link: resolution errored for Message-ID ' + email.messageId + ': ' + err.message + ' — keeping Message-ID footer');
+        }
+      }
 
       const card = await this.deck.createCardOnBoard(wb.boardId, stack.id, title, { description });
 
