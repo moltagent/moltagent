@@ -207,5 +207,52 @@ function makeRoutes() {
     assert.strictEqual(result, null, '_getJson should return null on parse error');
   });
 
+  // TC-MAIL-12: resolveThreadUrl issues a sync POST for the resolved mailbox
+  // before looking up the message (closes the heartbeat-vs-background-sync race).
+  await asyncTest('TC-MAIL-12: resolveThreadUrl syncs the mailbox before lookup', async () => {
+    const calls = [];
+    const nc = {
+      ncUrl: 'https://nc.example.com',
+      request: async (path, opts) => {
+        calls.push({ path, method: (opts && opts.method) || 'GET' });
+        if (path.startsWith('/index.php/apps/mail/api/accounts')) return { status: 200, body: JSON.stringify(ACCOUNTS) };
+        if (path.includes('/sync')) return { status: 200, body: JSON.stringify({ newMessages: [] }) };
+        if (path.startsWith('/index.php/apps/mail/api/mailboxes')) return { status: 200, body: JSON.stringify(MAILBOXES_RESP) };
+        if (path.startsWith('/index.php/apps/mail/api/messages')) return { status: 200, body: JSON.stringify(MESSAGES_RESP) };
+        return { status: 404, body: null };
+      }
+    };
+    const client = new NCMailClient(nc);
+
+    const url = await client.resolveThreadUrl('INBOX.INQUIRIES', '<msg1@host>');
+    assert.strictEqual(url, 'https://nc.example.com/apps/mail/box/99/thread/555');
+
+    const syncCall = calls.find(c => c.path.includes('/index.php/apps/mail/api/mailboxes/99/sync'));
+    assert.ok(syncCall, 'a sync POST should be issued for the resolved mailbox (id 99)');
+    assert.strictEqual(syncCall.method, 'POST', 'sync must be a POST');
+    // The sync must precede the messages lookup.
+    const syncIdx = calls.findIndex(c => c.path.includes('/sync'));
+    const msgIdx = calls.findIndex(c => c.path.startsWith('/index.php/apps/mail/api/messages'));
+    assert.ok(syncIdx >= 0 && msgIdx >= 0 && syncIdx < msgIdx, 'sync must precede the messages lookup');
+  });
+
+  // TC-MAIL-13: a failed sync does NOT block resolution (best-effort).
+  await asyncTest('TC-MAIL-13: resolveThreadUrl still resolves when the sync POST fails', async () => {
+    const nc = {
+      ncUrl: 'https://nc.example.com',
+      request: async (path) => {
+        if (path.includes('/sync')) throw new Error('sync boom');
+        if (path.startsWith('/index.php/apps/mail/api/accounts')) return { status: 200, body: JSON.stringify(ACCOUNTS) };
+        if (path.startsWith('/index.php/apps/mail/api/mailboxes')) return { status: 200, body: JSON.stringify(MAILBOXES_RESP) };
+        if (path.startsWith('/index.php/apps/mail/api/messages')) return { status: 200, body: JSON.stringify(MESSAGES_RESP) };
+        return { status: 404, body: null };
+      }
+    };
+    const client = new NCMailClient(nc);
+
+    const url = await client.resolveThreadUrl('INBOX.INQUIRIES', '<msg1@host>');
+    assert.strictEqual(url, 'https://nc.example.com/apps/mail/box/99/thread/555', 'resolution proceeds despite sync failure');
+  });
+
   setTimeout(() => { summary(); exitWithCode(); }, 500);
 })();
