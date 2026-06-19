@@ -86,7 +86,7 @@ function makeBoard({ cardLabels = [], assignedUsers = [], extraCards = [] } = {}
         ...extraCards
       ]
     }],
-    description: 'WORKFLOW: pipeline\nRULES: Process cards.',
+    description: 'WORKFLOW: pipeline\nREVIEWER: jordan\nRULES: Process cards.',
     workflowType: 'pipeline',
     boardId: 1
   };
