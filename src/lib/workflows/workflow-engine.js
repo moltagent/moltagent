@@ -540,8 +540,10 @@ class WorkflowEngine {
 
       // Handoff back: unassign human, assign bot for automated processing
       const botUser = this.deck.username || this.botUsername;
-      const humanUser = wb.board.owner?.uid || wb.board.owner || this._getHumanUser();
-      await this._safeUnassign(board.id, stack.id, card.id, humanUser);
+      const humanUser = this._resolveGateReviewer(wb, stack);
+      if (humanUser && humanUser !== botUser) {
+        await this._safeUnassign(board.id, stack.id, card.id, humanUser);
+      }
       await this._safeAssign(board.id, stack.id, card.id, botUser);
       console.log(`[Workflow] GATE resolution handoff: "${card.title}" → ${botUser}`);
 
@@ -638,13 +640,22 @@ class WorkflowEngine {
 
     // Safety net: if GATE card is still assigned to bot, reassign to human.
     // This catches cases where the LLM stamped GATE but forgot to reassign.
-    const botUser = this.deck.username || this.botUsername;
-    const assignedUids = (card.assignedUsers || []).map(u => u.participant?.uid);
-    if (assignedUids.includes(botUser)) {
-      const humanUser = wb.board.owner?.uid || wb.board.owner || this._getHumanUser();
-      await this._safeUnassign(board.id, stack.id, card.id, botUser);
-      await this._safeAssign(board.id, stack.id, card.id, humanUser);
-      console.log(`[Workflow] GATE safety net: reassigned "${card.title}" from ${botUser} to ${humanUser}`);
+    {
+      const bot = this.deck.username || this.botUsername;
+      const assignedUids = (card.assignedUsers || []).map(u => u.participant?.uid).filter(Boolean);
+      // Terminal: already assigned to a real (non-bot) human → done, never touch.
+      if (!assignedUids.some(uid => uid !== bot)) {
+        // Only act if the card is still assigned to the bot.
+        if (assignedUids.includes(bot)) {
+          const human = this._resolveGateReviewer(wb, stack);
+          // No human resolvable → do NOT churn (notification already fired once above).
+          if (human && human !== bot) {
+            await this._safeUnassign(board.id, stack.id, card.id, bot);
+            await this._safeAssign(board.id, stack.id, card.id, human);
+            console.log(`[Workflow] GATE safety net: reassigned "${card.title}" from ${bot} to ${human}`);
+          }
+        }
+      }
     }
 
     return false;
@@ -1206,7 +1217,8 @@ class WorkflowEngine {
     const isDone = this._isDoneStack(wb, stack);
     if (isDone) return; // Don't assign Done cards
 
-    const userId = isGate ? this._getHumanUser() : (this.deck.username || this.botUsername);
+    const userId = isGate ? this._resolveGateReviewer(wb, stack) : (this.deck.username || this.botUsername);
+    if (!userId) return;
     await this._safeAssign(wb.board.id, stack.id, card.id, userId);
   }
 
@@ -1241,11 +1253,55 @@ class WorkflowEngine {
   }
 
   /**
-   * Get the human user for GATE assignments.
+   * Resolve the declared GATE reviewer uid for a given stack/board.
+   * Never returns the bot uid — the convergence guard depends on this guarantee.
+   *
+   * Source of truth: a structural `REVIEWER: <uid>` marker declared in the board
+   * WORKFLOW rules card or the stack CONFIG card — same convention as TRIGGER:/MODEL:/
+   * SLA:/LLM: markers.  Board ownership and ACL are NOT consulted (declared intent
+   * is the only authority; inferring from NC ownership was the #183 generator).
+   *
+   * Resolution order (first hit wins):
+   * 1. Stack CONFIG card `REVIEWER: <uid>` — most specific override.
+   * 2. Board WORKFLOW rules `REVIEWER: <uid>` from wb._plainDescription.
+   * 3. config.adminUser, if explicitly set and !== bot.
+   * 4. null — no resolvable reviewer; callers must NOT churn assignments.
+   *
+   * @param {Object} wb    - Workflow board descriptor (wb._plainDescription)
+   * @param {Object} stack - Current stack (used to locate the CONFIG card)
+   * @returns {string|null}
    * @private
    */
-  _getHumanUser() {
-    return this.config.adminUser || 'admin';
+  _resolveGateReviewer(wb, stack) {
+    const bot = this.deck.username || this.botUsername;
+
+    // Step 1: stack CONFIG card — most specific (mirrors _extractStackLlmRouting pattern).
+    const configCard = findConfigCard(stack);
+    if (configCard?.description) {
+      const plain = stripHtml(configCard.description);
+      const m = plain.match(/^REVIEWER:\s*(\S+)\s*$/im);
+      if (m) {
+        const uid = m[1].trim();
+        // A declared reviewer that equals the bot uid is a misconfiguration — treat as absent.
+        if (uid && uid !== bot) return uid;
+      }
+    }
+
+    // Step 2: board WORKFLOW rules card.
+    const boardDesc = wb._plainDescription || '';
+    const bm = boardDesc.match(/^REVIEWER:\s*(\S+)\s*$/im);
+    if (bm) {
+      const uid = bm[1].trim();
+      if (uid && uid !== bot) return uid;
+    }
+
+    // Step 3: deterministic config default — only the explicitly configured
+    // value, never a fallback sentinel that could resolve to a non-existent user.
+    const admin = this.config.adminUser;
+    if (admin && admin !== bot) return admin;
+
+    // Step 4: unresolvable — return null so callers never churn.
+    return null;
   }
 
   /**
