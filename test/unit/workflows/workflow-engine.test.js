@@ -711,29 +711,6 @@ function createMockTalkQueue() {
     assert.strictEqual(putCalls.length, 0, 'Should never archive the rules card');
   });
 
-  // --- _getHumanUser ---
-
-  test('_getHumanUser() returns configured admin or default', () => {
-    const engine1 = new WorkflowEngine({
-      workflowDetector: createMockDetector(),
-      deckClient: createMockDeck(),
-      agentLoop: createMockAgentLoop(),
-      talkSendQueue: createMockTalkQueue(),
-      talkToken: 'test-token',
-      config: { adminUser: 'jordan' }
-    });
-    assert.strictEqual(engine1._getHumanUser(), 'jordan');
-
-    const engine2 = new WorkflowEngine({
-      workflowDetector: createMockDetector(),
-      deckClient: createMockDeck(),
-      agentLoop: createMockAgentLoop(),
-      talkSendQueue: createMockTalkQueue(),
-      talkToken: 'test-token'
-    });
-    assert.strictEqual(engine2._getHumanUser(), 'admin');
-  });
-
   // ─── _extractStackLlmRouting tests ────────────────────────────────────
 
   await asyncTest('_extractStackLlmRouting: extracts LLM: cloud from CONFIG card', async () => {

@@ -1253,14 +1253,6 @@ class WorkflowEngine {
   }
 
   /**
-   * Get the human user for GATE assignments.
-   * @private
-   */
-  _getHumanUser() {
-    return this.config.adminUser || 'admin';
-  }
-
-  /**
    * Resolve the declared GATE reviewer uid for a given stack/board.
    * Never returns the bot uid — the convergence guard depends on this guarantee.
    *
@@ -1303,8 +1295,8 @@ class WorkflowEngine {
       if (uid && uid !== bot) return uid;
     }
 
-    // Step 3: deterministic config default — only the explicitly configured value
-    // (NOT _getHumanUser()'s 'admin' sentinel).
+    // Step 3: deterministic config default — only the explicitly configured
+    // value, never a fallback sentinel that could resolve to a non-existent user.
     const admin = this.config.adminUser;
     if (admin && admin !== bot) return admin;
 
