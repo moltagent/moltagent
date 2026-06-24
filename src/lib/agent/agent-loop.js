@@ -437,7 +437,7 @@ class AgentLoop {
    * @param {number} [params.maxIterations] - Override max iterations (default: this.maxIterations)
    * @returns {Promise<string>} The agent's final text response
    */
-  async processWorkflowTask({ systemAddition, task, boardId, cardId, stackId, forceLocal, allowCloud, cloudTier, maxIterations }) {
+  async processWorkflowTask({ systemAddition, task, boardId, cardId, stackId, forceLocal, allowCloud, cloudTier, maxIterations, searchPolicy }) {
     const startTime = Date.now();
     const iterLimit = maxIterations || this.maxIterations;
     this.logger.info(`[AgentLoop] Workflow task: board=${boardId} card=${cardId} maxIter=${iterLimit}`);
@@ -462,7 +462,8 @@ class AgentLoop {
       tools = this.toolRegistry.getWorkflowToolDefinitions({ includeUpdateCard: cardId > 0 });
     } else {
       // Per-card processing (cardId > 0) gets update_card; schedules (cardId === 0) don't.
-      tools = this.toolRegistry.getCloudWorkflowToolDefinitions(systemAddition, { includeUpdateCard: cardId > 0 });
+      // searchPolicy gates web_search/web_read: excluded only when 'sovereign'.
+      tools = this.toolRegistry.getCloudWorkflowToolDefinitions(systemAddition, { includeUpdateCard: cardId > 0, searchPolicy });
     }
 
     const messages = [
