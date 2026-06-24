@@ -984,7 +984,24 @@ class WorkflowEngine {
       // Build the card title and description.
       const title = email.subject || '(No subject)';
       const bodyText = (email.body || '').slice(0, 2000);
-      let description = bodyText + '\n\n---\nFrom: ' + (email.from || '') +
+
+      // Custody fix (#185): carry the canonical fromAddress so downstream beats
+      // do not need to re-derive or fabricate it. Use RFC 5322 "Name <addr>" form.
+      // Invariant: when the display string already contains the address, do NOT
+      // duplicate it (handles the common "Name <addr>" production from IMAP).
+      const fromDisplay = email.from || '';
+      const fromAddr    = email.fromAddress || '';
+      let fromLine;
+      if (!fromAddr || fromDisplay.includes(fromAddr)) {
+        // Address absent or already embedded in the display string — preserve as-is.
+        fromLine = fromDisplay;
+      } else if (fromDisplay) {
+        fromLine = fromDisplay + ' <' + fromAddr + '>';
+      } else {
+        fromLine = '<' + fromAddr + '>';
+      }
+
+      let description = bodyText + '\n\n---\nFrom: ' + fromLine +
         '\nDate: ' + (email.date || '') +
         '\nMessage-ID: ' + key;
 

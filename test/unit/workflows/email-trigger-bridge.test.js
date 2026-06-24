@@ -329,6 +329,7 @@ function makeEmail(overrides = {}) {
     const email = makeEmail({
       messageId: '<footer-test@example.com>',
       from: 'Bob <bob@example.com>',
+      fromAddress: 'bob@example.com',
       date: new Date('2026-06-17T12:00:00Z'),
       body: 'Body content here.'
     });
@@ -525,6 +526,86 @@ function makeEmail(overrides = {}) {
       !desc.includes('[Open the original email in Mail]'),
       'no Mail link should appear when resolveThreadUrl threw'
     );
+  });
+
+  // TC-TRIGGER-20: from is display-name only, fromAddress present → From line is
+  //               "Name <addr>" — custody fix #185.
+  await asyncTest('TC-TRIGGER-20: from=display-name-only + fromAddress → From line is Name <addr>', async () => {
+    const email = makeEmail({
+      messageId: '<from-addr-20@example.com>',
+      from: 'Test Sender',
+      fromAddress: 'test@example.com',
+      body: 'Body.'
+    });
+    const emailHandler = createMockEmailHandler([email]);
+    const deck = createMockDeck();
+    const engine = makeEngine({ emailHandler, deck });
+    const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
+
+    await engine._ingestTriggerEmails(wb);
+
+    assert.strictEqual(deck._calls.length, 1);
+    const desc = deck._calls[0].description;
+    assert.ok(
+      desc.includes('From: Test Sender <test@example.com>'),
+      'From line should be "Test Sender <test@example.com>" — got: ' + desc
+    );
+  });
+
+  // TC-TRIGGER-21: from is display-name only, fromAddress empty → From line is name
+  //               with NO empty angle brackets (custody fix #185).
+  await asyncTest('TC-TRIGGER-21: from=display-name-only + fromAddress="" → no empty <>', async () => {
+    const email = makeEmail({
+      messageId: '<from-addr-21@example.com>',
+      from: 'Test Sender',
+      fromAddress: '',
+      body: 'Body.'
+    });
+    const emailHandler = createMockEmailHandler([email]);
+    const deck = createMockDeck();
+    const engine = makeEngine({ emailHandler, deck });
+    const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
+
+    await engine._ingestTriggerEmails(wb);
+
+    assert.strictEqual(deck._calls.length, 1);
+    const desc = deck._calls[0].description;
+    assert.ok(
+      !desc.includes('<>'),
+      'From line must NOT contain empty angle brackets <>'
+    );
+    assert.ok(
+      desc.includes('From: Test Sender'),
+      'From line should contain the display name — got: ' + desc
+    );
+  });
+
+  // TC-TRIGGER-22: from already contains the address → no duplication (no-duplication
+  //               invariant from custody fix #185; also guards TC-TRIGGER-13 regression).
+  await asyncTest('TC-TRIGGER-22: from already contains address → address appears exactly once', async () => {
+    const email = makeEmail({
+      messageId: '<from-addr-22@example.com>',
+      from: 'Dup <dup@example.com>',
+      fromAddress: 'dup@example.com',
+      body: 'Body.'
+    });
+    const emailHandler = createMockEmailHandler([email]);
+    const deck = createMockDeck();
+    const engine = makeEngine({ emailHandler, deck });
+    const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
+
+    await engine._ingestTriggerEmails(wb);
+
+    assert.strictEqual(deck._calls.length, 1);
+    const desc = deck._calls[0].description;
+    // The address must not appear a second time after a closing '>'
+    assert.ok(
+      !desc.includes('dup@example.com> <dup@example.com>'),
+      'address must not be duplicated in the From line — got: ' + desc
+    );
+    // And it must appear at least once
+    const count = (desc.match(/dup@example\.com/g) || []).length;
+    assert.strictEqual(count, 1, 'dup@example.com should appear exactly once, found: ' + count);
   });
 
   setTimeout(() => { summary(); exitWithCode(); }, 500);
