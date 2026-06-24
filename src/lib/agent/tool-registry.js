@@ -161,9 +161,15 @@ class ToolRegistry {
    * Keeps tool count low (5-10 instead of 54) to reduce token cost.
    *
    * @param {string} [boardContext=''] - The workflow system addition (board rules, card info)
+   * @param {Object} [options]
+   * @param {boolean} [options.includeUpdateCard=false] - Include workflow_deck_update_card
+   * @param {string} [options.searchPolicy] - System search policy: 'research'|'internal-first'|'sovereign'.
+   *   When 'research' or 'internal-first' (default when undefined), web_search and web_read are
+   *   added to the palette. When 'sovereign', they remain excluded.
+   *   Gate is advertising-only (execution is uncaged, matching the #133 subset guardrail).
    * @returns {Array<{type: 'function', function: {name: string, description: string, parameters: Object}}>}
    */
-  getCloudWorkflowToolDefinitions(boardContext = '', { includeUpdateCard = false } = {}) {
+  getCloudWorkflowToolDefinitions(boardContext = '', { includeUpdateCard = false, searchPolicy } = {}) {
     // Base tools every workflow needs
     const allowed = new Set([
       'workflow_deck_move_card',
@@ -177,6 +183,15 @@ class ToolRegistry {
     // Schedules only create cards, never update existing ones.
     if (includeUpdateCard) {
       allowed.add('workflow_deck_update_card');
+    }
+
+    // Web tools: included when searchPolicy is not 'sovereign'.
+    // Default (undefined) is treated as 'research' — web is on.
+    // Both 'research' and 'internal-first' mean web is available in a research
+    // stage (the stage's purpose is the signal, not the policy mode).
+    if (searchPolicy !== 'sovereign') {
+      allowed.add('web_search');
+      allowed.add('web_read');
     }
 
     // Scan context for capabilities the board actually needs

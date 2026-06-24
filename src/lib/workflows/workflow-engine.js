@@ -7,6 +7,7 @@ const GateDetector = require('./gate-detector');
 const { ScheduleHandler, parseScheduleBlock, findConfigCard, stripHtml } = require('./schedule-handler');
 const { isStructuralCard, hasLabel } = require('../integrations/deck-card-classifier');
 const DeckClient = require('../integrations/deck-client');
+const { proposeSlots, parseHoursMarker } = require('./slot-proposer');
 
 const DEFAULT_DATA_DIR = path.resolve(process.cwd(), 'data');
 
@@ -505,8 +506,174 @@ class WorkflowEngine {
       'and assign the human reviewer. Do not proceed past the GATE point.',
     ].filter(Boolean).join('\n');
 
+    // ── Research grounding block (Part 5 / #188) ─────────────────────────────
+    // Self-scoping: only injected when the card description contains a parseable
+    // From: footer line (structural signal that this is an ingested inquiry card).
+    // Generic cards and other boards receive no grounding block.
+    //
+    // The From: footer is written by the email trigger ingest path (#185) as:
+    //   <body>\n\n---\nFrom: <Name> <addr>\nDate: ...\nMessage-ID: ...
+    // We parse from the RAW description (not the stripHtml version) because
+    // stripHtml strips angle-bracket content (e.g. <alice@acme.com> → stripped).
+    // This is structural parsing of a machine-authored marker — Rule 1 clean.
+    //
+    // Custody: the parse is bound to the trailing footer segment (after the last
+    // "\n---\n" delimiter the ingest path appends), NOT the whole description.
+    // A quoted/forwarded inbound body can contain its own "From: x@other.com"
+    // line; matching that would let third-party content masquerade as the
+    // established contact fact and steer the web_search domain anchor. The footer
+    // is always the final segment, so .pop() isolates the machine-authored region.
+    const searchPolicy = this.agent.cockpitManager?.cachedConfig?.system?.searchPolicy || 'research';
+    let groundingBlock = '';
+    const rawCardDesc = card.description || '';
+    const footerSegment = rawCardDesc.split(/\n---\n/).pop();
+    const fromFooterMatch = footerSegment.match(/^From:\s*(.+)$/im);
+    if (fromFooterMatch) {
+      const fromRaw = fromFooterMatch[1].trim();
+      // Parse "Name <addr>" or "<addr>" or "addr" forms structurally.
+      let contactName    = '';
+      let contactAddress = '';
+      const angleMatch = fromRaw.match(/^(.*?)\s*<([^>]+)>\s*$/);
+      if (angleMatch) {
+        contactName    = angleMatch[1].trim();
+        contactAddress = angleMatch[2].trim();
+      } else {
+        // No angle-bracket form — treat the whole string as the address
+        contactAddress = fromRaw;
+      }
+
+      // Mail link: the NC Mail deep-link is on a separate line in the footer
+      // as "[Open the original email in Mail](url)".  Extract it structurally.
+      let mailLinkLine = '';
+      const mailLinkMatch = footerSegment.match(/\[Open the original email in Mail\]\(([^)]+)\)/i);
+      if (mailLinkMatch) {
+        mailLinkLine = `\n- Source: [NC Mail thread](${mailLinkMatch[1]})`;
+      }
+
+      // ── Section A: structured contact facts (always present when From present)
+      const sectionA = [
+        '## Known contact details (from the inbound message)',
+        `- Name: ${contactName || '(not provided)'}`,
+        `- Email: ${contactAddress}`,
+        mailLinkLine || '',
+        '',
+        'These details are established facts. Include them in the profile as-is.',
+        'Do not omit or fabricate the email address.',
+      ].filter(s => s !== null).join('\n');
+
+      // ── Section B: research instructions (web-dependent)
+      let sectionB;
+      if (searchPolicy !== 'sovereign') {
+        // Derive the domain from the sender address as a concrete company anchor.
+        const domainMatch = contactAddress.match(/@([^@>]+)$/);
+        const senderDomain = domainMatch ? domainMatch[1] : '';
+        sectionB = [
+          '## Research task',
+          'Find publicly available information about the company associated with this inquiry.',
+          senderDomain ? `The sender's email domain is @${senderDomain} — use this as a concrete anchor.` : '',
+          'Identify the company from the inquiry text (do NOT fabricate a company name if one is not clear).',
+          '',
+          'Useful signals: what the company does, its size/stage, its relevance to the inquiry topic,',
+          'any public contact or team pages.',
+          '',
+          'Source attribution rules (strictly enforced):',
+          '- Every claim from web results MUST include its source URL.',
+          '- Claims without a source URL are NOT included in the profile.',
+          '- Keep internal facts (from the email), provided contact details, and web findings',
+          '  as distinct attributed sections in both the card description and the Collectives page.',
+          '',
+          'Write the profile to BOTH:',
+          '  1. The card description (appended below the email text) — the reviewer\'s primary surface.',
+          '  2. The partner\'s Collectives page — the durable record.',
+        ].filter(Boolean).join('\n');
+      } else {
+        sectionB = [
+          '## Research note',
+          'Web research is disabled by system policy (sovereign mode).',
+          'Compile the profile from the email content and internal knowledge only.',
+          'Write the profile to both the card description and the Collectives page.',
+        ].join('\n');
+      }
+
+      // ── Section C: scheduling slots (only when hoursExplicit)
+      let sectionC = '';
+      const schedulingCfg = this._resolveSchedulingConfig(wb, stack);
+      if (schedulingCfg.hoursExplicit) {
+        // Fetch busy events via CalDAV client (guard for null / absent client)
+        let busyBlocks = [];
+        const calClient = this.agent.toolRegistry?.clients?.calDAVClient;
+        if (calClient) {
+          try {
+            const now       = new Date();
+            // Search 5 business days forward (matches proposeSlots default windowDays)
+            const WINDOW_DAYS = 5;
+            const rangeEnd  = new Date(now.getTime() + WINDOW_DAYS * 24 * 60 * 60 * 1000);
+            // getEvents needs a calendarId; use the default calendar name.
+            // Fall back to 'personal' if not configured.
+            const calId     = calClient.defaultCalendar || 'personal';
+            const events    = await calClient.getEvents(calId, now, rangeEnd);
+            // Drop events with missing start/end (malformed ICS yields null DTSTART/
+            // DTEND → new Date(null) = epoch, a spurious busy block). proposeSlots
+            // also re-filters NaN, but excluding incomplete events here is cleaner.
+            busyBlocks = (events || [])
+              .filter(e => e && e.start && e.end)
+              .map(e => ({
+                start: e.start instanceof Date ? e.start : new Date(e.start),
+                end:   e.end   instanceof Date ? e.end   : new Date(e.end)
+              }));
+          } catch (err) {
+            console.warn(`[Workflow] Could not fetch calendar events for slot proposal: ${err.message}`);
+          }
+        }
+
+        // Detect locale from card language — but since the model handles language
+        // and the contact details determine the response language, we default to
+        // 'en' here and let the model render them in the appropriate language.
+        // The slot strings carry machine-correct dates; the model may translate
+        // surrounding prose but must not recompute the dates.
+        const slots = proposeSlots({
+          busyBlocks,
+          hours:        schedulingCfg.hours,
+          timezone:     schedulingCfg.timezone,
+          slotDuration: schedulingCfg.slotDuration,
+          locale:       'en',
+          now:          new Date(),
+          maxSlots:     3,
+          windowDays:   5
+        });
+
+        if (slots.length > 0) {
+          sectionC = [
+            '## Available meeting slots',
+            'The following slots are confirmed available and correctly labeled.',
+            'Include these in the profile as proposed meeting times.',
+            'Weekday labels are pre-computed and correct — do NOT recompute them.',
+            ...slots.map(s => `- ${s}`),
+          ].join('\n');
+        } else {
+          sectionC = '## Available meeting slots\nNo availability found in the current window. Omit scheduling from the profile.';
+        }
+      }
+
+      groundingBlock = [
+        '',
+        '---',
+        '## Structured Research Grounding',
+        '',
+        sectionA,
+        '',
+        sectionB,
+        sectionC ? '' : null,
+        sectionC || null,
+      ].filter(s => s !== null).join('\n');
+    }
+
+    const finalSystemAddition = groundingBlock
+      ? systemAddition + groundingBlock
+      : systemAddition;
+
     await this.agent.processWorkflowTask({
-      systemAddition,
+      systemAddition: finalSystemAddition,
       task: `Process workflow card: "${card.title}" according to the board rules.`,
       boardId: board.id,
       cardId: card.id,
@@ -514,7 +681,8 @@ class WorkflowEngine {
       forceLocal,
       allowCloud,
       cloudTier,
-      maxIterations
+      maxIterations,
+      searchPolicy
     });
   }
 
@@ -1319,6 +1487,97 @@ class WorkflowEngine {
 
     // Step 4: unresolvable — return null so callers never churn.
     return null;
+  }
+
+  /**
+   * Resolve scheduling CONFIG markers for a given stack/board.
+   *
+   * Reads HOURS:, TIMEZONE:, and SLOT_DURATION: markers from:
+   *   1. Stack CONFIG card  — most specific override
+   *   2. Board WORKFLOW rules card (wb._plainDescription) — board-wide default
+   *   3. System timezone from Intl  (TIMEZONE only)
+   *   4. Code defaults: Mon-Fri 09:00-17:00, system tz, 30 min
+   *
+   * Each marker resolves independently — a stack CONFIG can override TIMEZONE
+   * while the board WORKFLOW card supplies HOURS.
+   *
+   * `hoursExplicit` is true only when a HOURS: marker was actually found
+   * (at stack or board level).  The grounding block (Part 5) uses this flag
+   * to decide whether to inject Section C (scheduling slots).
+   *
+   * @param {Object} wb    - Workflow board descriptor (wb._plainDescription)
+   * @param {Object} stack - Current stack (used to locate the CONFIG card)
+   * @returns {{
+   *   hours: { days: Set<number>, startMinutes: number, endMinutes: number },
+   *   timezone: string,
+   *   slotDuration: number,
+   *   hoursExplicit: boolean
+   * }}
+   * @private
+   */
+  _resolveSchedulingConfig(wb, stack) {
+    const DEFAULT_HOURS     = { days: new Set([1, 2, 3, 4, 5]), startMinutes: 9 * 60, endMinutes: 17 * 60 };
+    const DEFAULT_SLOT      = 30;
+    const systemTz          = (() => {
+      try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
+      catch (_) { return 'UTC'; }
+    })();
+
+    const configCard  = findConfigCard(stack);
+    const stackPlain  = configCard?.description ? stripHtml(configCard.description) : '';
+    const boardPlain  = wb._plainDescription || '';
+
+    // Helper: extract a marker value from a text block.  Returns null when absent.
+    function _getMarker(text, name) {
+      if (!text) return null;
+      const re = new RegExp(`^${name}:\\s*(.+)$`, 'im');
+      const m  = text.match(re);
+      return m ? m[1].trim() : null;
+    }
+
+    // ── HOURS ──────────────────────────────────────────────────────────────
+    // Resolution: stack CONFIG → board WORKFLOW → code default
+    let hours = null;
+    let hoursExplicit = false;
+    const hoursRaw = _getMarker(stackPlain, 'HOURS') || _getMarker(boardPlain, 'HOURS');
+    if (hoursRaw) {
+      const parsed = parseHoursMarker(hoursRaw);
+      if (parsed) {
+        hours = parsed;
+        hoursExplicit = true;
+      }
+      // Invalid value → fall through to code default (hoursExplicit stays false)
+    }
+    if (!hours) hours = DEFAULT_HOURS;
+
+    // ── TIMEZONE ───────────────────────────────────────────────────────────
+    // Resolution: stack CONFIG → board WORKFLOW → system tz → 'UTC'
+    let timezone = systemTz;
+    const tzRaw = _getMarker(stackPlain, 'TIMEZONE') || _getMarker(boardPlain, 'TIMEZONE');
+    if (tzRaw) {
+      // Validate: Intl.DateTimeFormat throws on unknown identifiers
+      try {
+        Intl.DateTimeFormat(undefined, { timeZone: tzRaw }).resolvedOptions();
+        timezone = tzRaw;
+      } catch (_) {
+        // Unknown timezone string — fall through to system tz (already set)
+        console.warn(`[Workflow] Unknown TIMEZONE value "${tzRaw}" — falling back to system tz`);
+      }
+    }
+
+    // ── SLOT_DURATION ──────────────────────────────────────────────────────
+    // Resolution: stack CONFIG → board WORKFLOW → code default (30 min)
+    let slotDuration = DEFAULT_SLOT;
+    const sdRaw = _getMarker(stackPlain, 'SLOT_DURATION') || _getMarker(boardPlain, 'SLOT_DURATION');
+    if (sdRaw !== null) {
+      const parsed = parseInt(sdRaw, 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        slotDuration = parsed;
+      }
+      // Non-integer or non-positive → fall through to default
+    }
+
+    return { hours, timezone, slotDuration, hoursExplicit };
   }
 
   /**
