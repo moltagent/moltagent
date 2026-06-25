@@ -1818,7 +1818,15 @@ class WorkflowEngine {
 
   /**
    * Remove a workflow label from a card by title.
-   * Looks up the label ID from the full board then calls the DELETE API.
+   * Looks up the label ID from the full board then calls the Deck removeLabel API.
+   *
+   * The Deck label-removal endpoint is `PUT .../cards/{id}/removeLabel` (the
+   * mirror of `PUT .../assignLabel` for adding). An earlier implementation used
+   * `DELETE .../assignLabel`, which this Nextcloud/Deck build rejects with HTTP
+   * 405 Method Not Allowed — the error was swallowed by the catch below, so the
+   * label silently persisted (breaking, among others, #197's GATE→APPROVED swap
+   * and its idempotency). DeckClient.removeLabel already uses the PUT endpoint;
+   * this aligns with it.
    * @private
    */
   async _removeLabelFromCard(boardId, stackId, cardId, labelTitle) {
@@ -1831,8 +1839,8 @@ class WorkflowEngine {
         console.warn(`[Workflow] Label "${labelTitle}" not found on board ${boardId} — nothing to remove`);
         return;
       }
-      const apiPath = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/assignLabel`;
-      await this.deck._request('DELETE', apiPath, { labelId: label.id });
+      const apiPath = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/removeLabel`;
+      await this.deck._request('PUT', apiPath, { labelId: label.id });
       console.log(`[Workflow] Removed label "${labelTitle}" from card ${cardId}`);
     } catch (err) {
       console.warn(`[Workflow] Could not remove label "${labelTitle}" from card ${cardId}: ${err.message}`);

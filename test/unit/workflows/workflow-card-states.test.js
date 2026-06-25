@@ -187,11 +187,11 @@ function makeEngine({ detector, deck, agent, talkQueue, config } = {}) {
 
     await engine.processAll();
 
-    // The SCHEDULED label must have been removed: DELETE to assignLabel endpoint with labelId=5
+    // The SCHEDULED label must have been removed: PUT to removeLabel endpoint with labelId=5
     const removeCalls = deck._requestCalls.filter(r =>
-      r.method === 'DELETE' && r.path.includes('/assignLabel') && r.body && r.body.labelId === 5
+      r.method === 'PUT' && r.path.includes('/removeLabel') && r.body && r.body.labelId === 5
     );
-    assert.ok(removeCalls.length > 0, 'SCHEDULED label (id=5) must be removed via DELETE /assignLabel');
+    assert.ok(removeCalls.length > 0, 'SCHEDULED label (id=5) must be removed via PUT /removeLabel');
   });
 
   // Test 3: SCHEDULED card with no due date is skipped with warning
@@ -232,7 +232,7 @@ function makeEngine({ detector, deck, agent, talkQueue, config } = {}) {
     // PAUSED wins — card must be skipped, no SCHEDULED removal
     assert.strictEqual(agent._calls.length, 0, 'AgentLoop must not be called — PAUSED wins');
     const removeCalls = deck._requestCalls.filter(r =>
-      r.method === 'DELETE' && r.path.includes('/assignLabel') && r.body && r.body.labelId === 5
+      r.method === 'PUT' && r.path.includes('/removeLabel') && r.body && r.body.labelId === 5
     );
     assert.strictEqual(removeCalls.length, 0, 'SCHEDULED label must NOT be removed when PAUSED wins');
   });
@@ -506,7 +506,7 @@ function makeEngine({ detector, deck, agent, talkQueue, config } = {}) {
     assert.strictEqual(agent._calls.length, 0, 'PAUSED card must be skipped');
     // No label removal calls (SCHEDULED handler must not run)
     const scheduledRemovals = deck._requestCalls.filter(r =>
-      r.method === 'DELETE' && r.path.includes('/assignLabel') && r.body && r.body.labelId === 5
+      r.method === 'PUT' && r.path.includes('/removeLabel') && r.body && r.body.labelId === 5
     );
     assert.strictEqual(scheduledRemovals.length, 0, 'SCHEDULED handler must not run when card is PAUSED');
   });
