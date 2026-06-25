@@ -728,12 +728,33 @@ class WorkflowEngine {
   async _handleGate(wb, stack, card) {
     const { board } = wb;
 
-    // Label-based resolution check — synchronous, no comment scanning
-    const resolution = GateDetector.checkGateResolution(card);
+    // Resolution check (#197): two sources, evaluated in GateDetector —
+    //   via 'label' → legacy APPROVED/REJECTED stamp (backward-compat)
+    //   via 'move'  → reviewer dragged the GATE card OUT of the gate stack.
+    // The engine computes whether the card's CURRENT stack is a declared
+    // rejection target; GateDetector decides gate-stack membership from `stack`.
+    const isRejectionStack = this._isRejectionStack(stack);
+    const resolution = GateDetector.checkGateResolution(card, stack, isRejectionStack);
 
     if (resolution.resolved && resolution.decision) {
-      // Human has applied APPROVED or REJECTED label
-      console.log(`[Workflow] GATE resolved: "${card.title}" -> ${resolution.decision}`);
+      // Post-resolution label swap (#197, Part 2). Only for via==='move' — a
+      // 'label' resolution already carries its record-keeping label, so re-stamping
+      // would be redundant. Run BEFORE the processWorkflowTask handoff so the
+      // record-keeping state is deterministic regardless of what the LLM does downstream.
+      if (resolution.via === 'move') {
+        await this._removeLabelFromCard(board.id, stack.id, card.id, 'GATE');
+        await this._addLabelToCard(board.id, stack.id, card.id,
+          resolution.decision === 'rejected' ? 'REJECTED' : 'APPROVED');
+        // Idempotency: removing the GATE label makes isGate() false next pulse,
+        // so the card is not re-handled. Known edge: isGate() also matches a
+        // "GATE:" TITLE prefix, so a move-resolved card whose title starts
+        // "GATE:" could re-enter via the APPROVED label path — tracked in #200.
+        console.log(`[Workflow] GATE resolved: card "${card.title}" ` +
+          `${resolution.decision} (moved from gate stack to "${stack.title}")`);
+      } else {
+        // Legacy label-stamp resolution (backward-compat path).
+        console.log(`[Workflow] GATE resolved: "${card.title}" -> ${resolution.decision}`);
+      }
 
       // Clear notification dedup so card can be re-gated later if needed
       const gateKey = `${board.id}:${card.id}`;
@@ -812,13 +833,18 @@ class WorkflowEngine {
     // Not resolved (has GATE label, no APPROVED/REJECTED) — notify human once
     const gateKey = `${board.id}:${card.id}`;
     if (!this._notifiedGates.has(gateKey)) {
-      // Label presence IS the notification state — no comment scan needed.
+      // Notification text reflects the new gesture (#197, Part 4): the approval
+      // signal is the stack MOVE, not a label. These are fixed system strings
+      // (not NL classification), so a static template is acceptable.
+      const rej = wb.stacks.find(s => this._isRejectionStack(s));
+      const declineLine = rej ? `\nMove to "${rej.title}" to decline.` : '';
+
       // Notify in Talk once per process lifecycle (in-memory dedup via _notifiedGates).
       if (this.talkQueue && this.talkToken) {
         await this.talkQueue.enqueue(this.talkToken,
           `\u23F8\uFE0F Workflow "${wb.board.title}" is waiting for your review.\n` +
           `Card: **${card.title}**\n` +
-          'Apply the \u2705 APPROVED or \u274C REJECTED label on the card to continue.'
+          'Move this card forward to approve.' + declineLine
         );
       }
 
@@ -828,7 +854,7 @@ class WorkflowEngine {
         try {
           await this.deck.addComment(card.id,
             `\u23F8\uFE0F **GATE**: Waiting for human review.\n` +
-            'Apply the APPROVED or REJECTED label to continue the workflow.'
+            'Move this card forward to approve.' + declineLine
           );
         } catch (_err) {
           // Non-fatal — Talk notification is the primary channel
@@ -1570,6 +1596,28 @@ class WorkflowEngine {
     const configCard = findConfigCard(stack);
     const stackPlain = configCard?.description ? stripHtml(configCard.description) : '';
     const raw = getConfigMarker(stackPlain, 'TERMINAL');
+    return raw !== null && raw.trim().toLowerCase() === 'true';
+  }
+
+  /**
+   * Is this stack a declared rejection target for GATE drag-to-decline (#197)?
+   *
+   * A stack is a rejection target when its CONFIG card declares `REJECTED: true`.
+   * The marker MUST live on the SAME CONFIG card as #196 TERMINAL — i.e. located
+   * via findConfigCard (the 'CONFIG:' title-prefix card), NOT GateDetector's
+   * 'System'-label gate-stack card — so a deployer declares all stack policy in
+   * one place. Explicit opt-in only: `REJECTED: false` or an absent marker both
+   * mean "not a rejection stack" (all other moves out of the gate stack are
+   * approvals).
+   *
+   * @param {Object} stack - Stack to test (used to locate the CONFIG card)
+   * @returns {boolean}
+   * @private
+   */
+  _isRejectionStack(stack) {
+    const configCard = findConfigCard(stack);
+    const stackPlain = configCard?.description ? stripHtml(configCard.description) : '';
+    const raw = getConfigMarker(stackPlain, 'REJECTED');
     return raw !== null && raw.trim().toLowerCase() === 'true';
   }
 

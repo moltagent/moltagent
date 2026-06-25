@@ -1053,7 +1053,11 @@ function createMockTalkQueue() {
       description: 'WORKFLOW: pipeline',
       _plainDescription: 'RULES: ...'
     };
-    const stack = { id: 10, title: 'Review' };
+    // Gate CONFIG card gives isGateStack() a true result so the card is held
+    // (unresolved) rather than treated as "moved out → approved" (#197).
+    const stack = { id: 10, title: 'Review', cards: [
+      { id: 901, title: 'CONFIG: GATE review', description: 'Gate review step', labels: [{ title: 'System' }] }
+    ] };
     // GATE label (not resolved), assigned to the bot
     const card = {
       id: 200,
@@ -1097,7 +1101,9 @@ function createMockTalkQueue() {
       description: 'WORKFLOW: pipeline',
       _plainDescription: 'RULES: ...'
     };
-    const stack = { id: 10, title: 'Review' };
+    const stack = { id: 10, title: 'Review', cards: [
+      { id: 901, title: 'CONFIG: GATE review', description: 'Gate review step', labels: [{ title: 'System' }] }
+    ] };
     const card = {
       id: 200,
       title: 'GATE: Needs Review',
@@ -1144,7 +1150,9 @@ function createMockTalkQueue() {
       description: 'WORKFLOW: pipeline',
       _plainDescription: 'RULES: ...'
     };
-    const stack = { id: 10, title: 'Review' };
+    const stack = { id: 10, title: 'Review', cards: [
+      { id: 901, title: 'CONFIG: GATE review', description: 'Gate review step', labels: [{ title: 'System' }] }
+    ] };
     const card = {
       id: 200,
       title: 'GATE: Needs Review',
@@ -1187,7 +1195,9 @@ function createMockTalkQueue() {
       description: 'WORKFLOW: pipeline',
       _plainDescription: 'RULES: ...'
     };
-    const stack = { id: 10, title: 'Review' };
+    const stack = { id: 10, title: 'Review', cards: [
+      { id: 901, title: 'CONFIG: GATE review', description: 'Gate review step', labels: [{ title: 'System' }] }
+    ] };
     const card = {
       id: 200,
       title: 'GATE: Needs Review',
@@ -1230,12 +1240,14 @@ function createMockTalkQueue() {
       description: 'WORKFLOW: pipeline',
       _plainDescription: 'RULES: ...'
     };
-    // Stack with a CONFIG card that carries REVIEWER: sam
+    // Stack with a CONFIG card that carries REVIEWER: sam.
+    // System label + "GATE" in title satisfies isGateStack() (#197) so the card
+    // is held (unresolved) rather than treated as a post-move approval.
     const stack = {
       id: 10,
       title: 'Review',
       cards: [
-        { id: 901, title: 'CONFIG: Review Stack', description: 'REVIEWER: sam\nLLM: local', labels: [] }
+        { id: 901, title: 'CONFIG: GATE Review Stack', description: 'REVIEWER: sam\nLLM: local', labels: [{ title: 'System' }] }
       ]
     };
     const card = {
@@ -1282,8 +1294,11 @@ function createMockTalkQueue() {
       description: 'WORKFLOW: pipeline',
       _plainDescription: 'WORKFLOW: pipeline\nREVIEWER: dana\nRULES: ...'
     };
-    // Stack has no CONFIG card
-    const stack = { id: 10, title: 'Review', cards: [] };
+    // Gate CONFIG card satisfies isGateStack() (#197). No REVIEWER on CONFIG card
+    // so the resolver falls through to wb._plainDescription (REVIEWER: dana).
+    const stack = { id: 10, title: 'Review', cards: [
+      { id: 901, title: 'CONFIG: GATE review', description: 'Gate review step', labels: [{ title: 'System' }] }
+    ] };
     const card = {
       id: 200,
       title: 'GATE: Needs Review',
@@ -1327,12 +1342,13 @@ function createMockTalkQueue() {
       description: 'WORKFLOW: pipeline',
       _plainDescription: 'WORKFLOW: pipeline\nREVIEWER: dana\nRULES: ...'
     };
-    // Stack CONFIG card declares a different reviewer — must win over board-level
+    // Stack CONFIG card declares a different reviewer — must win over board-level.
+    // System label + "GATE" in title satisfies isGateStack() (#197).
     const stack = {
       id: 10,
       title: 'Review',
       cards: [
-        { id: 901, title: 'CONFIG: Review Stack', description: 'REVIEWER: quinn', labels: [] }
+        { id: 901, title: 'CONFIG: GATE Review Stack', description: 'REVIEWER: quinn', labels: [{ title: 'System' }] }
       ]
     };
     const card = {
@@ -1379,7 +1395,11 @@ function createMockTalkQueue() {
       description: 'WORKFLOW: pipeline',
       _plainDescription: 'WORKFLOW: pipeline\nREVIEWER: quinn\nRULES: ...'
     };
-    const stack = { id: 10, title: 'Review', cards: [] };
+    // Gate CONFIG card satisfies isGateStack() (#197). No REVIEWER on CONFIG card
+    // so the resolver falls through to wb._plainDescription (REVIEWER: quinn).
+    const stack = { id: 10, title: 'Review', cards: [
+      { id: 901, title: 'CONFIG: GATE review', description: 'Gate review step', labels: [{ title: 'System' }] }
+    ] };
     const card = {
       id: 200,
       title: 'GATE: Needs Review',
