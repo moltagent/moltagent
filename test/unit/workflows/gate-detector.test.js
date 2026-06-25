@@ -66,6 +66,24 @@ const GateDetector = require('../../../src/lib/workflows/gate-detector');
     assert.strictEqual(GateDetector.isGateStack(null), false);
   });
 
+  test('isGateStack() finds CONFIG card by "CONFIG:" title prefix when no System label (#197 dual locator)', () => {
+    // A board whose gate CONFIG card uses ONLY the "CONFIG:" title convention,
+    // with NO System label. Must still be recognised as a gate stack — otherwise
+    // a held GATE card here would be silently read as approved-via-move.
+    const cards = [
+      { title: 'CONFIG: GATE review step', description: 'Human review required', labels: [] },
+      { title: 'Task A', description: '', labels: [] }
+    ];
+    assert.strictEqual(GateDetector.isGateStack(cards), true);
+  });
+
+  test('isGateStack() returns false for CONFIG-title card without GATE token', () => {
+    const cards = [
+      { title: 'CONFIG: Replied', description: 'TERMINAL: true', labels: [] }
+    ];
+    assert.strictEqual(GateDetector.isGateStack(cards), false);
+  });
+
   // ── checkGateResolution ──────────────────────────────────────────────────────
 
   test('checkGateResolution() returns approved when APPROVED label present', () => {
@@ -107,6 +125,87 @@ const GateDetector = require('../../../src/lib/workflows/gate-detector');
     const result = GateDetector.checkGateResolution(card);
     assert.strictEqual(result.resolved, true);
     assert.strictEqual(result.decision, 'approved');
+  });
+
+  // ── checkGateResolution (stack-move / #197) ──────────────────────────────────
+
+  // Reusable stacks for move-detection tests
+  const gateCurrentStack = { cards: [
+    { title: 'CONFIG: GATE review', description: 'Requires human GATE', labels: [{ title: 'System' }] }
+  ]};
+  const nonGateCurrentStack = { cards: [
+    { title: 'CONFIG: Replied', description: 'TERMINAL: true', labels: [{ title: 'System' }] }
+  ]};
+
+  test('checkGateResolution() GATE label + still in gate stack → unresolved', () => {
+    const card = { labels: [{ title: 'GATE' }] };
+    const result = GateDetector.checkGateResolution(card, gateCurrentStack, false);
+    assert.strictEqual(result.resolved, false);
+    assert.strictEqual(result.decision, null);
+    assert.strictEqual(result.via, null);
+  });
+
+  // Regression guard for the #197 false-approval BLOCKER: a gate stack whose
+  // CONFIG card uses ONLY the "CONFIG:" title convention (no System label) must
+  // still hold the gate, not auto-approve it.
+  test('checkGateResolution() GATE label + gate stack identified by CONFIG-title only → unresolved (no false approval)', () => {
+    const card = { labels: [{ title: 'GATE' }] };
+    const titleOnlyGateStack = { cards: [
+      { title: 'CONFIG: GATE review', description: 'Human review required', labels: [] }
+    ]};
+    const result = GateDetector.checkGateResolution(card, titleOnlyGateStack, false);
+    assert.strictEqual(result.resolved, false);
+    assert.strictEqual(result.decision, null);
+    assert.strictEqual(result.via, null);
+  });
+
+  test('checkGateResolution() GATE label + moved to non-gate stack → approved via move', () => {
+    const card = { labels: [{ title: 'GATE' }] };
+    const result = GateDetector.checkGateResolution(card, nonGateCurrentStack, false);
+    assert.strictEqual(result.resolved, true);
+    assert.strictEqual(result.decision, 'approved');
+    assert.strictEqual(result.via, 'move');
+  });
+
+  test('checkGateResolution() GATE label + moved to rejection stack → rejected via move', () => {
+    const card = { labels: [{ title: 'GATE' }] };
+    const result = GateDetector.checkGateResolution(card, nonGateCurrentStack, true);
+    assert.strictEqual(result.resolved, true);
+    assert.strictEqual(result.decision, 'rejected');
+    assert.strictEqual(result.via, 'move');
+  });
+
+  test('checkGateResolution() GATE+APPROVED labels in gate stack → approved via label (label-first backward compat)', () => {
+    const card = { labels: [{ title: 'GATE' }, { title: 'APPROVED' }] };
+    // APPROVED check fires first, regardless of currentStack
+    const result = GateDetector.checkGateResolution(card, gateCurrentStack, false);
+    assert.strictEqual(result.resolved, true);
+    assert.strictEqual(result.decision, 'approved');
+    assert.strictEqual(result.via, 'label');
+  });
+
+  test('checkGateResolution() REJECTED label → rejected via label', () => {
+    const card = { labels: [{ title: 'REJECTED' }] };
+    const result = GateDetector.checkGateResolution(card, nonGateCurrentStack, false);
+    assert.strictEqual(result.resolved, true);
+    assert.strictEqual(result.decision, 'rejected');
+    assert.strictEqual(result.via, 'label');
+  });
+
+  test('checkGateResolution() no workflow label → pass-through (via null)', () => {
+    const card = { labels: [] };
+    const result = GateDetector.checkGateResolution(card, nonGateCurrentStack, false);
+    assert.strictEqual(result.resolved, true);
+    assert.strictEqual(result.decision, null);
+    assert.strictEqual(result.via, null);
+  });
+
+  test('checkGateResolution() GATE-only, currentStack omitted (legacy 1-arg call) → unresolved', () => {
+    const card = { labels: [{ title: 'GATE' }] };
+    const result = GateDetector.checkGateResolution(card);
+    assert.strictEqual(result.resolved, false);
+    assert.strictEqual(result.decision, null);
+    assert.strictEqual(result.via, null);
   });
 
   summary();
