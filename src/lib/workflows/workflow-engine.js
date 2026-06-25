@@ -379,6 +379,16 @@ class WorkflowEngine {
    */
   async _processCard(wb, stack, card) {
     const { board, description, stacks } = wb;
+
+    // Terminal stack: the pipeline's end. A card resting here has nothing
+    // further to do, so skip the beat entirely — no LLM call, no cost. A stack
+    // is terminal only when its CONFIG card explicitly declares TERMINAL: true
+    // (opt-in; the default is non-terminal).
+    if (this._isTerminalStack(stack)) {
+      console.log(`[Workflow] Skipping terminal stack "${stack.title}" for card "${card.title}"`);
+      return;
+    }
+
     let { forceLocal } = this._getRoleForCard(wb, card);
 
     // Budget check before cloud processing
@@ -1541,6 +1551,26 @@ class WorkflowEngine {
 
     // Step 4: unresolvable — return null so callers never churn.
     return null;
+  }
+
+  /**
+   * Is this stack a declared terminal stack?
+   *
+   * A terminal stack is the pipeline's end (e.g. "Replied"): a card resting
+   * there needs no further processing. Declared by a TERMINAL: true marker on
+   * the stack's CONFIG card. This is explicit opt-in only — there is no
+   * resolution chain and no code default. TERMINAL: false or an absent marker
+   * both mean non-terminal.
+   *
+   * @param {Object} stack - Current stack (used to locate the CONFIG card)
+   * @returns {boolean}
+   * @private
+   */
+  _isTerminalStack(stack) {
+    const configCard = findConfigCard(stack);
+    const stackPlain = configCard?.description ? stripHtml(configCard.description) : '';
+    const raw = getConfigMarker(stackPlain, 'TERMINAL');
+    return raw !== null && raw.trim().toLowerCase() === 'true';
   }
 
   /**
