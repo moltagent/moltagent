@@ -425,12 +425,13 @@ function makeBoard({ cardLabels = [], assignedUsers = [], extraCards = [] } = {}
     assert.strictEqual(results.gatesResolved, 1, 'Gate should be resolved');
     assert.strictEqual(agentLoop._calls.length, 1, 'processWorkflowTask should be called once');
 
-    // Label swap: DELETE for GATE (id:1), then PUT for APPROVED (id:2)
-    const labelOps = mockDeck._requestCalls.filter(c => c.path.includes('assignLabel'));
-    const gateRemoval = labelOps.find(c => c.method === 'DELETE' && c.body && c.body.labelId === 1);
-    const approvedAdd  = labelOps.find(c => c.method === 'PUT'    && c.body && c.body.labelId === 2);
-    assert.ok(gateRemoval, 'Should DELETE GATE label');
-    assert.ok(approvedAdd,  'Should PUT APPROVED label');
+    // Label swap: remove GATE (id:1) via PUT /removeLabel, then add APPROVED (id:2) via PUT /assignLabel
+    const gateRemoval = mockDeck._requestCalls.find(c =>
+      c.method === 'PUT' && c.path.includes('/removeLabel') && c.body && c.body.labelId === 1);
+    const approvedAdd = mockDeck._requestCalls.find(c =>
+      c.method === 'PUT' && c.path.includes('/assignLabel') && c.body && c.body.labelId === 2);
+    assert.ok(gateRemoval, 'Should remove GATE label via PUT /removeLabel');
+    assert.ok(approvedAdd,  'Should add APPROVED label via PUT /assignLabel');
 
     // Handoff context mentions approved
     const call = agentLoop._calls[0];
@@ -455,11 +456,12 @@ function makeBoard({ cardLabels = [], assignedUsers = [], extraCards = [] } = {}
 
     assert.strictEqual(results.gatesResolved, 1, 'Gate should be resolved');
 
-    const labelOps = mockDeck._requestCalls.filter(c => c.path.includes('assignLabel'));
-    const gateRemoval   = labelOps.find(c => c.method === 'DELETE' && c.body && c.body.labelId === 1);
-    const rejectedAdd   = labelOps.find(c => c.method === 'PUT'    && c.body && c.body.labelId === 3);
-    assert.ok(gateRemoval, 'Should DELETE GATE label');
-    assert.ok(rejectedAdd, 'Should PUT REJECTED label (not APPROVED)');
+    const gateRemoval = mockDeck._requestCalls.find(c =>
+      c.method === 'PUT' && c.path.includes('/removeLabel') && c.body && c.body.labelId === 1);
+    const rejectedAdd = mockDeck._requestCalls.find(c =>
+      c.method === 'PUT' && c.path.includes('/assignLabel') && c.body && c.body.labelId === 3);
+    assert.ok(gateRemoval, 'Should remove GATE label via PUT /removeLabel');
+    assert.ok(rejectedAdd, 'Should add REJECTED label via PUT /assignLabel (not APPROVED)');
 
     const call = agentLoop._calls[0];
     assert.ok(call.systemAddition.toLowerCase().includes('rejected'), 'systemAddition should mention rejected');
