@@ -105,6 +105,18 @@ function makeEngine({ emailHandler, deck, ncMailClient } = {}) {
   });
 }
 
+/**
+ * Mark a board as already-seeded (past its first pulse) so the normal
+ * ingest/dedup path runs. Seeding (#194) makes a board's FIRST pulse record the
+ * folder's existing mail without creating cards; tests that exercise ongoing
+ * ingestion start from a board that has already had that first pulse. An empty
+ * set is sufficient: it makes the .has() first-run check false while leaving no
+ * Message-ID marked, so any fetched mail flows through the normal ingest path.
+ */
+function markSeeded(engine, boardId = 1) {
+  engine._ingestedEmails.set(String(boardId), new Set());
+}
+
 /** Fixture: a single email with a Message-ID. */
 function makeEmail(overrides = {}) {
   return {
@@ -179,6 +191,7 @@ function makeEmail(overrides = {}) {
     const emailHandler = createMockEmailHandler(emails);
     const deck = createMockDeck();
     const engine = makeEngine({ emailHandler, deck });
+    markSeeded(engine);
     const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
 
     await engine._ingestTriggerEmails(wb);
@@ -204,6 +217,7 @@ function makeEmail(overrides = {}) {
     };
     const deck = createMockDeck();
     const engine = makeEngine({ emailHandler, deck });
+    markSeeded(engine);
     const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
 
     await engine._ingestTriggerEmails(wb);
@@ -213,7 +227,9 @@ function makeEmail(overrides = {}) {
   });
 
   // TC-TRIGGER-07: _fetchEmails is called with the correct options.
-  await asyncTest('TC-TRIGGER-07: _fetchEmails called with {folder, unreadOnly:true, limit:50}', async () => {
+  // Post-#194 the trigger fetch is unreadOnly:false — dedup is the Message-ID
+  // store's job, not the IMAP \Seen flag's.
+  await asyncTest('TC-TRIGGER-07: _fetchEmails called with {folder, unreadOnly:false, limit:50}', async () => {
     const emailHandler = createMockEmailHandler([]);
     const engine = makeEngine({ emailHandler });
     const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.INQUIRIES' });
@@ -223,7 +239,7 @@ function makeEmail(overrides = {}) {
     assert.strictEqual(emailHandler._fetchCalls.length, 1);
     const opts = emailHandler._fetchCalls[0];
     assert.strictEqual(opts.folder, 'INBOX.INQUIRIES');
-    assert.strictEqual(opts.unreadOnly, true);
+    assert.strictEqual(opts.unreadOnly, false);
     assert.strictEqual(opts.limit, 50);
   });
 
@@ -232,6 +248,7 @@ function makeEmail(overrides = {}) {
     const emailHandler = createMockEmailHandler([makeEmail()]);
     const deck = createMockDeck();
     const engine = makeEngine({ emailHandler, deck });
+    markSeeded(engine);
 
     // Stacks intentionally out of order; lowest order=0 is id=30.
     const stacks = [
@@ -255,6 +272,7 @@ function makeEmail(overrides = {}) {
     const emailHandler = createMockEmailHandler([makeEmail()]);
     const deck = createMockDeck();
     const engine = makeEngine({ emailHandler, deck });
+    markSeeded(engine);
 
     const stacks = [
       { id: 10, title: 'Inbox', order: 0, cards: [] },
@@ -279,6 +297,7 @@ function makeEmail(overrides = {}) {
     const emailHandler = createMockEmailHandler([emailNoId]);
     const deck = createMockDeck();
     const engine = makeEngine({ emailHandler, deck });
+    markSeeded(engine);
     const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
 
     await engine._ingestTriggerEmails(wb);
@@ -313,6 +332,7 @@ function makeEmail(overrides = {}) {
     const emailHandler = createMockEmailHandler(emails);
     const deck = createMockDeck({ returnNull: true });
     const engine = makeEngine({ emailHandler, deck });
+    markSeeded(engine);
     const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
 
     await engine._ingestTriggerEmails(wb);
@@ -336,6 +356,7 @@ function makeEmail(overrides = {}) {
     const emailHandler = createMockEmailHandler([email]);
     const deck = createMockDeck();
     const engine = makeEngine({ emailHandler, deck });
+    markSeeded(engine);
     const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
 
     await engine._ingestTriggerEmails(wb);
@@ -405,6 +426,9 @@ function makeEmail(overrides = {}) {
         emailHandler: createMockEmailHandler([email]),
         config: { dataDir: tmpDir }
       });
+      // This board is already live (past its seeding pulse), so the email ingests
+      // rather than being seeded-and-skipped (#194).
+      markSeeded(engineA);
       await engineA._ingestTriggerEmails(makeWorkflowBoard({ description: desc }));
       assert.strictEqual(deckA._calls.length, 1, 'first engine creates the card');
       assert.ok(fs.existsSync(path.join(tmpDir, 'workflow-ingested-emails.json')),
@@ -446,6 +470,7 @@ function makeEmail(overrides = {}) {
     const emailHandler = createMockEmailHandler([email]);
     const deck = createMockDeck();
     const engine = makeEngine({ emailHandler, deck, ncMailClient });
+    markSeeded(engine);
     const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.INQUIRIES' });
 
     await engine._ingestTriggerEmails(wb);
@@ -472,6 +497,7 @@ function makeEmail(overrides = {}) {
     const emailHandler = createMockEmailHandler([email]);
     const deck = createMockDeck();
     const engine = makeEngine({ emailHandler, deck, ncMailClient });
+    markSeeded(engine);
     const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.INQUIRIES' });
 
     let threw = false;
@@ -505,6 +531,7 @@ function makeEmail(overrides = {}) {
     const emailHandler = createMockEmailHandler([email]);
     const deck = createMockDeck();
     const engine = makeEngine({ emailHandler, deck, ncMailClient });
+    markSeeded(engine);
     const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.INQUIRIES' });
 
     let threw = false;
@@ -540,6 +567,7 @@ function makeEmail(overrides = {}) {
     const emailHandler = createMockEmailHandler([email]);
     const deck = createMockDeck();
     const engine = makeEngine({ emailHandler, deck });
+    markSeeded(engine);
     const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
 
     await engine._ingestTriggerEmails(wb);
@@ -564,6 +592,7 @@ function makeEmail(overrides = {}) {
     const emailHandler = createMockEmailHandler([email]);
     const deck = createMockDeck();
     const engine = makeEngine({ emailHandler, deck });
+    markSeeded(engine);
     const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
 
     await engine._ingestTriggerEmails(wb);
@@ -592,6 +621,7 @@ function makeEmail(overrides = {}) {
     const emailHandler = createMockEmailHandler([email]);
     const deck = createMockDeck();
     const engine = makeEngine({ emailHandler, deck });
+    markSeeded(engine);
     const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
 
     await engine._ingestTriggerEmails(wb);
@@ -606,6 +636,89 @@ function makeEmail(overrides = {}) {
     // And it must appear at least once
     const count = (desc.match(/dup@example\.com/g) || []).length;
     assert.strictEqual(count, 1, 'dup@example.com should appear exactly once, found: ' + count);
+  });
+
+  // TC-TRIGGER-23: A \Seen (read) email is ingested. Pre-#194 unreadOnly:true made
+  //               read mail invisible; now dedup is the store's job, not the flag's.
+  await asyncTest('TC-TRIGGER-23: read (isRead:true) email is ingested on a live board', async () => {
+    const email = makeEmail({ messageId: '<seen-mail@example.com>', isRead: true });
+    const emailHandler = createMockEmailHandler([email]);
+    const deck = createMockDeck();
+    const engine = makeEngine({ emailHandler, deck });
+    markSeeded(engine);
+    const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
+
+    const result = await engine._ingestTriggerEmails(wb);
+
+    assert.strictEqual(result, 1, 'a \\Seen email should be ingested');
+    assert.strictEqual(deck._calls.length, 1, 'one card should be created from the read email');
+  });
+
+  // TC-TRIGGER-24: First pulse on a fresh board with existing mail → seed-and-skip.
+  //               Zero cards created; every Message-ID recorded in the store.
+  await asyncTest('TC-TRIGGER-24: first pulse seeds existing mail, creates zero cards', async () => {
+    const emails = [
+      makeEmail({ messageId: '<hist-1@example.com>', id: 1 }),
+      makeEmail({ messageId: '<hist-2@example.com>', id: 2 }),
+      makeEmail({ messageId: '<hist-3@example.com>', id: 3 })
+    ];
+    const emailHandler = createMockEmailHandler(emails);
+    const deck = createMockDeck();
+    const engine = makeEngine({ emailHandler, deck }); // NOT seeded → first run
+    const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
+
+    const result = await engine._ingestTriggerEmails(wb);
+
+    assert.strictEqual(result, 0, 'first pulse creates zero cards (seed-and-skip)');
+    assert.strictEqual(deck._calls.length, 0, 'no cards on the seeding pulse');
+    assert.strictEqual(engine._isEmailIngested(1, '<hist-1@example.com>'), true, 'hist-1 seeded');
+    assert.strictEqual(engine._isEmailIngested(1, '<hist-3@example.com>'), true, 'hist-3 seeded');
+  });
+
+  // TC-TRIGGER-25: After seeding, a genuinely new email on the next pulse is ingested;
+  //               the seeded historical mail stays skipped.
+  await asyncTest('TC-TRIGGER-25: second pulse ingests new mail, skips seeded history', async () => {
+    let callCount = 0;
+    const hist = makeEmail({ messageId: '<hist-only@example.com>', id: 1 });
+    const fresh = makeEmail({ messageId: '<brand-new@example.com>', id: 2 });
+    const emailSets = [[hist], [hist, fresh]];
+    const emailHandler = {
+      _fetchEmails: async () => emailSets[callCount++] || emailSets[1],
+      _fetchCalls: []
+    };
+    const deck = createMockDeck();
+    const engine = makeEngine({ emailHandler, deck }); // NOT seeded → first run seeds
+    const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
+
+    await engine._ingestTriggerEmails(wb); // pulse 1: seeds [hist], zero cards
+    await engine._ingestTriggerEmails(wb); // pulse 2: hist skipped, fresh ingested
+
+    assert.strictEqual(deck._calls.length, 1, 'only the new email creates a card');
+    assert.strictEqual(deck._calls[0].title, fresh.subject, 'the card is from the new email');
+    assert.strictEqual(engine._isEmailIngested(1, '<hist-only@example.com>'), true, 'history stays seeded');
+  });
+
+  // TC-TRIGGER-26: An empty trigger folder on first run must NOT swallow the first
+  //               real email arriving later. This is why the first-run signal is
+  //               store.has(boardId), not set.size === 0 — an empty starting folder
+  //               would otherwise re-trigger seeding and skip the first message forever.
+  await asyncTest('TC-TRIGGER-26: empty-folder first run still ingests the first later email', async () => {
+    let callCount = 0;
+    const first = makeEmail({ messageId: '<first-ever@example.com>', id: 1 });
+    const emailSets = [[], [first]];
+    const emailHandler = {
+      _fetchEmails: async () => emailSets[callCount++] || emailSets[1],
+      _fetchCalls: []
+    };
+    const deck = createMockDeck();
+    const engine = makeEngine({ emailHandler, deck }); // NOT seeded → first run
+    const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
+
+    await engine._ingestTriggerEmails(wb); // pulse 1: empty folder, seeds nothing but records board
+    await engine._ingestTriggerEmails(wb); // pulse 2: first real email must ingest
+
+    assert.strictEqual(deck._calls.length, 1, 'the first email after an empty-folder seed must ingest');
+    assert.strictEqual(engine._isEmailIngested(1, '<first-ever@example.com>'), true, 'first email recorded');
   });
 
   setTimeout(() => { summary(); exitWithCode(); }, 500);

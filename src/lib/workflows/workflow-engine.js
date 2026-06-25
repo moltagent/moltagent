@@ -59,7 +59,7 @@ class WorkflowEngine {
    * @param {import('../talk/talk-send-queue').TalkSendQueue} options.talkSendQueue
    * @param {string} options.talkToken - Primary Talk room token for notifications
    * @param {Object} [options.emailHandler] - EmailHandler instance; when provided, boards with a
-   *   TRIGGER: email:<folder> line will have unread emails ingested as cards each pulse.
+   *   TRIGGER: email:<folder> line will have new emails ingested as cards each pulse.
    * @param {Object} [options.ncMailClient] - NCMailClient instance; when provided, ingested cards
    *   receive a best-effort deep-link back to the original message in NC Mail.
    * @param {Object} [options.config]
@@ -1110,8 +1110,12 @@ class WorkflowEngine {
   }
 
   /**
-   * Ingest unread emails from a TRIGGER: email:<folder> declaration into this
-   * board as Deck cards. Idempotent on Message-ID; never mutates \Seen.
+   * Ingest emails from a TRIGGER: email:<folder> declaration into this board as
+   * Deck cards. Idempotent on the Message-ID store (data/workflow-ingested-emails.json),
+   * NOT on the IMAP \Seen flag (#194) — a flag the engine does not own. The mailbox
+   * is opened read-only and \Seen is never mutated. On a board's first pulse the
+   * folder's existing contents are seeded into the store (zero cards) so historical
+   * mail is not bulk-ingested.
    * @param {Object} wb - WorkflowBoard descriptor
    * @returns {Promise<number>} Number of cards created this pulse
    * @private
@@ -1145,12 +1149,15 @@ class WorkflowEngine {
       return 0;
     }
 
-    // Fetch unread emails — opens the mailbox READ-ONLY (never mutates \Seen).
+    // Fetch ALL emails in the folder — opens the mailbox READ-ONLY (never mutates
+    // \Seen). Dedup is the Message-ID store's job (#194), not the \Seen flag's: a
+    // human who reads then curates a mail into the trigger folder leaves it \Seen,
+    // and the old unreadOnly filter made that mail permanently invisible.
     let emails;
     try {
       emails = await this.emailHandler._fetchEmails({
         folder: trigger.locator,
-        unreadOnly: true,
+        unreadOnly: false,
         limit: 50
       });
     } catch (err) {
@@ -1160,12 +1167,35 @@ class WorkflowEngine {
 
     if (emails.length === 50) {
       // Soft warning: a full fetch window may silently cap a backlog.
-      console.warn('[Workflow] Email trigger fetch hit the limit (50) for folder ' + trigger.locator + ' — older unread may wait for the next pulse');
+      console.warn('[Workflow] Email trigger fetch hit the limit (50) for folder ' + trigger.locator + ' — older mail may wait for the next pulse');
     }
 
     // Process oldest-first so card order on the board reflects email arrival order.
     // _fetchEmails returns newest-first (sorted descending); reverse to get oldest-first.
     const orderedEmails = [...emails].reverse();
+
+    // First-run seeding (#194): now that the fetch returns ALL mail, a board whose
+    // trigger folder already holds messages would bulk-create a card per message on
+    // its first pulse. A board is on its first pulse when the store holds no entry
+    // for it (the .has() signal — NOT an empty set, which an empty starting folder
+    // would also produce, re-triggering seeding forever). Record the folder's
+    // current Message-IDs, persist the board entry even when the folder is empty,
+    // and create zero cards. Genuinely new mail arriving on later pulses ingests
+    // normally because the store entry now exists.
+    if (!this._ingestedEmails.has(String(wb.boardId))) {
+      for (const email of orderedEmails) {
+        const key = email.messageId || this._fallbackEmailKey(trigger.locator, email);
+        this._markEmailIngested(wb.boardId, key);
+      }
+      // Guarantee a board entry persists even when the folder was empty, so an
+      // email arriving on a later pulse is ingested rather than re-seeded.
+      if (!this._ingestedEmails.has(String(wb.boardId))) {
+        this._ingestedEmails.set(String(wb.boardId), new Set());
+        this._saveIngestedEmails();
+      }
+      console.log('[Workflow] Seeded ingested-emails store for board ' + wb.boardId + ' with ' + orderedEmails.length + ' existing Message-ID(s)');
+      return 0;
+    }
 
     let ingested = 0;
     for (const email of orderedEmails) {
