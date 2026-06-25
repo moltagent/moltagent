@@ -11,6 +11,28 @@ const { proposeSlots, parseHoursMarker } = require('./slot-proposer');
 
 const DEFAULT_DATA_DIR = path.resolve(process.cwd(), 'data');
 
+// Upper bound for a CONFIG-declared MAX_ITERATIONS. A research stage legitimately
+// needs more steps than the pipeline default of 3, but a typo (70 vs 7) must not
+// run cloud cost away — the cap is clamped to this ceiling.
+const MAX_ITERATION_CEILING = 15;
+
+/**
+ * Extract a CONFIG/WORKFLOW marker value from a plain-text block.
+ * Matches `^NAME: value$` (case-insensitive, multiline) and trims the capture —
+ * trailing whitespace in a marker value is never meaningful. Returns null when
+ * the marker is absent. Shared by the scheduling and iteration-cap resolvers so
+ * a single reader owns marker extraction.
+ * @param {string} text
+ * @param {string} name
+ * @returns {string|null}
+ */
+function getConfigMarker(text, name) {
+  if (!text) return null;
+  const re = new RegExp(`^${name}:\\s*(.+)$`, 'im');
+  const m = text.match(re);
+  return m ? m[1].trim() : null;
+}
+
 /**
  * WorkflowEngine
  *
@@ -368,8 +390,10 @@ class WorkflowEngine {
       }
     }
 
-    // Iteration cap: procedures get more steps (multi-phase), pipelines less
-    const maxIterations = wb.workflowType === 'procedure' ? 5 : 3;
+    // Iteration cap: stack CONFIG → board WORKFLOW → code default. A research/
+    // grounding stage writes a profile to two surfaces, attributes web sources,
+    // drafts a reply and moves the card — more steps than the pipeline default.
+    const maxIterations = this._resolveMaxIterations(wb, stack);
 
     console.log(`[Workflow] Processing card "${card.title}" in "${board.title}" / "${stack.title}" (maxIter=${maxIterations})`);
 
@@ -1490,6 +1514,48 @@ class WorkflowEngine {
   }
 
   /**
+   * Resolve the per-card iteration cap for a stack.
+   *
+   * Resolution chain (mirrors _resolveSchedulingConfig):
+   *   1. Stack CONFIG card `MAX_ITERATIONS:` — most specific override
+   *   2. Board WORKFLOW rules card `MAX_ITERATIONS:` — board-wide default
+   *   3. Code default: procedure ? 5 : 3
+   *
+   * The pipeline default of 3 is too few for a research/grounding stage that
+   * web-researches, writes a profile to two surfaces, drafts a reply and moves
+   * the card. Boards declare the cap they need in CONFIG rather than the cap
+   * being hardcoded per workflow type. The resolved value is clamped to
+   * [1, MAX_ITERATION_CEILING] so a typo cannot run cloud cost away.
+   *
+   * @param {Object} wb    - Workflow board descriptor (wb._plainDescription, wb.workflowType)
+   * @param {Object} stack - Current stack (used to locate the CONFIG card)
+   * @returns {number}
+   * @private
+   */
+  _resolveMaxIterations(wb, stack) {
+    const codeDefault = wb.workflowType === 'procedure' ? 5 : 3;
+
+    const configCard = findConfigCard(stack);
+    const stackPlain = configCard?.description ? stripHtml(configCard.description) : '';
+    const boardPlain = wb._plainDescription || '';
+
+    const raw = getConfigMarker(stackPlain, 'MAX_ITERATIONS')
+      || getConfigMarker(boardPlain, 'MAX_ITERATIONS');
+    if (raw === null) return codeDefault;
+
+    const parsed = parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      // Non-integer or non-positive → fall through to code default
+      return codeDefault;
+    }
+    if (parsed > MAX_ITERATION_CEILING) {
+      console.warn(`[Workflow] MAX_ITERATIONS ${parsed} exceeds ceiling ${MAX_ITERATION_CEILING} — clamping`);
+      return MAX_ITERATION_CEILING;
+    }
+    return parsed;
+  }
+
+  /**
    * Resolve scheduling CONFIG markers for a given stack/board.
    *
    * Reads HOURS:, TIMEZONE:, and SLOT_DURATION: markers from:
@@ -1527,13 +1593,8 @@ class WorkflowEngine {
     const stackPlain  = configCard?.description ? stripHtml(configCard.description) : '';
     const boardPlain  = wb._plainDescription || '';
 
-    // Helper: extract a marker value from a text block.  Returns null when absent.
-    function _getMarker(text, name) {
-      if (!text) return null;
-      const re = new RegExp(`^${name}:\\s*(.+)$`, 'im');
-      const m  = text.match(re);
-      return m ? m[1].trim() : null;
-    }
+    // Marker extraction (trim included) is shared via module-level getConfigMarker.
+    const _getMarker = getConfigMarker;
 
     // ── HOURS ──────────────────────────────────────────────────────────────
     // Resolution: stack CONFIG → board WORKFLOW → code default

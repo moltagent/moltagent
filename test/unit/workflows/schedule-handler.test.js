@@ -153,6 +153,18 @@ test('stripHtml: strips Markdown bold/italic markers', () => {
   assert.strictEqual(stripHtml('**bold** and *italic*'), 'bold and italic');
 });
 
+test('stripHtml: preserves intraword underscores (snake_case CONFIG markers)', () => {
+  // Regression: two underscore markers used to pair across lines and both got
+  // mangled (SLOT_DURATION → SLOTDURATION, MAX_ITERATIONS → MAXITERATIONS),
+  // breaking marker parsing. CommonMark: intraword underscores are literal.
+  assert.strictEqual(stripHtml('SLOT_DURATION: 30'), 'SLOT_DURATION: 30');
+  const both = stripHtml('SLOT_DURATION: 30\nMAX_ITERATIONS: 7');
+  assert.ok(both.includes('SLOT_DURATION: 30'), 'SLOT_DURATION intact');
+  assert.ok(both.includes('MAX_ITERATIONS: 7'), 'MAX_ITERATIONS intact');
+  // Boundary underscore emphasis still strips, mixed with snake_case present.
+  assert.strictEqual(stripHtml('_note_ MAX_ITERATIONS: 7'), 'note MAX_ITERATIONS: 7');
+});
+
 test('parseScheduleBlock: parses Markdown bold SCHEDULE header', () => {
   const desc = 'WORKFLOW: pipeline\n\n**SCHEDULE:**\nEvery 24h: Scan NC News feeds\nEvery 7d: Archive stale cards\n\n**STAGES:**\nInbox → Done';
   const schedules = parseScheduleBlock(desc);

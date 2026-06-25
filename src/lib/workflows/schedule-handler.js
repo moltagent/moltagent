@@ -77,7 +77,11 @@ function stripHtml(html) {
     .replace(/&nbsp;/g, ' ');
   // Strip Markdown bold/italic markers: **text**, __text__, *text*, _text_
   text = text.replace(/\*{1,2}([^*]+)\*{1,2}/g, '$1');
-  text = text.replace(/_{1,2}([^_]+)_{1,2}/g, '$1');
+  // Underscore emphasis only at word boundaries (CommonMark: intraword underscores
+  // are literal). This leaves snake_case intact — e.g. structural CONFIG markers
+  // SLOT_DURATION and MAX_ITERATIONS, which the naive global strip corrupted into
+  // SLOTDURATION/MAXITERATIONS whenever two underscores paired across lines.
+  text = text.replace(/(^|[^\w])_{1,2}([^_]+?)_{1,2}(?=[^\w]|$)/g, '$1$2');
   // Collapse runs of whitespace-only lines into single newlines, trim
   text = text.replace(/\n[ \t]*\n/g, '\n').trim();
   return text;
