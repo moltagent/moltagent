@@ -199,7 +199,7 @@ class ToolRegistry {
     if (ctx.includes('wiki') || ctx.includes('[['))
       ['wiki_write', 'wiki_read', 'wiki_search', 'wiki_delete'].forEach(t => allowed.add(t));
     if (ctx.includes('calendar') || ctx.includes('schedule') || ctx.includes('meeting') || ctx.includes('kickoff'))
-      ['calendar_create_event', 'calendar_list_events', 'calendar_check_availability', 'calendar_quick_schedule', 'calendar_schedule_meeting', 'calendar_cancel_meeting'].forEach(t => allowed.add(t));
+      ['calendar_create_event', 'calendar_list_events', 'calendar_check_availability', 'calendar_cancel_meeting'].forEach(t => allowed.add(t));
     if (ctx.includes('folder') || ctx.includes('/clients/') || ctx.includes('file'))
       ['file_mkdir', 'file_write'].forEach(t => allowed.add(t));
     if (ctx.includes('email') || ctx.includes('mail'))
@@ -259,9 +259,6 @@ class ToolRegistry {
         'calendar_list_events',
         'calendar_create_event',
         'calendar_check_availability',
-        'calendar_check_conflicts',
-        'calendar_quick_schedule',
-        'calendar_schedule_meeting',
         'calendar_update_event',
         'calendar_delete_event',
         'meeting_compose',
@@ -1752,13 +1749,15 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_create_event',
-      description: 'Create a new calendar event. When attendees are provided, Nextcloud automatically sends invitation emails to them.',
+      description: 'Create a calendar event. Optionally checks availability first (set check_availability: true). Supports attendees with automatic invitation emails. Use duration_minutes OR end to set the event length (default: 60 minutes).',
       parameters: {
         type: 'object',
         properties: {
           title: { type: 'string', description: 'Event title' },
           start: { type: 'string', description: 'Start datetime as ISO 8601 string' },
-          end: { type: 'string', description: 'End datetime as ISO 8601 string (default: 1 hour after start)' },
+          end: { type: 'string', description: 'End datetime as ISO 8601 string. Overrides duration_minutes if both are given (default: start + duration_minutes, or +1 hour).' },
+          duration_minutes: { type: 'number', description: 'Event length in minutes. Used to compute end when end is omitted (default: 60).' },
+          check_availability: { type: 'boolean', description: 'When true, check the slot is free before creating; if not, report conflicts and create nothing (default: false).' },
           description: { type: 'string', description: 'Event description (optional)' },
           location: { type: 'string', description: 'Location (optional)' },
           attendees: {
@@ -1782,23 +1781,36 @@ class ToolRegistry {
           return `Invalid start date: "${args.start}". Use ISO 8601 format (e.g. 2026-02-26T14:00:00).`;
         }
 
-        // Reject dates more than 24 hours in the past — likely an LLM date hallucination
-        const now = new Date();
-        const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-        if (startDate < twentyFourHoursAgo) {
-          return `Rejected: start date ${startDate.toISOString()} is in the past. Current date/time is ${now.toISOString()}. Please use the correct date.`;
-        }
+        // Past-date rejection lives in the CalDAVClient.createEvent substrate (#169),
+        // so every creation path inherits it; do not duplicate it here.
 
-        const endDate = args.end
-          ? new Date(args.end)
-          : new Date(startDate.getTime() + 60 * 60 * 1000);
-
-        if (args.end && isNaN(endDate.getTime())) {
-          return `Invalid end date: "${args.end}". Use ISO 8601 format (e.g. 2026-02-26T15:00:00).`;
+        // end wins when both end and duration_minutes are supplied; otherwise
+        // duration_minutes computes end; otherwise default to a 60-minute event.
+        let endDate;
+        if (args.end) {
+          endDate = new Date(args.end);
+          if (isNaN(endDate.getTime())) {
+            return `Invalid end date: "${args.end}". Use ISO 8601 format (e.g. 2026-02-26T15:00:00).`;
+          }
+        } else if (Number.isFinite(args.duration_minutes) && args.duration_minutes > 0) {
+          endDate = new Date(startDate.getTime() + args.duration_minutes * 60 * 1000);
+        } else {
+          endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
         }
 
         if (endDate <= startDate) {
           return `Invalid time range: end (${endDate.toISOString()}) is not after start (${startDate.toISOString()}).`;
+        }
+
+        // Optional pre-creation availability check (absorbs calendar_quick_schedule).
+        if (args.check_availability) {
+          const availability = await cal.checkAvailability(startDate, endDate);
+          if (!availability.isFree) {
+            const conflicts = (availability.conflicts || []).map(c =>
+              `- ${c.summary} (${new Date(c.start).toLocaleString()} – ${new Date(c.end).toLocaleString()})`
+            ).join('\n');
+            return `Time slot not available. Conflicts:\n${conflicts}\nNo event created. Try a different time.`;
+          }
         }
 
         const eventData = {
@@ -1867,39 +1879,6 @@ class ToolRegistry {
           msg += ` Invitations sent to: ${names}.`;
         }
         return msg;
-      }
-    });
-
-    this.register({
-      name: 'calendar_check_conflicts',
-      description: 'Check if a time slot has conflicts with existing events.',
-      parameters: {
-        type: 'object',
-        properties: {
-          start: { type: 'string', description: 'Start datetime as ISO 8601 string' },
-          end: { type: 'string', description: 'End datetime as ISO 8601 string (default: 1 hour after start)' }
-        },
-        required: ['start']
-      },
-      handler: async (args) => {
-        try {
-          const startDate = new Date(args.start);
-          const endDate = args.end
-            ? new Date(args.end)
-            : new Date(startDate.getTime() + 60 * 60 * 1000);
-
-          const result = await cal.checkAvailability(startDate, endDate);
-
-          if (result.isFree) {
-            return `No conflicts on ${startDate.toLocaleDateString()} at ${startDate.toLocaleTimeString()}.`;
-          }
-
-          return `Conflicts found:\n` +
-            result.conflicts.map(c => `  - ${c.summary} (${c.start} - ${c.end})`).join('\n');
-        } catch (err) {
-          this.logger.error(`[calendar_check_conflicts] ${err.message}`);
-          return `Failed to check conflicts: ${err.message}`;
-        }
       }
     });
 
@@ -2042,24 +2021,36 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_check_availability',
-      description: 'Check if a time slot is available. Returns whether the user is free and shows any conflicting events.',
+      description: 'Check whether a time slot is free. Returns availability and any conflicting events. If end is omitted, checks a 1-hour window from start.',
       parameters: {
         type: 'object',
         properties: {
-          date_time: {
+          start: {
             type: 'string',
-            description: 'ISO 8601 datetime to check (e.g., "2026-02-25T15:00:00"). Checks a 1-hour window starting at this time.'
+            description: 'Start datetime to check as ISO 8601 string (e.g., "2026-02-25T15:00:00").'
+          },
+          end: {
+            type: 'string',
+            description: 'End datetime as ISO 8601 string (optional; default: 1 hour after start).'
           }
         },
-        required: ['date_time']
+        required: ['start']
       },
       handler: async (args) => {
         try {
-          const start = new Date(args.date_time);
-          const end = new Date(start.getTime() + 60 * 60 * 1000);
+          const start = new Date(args.start);
+          if (isNaN(start.getTime())) {
+            return `Invalid start date: "${args.start}". Use ISO 8601 format (e.g. 2026-02-25T15:00:00).`;
+          }
+          const end = args.end
+            ? new Date(args.end)
+            : new Date(start.getTime() + 60 * 60 * 1000);
+          if (args.end && isNaN(end.getTime())) {
+            return `Invalid end date: "${args.end}". Use ISO 8601 format (e.g. 2026-02-25T16:00:00).`;
+          }
           const result = await cal.checkAvailability(start, end);
           if (result.isFree) {
-            return `You're free at ${args.date_time} (1-hour window). No conflicts.`;
+            return `You're free from ${start.toLocaleString()} to ${end.toLocaleString()}. No conflicts.`;
           }
           const conflicts = result.conflicts.map(c =>
             `- ${c.summary} (${new Date(c.start).toLocaleString()} – ${new Date(c.end).toLocaleString()})`
@@ -2072,109 +2063,9 @@ class ToolRegistry {
       }
     });
 
-    this.register({
-      name: 'calendar_quick_schedule',
-      description: 'Check availability and create a calendar event if the time slot is free. Combines availability check with event creation in one step.',
-      parameters: {
-        type: 'object',
-        properties: {
-          summary: { type: 'string', description: 'Event title/summary' },
-          date_time: { type: 'string', description: 'Start time in ISO 8601 format' },
-          duration_minutes: { type: 'number', description: 'Duration in minutes (default: 60)' },
-          attendees: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'Email addresses of attendees (optional). Invitations will be sent.'
-          }
-        },
-        required: ['summary', 'date_time']
-      },
-      handler: async (args) => {
-        try {
-          const result = await cal.quickSchedule(
-            args.summary,
-            args.date_time,
-            args.duration_minutes || 60,
-            args.attendees || []
-          );
-          if (!result.success) {
-            if (result.conflicts && result.conflicts.length > 0) {
-              const conflicts = result.conflicts.map(c =>
-                `- ${c.summary} (${new Date(c.start).toLocaleString()} – ${new Date(c.end).toLocaleString()})`
-              ).join('\n');
-              return `Time slot not available. Conflicts:\n${conflicts}\nTry a different time.`;
-            }
-            return 'Failed to schedule: time slot not available or event creation failed.';
-          }
-          const attendeeNote = args.attendees?.length
-            ? ` Invitations sent to: ${args.attendees.join(', ')}.`
-            : '';
-          return `Scheduled "${args.summary}" at ${args.date_time} (${args.duration_minutes || 60} min).${attendeeNote}`;
-        } catch (err) {
-          this.logger.error(`[calendar_quick_schedule] ${err.message}`);
-          return `Failed to schedule event: ${err.message}`;
-        }
-      }
-    });
-
-    this.register({
-      name: 'calendar_schedule_meeting',
-      description: 'Schedule a meeting with full details including attendees, location, and description. Sends calendar invitations to all attendees.',
-      parameters: {
-        type: 'object',
-        properties: {
-          summary: { type: 'string', description: 'Meeting title' },
-          start: { type: 'string', description: 'Start time in ISO 8601 format' },
-          end: { type: 'string', description: 'End time in ISO 8601 format' },
-          attendees: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'Email addresses of attendees'
-          },
-          location: { type: 'string', description: 'Meeting location or video call URL (optional)' },
-          description: { type: 'string', description: 'Meeting agenda or notes (optional)' }
-        },
-        required: ['summary', 'start', 'end', 'attendees']
-      },
-      handler: async (args) => {
-        try {
-          // Resolve organizer email from NC identity
-          let organizerEmail = null;
-          if (ncMgr) {
-            try {
-              organizerEmail = await ncMgr.getUserEmail(ncMgr.ncUser);
-            } catch (err) {
-              this.logger.warn(`[calendar_schedule_meeting] Could not resolve organizer email: ${err.message}`);
-            }
-          }
-          if (!organizerEmail) {
-            return 'Failed to schedule meeting: could not resolve organizer email. Check Nextcloud user configuration.';
-          }
-
-          const meeting = {
-            summary: args.summary,
-            start: new Date(args.start),
-            end: new Date(args.end),
-            attendees: args.attendees,
-            location: args.location || '',
-            description: args.description || '',
-            organizerEmail
-          };
-          const result = await cal.scheduleMeeting(meeting);
-          if (!result || !result.uid) {
-            return 'Failed to schedule meeting: no confirmation received from calendar server.';
-          }
-          return `Meeting scheduled: "${args.summary}"\n` +
-            `Time: ${args.start} – ${args.end}\n` +
-            `Attendees: ${args.attendees.join(', ')}\n` +
-            (args.location ? `Location: ${args.location}\n` : '') +
-            `Invitations sent.`;
-        } catch (err) {
-          this.logger.error(`[calendar_schedule_meeting] ${err.message}`);
-          return `Failed to schedule meeting: ${err.message}`;
-        }
-      }
-    });
+    // calendar_quick_schedule and calendar_schedule_meeting retired (#169):
+    // calendar_create_event now subsumes both via check_availability +
+    // duration_minutes + attendees. Past-date guard lives in the CalDAV substrate.
 
     this.register({
       name: 'calendar_cancel_meeting',

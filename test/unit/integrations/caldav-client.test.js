@@ -681,10 +681,13 @@ asyncTest('TC-EVENT-004: Create event', async () => {
   });
   const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
 
+  // Future dates: the substrate past-date guard (#169) rejects starts >24h ago.
+  const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const end = new Date(start.getTime() + 60 * 60 * 1000);
   const event = await client.createEvent({
     summary: 'New Event',
-    start: new Date('2025-02-15T10:00:00Z'),
-    end: new Date('2025-02-15T11:00:00Z'),
+    start,
+    end,
     calendarId: 'personal'
   });
 
@@ -705,14 +708,86 @@ asyncTest('TC-EVENT-005: Handle event creation error', async () => {
   const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
 
   try {
+    // Future dates so the request reaches the server and returns 403 — the
+    // substrate past-date guard (#169) would otherwise short-circuit first.
+    const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     await client.createEvent({
       summary: 'New Event',
-      start: new Date('2025-02-15T10:00:00Z'),
-      end: new Date('2025-02-15T11:00:00Z')
+      start,
+      end: new Date(start.getTime() + 60 * 60 * 1000)
     });
     assert.fail('Should have thrown error');
   } catch (error) {
     assert.ok(error.message.includes('403'));
+  }
+});
+
+// --- #169: past-date guard at the createEvent substrate ---
+
+asyncTest('TC-EVENT-GUARD-001: createEvent rejects a start more than 24h in the past', async () => {
+  const mockNC = createCalDAVMockNC();
+  const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
+
+  const past = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  try {
+    await client.createEvent({
+      summary: 'Past Event',
+      start: past,
+      end: new Date(past.getTime() + 60 * 60 * 1000)
+    });
+    assert.fail('Should have rejected the past-dated event');
+  } catch (error) {
+    assert.ok(error.message.includes('in the past'), 'message names the past-date rejection');
+    assert.ok(error.message.includes('Current date/time is'), 'message names the current datetime for self-correction');
+  }
+});
+
+asyncTest('TC-EVENT-GUARD-002: createEvent accepts a start within the 24h grace window', async () => {
+  const mockNC = createCalDAVMockNC();
+  const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
+
+  // 1 hour ago — inside the 24h grace window, must NOT be rejected.
+  const recent = new Date(Date.now() - 60 * 60 * 1000);
+  const event = await client.createEvent({
+    summary: 'Recent Event',
+    start: recent,
+    end: new Date(recent.getTime() + 60 * 60 * 1000)
+  });
+
+  assert.ok(event.uid, 'event created within grace window');
+});
+
+asyncTest('TC-EVENT-GUARD-003: scheduleMeeting inherits the past-date guard', async () => {
+  const mockNC = createCalDAVMockNC();
+  const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
+
+  const past = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  try {
+    await client.scheduleMeeting({
+      summary: 'Past Meeting',
+      start: past,
+      end: new Date(past.getTime() + 60 * 60 * 1000),
+      attendees: ['alice@example.com'],
+      organizerEmail: 'organizer@example.com'
+    });
+    assert.fail('Should have rejected the past-dated meeting');
+  } catch (error) {
+    assert.ok(error.message.includes('in the past'), 'scheduleMeeting inherits substrate rejection');
+  }
+});
+
+asyncTest('TC-EVENT-GUARD-004: quickSchedule inherits the past-date guard', async () => {
+  const mockNC = createCalDAVMockNC();
+  const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
+  // Force the availability check to pass so we reach createEvent.
+  client.checkAvailability = async () => ({ isFree: true, conflicts: [] });
+
+  const past = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  try {
+    await client.quickSchedule('Past Quick', past, 60);
+    assert.fail('Should have rejected the past-dated quick schedule');
+  } catch (error) {
+    assert.ok(error.message.includes('in the past'), 'quickSchedule inherits substrate rejection');
   }
 });
 
@@ -906,10 +981,13 @@ asyncTest('TC-MEET-001: Accept meeting creates event', async () => {
   });
   const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
 
+  // Future dates: respondToMeeting routes through createEvent, which now carries
+  // the substrate past-date guard (#169).
+  const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   const result = await client.respondToMeeting({
     summary: 'Invited Meeting',
-    start: new Date('2025-03-01T10:00:00Z'),
-    end: new Date('2025-03-01T11:00:00Z'),
+    start,
+    end: new Date(start.getTime() + 60 * 60 * 1000),
     organizerEmail: 'organizer@example.com'
   }, 'ACCEPTED');
 
@@ -945,7 +1023,7 @@ asyncTest('TC-MEET-003: Tentative meeting creates tentative event', async () => 
 
   const result = await client.respondToMeeting({
     summary: 'Maybe Meeting',
-    start: new Date('2025-03-01T10:00:00Z'),
+    start: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     organizerEmail: 'organizer@example.com'
   }, 'TENTATIVE');
 
