@@ -557,7 +557,9 @@ class WorkflowEngine {
       '**Instructions:**',
       'Follow the CONFIG instructions for this stack. The CONFIG card defines',
       'exactly what to do with cards in this stack.',
-      'Use workflow_deck_update_card to write or rewrite the card description.',
+      'Use workflow_deck_update_card to append the profile to the card description.',
+      'The section after the --- line (From, Date, and the "Open in Mail" link if present) is system-owned.',
+      'Do NOT rewrite or reformat that footer — append profile prose below the existing footer.',
       'Use workflow_deck_* tools with numeric IDs to move cards, add comments, etc.',
       'Comment on the card with what you did.',
       'If the CONFIG says to notify in Talk, use the talk_send tool.',
@@ -574,7 +576,7 @@ class WorkflowEngine {
     // Generic cards and other boards receive no grounding block.
     //
     // The From: footer is written by the email trigger ingest path (#185) as:
-    //   <body>\n\n---\nFrom: <Name> <addr>\nDate: ...\nMessage-ID: ...
+    //   <body>\n\n---\nFrom: <Name> <addr>\nDate: ...\n[Open the original email in Mail](...)
     // We parse from the RAW description (not the stripHtml version) because
     // stripHtml strips angle-bracket content (e.g. <alice@acme.com> → stripped).
     // This is structural parsing of a machine-authored marker — Rule 1 clean.
@@ -645,8 +647,12 @@ class WorkflowEngine {
           '  as distinct attributed sections in both the card description and the Collectives page.',
           '',
           'Write the profile to BOTH:',
-          '  1. The card description (appended below the email text) — the reviewer\'s primary surface.',
+          '  1. The card description (appended below the system-owned footer) — the reviewer\'s primary surface.',
           '  2. The partner\'s Collectives page — the durable record.',
+          'For the Collectives link written into the card description: use the exact URL returned by',
+          'the wiki_write tool result (the [View](...) URL in the tool response).',
+          'Do NOT construct a [[wikilink]] — NC Collectives has no wikilink resolver',
+          'and [[...]] syntax will not render as a link.',
         ].filter(Boolean).join('\n');
       } else {
         sectionB = [
@@ -654,6 +660,10 @@ class WorkflowEngine {
           'Web research is disabled by system policy (sovereign mode).',
           'Compile the profile from the email content and internal knowledge only.',
           'Write the profile to both the card description and the Collectives page.',
+          'For the Collectives link written into the card description: use the exact URL returned by',
+          'the wiki_write tool result (the [View](...) URL in the tool response).',
+          'Do NOT construct a [[wikilink]] — NC Collectives has no wikilink resolver',
+          'and [[...]] syntax will not render as a link.',
         ].join('\n');
       }
 
@@ -1288,8 +1298,7 @@ class WorkflowEngine {
       }
 
       let description = bodyText + '\n\n---\nFrom: ' + fromLine +
-        '\nDate: ' + (email.date || '') +
-        '\nMessage-ID: ' + key;
+        '\nDate: ' + (email.date || '');
 
       // Best-effort: append a deep-link back to the original message in NC Mail.
       // Only attempt resolution when the real Message-ID header is available
@@ -1300,10 +1309,10 @@ class WorkflowEngine {
           if (mailUrl) {
             description += '\n[Open the original email in Mail](' + mailUrl + ')';
           } else {
-            console.log('[Workflow] NC Mail back-link: no match for Message-ID ' + email.messageId + ' (message may not yet be synced) — keeping Message-ID footer');
+            console.log('[Workflow] NC Mail back-link: no match for Message-ID ' + email.messageId + ' (message may not yet be synced) — omitting Mail link');
           }
         } catch (err) {
-          console.log('[Workflow] NC Mail back-link: resolution errored for Message-ID ' + email.messageId + ': ' + err.message + ' — keeping Message-ID footer');
+          console.log('[Workflow] NC Mail back-link: resolution errored for Message-ID ' + email.messageId + ': ' + err.message + ' — omitting Mail link');
         }
       }
 
