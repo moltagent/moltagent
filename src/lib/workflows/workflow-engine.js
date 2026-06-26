@@ -175,6 +175,13 @@ class WorkflowEngine {
       results.errors.push({ board: 'detection', error: err.message });
     } finally {
       this._processing = false;
+      // A1: invalidate the board-snapshot cache after any pulse that mutated card
+      // positions so the next pulse reads live state rather than the stale snapshot.
+      // The board list was fetched once at the top of this function, so invalidation
+      // here only affects the next pulse — exactly the goal.
+      if (results.cardsProcessed > 0 || results.gatesResolved > 0 || results.schedulesExecuted > 0) {
+        this.detector.invalidateCache();
+      }
     }
 
     if (results.boardsProcessed > 0) {
@@ -205,9 +212,26 @@ class WorkflowEngine {
       console.warn(`[Workflow] Board "${board.title}" — rules card not resolvable (id=${wb.rulesCardId}), treating as PAUSED`);
       return result;
     }
-    if (hasLabel(rulesCard, 'PAUSED')) {
-      console.log(`[Workflow] Board "${board.title}" is PAUSED — skipping`);
-      return result;
+    // A3: Fresh targeted read of the rules card to honor a PAUSED label applied
+    // this pulse. The cached snapshot is up to 5 minutes stale — a human who
+    // pauses the board should not wait up to one full cache window. We read just
+    // the rules card from the Deck API; on any error we fall back to the snapshot
+    // so a transient network hiccup never skips a board silently.
+    {
+      const rulesCardStack = stacks.find(s => (s.cards || []).some(c => c.id === wb.rulesCardId));
+      let pausedCheckCard = rulesCard; // snapshot fallback
+      if (rulesCardStack) {
+        try {
+          const fresh = await this.deck.getCardById(board.id, rulesCardStack.id, wb.rulesCardId);
+          pausedCheckCard = fresh.body || fresh;
+        } catch (err) {
+          console.warn(`[Workflow] Board "${board.title}" — could not fresh-check PAUSED: ${err.message} (using snapshot)`);
+        }
+      }
+      if (hasLabel(pausedCheckCard, 'PAUSED')) {
+        console.log(`[Workflow] Board "${board.title}" is PAUSED — skipping`);
+        return result;
+      }
     }
 
     // External-event ingestion: a TRIGGER: line pulls emails from a folder into
@@ -1463,21 +1487,78 @@ class WorkflowEngine {
   }
 
   /**
+   * GET the card from `fallbackStackId`, resolve the card's live stack from the
+   * response body, and PUT using the live stack path.  This prevents hygiene
+   * writes (due-date, archive) from silently relocating a card that the agent
+   * has already moved to a different stack — a stack-scoped Deck PUT sets the
+   * card's stack to the path stack, so writing with a stale stack id is a move.
+   *
+   * Fallback chain:
+   *  1. GET from `fallbackStackId`.  If the body carries `stackId`, use that.
+   *  2. If the GET fails (card already moved), list the board's stacks and
+   *     locate the card there; use that stack for the PUT.
+   *  3. If the board-level lookup also fails, re-throw the original GET error so
+   *     the caller's try/catch can log it cleanly.
+   *
+   * @param {number} boardId
+   * @param {number} fallbackStackId - Stack id from the (possibly stale) snapshot
+   * @param {number} cardId - Deck card id (always a number; strict-equality used in the board-level search)
+   * @param {function(Object): Object} buildBody - Called with the current card data;
+   *   must return the complete PUT body (all fields required by Deck API).
+   * @private
+   */
+  async _putCardToLiveStack(boardId, fallbackStackId, cardId, buildBody) {
+    const fallbackPath = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${fallbackStackId}/cards/${cardId}`;
+    let liveStackId = fallbackStackId;
+    let cardData;
+
+    try {
+      const current = await this.deck._request('GET', fallbackPath);
+      cardData = current.body || current;
+      // Deck card objects carry `stackId` — use it to write to the card's true stack.
+      // If absent (unexpected for this Deck build), the fallback is the parameter stack,
+      // which risks the stale-stack write this helper prevents. If that ever fires in
+      // the live journal, investigate whether the Deck version omits stackId on GET.
+      liveStackId = cardData.stackId ?? fallbackStackId;
+    } catch (getErr) {
+      // Card may have moved out of the fallback stack — locate it via the board listing.
+      try {
+        const stacksResult = await this.deck.getStacks(boardId);
+        const stacksArr = (stacksResult.body || stacksResult) || [];
+        for (const s of stacksArr) {
+          const found = (s.cards || []).find(c => c.id === cardId);
+          if (found) {
+            liveStackId = s.id;
+            cardData = found;
+            break;
+          }
+        }
+      } catch (listErr) {
+        console.warn(`[Workflow] _putCardToLiveStack: board-level fallback failed for card ${cardId}: ${listErr.message}`);
+      }
+      if (!cardData) {
+        // Could not locate the card anywhere — re-throw the original error.
+        throw getErr;
+      }
+    }
+
+    const livePath = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${liveStackId}/cards/${cardId}`;
+    await this.deck._request('PUT', livePath, buildBody(cardData));
+  }
+
+  /**
    * Update a card's due date via the Deck API.
+   * Routes through _putCardToLiveStack so a stale stack id never relocates the card.
    * @private
    */
   async _updateCardDueDate(boardId, stackId, cardId, duedate) {
-    const path = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`;
-    const current = await this.deck._request('GET', path);
-    const cardData = current.body || current;
-
-    await this.deck._request('PUT', path, {
+    await this._putCardToLiveStack(boardId, stackId, cardId, (cardData) => ({
       title: cardData.title,
       type: cardData.type || 'plain',
       owner: cardData.owner?.uid || cardData.owner || '',
       description: cardData.description || '',
       duedate
-    });
+    }));
   }
 
   /**
@@ -1768,18 +1849,14 @@ class WorkflowEngine {
         const lastMod = new Date(card.lastModified || 0).getTime();
         if (lastMod < cutoff) {
           try {
-            const path = `/index.php/apps/deck/api/v1.0/boards/${wb.board.id}/stacks/${stack.id}/cards/${card.id}`;
-            const current = await this.deck._request('GET', path);
-            const cardData = current.body || current;
-
-            await this.deck._request('PUT', path, {
+            await this._putCardToLiveStack(wb.board.id, stack.id, card.id, (cardData) => ({
               title: cardData.title,
               type: cardData.type || 'plain',
               owner: cardData.owner?.uid || cardData.owner || '',
               description: cardData.description || '',
               duedate: cardData.duedate || null,
               archived: true
-            });
+            }));
             console.log(`[Workflow] Archived stale card: "${card.title}" (${archiveAfterDays}+ days in Done)`);
           } catch (err) {
             console.warn(`[Workflow] Could not archive card ${card.id}: ${err.message}`);

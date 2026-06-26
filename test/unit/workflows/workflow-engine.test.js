@@ -1540,6 +1540,230 @@ function createMockTalkQueue() {
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // A4 — stale-cache stack revert (#205)
+  // ---------------------------------------------------------------------------
+
+  // A4.1: _ensureDueDate PUTs to the card's live stack (from GET body), not the
+  // stale stack id passed as a parameter.  This is the core regression guard for
+  // the hygiene-write relocation bug.
+  await asyncTest('A4.1: _ensureDueDate() PUTs to live stack from GET body, not stale parameter stack', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      if (method === 'GET') {
+        // GET returns a card body that carries the card's live stackId = 'LIVE'
+        return { title: 'Moved Card', type: 'plain', owner: '', description: '', stackId: 'LIVE' };
+      }
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    // card has no duedate → _ensureDueDate will call _updateCardDueDate → _putCardToLiveStack
+    const card = { id: 100, title: 'Active Card', labels: [] };
+    const wb = { board: { id: 1 }, stacks: [], description: 'WORKFLOW: pipeline' };
+    const stack = { id: 'STALE', title: 'Inbox' };
+
+    await engine._ensureDueDate(wb, stack, card);
+
+    const putCall = requestCalls.find(c => c.method === 'PUT');
+    assert.ok(putCall, 'Should issue a PUT to set the due date');
+    assert.ok(putCall.path.includes('/stacks/LIVE/'), 'PUT path must use the live stack id from the GET body');
+    assert.ok(!putCall.path.includes('/stacks/STALE/'), 'PUT path must NOT use the stale stack parameter');
+  });
+
+  // A4.2: processAll() invalidates the detector cache after a productive pulse
+  // (cardsProcessed > 0) and does NOT invalidate after a no-work pulse.
+  await asyncTest('A4.2: processAll() invalidates cache after productive pulse, skips on no-work pulse', async () => {
+    // Sub-test: no-work pulse (empty board list) → zero invalidations
+    let invalidateCount = 0;
+    const engine1 = new WorkflowEngine({
+      workflowDetector: {
+        getWorkflowBoards: async () => [],
+        invalidateCache: () => { invalidateCount++; }
+      },
+      deckClient: createMockDeck(),
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+    await engine1.processAll();
+    assert.strictEqual(invalidateCount, 0, 'No-work pulse must not call invalidateCache');
+
+    // Sub-test: productive pulse (1 card processed) → at least 1 invalidation
+    let invalidateCount2 = 0;
+    const agentLoop2 = createMockAgentLoop();
+    // Build the board inline with an explicit rules card so createMockDetector
+    // does not auto-inject one at a different id.
+    const boards = [{
+      board: { id: 1, title: 'Test' },
+      stacks: [{
+        id: 10, title: 'Inbox',
+        cards: [
+          { id: 900, title: 'WORKFLOW: pipeline', description: 'RULES', labels: [] },
+          { id: 100, title: 'Work Card', description: 'task', labels: [], lastModified: new Date().toISOString() }
+        ]
+      }],
+      description: 'WORKFLOW: pipeline\nRULES: Go.',
+      workflowType: 'pipeline',
+      boardId: 1,
+      rulesCardId: 900
+    }];
+    // Use a custom detector spy rather than createMockDetector so we can count.
+    const mockDeck2 = createMockDeck();
+    mockDeck2._request = async () => ({});
+    // Fresh PAUSED check (A3) calls getCardById on the rules card.
+    mockDeck2.getCardById = async () => ({ id: 900, title: 'WORKFLOW: pipeline', labels: [] });
+    const engine2 = new WorkflowEngine({
+      workflowDetector: {
+        getWorkflowBoards: async () => boards,
+        invalidateCache: () => { invalidateCount2++; }
+      },
+      deckClient: mockDeck2,
+      agentLoop: agentLoop2,
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+    await engine2.processAll();
+    assert.ok(agentLoop2._calls.length >= 1, 'Agent should have been called for the work card');
+    assert.ok(invalidateCount2 >= 1, `Cache must be invalidated after productive pulse (count=${invalidateCount2})`);
+  });
+
+  // A4.3: _processBoard() honors a PAUSED label applied to the rules card between
+  // pulses (absent from the snapshot), via the fresh getCardById read.  The
+  // AgentLoop must not be called even though the snapshot shows the board as active.
+  await asyncTest('A4.3: _processBoard() skips board when fresh rules-card read shows PAUSED (snapshot had none)', async () => {
+    const agentLoop = createMockAgentLoop();
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+    // Fresh read returns the rules card WITH PAUSED — simulates a human-applied pause.
+    mockDeck.getCardById = async (boardId, stackId, cardId) => ({
+      id: cardId,
+      title: 'WORKFLOW: pipeline',
+      description: 'RULES',
+      labels: [{ title: 'PAUSED' }]  // freshly applied
+    });
+
+    // Snapshot rules card has NO PAUSED label
+    const rulesCard = { id: 900, title: 'WORKFLOW: pipeline', description: 'RULES', labels: [] };
+    const boards = [{
+      board: { id: 1, title: 'Test Board' },
+      stacks: [{
+        id: 10, title: 'Inbox',
+        cards: [
+          rulesCard,
+          { id: 100, title: 'Work Card', description: 'task', labels: [], lastModified: new Date().toISOString() }
+        ]
+      }],
+      description: 'WORKFLOW: pipeline\nRULES: Go.',
+      workflowType: 'pipeline',
+      boardId: 1,
+      rulesCardId: 900
+    }];
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(boards),
+      deckClient: mockDeck,
+      agentLoop,
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const result = await engine.processAll();
+
+    assert.strictEqual(result.cardsProcessed, 0, 'Board must be skipped: PAUSED from fresh read');
+    assert.strictEqual(agentLoop._calls.length, 0, 'AgentLoop must not be called on a freshly-PAUSED board');
+  });
+
+  // A4.4: GET on the stale stack fails (card has moved); board-level getStacks
+  // locates the card under its MOVED stack → PUT must target the MOVED stack.
+  // This is the exact #205 scenario: the card was moved to a new stack by the
+  // prior pulse, and the hygiene write must follow it rather than pull it back.
+  await asyncTest('A4.4: _putCardToLiveStack() follows card to MOVED stack when stale GET fails', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      if (method === 'GET') {
+        // Simulate a 404 / rejection when the card is no longer in the stale stack
+        throw new Error('404 card not found in stale stack');
+      }
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+    // Board-level stack listing: the card now lives in stack 'MOVED'
+    mockDeck.getStacks = async (boardId) => [
+      { id: 'STALE', cards: [] },
+      { id: 'MOVED', cards: [{ id: 100, title: 'Moved Card', type: 'plain', owner: '', description: '' }] }
+    ];
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const card = { id: 100, title: 'Moved Card', labels: [] }; // no duedate
+    const wb = { board: { id: 1 }, stacks: [], description: 'WORKFLOW: pipeline' };
+    const stack = { id: 'STALE', title: 'Old Stack' };
+
+    await engine._ensureDueDate(wb, stack, card);
+
+    const putCall = requestCalls.find(c => c.method === 'PUT');
+    assert.ok(putCall, 'Should still issue a PUT after locating the card via getStacks');
+    assert.ok(putCall.path.includes('/stacks/MOVED/'), 'PUT path must use the MOVED stack, not the stale parameter');
+    assert.ok(!putCall.path.includes('/stacks/STALE/'), 'PUT path must NOT use the stale stack parameter');
+  });
+
+  // A4.5: GET on the stale stack fails AND the board-level getStacks also fails
+  // (or does not contain the card) → the helper must re-throw the original GET
+  // error so the caller's error handler sees it (no silent swallow, no write).
+  await asyncTest('A4.5: _putCardToLiveStack() re-throws original GET error when getStacks also fails', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      if (method === 'GET') throw new Error('GET failed: stale stack 404');
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+    // getStacks also rejects — the card cannot be located anywhere
+    mockDeck.getStacks = async () => { throw new Error('board listing failed'); };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    // Call _updateCardDueDate directly to observe the re-throw without
+    // _ensureDueDate's wrapping try/catch swallowing it.
+    let thrown = null;
+    try {
+      await engine._updateCardDueDate(1, 99, 100, '2026-01-01T00:00:00Z');
+    } catch (err) {
+      thrown = err;
+    }
+
+    assert.ok(thrown, 'Helper must re-throw when card cannot be located anywhere');
+    assert.ok(thrown.message.includes('GET failed'), 'Re-thrown error must be the original GET error, not the listing error');
+    assert.strictEqual(requestCalls.filter(c => c.method === 'PUT').length, 0, 'Must not issue any PUT when card is not found');
+  });
+
   summary();
   exitWithCode();
 })();
