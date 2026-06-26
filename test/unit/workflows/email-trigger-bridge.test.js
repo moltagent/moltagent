@@ -344,8 +344,8 @@ function makeEmail(overrides = {}) {
       'email should NOT be marked as ingested when card creation returned null');
   });
 
-  // TC-TRIGGER-13: Card description contains sender, date, and Message-ID footer.
-  await asyncTest('TC-TRIGGER-13: Card description has From/Date/Message-ID footer', async () => {
+  // TC-TRIGGER-13: Card description contains sender and date footer (no Message-ID after B2).
+  await asyncTest('TC-TRIGGER-13: Card description has From/Date footer (no Message-ID)', async () => {
     const email = makeEmail({
       messageId: '<footer-test@example.com>',
       from: 'Bob <bob@example.com>',
@@ -364,9 +364,9 @@ function makeEmail(overrides = {}) {
     assert.strictEqual(deck._calls.length, 1);
     const desc = deck._calls[0].description;
     assert.ok(desc.includes('Bob <bob@example.com>'), 'description should contain sender');
-    assert.ok(desc.includes('<footer-test@example.com>'), 'description should contain Message-ID');
     // date is included (any format — it's the raw Date object converted to string)
     assert.ok(desc.includes('Date:'), 'description should contain Date: label');
+    assert.ok(!desc.includes('Message-ID'), 'description must NOT contain Message-ID after B2');
   });
 
   // TC-TRIGGER-14: Unsupported kind (files:) → returns 0, _fetchEmails NOT called.
@@ -455,9 +455,9 @@ function makeEmail(overrides = {}) {
     }
   });
 
-  // TC-TRIGGER-17: ncMailClient resolves a URL → description contains Markdown link AND
-  //               still contains the Message-ID: footer.
-  await asyncTest('TC-TRIGGER-17: ncMailClient resolves URL → description has link AND Message-ID footer', async () => {
+  // TC-TRIGGER-17: ncMailClient resolves a URL → description contains Markdown link,
+  //               no Message-ID in footer (B2: Message-ID dropped from footer).
+  await asyncTest('TC-TRIGGER-17: ncMailClient resolves URL → description has Mail link, no Message-ID', async () => {
     const MAIL_URL = 'https://nc.example.com/apps/mail/box/99/thread/555';
     const ncMailClient = {
       resolveThreadUrl: async (_folder, _msgId) => MAIL_URL
@@ -482,14 +482,14 @@ function makeEmail(overrides = {}) {
       'description should contain Markdown link to NC Mail'
     );
     assert.ok(
-      desc.includes('Message-ID: <link-test@example.com>'),
-      'description should still contain the Message-ID footer'
+      !desc.includes('Message-ID'),
+      'description must NOT contain Message-ID after B2 removal'
     );
   });
 
-  // TC-TRIGGER-18: ncMailClient.resolveThreadUrl returns null → description falls back to
-  //               Message-ID footer with NO Mail link; ingestion returns 1 card (no throw).
-  await asyncTest('TC-TRIGGER-18: ncMailClient returns null → Message-ID footer intact, no link, ingestion completes', async () => {
+  // TC-TRIGGER-18: ncMailClient.resolveThreadUrl returns null → no Mail link, no Message-ID;
+  //               ingestion returns 1 card (no throw). (B2: Message-ID dropped from footer.)
+  await asyncTest('TC-TRIGGER-18: ncMailClient returns null → no Mail link, no Message-ID, ingestion completes', async () => {
     const ncMailClient = {
       resolveThreadUrl: async (_folder, _msgId) => null
     };
@@ -512,18 +512,21 @@ function makeEmail(overrides = {}) {
     assert.strictEqual(result, 1, 'should return 1 ingested card');
     const desc = deck._calls[0].description;
     assert.ok(
-      desc.includes('Message-ID: <null-link-test@example.com>'),
-      'Message-ID footer must be present'
+      !desc.includes('Message-ID'),
+      'Message-ID must NOT appear in footer after B2 removal'
     );
     assert.ok(
       !desc.includes('[Open the original email in Mail]'),
       'no Mail link should be present when resolveThreadUrl returned null'
     );
+    assert.ok(desc.includes('From:'), 'From: line must still be present');
+    assert.ok(desc.includes('Date:'), 'Date: line must still be present');
   });
 
   // TC-TRIGGER-19: ncMailClient.resolveThreadUrl throws → ingestion still completes
-  //               (try/catch swallows it), footer is intact, returns 1 card.
-  await asyncTest('TC-TRIGGER-19: ncMailClient throws → ingestion completes, footer intact', async () => {
+  //               (try/catch swallows it), no Mail link, no Message-ID, returns 1 card.
+  //               (B2: Message-ID dropped from footer.)
+  await asyncTest('TC-TRIGGER-19: ncMailClient throws → ingestion completes, no Message-ID, no link', async () => {
     const ncMailClient = {
       resolveThreadUrl: async () => { throw new Error('simulated NC Mail error'); }
     };
@@ -546,13 +549,15 @@ function makeEmail(overrides = {}) {
     assert.strictEqual(result, 1, 'should return 1 ingested card');
     const desc = deck._calls[0].description;
     assert.ok(
-      desc.includes('Message-ID: <throw-test@example.com>'),
-      'Message-ID footer must be present after resolveThreadUrl threw'
+      !desc.includes('Message-ID'),
+      'Message-ID must NOT appear in footer after B2 removal'
     );
     assert.ok(
       !desc.includes('[Open the original email in Mail]'),
       'no Mail link should appear when resolveThreadUrl threw'
     );
+    assert.ok(desc.includes('From:'), 'From: line must still be present');
+    assert.ok(desc.includes('Date:'), 'Date: line must still be present');
   });
 
   // TC-TRIGGER-20: from is display-name only, fromAddress present → From line is
@@ -719,6 +724,61 @@ function makeEmail(overrides = {}) {
 
     assert.strictEqual(deck._calls.length, 1, 'the first email after an empty-folder seed must ingest');
     assert.strictEqual(engine._isEmailIngested(1, '<first-ever@example.com>'), true, 'first email recorded');
+  });
+
+  // TC-TRIGGER-27: (#192 / B2) The assembled ingest footer contains no Message-ID substring.
+  //               Key is still computed and used for dedup — only the card TEXT is free of it.
+  await asyncTest('TC-TRIGGER-27: assembled footer contains no Message-ID substring (B2)', async () => {
+    const email = makeEmail({
+      messageId: '<msgid-absent-test@example.com>',
+      from: 'Dana <dana@example.com>',
+      fromAddress: 'dana@example.com',
+      date: new Date('2026-06-26T08:00:00Z'),
+      body: 'Some body text.'
+    });
+    const emailHandler = createMockEmailHandler([email]);
+    const deck = createMockDeck();
+    const engine = makeEngine({ emailHandler, deck });
+    markSeeded(engine);
+    const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.TEST' });
+
+    await engine._ingestTriggerEmails(wb);
+
+    assert.strictEqual(deck._calls.length, 1, 'one card should be created');
+    const desc = deck._calls[0].description;
+    assert.ok(!desc.includes('Message-ID'), 'footer must contain no "Message-ID" substring');
+    // Dedup store should still have the key — only card text is scrubbed.
+    assert.ok(engine._isEmailIngested(1, '<msgid-absent-test@example.com>'),
+      'Message-ID key must still be stored in the dedup store');
+  });
+
+  // TC-TRIGGER-28: (#195 / B2) The footer is From line + standalone Mail link, no Message-ID.
+  await asyncTest('TC-TRIGGER-28: footer is From + Date + standalone Mail link, no Message-ID (B2)', async () => {
+    const MAIL_URL = 'https://nc.example.com/apps/mail/inbox/thread/42';
+    const ncMailClient = {
+      resolveThreadUrl: async (_folder, _msgId) => MAIL_URL
+    };
+    const email = makeEmail({
+      messageId: '<footer-shape-test@example.com>',
+      from: 'Eve <eve@example.com>',
+      fromAddress: 'eve@example.com',
+      date: new Date('2026-06-26T09:00:00Z'),
+      body: 'Footer shape test.'
+    });
+    const emailHandler = createMockEmailHandler([email]);
+    const deck = createMockDeck();
+    const engine = makeEngine({ emailHandler, deck, ncMailClient });
+    markSeeded(engine);
+    const wb = makeWorkflowBoard({ description: 'WORKFLOW: pipeline\nTRIGGER: email:INBOX.INQUIRIES' });
+
+    await engine._ingestTriggerEmails(wb);
+
+    assert.strictEqual(deck._calls.length, 1, 'one card should be created');
+    const desc = deck._calls[0].description;
+    assert.ok(/\nFrom:/.test(desc), 'footer must contain \\nFrom: line');
+    assert.ok(/\[Open the original email in Mail\]\(/.test(desc),
+      'footer must contain standalone [Open the original email in Mail](...) link');
+    assert.ok(!desc.includes('Message-ID'), 'footer must NOT contain Message-ID');
   });
 
   setTimeout(() => { summary(); exitWithCode(); }, 500);

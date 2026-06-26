@@ -101,8 +101,9 @@ function makeWb({ cardDescription = '' } = {}) {
   };
 }
 
-const FROM_FOOTER = '\n\n---\nFrom: Alice Example <alice@acme.com>\nDate: 2026-06-22\nMessage-ID: <abc123@mail.acme.com>';
-const MAIL_LINK_FOOTER = '\n\n---\nFrom: Alice Example <alice@acme.com>\nDate: 2026-06-22\nMessage-ID: <abc123@mail.acme.com>\n[Open the original email in Mail](https://nc.example.com/apps/mail/inbox/1234)';
+// Post-B2 footer format: no Message-ID line (dropped by _ingestTriggerEmails after #206 fix).
+const FROM_FOOTER = '\n\n---\nFrom: Alice Example <alice@acme.com>\nDate: 2026-06-22';
+const MAIL_LINK_FOOTER = '\n\n---\nFrom: Alice Example <alice@acme.com>\nDate: 2026-06-22\n[Open the original email in Mail](https://nc.example.com/apps/mail/inbox/1234)';
 
 // ---------------------------------------------------------------------------
 // Helper: run engine against one wb, return captured processWorkflowTask calls
@@ -166,7 +167,8 @@ asyncTest('Section A includes the NC Mail link when present in footer', async ()
 });
 
 asyncTest('Section A works when From footer has no display name (bare address)', async () => {
-  const bareAddr = '\n\n---\nFrom: <bareaddr@corp.io>\nDate: 2026-06-22\nMessage-ID: <x>';
+  // Post-B2 footer: no Message-ID line.
+  const bareAddr = '\n\n---\nFrom: <bareaddr@corp.io>\nDate: 2026-06-22';
   const wb = makeWb({ cardDescription: 'Hello\n' + bareAddr });
   const calls = await runEngine(wb, 'research');
   const sys = calls[0].systemAddition;
@@ -292,6 +294,74 @@ asyncTest('searchPolicy defaults to "research" when cockpitManager absent', asyn
   assert.ok(calls.length >= 1);
   assert.strictEqual(calls[0].searchPolicy, 'research',
     `Default searchPolicy should be 'research' when cockpitManager absent`);
+});
+
+// ---------------------------------------------------------------------------
+// B1: wiki_write URL directive (#206 — no [[wikilink]] for Collectives link)
+// ---------------------------------------------------------------------------
+
+asyncTest('B1: grounding instructs to use the exact wiki_write returned URL for Collectives link', async () => {
+  // Both non-sovereign and sovereign branches must carry the directive.
+  const wb    = makeWb({ cardDescription: 'Hello\n' + FROM_FOOTER });
+  const calls = await runEngine(wb, 'research');
+  assert.ok(calls.length >= 1);
+  const sys = calls[0].systemAddition;
+  assert.ok(
+    sys.includes('wiki_write'),
+    `systemAddition must reference wiki_write tool so model knows to use its returned URL; got:\n${sys}`
+  );
+  assert.ok(
+    sys.includes('[View](') || sys.includes('[View](...)'),
+    `systemAddition must reference the [View](...) URL pattern from wiki_write result; got:\n${sys}`
+  );
+});
+
+asyncTest('B1-sovereign: sovereign branch also carries the wiki_write URL directive', async () => {
+  const wb    = makeWb({ cardDescription: 'Hello\n' + FROM_FOOTER });
+  const calls = await runEngine(wb, 'sovereign');
+  assert.ok(calls.length >= 1);
+  const sys = calls[0].systemAddition;
+  assert.ok(
+    sys.includes('wiki_write'),
+    `sovereign systemAddition must reference wiki_write tool; got:\n${sys}`
+  );
+});
+
+asyncTest('B1: grounding forbids [[wikilink]] syntax for the Collectives link', async () => {
+  const wb    = makeWb({ cardDescription: 'Hello\n' + FROM_FOOTER });
+  const calls = await runEngine(wb, 'research');
+  assert.ok(calls.length >= 1);
+  const sys = calls[0].systemAddition;
+  // The prohibition must be present so the model knows not to construct [[...]] links.
+  assert.ok(
+    sys.includes('[[wikilink]]') || sys.includes('[['),
+    `systemAddition must name the [[...]] pattern to forbid it; got:\n${sys}`
+  );
+  // The instruction must forbid it, not recommend it.
+  // We check for the prohibition phrase that the implementation uses.
+  assert.ok(
+    sys.includes('Do NOT construct a [[wikilink]]') ||
+    sys.includes('Do NOT construct') ||
+    sys.includes('wikilink resolver'),
+    `systemAddition must contain a prohibition on [[wikilink]] construction; got:\n${sys}`
+  );
+});
+
+// ---------------------------------------------------------------------------
+// B2: no Message-ID in assembled grounding (#192 / #206)
+// ---------------------------------------------------------------------------
+
+asyncTest('B2: assembled systemAddition contains no Message-ID substring (B2 removal)', async () => {
+  // The card description uses a post-B2 footer (no Message-ID line).
+  // The grounding block (Sections A+B) must not include Message-ID either.
+  const wb    = makeWb({ cardDescription: 'Hello\n' + FROM_FOOTER });
+  const calls = await runEngine(wb, 'research');
+  assert.ok(calls.length >= 1);
+  const sys = calls[0].systemAddition;
+  assert.ok(
+    !sys.includes('Message-ID'),
+    `systemAddition must contain no "Message-ID" substring after B2 removal; got:\n${sys}`
+  );
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);
