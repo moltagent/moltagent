@@ -23,8 +23,6 @@ const SENSITIVE_TOOLS = new Set([
   'calendar_create_event',
   'calendar_update_event',
   'calendar_delete_event',
-  'calendar_quick_schedule',
-  'calendar_schedule_meeting',
   'calendar_cancel_meeting',
   'wiki_write',
   'wiki_delete',
@@ -36,8 +34,6 @@ const EDITABLE_TOOLS = new Set([
   'mail_reply',
   'calendar_create_event',
   'calendar_update_event',
-  'calendar_quick_schedule',
-  'calendar_schedule_meeting',
   'wiki_write',
 ]);
 
@@ -50,8 +46,6 @@ const TOOL_CATEGORIES = {
   calendar_create_event:  'CALENDAR — creates a new calendar event',
   calendar_update_event:  'CALENDAR — modifies an existing calendar event',
   calendar_delete_event:  'CALENDAR — deletes a calendar event',
-  calendar_quick_schedule:'CALENDAR — checks availability and creates an event',
-  calendar_schedule_meeting:'CALENDAR — schedules a meeting with attendee invitations',
   calendar_cancel_meeting:'CALENDAR — cancels a meeting and sends cancellation notices',
   wiki_write:             'KNOWLEDGE BASE — creates or updates a wiki page in shared knowledge',
   wiki_delete:            'KNOWLEDGE BASE — permanently trashes a wiki page',
@@ -65,8 +59,6 @@ const KEYWORD_FALLBACK_MAP = {
   calendar_create_event:  ['calendar event', 'schedule meeting'],
   calendar_update_event:  ['calendar event', 'modify calendar'],
   calendar_delete_event:  ['delete event', 'cancel event'],
-  calendar_quick_schedule:['schedule meeting', 'book meeting', 'calendar event'],
-  calendar_schedule_meeting:['schedule meeting', 'meeting invitation', 'calendar event'],
   calendar_cancel_meeting:['cancel meeting', 'meeting cancellation', 'cancel event'],
   wiki_write:             ['knowledge base', 'wiki', 'knowledge change'],
   wiki_delete:            ['delete wiki', 'wiki page deletion', 'remove wiki page'],
@@ -81,7 +73,7 @@ const HIGH_SEVERITY_TOOLS = new Set([
   'execute_shell', 'run_command',
   'notification_send', 'external_api_call',
   'file_share', 'deck_share_board',
-  'calendar_schedule_meeting', 'calendar_cancel_meeting',
+  'calendar_cancel_meeting',
 ]);
 
 const TOOL_APPROVAL_LABELS = {
@@ -104,8 +96,6 @@ const TOOL_APPROVAL_LABELS = {
   deck_share_board:     'Share board',
   access_new_credential:'Access credential',
   wiki_delete:          'Delete wiki page',
-  calendar_quick_schedule:  'Schedule event',
-  calendar_schedule_meeting:'Schedule meeting with invitations',
   calendar_cancel_meeting:  'Cancel meeting',
 };
 
@@ -528,8 +518,6 @@ class GuardrailEnforcer {
         return this._buildFileMoveConfirmation(toolArgs, guardrailLine);
       case 'calendar_create_event':
       case 'calendar_update_event':
-      case 'calendar_quick_schedule':
-      case 'calendar_schedule_meeting':
         return this._buildCalendarConfirmation(toolName, toolArgs, guardrailLine);
       case 'calendar_delete_event':
       case 'calendar_cancel_meeting':
@@ -603,8 +591,6 @@ class GuardrailEnforcer {
     const actionMap = {
       calendar_create_event: 'Create event',
       calendar_update_event: 'Update event',
-      calendar_quick_schedule: 'Quick schedule',
-      calendar_schedule_meeting: 'Schedule meeting',
     };
     const action = actionMap[toolName] || 'Calendar action';
     const attendees = Array.isArray(args.attendees) ? args.attendees.join(', ') : (args.attendee || '');
@@ -671,8 +657,6 @@ class GuardrailEnforcer {
       deck_delete_card: 'delete a Deck card',
       deck_share_board: 'share a Deck board',
       file_share: 'share a file',
-      calendar_quick_schedule: 'schedule an event',
-      calendar_schedule_meeting: 'schedule a meeting with invitations',
       calendar_cancel_meeting: 'cancel a meeting',
     };
     const action = actionMap[toolName] || `perform an action (${toolName})`;
@@ -854,18 +838,6 @@ class GuardrailEnforcer {
           patterns.push(new RegExp(`\\bshare\\b.*${escaped}`, 'i'));
         }
         break;
-      case 'calendar_quick_schedule':
-        patterns.push(
-          /\b(?:schedule|book|set up)\b/,
-          /\bfind\s+(?:a\s+)?time\b/
-        );
-        break;
-      case 'calendar_schedule_meeting':
-        patterns.push(
-          /\b(?:schedule|book|set up|arrange)\b.*\bmeeting\b/,
-          /\bmeeting\b.*\b(?:schedule|book|set up|arrange)\b/
-        );
-        break;
       case 'calendar_cancel_meeting':
         patterns.push(
           /\b(?:cancel|call off)\b.*\bmeeting\b/,
@@ -1027,18 +999,6 @@ class GuardrailEnforcer {
       case 'wiki_delete':
         lines.push(`Page: **${args.page_title || '?'}**`);
         lines.push('\u26a0\ufe0f This cannot be undone.');
-        break;
-      case 'calendar_quick_schedule':
-        lines.push(`Event: **${args.summary || '?'}**`);
-        lines.push(`Time: ${args.date_time || '?'} (${args.duration_minutes || 60} min)`);
-        if (args.attendees?.length) lines.push(`Attendees: ${args.attendees.join(', ')}`);
-        break;
-      case 'calendar_schedule_meeting':
-        lines.push(`Meeting: **${args.summary || '?'}**`);
-        lines.push(`Time: ${args.start || '?'} – ${args.end || '?'}`);
-        lines.push(`Attendees: ${(args.attendees || []).join(', ')}`);
-        if (args.location) lines.push(`Location: ${args.location}`);
-        lines.push('\u26a0\ufe0f Invitations will be sent to all attendees.');
         break;
       case 'calendar_cancel_meeting':
         lines.push(`Event UID: **${args.event_uid || '?'}**`);

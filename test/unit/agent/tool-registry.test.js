@@ -86,7 +86,15 @@ function createMockCalDAVClient() {
       { uid: 'ev1', summary: 'Team standup', start: '2026-02-09T09:00:00Z', end: '2026-02-09T09:30:00Z', location: 'Zoom' },
       { uid: 'ev2', summary: 'Lunch', start: '2026-02-09T12:00:00Z', end: '2026-02-09T13:00:00Z' }
     ],
-    createEvent: async (event) => ({ uid: 'new-event-123', ...event }),
+    // Mirrors the real CalDAVClient.createEvent past-date guard (#169) so
+    // registry-level tests reflect production: a past start surfaces as an error.
+    createEvent: async (event) => {
+      const start = event.start instanceof Date ? event.start : new Date(event.start);
+      if (!isNaN(start.getTime()) && start < new Date(Date.now() - 24 * 60 * 60 * 1000)) {
+        throw new Error(`Rejected: start date ${start.toISOString()} is in the past. Current date/time is ${new Date().toISOString()}. Please use the correct date.`);
+      }
+      return { uid: 'new-event-123', ...event };
+    },
     checkAvailability: async (_start, _end) => ({ isFree: true, conflicts: [] })
   };
 }
@@ -138,7 +146,7 @@ test('constructor creates registry with tools from all clients', () => {
   assert.ok(registry.has('deck_create_card'), 'Should have deck_create_card');
   assert.ok(registry.has('calendar_list_events'), 'Should have calendar_list_events');
   assert.ok(registry.has('calendar_create_event'), 'Should have calendar_create_event');
-  assert.ok(registry.has('calendar_check_conflicts'), 'Should have calendar_check_conflicts');
+  assert.ok(registry.has('calendar_check_availability'), 'Should have calendar_check_availability');
   assert.ok(registry.has('tag_file'), 'Should have tag_file');
   assert.ok(registry.has('memory_recall'), 'Should have memory_recall');
 });
@@ -421,19 +429,21 @@ asyncTest('calendar_create_event rejects invalid start date', async () => {
   assert.ok(result.result.includes('Invalid start date'));
 });
 
-asyncTest('calendar_create_event rejects past date', async () => {
+asyncTest('calendar_create_event rejects past date (guard inherited from substrate)', async () => {
   const registry = new ToolRegistry({
     calDAVClient: createMockCalDAVClient(),
     logger: silentLogger
   });
 
+  // The handler no longer guards past dates (#169); CalDAVClient.createEvent does.
+  // The throw is reframed by execute() as a structured failure shown to the model.
   const result = await registry.execute('calendar_create_event', {
     title: 'Past meeting',
     start: '2020-01-01T10:00:00Z'
   });
 
-  assert.ok(result.success);
-  assert.ok(result.result.includes('in the past'));
+  assert.strictEqual(result.success, false);
+  assert.ok(result.error.includes('in the past'));
 });
 
 asyncTest('calendar_create_event rejects end before start', async () => {
@@ -454,18 +464,133 @@ asyncTest('calendar_create_event rejects end before start', async () => {
   assert.ok(result.result.includes('not after start'));
 });
 
-asyncTest('calendar_check_conflicts returns no conflicts', async () => {
+// #169: consolidated calendar tool surface
+asyncTest('calendar_check_availability reports free with a start (date_time retired)', async () => {
   const registry = new ToolRegistry({
     calDAVClient: createMockCalDAVClient(),
     logger: silentLogger
   });
 
-  const result = await registry.execute('calendar_check_conflicts', {
-    start: '2026-02-15T14:00:00Z'
+  const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const result = await registry.execute('calendar_check_availability', { start: future });
+
+  assert.ok(result.success);
+  assert.ok(result.result.includes('free'));
+  assert.ok(result.result.includes('No conflicts'));
+});
+
+asyncTest('calendar_create_event computes end from duration_minutes when end omitted', async () => {
+  let captured = null;
+  const cal = createMockCalDAVClient();
+  cal.createEvent = async (event) => { captured = event; return { uid: 'ev-dur', ...event }; };
+  const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
+
+  const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const result = await registry.execute('calendar_create_event', {
+    title: 'Dur meeting',
+    start: start.toISOString(),
+    duration_minutes: 90
   });
 
   assert.ok(result.success);
-  assert.ok(result.result.includes('No conflicts'));
+  assert.strictEqual(captured.end.getTime() - captured.start.getTime(), 90 * 60 * 1000);
+});
+
+asyncTest('calendar_create_event: end wins when both end and duration_minutes given', async () => {
+  let captured = null;
+  const cal = createMockCalDAVClient();
+  cal.createEvent = async (event) => { captured = event; return { uid: 'ev-end', ...event }; };
+  const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
+
+  const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const end = new Date(start.getTime() + 30 * 60 * 1000);
+  const result = await registry.execute('calendar_create_event', {
+    title: 'End wins',
+    start: start.toISOString(),
+    end: end.toISOString(),
+    duration_minutes: 240
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(captured.end.getTime() - captured.start.getTime(), 30 * 60 * 1000);
+});
+
+asyncTest('calendar_create_event defaults to 60 minutes when neither end nor duration given', async () => {
+  let captured = null;
+  const cal = createMockCalDAVClient();
+  cal.createEvent = async (event) => { captured = event; return { uid: 'ev-def', ...event }; };
+  const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
+
+  const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const result = await registry.execute('calendar_create_event', {
+    title: 'Default',
+    start: start.toISOString()
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(captured.end.getTime() - captured.start.getTime(), 60 * 60 * 1000);
+});
+
+asyncTest('calendar_create_event with check_availability:true and a conflict creates nothing', async () => {
+  let createCalled = false;
+  const cal = createMockCalDAVClient();
+  cal.checkAvailability = async () => ({
+    isFree: false,
+    conflicts: [{ summary: 'Existing call', start: '2026-07-01T14:00:00Z', end: '2026-07-01T15:00:00Z' }]
+  });
+  cal.createEvent = async (event) => { createCalled = true; return { uid: 'x', ...event }; };
+  const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
+
+  const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const result = await registry.execute('calendar_create_event', {
+    title: 'Conflicting',
+    start: start.toISOString(),
+    check_availability: true
+  });
+
+  assert.ok(result.success);
+  assert.ok(result.result.includes('not available'));
+  assert.ok(result.result.includes('Existing call'));
+  assert.strictEqual(createCalled, false, 'no event created on conflict');
+});
+
+asyncTest('calendar_create_event with check_availability:true and a free slot creates the event', async () => {
+  const cal = createMockCalDAVClient(); // checkAvailability defaults to free
+  const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
+
+  const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const result = await registry.execute('calendar_create_event', {
+    title: 'Free slot',
+    start: start.toISOString(),
+    check_availability: true
+  });
+
+  assert.ok(result.success);
+  assert.ok(result.result.includes('Free slot'));
+});
+
+test('retired calendar tools are not registered (#169)', () => {
+  const registry = new ToolRegistry({
+    calDAVClient: createMockCalDAVClient(),
+    ncRequestManager: createMockNCRequestManager(),
+    logger: silentLogger
+  });
+  assert.ok(!registry.has('calendar_quick_schedule'), 'calendar_quick_schedule retired');
+  assert.ok(!registry.has('calendar_schedule_meeting'), 'calendar_schedule_meeting retired');
+  assert.ok(!registry.has('calendar_check_conflicts'), 'calendar_check_conflicts retired');
+});
+
+test("getToolSubset('calendar') reflects the consolidated set (#169)", () => {
+  const registry = new ToolRegistry({
+    calDAVClient: createMockCalDAVClient(),
+    logger: silentLogger
+  });
+  const names = registry.getToolSubset('calendar').map(t => t.function.name);
+  assert.ok(names.includes('calendar_create_event'));
+  assert.ok(names.includes('calendar_check_availability'));
+  assert.ok(!names.includes('calendar_quick_schedule'));
+  assert.ok(!names.includes('calendar_schedule_meeting'));
+  assert.ok(!names.includes('calendar_check_conflicts'));
 });
 
 asyncTest('tag_file tags successfully', async () => {
@@ -1833,9 +1958,9 @@ test('all 53 tools registered with all clients', () => {
     textExtractor: createMockTextExtractor(),
     logger: silentLogger
   });
-  // 24 deck + 10 calendar + 1 tag + 1 memory + 10 file + 1 search + 6 workflow_deck = 53
-  // (workflow_deck_assign_label added as part of LLM-driven GATE architecture)
-  assert.strictEqual(registry.size, 53, `Expected 53 tools, got ${registry.size}`);
+  // 24 deck + 7 calendar + 1 tag + 1 memory + 10 file + 1 search + 6 workflow_deck = 50
+  // (#169 retired calendar_quick_schedule, calendar_schedule_meeting, calendar_check_conflicts)
+  assert.strictEqual(registry.size, 50, `Expected 50 tools, got ${registry.size}`);
 });
 
 asyncTest('file_read returns file content', async () => {

@@ -1911,7 +1911,7 @@ asyncTest('#133: system prompt — unknown domain (astrology) produces no ## Thi
 
 function makeParserLoop() {
   const registry = createMockToolRegistry({
-    calendar_quick_schedule: async () => ({ success: true, result: 'Scheduled.' }),
+    calendar_create_event: async () => ({ success: true, result: 'Scheduled.' }),
     deck_move_card: async () => ({ success: true, result: 'Moved.' })
   });
   return new AgentLoop({
@@ -1936,10 +1936,10 @@ test('#164: parser recognizes canonical {"name","arguments"} JSON shape', () => 
 test('#164: parser recognizes a <tool_call>-wrapped arguments-shape call', () => {
   const loop = makeParserLoop();
   const parsed = loop._parseToolCallFromText(
-    '<tool_call>\n{"name": "calendar_quick_schedule", "arguments": {"title": "Check backend"}}\n</tool_call>'
+    '<tool_call>\n{"name": "calendar_create_event", "arguments": {"title": "Check backend"}}\n</tool_call>'
   );
   assert.ok(parsed, '<tool_call>-wrapped call must parse');
-  assert.strictEqual(parsed.name, 'calendar_quick_schedule');
+  assert.strictEqual(parsed.name, 'calendar_create_event');
   assert.strictEqual(parsed.arguments.title, 'Check backend');
 });
 
@@ -1956,12 +1956,12 @@ asyncTest('#164: text-form call on a gate=action turn is invoked, reply is synth
   // Iteration 1 emits the call as TEXT (qwen3:8b shape); iteration 2 synthesizes.
   // Pre-fix: parser missed it → action guard re-prompts once → envelope shipped.
   const provider = createMockProvider([
-    { content: '<tool_call>\n{"name": "calendar_quick_schedule", "arguments": {"title": "Check backend", "start": "2026-06-17T19:00"}}\n</tool_call>', toolCalls: null },
+    { content: '<tool_call>\n{"name": "calendar_create_event", "arguments": {"title": "Check backend", "start": "2026-06-17T19:00"}}\n</tool_call>', toolCalls: null },
     { content: 'Scheduled "Check backend" for tomorrow at 19:00.', toolCalls: null }
   ]);
   let executed = false;
   const registry = createDomainMockToolRegistry({
-    calendar_quick_schedule: async () => { executed = true; return { success: true, result: 'Scheduled.' }; }
+    calendar_create_event: async () => { executed = true; return { success: true, result: 'Scheduled.' }; }
   });
 
   const loop = new AgentLoop({
