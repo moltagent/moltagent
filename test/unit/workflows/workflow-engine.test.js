@@ -1620,8 +1620,12 @@ function createMockTalkQueue() {
     // Use a custom detector spy rather than createMockDetector so we can count.
     const mockDeck2 = createMockDeck();
     mockDeck2._request = async () => ({});
-    // Fresh PAUSED check (A3) calls getCardById on the rules card.
-    mockDeck2.getCardById = async () => ({ id: 900, title: 'WORKFLOW: pipeline', labels: [] });
+    // Fresh PAUSED check (A3) reads via the plural getStacks; rules card has no PAUSED.
+    mockDeck2.getStacks = async () => ([
+      { id: 10, title: 'Inbox', cards: [
+        { id: 900, title: 'WORKFLOW: pipeline', description: 'RULES', labels: [] }
+      ] }
+    ]);
     const engine2 = new WorkflowEngine({
       workflowDetector: {
         getWorkflowBoards: async () => boards,
@@ -1637,36 +1641,37 @@ function createMockTalkQueue() {
     assert.ok(invalidateCount2 >= 1, `Cache must be invalidated after productive pulse (count=${invalidateCount2})`);
   });
 
-  // A4.3: _processBoard() honors a PAUSED label applied to the rules card between
-  // pulses (absent from the snapshot), via the fresh getCardById read.  The
-  // AgentLoop must not be called even though the snapshot shows the board as active.
-  await asyncTest('A4.3: _processBoard() skips board when fresh rules-card read shows PAUSED (snapshot had none)', async () => {
+  // A4.3: _processBoard() honors a PAUSED applied to the rules card between pulses,
+  // read via the PLURAL getStacks (hydrated labels), NOT the singular card endpoint.
+  // Regression guard: getCardById is mocked with the real #22 shape (labels:null),
+  // so if the fresh read ever reverts to getCardById it will MISS PAUSED and fail here.
+  await asyncTest('A4.3: _processBoard() honors freshly-applied PAUSED via hydrated getStacks, not getCardById', async () => {
     const agentLoop = createMockAgentLoop();
     const mockDeck = createMockDeck();
-    const requestCalls = [];
-    mockDeck._request = async (method, path, body) => {
-      requestCalls.push({ method, path, body });
-      return {};
-    };
-    // Fresh read returns the rules card WITH PAUSED — simulates a human-applied pause.
-    mockDeck.getCardById = async (boardId, stackId, cardId) => ({
-      id: cardId,
-      title: 'WORKFLOW: pipeline',
-      description: 'RULES',
-      labels: [{ title: 'PAUSED' }]  // freshly applied
+    mockDeck._request = async () => ({});
+
+    // Singular card endpoint shape (#22): labels NOT hydrated. Using this path
+    // would miss the PAUSED label — this mock makes that failure observable.
+    mockDeck.getCardById = async (_boardId, _stackId, cardId) => ({
+      id: cardId, title: 'WORKFLOW: pipeline', description: 'RULES', labels: null
     });
 
-    // Snapshot rules card has NO PAUSED label
+    // Plural stacks endpoint shape: per-card labels hydrated; rules card has PAUSED.
+    mockDeck.getStacks = async (_boardId) => ([
+      { id: 10, title: 'Inbox', cards: [
+        { id: 900, title: 'WORKFLOW: pipeline', description: 'RULES', labels: [{ title: 'PAUSED' }] },
+        { id: 100, title: 'Work Card', description: 'task', labels: [], lastModified: new Date().toISOString() }
+      ] }
+    ]);
+
+    // Snapshot rules card has NO PAUSED label (the pause was applied after the snapshot).
     const rulesCard = { id: 900, title: 'WORKFLOW: pipeline', description: 'RULES', labels: [] };
     const boards = [{
       board: { id: 1, title: 'Test Board' },
-      stacks: [{
-        id: 10, title: 'Inbox',
-        cards: [
-          rulesCard,
-          { id: 100, title: 'Work Card', description: 'task', labels: [], lastModified: new Date().toISOString() }
-        ]
-      }],
+      stacks: [{ id: 10, title: 'Inbox', cards: [
+        rulesCard,
+        { id: 100, title: 'Work Card', description: 'task', labels: [], lastModified: new Date().toISOString() }
+      ] }],
       description: 'WORKFLOW: pipeline\nRULES: Go.',
       workflowType: 'pipeline',
       boardId: 1,
@@ -1683,7 +1688,7 @@ function createMockTalkQueue() {
 
     const result = await engine.processAll();
 
-    assert.strictEqual(result.cardsProcessed, 0, 'Board must be skipped: PAUSED from fresh read');
+    assert.strictEqual(result.cardsProcessed, 0, 'Board must be skipped: PAUSED read from hydrated getStacks');
     assert.strictEqual(agentLoop._calls.length, 0, 'AgentLoop must not be called on a freshly-PAUSED board');
   });
 

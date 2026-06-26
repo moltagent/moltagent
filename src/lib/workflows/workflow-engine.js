@@ -212,21 +212,25 @@ class WorkflowEngine {
       console.warn(`[Workflow] Board "${board.title}" — rules card not resolvable (id=${wb.rulesCardId}), treating as PAUSED`);
       return result;
     }
-    // A3: Fresh targeted read of the rules card to honor a PAUSED label applied
-    // this pulse. The cached snapshot is up to 5 minutes stale — a human who
-    // pauses the board should not wait up to one full cache window. We read just
-    // the rules card from the Deck API; on any error we fall back to the snapshot
-    // so a transient network hiccup never skips a board silently.
+    // A3: Fresh PAUSED check. The cached snapshot is up to 5 minutes stale — a
+    // human who pauses the board should not wait up to one full cache window.
+    // Read via the PLURAL stacks endpoint (getStacks), which hydrates per-card
+    // labels. The singular card endpoint does NOT reliably hydrate labels (#22),
+    // so reading the rules card with getCardById here could see labels:null and
+    // silently miss a real PAUSED — worse than the stale snapshot, which is at
+    // least label-hydrated. On any error, fall back to the snapshot (hydrated,
+    // just stale) so a transient network hiccup never skips a board silently.
     {
-      const rulesCardStack = stacks.find(s => (s.cards || []).some(c => c.id === wb.rulesCardId));
-      let pausedCheckCard = rulesCard; // snapshot fallback
-      if (rulesCardStack) {
-        try {
-          const fresh = await this.deck.getCardById(board.id, rulesCardStack.id, wb.rulesCardId);
-          pausedCheckCard = fresh.body || fresh;
-        } catch (err) {
-          console.warn(`[Workflow] Board "${board.title}" — could not fresh-check PAUSED: ${err.message} (using snapshot)`);
-        }
+      let pausedCheckCard = rulesCard; // snapshot fallback (hydrated, possibly stale)
+      try {
+        const freshStacks = await this.deck.getStacks(board.id);
+        const freshArr = (freshStacks.body || freshStacks) || [];
+        const freshRules = freshArr
+          .flatMap(s => s.cards || [])
+          .find(c => c.id === wb.rulesCardId);
+        if (freshRules) pausedCheckCard = freshRules;
+      } catch (err) {
+        console.warn(`[Workflow] Board "${board.title}" — could not fresh-check PAUSED: ${err.message} (using snapshot)`);
       }
       if (hasLabel(pausedCheckCard, 'PAUSED')) {
         console.log(`[Workflow] Board "${board.title}" is PAUSED — skipping`);
