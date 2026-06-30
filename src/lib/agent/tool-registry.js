@@ -999,6 +999,78 @@ class ToolRegistry {
       }
     });
 
+    // -- Phase F3: Board lifecycle --
+
+    this.register({
+      name: 'deck_rename_board',
+      description: 'Rename an existing Deck board.',
+      parameters: {
+        type: 'object',
+        properties: {
+          board: { type: 'string', description: 'Board name (partial match) or board ID' },
+          title: { type: 'string', description: 'New board title' }
+        },
+        required: ['board', 'title']
+      },
+      handler: async (args) => {
+        try {
+          const board = await this._resolveBoard(deck, args.board);
+          if (!board) return `No board found matching "${args.board}".`;
+          await deck.updateBoard(board.id, { title: args.title });
+          return `Renamed board "${board.title}" to "${args.title}".`;
+        } catch (err) {
+          this.logger.error(`[deck_rename_board] ${err.message}`);
+          return `Failed to rename board: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'deck_archive_board',
+      description: 'Archive a Deck board. Archived boards are hidden from the default view but not deleted.',
+      parameters: {
+        type: 'object',
+        properties: {
+          board: { type: 'string', description: 'Board name (partial match) or board ID' }
+        },
+        required: ['board']
+      },
+      handler: async (args) => {
+        try {
+          const board = await this._resolveBoard(deck, args.board);
+          if (!board) return `No board found matching "${args.board}".`;
+          await deck.archiveBoard(board.id);
+          return `Archived board "${board.title}" (ID: ${board.id}).`;
+        } catch (err) {
+          this.logger.error(`[deck_archive_board] ${err.message}`);
+          return `Failed to archive board: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'deck_delete_board',
+      description: 'Permanently delete a Deck board and all its stacks and cards. This is irreversible and requires confirmation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          board: { type: 'string', description: 'Board name (partial match) or board ID' }
+        },
+        required: ['board']
+      },
+      handler: async (args) => {
+        try {
+          const board = await this._resolveBoard(deck, args.board);
+          if (!board) return `No board found matching "${args.board}".`;
+          await deck.deleteBoard(board.id);
+          return `Deleted board "${board.title}" (ID: ${board.id}). This action is irreversible.`;
+        } catch (err) {
+          this.logger.error(`[deck_delete_board] ${err.message}`);
+          return `Failed to delete board: ${err.message}`;
+        }
+      }
+    });
+
     // -- Phase A: Stack ops --
 
     this.register({
@@ -1051,6 +1123,69 @@ class ToolRegistry {
         } catch (err) {
           this.logger.error(`[deck_create_stack] ${err.message}`);
           return `Failed to create stack: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'deck_rename_stack',
+      description: 'Rename a stack (column) in a Deck board.',
+      parameters: {
+        type: 'object',
+        properties: {
+          board: { type: 'string', description: 'Board name (partial match) or board ID' },
+          stack: { type: 'string', description: 'Stack name (partial match) or stack ID' },
+          title: { type: 'string', description: 'New stack title' }
+        },
+        required: ['board', 'stack', 'title']
+      },
+      handler: async (args) => {
+        try {
+          const board = await this._resolveBoard(deck, args.board);
+          if (!board) return `No board found matching "${args.board}".`;
+          const stacks = await deck.getStacks(board.id);
+          const idStr = String(args.stack).replace(/^#/, '');
+          const asNum = parseInt(idStr, 10);
+          const stack = (!isNaN(asNum) && String(asNum) === idStr)
+            ? stacks.find(s => String(s.id) === idStr)
+            : stacks.find(s => s.title.toLowerCase().includes(args.stack.toLowerCase()));
+          if (!stack) return `No stack found matching "${args.stack}" on board "${board.title}".`;
+          await deck.updateStack(board.id, stack.id, { title: args.title });
+          return `Renamed stack "${stack.title}" to "${args.title}" on board "${board.title}".`;
+        } catch (err) {
+          this.logger.error(`[deck_rename_stack] ${err.message}`);
+          return `Failed to rename stack: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'deck_delete_stack',
+      description: 'Permanently delete a stack (column) and all its cards from a Deck board. This is irreversible and requires confirmation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          board: { type: 'string', description: 'Board name (partial match) or board ID' },
+          stack: { type: 'string', description: 'Stack name (partial match) or stack ID' }
+        },
+        required: ['board', 'stack']
+      },
+      handler: async (args) => {
+        try {
+          const board = await this._resolveBoard(deck, args.board);
+          if (!board) return `No board found matching "${args.board}".`;
+          const stacks = await deck.getStacks(board.id);
+          const idStr = String(args.stack).replace(/^#/, '');
+          const asNum = parseInt(idStr, 10);
+          const stack = (!isNaN(asNum) && String(asNum) === idStr)
+            ? stacks.find(s => String(s.id) === idStr)
+            : stacks.find(s => s.title.toLowerCase().includes(args.stack.toLowerCase()));
+          if (!stack) return `No stack found matching "${args.stack}" on board "${board.title}".`;
+          await deck.deleteStack(board.id, stack.id);
+          return `Deleted stack "${stack.title}" (ID: ${stack.id}) from board "${board.title}". This action is irreversible.`;
+        } catch (err) {
+          this.logger.error(`[deck_delete_stack] ${err.message}`);
+          return `Failed to delete stack: ${err.message}`;
         }
       }
     });
@@ -1698,6 +1833,136 @@ class ToolRegistry {
         } catch (err) {
           this.logger.error(`[deck_complete_review] ${err.message}`);
           return `Failed to complete review: ${err.message}`;
+        }
+      }
+    });
+
+    // -- Phase F3: Compound ops --
+
+    this.register({
+      name: 'deck_setup_workflow',
+      description: 'Create a new board with a set of named stacks (columns), optionally seed it with cards in the first stack, and optionally share it with a user. Use when asked to set up a workflow or project board with a defined column structure. Requires confirmation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Board title' },
+          stacks: {
+            type: 'array',
+            description: 'Stack (column) names in display order',
+            items: { type: 'string' }
+          },
+          cards: {
+            type: 'array',
+            description: 'Optional card titles to create in the first stack',
+            items: { type: 'string' }
+          },
+          share_with: { type: 'string', description: 'NC username to share the board with (optional)' }
+        },
+        required: ['title', 'stacks']
+      },
+      handler: async (args) => {
+        try {
+          if (!Array.isArray(args.stacks) || args.stacks.length === 0) {
+            return 'At least one stack name is required.';
+          }
+
+          const board = await deck.createNewBoard(args.title);
+          this.logger.info(`[deck_setup_workflow] Created board "${args.title}" (${board.id})`);
+
+          const createdStacks = [];
+          for (let i = 0; i < args.stacks.length; i++) {
+            try {
+              const stack = await deck.createStack(board.id, args.stacks[i], i);
+              createdStacks.push(stack);
+              this.logger.info(`[deck_setup_workflow] Created stack "${args.stacks[i]}" (${stack.id})`);
+            } catch (err) {
+              this.logger.warn(`[deck_setup_workflow] Stack creation failed "${args.stacks[i]}": ${err.message}`);
+            }
+          }
+
+          let cardCount = 0;
+          if (Array.isArray(args.cards) && args.cards.length > 0 && createdStacks.length > 0) {
+            const firstStackId = createdStacks[0].id;
+            for (const cardTitle of args.cards) {
+              try {
+                await deck.createCardOnBoard(board.id, firstStackId, cardTitle);
+                cardCount++;
+              } catch (err) {
+                this.logger.warn(`[deck_setup_workflow] Card creation failed "${cardTitle}": ${err.message}`);
+              }
+            }
+          }
+
+          if (args.share_with) {
+            try {
+              await deck.shareBoardWithUser(board.id, args.share_with);
+              this.logger.info(`[deck_setup_workflow] Shared board ${board.id} with ${args.share_with}`);
+            } catch (err) {
+              this.logger.warn(`[deck_setup_workflow] Share failed for ${args.share_with}: ${err.message}`);
+            }
+          }
+
+          const boardUrl = deckBoardUrl(board.id);
+          const boardLink = deckLink(`"${board.title}"`, boardUrl);
+          const stackSummary = createdStacks.map(s => s.title).join(' → ');
+          let response = `Created board ${boardLink} with ${createdStacks.length} stack(s): ${stackSummary}.`;
+          if (cardCount > 0) response += ` Added ${cardCount} card(s) to "${createdStacks[0].title}".`;
+          if (args.share_with) response += ` Shared with "${args.share_with}".`;
+          if (createdStacks.length < args.stacks.length) {
+            response += ` Note: ${args.stacks.length - createdStacks.length} stack(s) could not be created.`;
+          }
+          return response;
+        } catch (err) {
+          this.logger.error(`[deck_setup_workflow] ${err.message}`);
+          return `Failed to set up workflow: ${err.message}`;
+        }
+      }
+    });
+
+    this.register({
+      name: 'deck_troubleshoot',
+      description: 'Diagnose board access and visibility issues. Lists accessible boards and reports whether a specific board exists. Does NOT perform sharing — if a share is needed, use deck_share_board.',
+      parameters: {
+        type: 'object',
+        properties: {
+          board: { type: 'string', description: 'Board name (partial match) or board ID to check (optional)' }
+        },
+        required: []
+      },
+      handler: async (args) => {
+        try {
+          const boards = await deck.listBoards();
+          const activeBoards = (boards || []).filter(b => !b.archived);
+
+          if (args.board) {
+            const found = await this._resolveBoard(deck, args.board);
+            if (!found) {
+              const list = activeBoards.length > 0
+                ? `\n\nAccessible boards:\n${activeBoards.map(b => `- "${b.title}" (ID: ${b.id})`).join('\n')}`
+                : '';
+              return `No board found matching "${args.board}".${list}\n\nIf the board exists but is not listed, it may not be shared with this account. Use deck_share_board to grant access.`;
+            }
+
+            const owned = found.owner?.uid === deck.username || found.owner === deck.username;
+            let report = `Board "${found.title}" (ID: ${found.id}) is accessible`;
+            report += owned ? ' and owned by this account.' : ' (shared with this account).';
+            if (found.archived) report += ' Note: this board is archived.';
+            report += '\n\nIf another user cannot see it, use deck_share_board to share it with them.';
+            return report;
+          }
+
+          if (activeBoards.length === 0) {
+            return 'No active boards found. The account may have no boards, or all boards are archived.';
+          }
+
+          const lines = activeBoards.map(b => {
+            const owned = b.owner?.uid === deck.username || b.owner === deck.username;
+            return `- "${b.title}" (ID: ${b.id}, ${owned ? 'owned' : 'shared'})`;
+          });
+          return `Accessible boards (${activeBoards.length}):\n${lines.join('\n')}\n\nIf a board is missing for another user, use deck_share_board to share it with them.`;
+        } catch (err) {
+          this.logger.error(`[deck_troubleshoot] ${err.message}`);
+          return `Failed to run board diagnostics: ${err.message}`;
         }
       }
     });

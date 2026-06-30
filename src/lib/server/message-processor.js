@@ -1556,32 +1556,6 @@ class MessageProcessor {
       console.log('[Message] Wired ToolGuard into MicroPipeline');
     }
 
-    // Wire domain executors (structured parameter extraction)
-    const guardrailEnforcer = this.microPipeline.guardrailEnforcer;
-    const toolGuardRef = this.microPipeline.toolGuard;
-    const router = this.microPipeline.router;
-    const tz = this.microPipeline.timezone;
-    const aLog = this.microPipeline.activityLogger;
-    const cloudProvider = this.microPipeline.cloudToolsProvider || null;
-
-    if (router && !this.microPipeline.executors.deck && toolRegistry) {
-      try {
-        const DeckExecutor = require('../agent/executors/deck-executor');
-        const enricherRef = this.microPipeline?.memoryContextEnricher;
-        this.microPipeline.executors.deck = new DeckExecutor({
-          router, cloudProvider, toolRegistry,
-          deckClient: toolRegistry.clients?.deckClient || null,
-          adminUser: process.env.KNOWLEDGE_ADMIN_USER || this.adminUser || null,
-          guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
-          activityLogger: aLog, timezone: tz, logger: console,
-          boardMapProvider: enricherRef ? () => enricherRef._buildBoardMapBlock() : null
-        });
-        console.log('[Message] Wired DeckExecutor into MicroPipeline');
-      } catch (err) {
-        console.warn(`[Message] DeckExecutor skipped: ${err.message}`);
-      }
-    }
-
     // Wire ClarificationManager — needs sessionManager + executor map
     if (this.sessionManager && !this.clarificationManager) {
       try {
@@ -2693,25 +2667,10 @@ JSON array:`,
         } catch (err) { console.warn(`[probeWiki] Error: ${err.message}`); return []; }
       },
 
-      probeDeck: async (terms, fullQuery) => {
-        // Primary path: delegate to DeckExecutor — it uses the LLM to extract
-        // board_name, stack_name, action from natural language (any language).
-        const deckExec = self.microPipeline?.executors?.deck;
-        if (deckExec && fullQuery) {
-          try {
-            const result = await deckExec.execute(fullQuery, {});
-            if (result?.response) {
-              return [{
-                title: 'Deck query result',
-                snippet: result.response,
-                content: result.response,
-                sourceTag: 'deck'
-              }];
-            }
-          } catch (err) { console.log(`[probeDeck] Executor path failed: ${err.message}`); }
-        }
-
-        // Fallback: enricher keyword search (ambient context, no specific board)
+      probeDeck: async (terms) => {
+        // Enricher keyword search over cached board state (ambient context, no
+        // specific board). The Path-B deck executor primary was retired in F1;
+        // board reads now run on Path A deck_* tools.
         if (!enricher?._searchDeck) return [];
         try {
           const results = await enricher._searchDeck(terms);
@@ -2725,16 +2684,10 @@ JSON array:`,
         } catch { return []; }
       },
 
-      probeCalendar: async (query) => {
-        const calExec = this.microPipeline?.executors?.calendar;
-        if (!calExec) return [];
-        try {
-          const result = await calExec.queryEvents({ query_type: 'upcoming' }, {});
-          if (typeof result === 'string') {
-            return [{ title: 'Upcoming events', snippet: result }];
-          }
-          return [];
-        } catch { return []; }
+      probeCalendar: async () => {
+        // Calendar knowledge-probe retired with the Path-B calendar executor (F1).
+        // Upcoming-events context now flows through Path A calendar_* tools.
+        return [];
       },
 
       probeGraph: async (terms) => {
