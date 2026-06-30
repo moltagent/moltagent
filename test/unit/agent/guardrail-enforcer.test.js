@@ -1023,6 +1023,29 @@ async function runTests() {
     assert.ok(userMsg.includes('Does this guardrail govern the FILE DELETION category?'));
   });
 
+  // F1 discovery: file_write was ungated on the live (Path A) tool-calling path —
+  // present in neither ToolGuard REQUIRES_APPROVAL nor GuardrailEnforcer SENSITIVE_TOOLS,
+  // while file_delete/file_move/file_share and wiki_write all were. Mirror wiki_write
+  // (the write precedent): file_write is now guardrail-evaluable (Cockpit-GATE-governed),
+  // not short-circuited. This asserts the gap is closed.
+  await asyncTest('file_write is evaluated as sensitive (F1 gap closed)', async () => {
+    const ollama = createMockOllama('NO');
+    const enforcer = makeEnforcer({
+      cockpitManager: createMockCockpit([gateGuardrail('Confirm before writing files')]),
+      ollamaProvider: ollama,
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([])
+    });
+
+    await enforcer.check('file_write', { path: '/Outbox/report.md', content: 'x' }, 'room1');
+    // If file_write were still non-sensitive, check() would short-circuit before any
+    // LLM call and _getLastCall() would be empty — so reaching the semantic prompt
+    // proves it is now in SENSITIVE_TOOLS.
+    const userMsg = ollama._getLastCall().messages[0].content;
+    assert.ok(userMsg.includes('Tool category: FILE WRITE'));
+    assert.ok(userMsg.includes('Does this guardrail govern the FILE WRITE category?'));
+  });
+
   // ============================================================
   // checkApproval() — ToolGuard APPROVAL_REQUIRED routing
   // ============================================================
