@@ -20,6 +20,7 @@ const SENSITIVE_TOOLS = new Set([
   'mail_send',
   'file_delete',
   'file_move',
+  'file_write',
   'calendar_create_event',
   'calendar_update_event',
   'calendar_delete_event',
@@ -35,6 +36,7 @@ const EDITABLE_TOOLS = new Set([
   'calendar_create_event',
   'calendar_update_event',
   'wiki_write',
+  'file_write',
 ]);
 
 // Explicit tool categories — fed to the LLM so it reasons about category membership,
@@ -43,6 +45,7 @@ const TOOL_CATEGORIES = {
   mail_send:              'EMAIL — sends a message to an external recipient',
   file_delete:            'FILE DELETION — permanently removes a file from storage',
   file_move:              'FILE MOVE — relocates a file to a different path',
+  file_write:             'FILE WRITE — creates a new file or overwrites an existing one in storage',
   calendar_create_event:  'CALENDAR — creates a new calendar event',
   calendar_update_event:  'CALENDAR — modifies an existing calendar event',
   calendar_delete_event:  'CALENDAR — deletes a calendar event',
@@ -56,6 +59,7 @@ const KEYWORD_FALLBACK_MAP = {
   mail_send:              ['external communication', 'email', 'outbound mail'],
   file_delete:            ['delete file', 'file deletion', 'destructive'],
   file_move:              ['move file', 'file move'],
+  file_write:             ['write file', 'file write', 'save file', 'create file', 'overwrite file'],
   calendar_create_event:  ['calendar event', 'schedule meeting'],
   calendar_update_event:  ['calendar event', 'modify calendar'],
   calendar_delete_event:  ['delete event', 'cancel event'],
