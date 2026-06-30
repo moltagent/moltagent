@@ -1564,35 +1564,6 @@ class MessageProcessor {
     const aLog = this.microPipeline.activityLogger;
     const cloudProvider = this.microPipeline.cloudToolsProvider || null;
 
-    if (router && !this.microPipeline.executors.calendar && this.microPipeline.calendarClient) {
-      try {
-        const CalendarExecutor = require('../agent/executors/calendar-executor');
-        this.microPipeline.executors.calendar = new CalendarExecutor({
-          router, cloudProvider, calendarClient: this.microPipeline.calendarClient,
-          guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
-          activityLogger: aLog, timezone: tz, logger: console
-        });
-        console.log('[Message] Wired CalendarExecutor into MicroPipeline');
-      } catch (err) {
-        console.warn(`[Message] CalendarExecutor skipped: ${err.message}`);
-      }
-    }
-
-    if (router && !this.microPipeline.executors.file && this.agentLoop.toolRegistry?.clients?.ncFilesClient) {
-      try {
-        const FileExecutor = require('../agent/executors/file-executor');
-        this.microPipeline.executors.file = new FileExecutor({
-          router, cloudProvider, ncFilesClient: this.agentLoop.toolRegistry.clients.ncFilesClient,
-          textExtractor: this.agentLoop.toolRegistry.clients.textExtractor || null,
-          guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
-          activityLogger: aLog, timezone: tz, logger: console
-        });
-        console.log('[Message] Wired FileExecutor into MicroPipeline');
-      } catch (err) {
-        console.warn(`[Message] FileExecutor skipped: ${err.message}`);
-      }
-    }
-
     if (router && !this.microPipeline.executors.wiki && toolRegistry) {
       try {
         const WikiExecutor = require('../agent/executors/wiki-executor');
