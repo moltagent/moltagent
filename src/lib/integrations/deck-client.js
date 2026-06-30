@@ -578,7 +578,16 @@ class DeckClient {
    */
   async updateBoard(boardId, updates) {
     if (!boardId) throw new DeckApiError('boardId is required');
-    return await this._request('PUT', `/index.php/apps/deck/api/v1.0/boards/${boardId}`, updates);
+    // Deck's board PUT requires the full representation (title + color); a partial
+    // body returns HTTP 400 (NC partial-PUT, same class as the #139 card fix).
+    // Read-modify-write: merge the requested changes onto the current board.
+    const current = await this.getBoard(boardId);
+    const body = {
+      title: updates.title ?? current.title,
+      color: updates.color ?? current.color,
+      archived: updates.archived ?? current.archived ?? false
+    };
+    return await this._request('PUT', `/index.php/apps/deck/api/v1.0/boards/${boardId}`, body);
   }
 
   /**
@@ -613,8 +622,17 @@ class DeckClient {
    */
   async updateStack(boardId, stackId, updates) {
     if (!boardId || !stackId) throw new DeckApiError('boardId and stackId are required');
+    // Deck's stack PUT requires the full body (title + order); a partial body
+    // returns HTTP 400 (NC partial-PUT, same class as the #139 card fix).
+    // Read-modify-write: merge the requested changes onto the current stack.
+    const stacks = await this.getStacks(boardId);
+    const current = (Array.isArray(stacks) ? stacks : []).find(s => String(s.id) === String(stackId)) || {};
+    const body = {
+      title: updates.title ?? current.title,
+      order: updates.order ?? current.order ?? 999
+    };
     return await this._request('PUT',
-      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}`, updates);
+      `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}`, body);
   }
 
   /**

@@ -165,9 +165,13 @@ asyncTest('TC-CNB-004: createNewBoard with null title throws DeckApiError', asyn
 // --- updateBoard ---
 console.log('\n--- updateBoard ---\n');
 
-asyncTest('TC-UB-001: updateBoard sends PUT with updates and returns updated board', async () => {
+asyncTest('TC-UB-001: updateBoard read-modify-writes the full body (title + color)', async () => {
+  // Partial PUT (title only) returns HTTP 400 from Deck; updateBoard must merge
+  // onto the current board and send the full representation.
+  const current = { id: 5, title: 'Old Board', color: 'ff0000', archived: false };
   const updated = { id: 5, title: 'Renamed Board', color: 'ff0000', archived: false };
   const { client, nc } = makeClient({
+    'GET:/index.php/apps/deck/api/v1.0/boards/5': { status: 200, body: current, headers: {} },
     'PUT:/index.php/apps/deck/api/v1.0/boards/5': { status: 200, body: updated, headers: {} }
   });
 
@@ -177,6 +181,7 @@ asyncTest('TC-UB-001: updateBoard sends PUT with updates and returns updated boa
   const call = nc._calls.find(c => c.method === 'PUT' && c.path === '/index.php/apps/deck/api/v1.0/boards/5');
   assert.ok(call, 'PUT to /boards/5 should have been made');
   assert.strictEqual(call.body.title, 'Renamed Board');
+  assert.strictEqual(call.body.color, 'ff0000', 'color must be preserved from the current board');
 });
 
 asyncTest('TC-UB-002: updateBoard without boardId throws DeckApiError', async () => {
@@ -237,9 +242,13 @@ asyncTest('TC-AB-001: archiveBoard sends PUT with archived: true', async () => {
 // --- updateStack ---
 console.log('\n--- updateStack ---\n');
 
-asyncTest('TC-US-001: updateStack sends PUT to correct path with updates', async () => {
-  const updatedStack = { id: 201, title: 'Backlog', order: 1 };
+asyncTest('TC-US-001: updateStack read-modify-writes the full body (title + order)', async () => {
+  // Partial PUT (title only) returns HTTP 400 from Deck; updateStack must merge
+  // onto the current stack and send title + order.
+  const stacks = [{ id: 201, title: 'To Do', order: 3 }, { id: 202, title: 'Done', order: 4 }];
+  const updatedStack = { id: 201, title: 'Backlog', order: 3 };
   const { client, nc } = makeClient({
+    'GET:/index.php/apps/deck/api/v1.0/boards/10/stacks': { status: 200, body: stacks, headers: {} },
     'PUT:/index.php/apps/deck/api/v1.0/boards/10/stacks/201': {
       status: 200, body: updatedStack, headers: {}
     }
@@ -253,6 +262,7 @@ asyncTest('TC-US-001: updateStack sends PUT to correct path with updates', async
   );
   assert.ok(call, 'PUT to /boards/10/stacks/201 should have been made');
   assert.strictEqual(call.body.title, 'Backlog');
+  assert.strictEqual(call.body.order, 3, 'order must be preserved from the current stack (NC partial-PUT 400 fix)');
 });
 
 asyncTest('TC-US-002: updateStack without boardId or stackId throws DeckApiError', async () => {
