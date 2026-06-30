@@ -82,8 +82,8 @@ class ToolRegistry {
    * @param {import('../integrations/news-client').NewsClient} [options.newsClient]
    * @param {Object} [options.logger]
    */
-  constructor({ deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter, newsClient, logger }) {
-    this.clients = { deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter, newsClient };
+  constructor({ deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter, newsClient, entityExtractor, logger }) {
+    this.clients = { deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter, newsClient, entityExtractor };
     this.logger = logger || console;
 
     /** @type {Map<string, {name: string, description: string, parameters: Object, handler: Function}>} */
@@ -239,6 +239,13 @@ class ToolRegistry {
         'deck_get_card',
         'deck_list_stacks',
         'deck_create_stack',
+        'deck_rename_stack',
+        'deck_delete_stack',
+        'deck_rename_board',
+        'deck_archive_board',
+        'deck_delete_board',
+        'deck_setup_workflow',
+        'deck_troubleshoot',
         'deck_create_label',
         'deck_remove_label',
         'deck_move_card',
