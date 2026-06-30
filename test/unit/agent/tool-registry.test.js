@@ -1947,7 +1947,7 @@ test('search tool registered when ncSearchClient provided', () => {
   assert.ok(registry.has('unified_search'), 'Should have unified_search');
 });
 
-test('all 53 tools registered with all clients', () => {
+test('all 57 tools registered with all clients', () => {
   const registry = new ToolRegistry({
     deckClient: createMockDeckClient(),
     calDAVClient: createMockCalDAVClient(),
@@ -1958,9 +1958,11 @@ test('all 53 tools registered with all clients', () => {
     textExtractor: createMockTextExtractor(),
     logger: silentLogger
   });
-  // 24 deck + 7 calendar + 1 tag + 1 memory + 10 file + 1 search + 6 workflow_deck = 50
+  // 31 deck + 7 calendar + 1 tag + 1 memory + 10 file + 1 search + 6 workflow_deck = 57
   // (#169 retired calendar_quick_schedule, calendar_schedule_meeting, calendar_check_conflicts)
-  assert.strictEqual(registry.size, 50, `Expected 50 tools, got ${registry.size}`);
+  // (F3 added deck_rename_board, deck_archive_board, deck_delete_board, deck_rename_stack,
+  //      deck_delete_stack, deck_setup_workflow, deck_troubleshoot — +7 deck tools)
+  assert.strictEqual(registry.size, 57, `Expected 57 tools, got ${registry.size}`);
 });
 
 asyncTest('file_read returns file content', async () => {

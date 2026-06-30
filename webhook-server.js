@@ -1828,7 +1828,8 @@ async function initialize() {
         resilientWriter: resilientWriter,
         meetingComposer: meetingComposer,
         rsvpTracker: rsvpTracker,
-        newsClient: newsClient
+        newsClient: newsClient,
+        entityExtractor: entityExtractor
       });
       console.log(`[INIT] ToolRegistry ready (${toolRegistry.size} tools)`);
 
@@ -2226,12 +2227,6 @@ async function initialize() {
     }
   });
   console.log('[INIT] Server Components ready');
-
-  // Late-bind EntityExtractor into WikiExecutor for knowledge graph population
-  if (entityExtractor && serverComponents?.messageProcessor?.microPipeline?.executors?.wiki) {
-    serverComponents.messageProcessor.microPipeline.executors.wiki.entityExtractor = entityExtractor;
-    console.log('[INIT] EntityExtractor wired into WikiExecutor');
-  }
 
   // 11. Initialize HeartbeatManager (proactive operations)
   if (HeartbeatManager && ncRequestManager && llmRouter) {

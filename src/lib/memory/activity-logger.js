@@ -18,7 +18,7 @@
  * - Pattern: Pure code logging — every executor action appends one line, no LLM
  * - Key Dependencies: CollectivesClient (wiki write)
  * - Data Flow: executor completes → append(entry) → buffer → flush() → wiki page
- * - Dependency Map: base-executor.js → activity-logger.js → collectives-client.js
+ * - Dependency Map: heartbeat-extractor.js → activity-logger.js → collectives-client.js
  *
  * @module memory/activity-logger
  * @version 1.0.0

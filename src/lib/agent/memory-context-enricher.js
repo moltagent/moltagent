@@ -413,7 +413,7 @@ class MemoryContextEnricher {
 
   /**
    * Invalidate the cached deck board state.
-   * Call this after DeckExecutor operations (card created/moved/updated/deleted).
+   * Call this after deck mutations (card created/moved/updated/deleted).
    */
   invalidateDeckCache() {
     this._deckCache = null;
