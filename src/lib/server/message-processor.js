@@ -1564,20 +1564,6 @@ class MessageProcessor {
     const aLog = this.microPipeline.activityLogger;
     const cloudProvider = this.microPipeline.cloudToolsProvider || null;
 
-    if (router && !this.microPipeline.executors.wiki && toolRegistry) {
-      try {
-        const WikiExecutor = require('../agent/executors/wiki-executor');
-        this.microPipeline.executors.wiki = new WikiExecutor({
-          router, cloudProvider, toolRegistry,
-          guardrailEnforcer: guardrailEnforcer, toolGuard: toolGuardRef,
-          activityLogger: aLog, timezone: tz, logger: console
-        });
-        console.log('[Message] Wired WikiExecutor into MicroPipeline');
-      } catch (err) {
-        console.warn(`[Message] WikiExecutor skipped: ${err.message}`);
-      }
-    }
-
     if (router && !this.microPipeline.executors.deck && toolRegistry) {
       try {
         const DeckExecutor = require('../agent/executors/deck-executor');

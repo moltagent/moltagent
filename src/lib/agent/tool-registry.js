@@ -2741,7 +2741,7 @@ class ToolRegistry {
 
     this.register({
       name: 'wiki_write',
-      description: 'Create or update a page in the Moltagent Knowledge wiki. Content can include YAML frontmatter between --- delimiters.',
+      description: 'Create or update a page in the Moltagent Knowledge wiki. Content can include YAML frontmatter between --- delimiters. To ADD to an existing page rather than replace it, call wiki_read first, then wiki_write with the merged content.',
       parameters: {
         type: 'object',
         properties: {
@@ -2753,6 +2753,16 @@ class ToolRegistry {
         required: ['page_title', 'content']
       },
       handler: async (args) => {
+        // Knowledge-graph population — Path-A port of the retired Path-B wiki executor side-effect.
+        // Fire-and-forget: graph population must never block or fail the write itself.
+        const populateGraph = (title, body) => {
+          const extractor = this.clients.entityExtractor;
+          if (!extractor || typeof extractor.extractFromPage !== 'function') return;
+          Promise.resolve()
+            .then(() => extractor.extractFromPage(title, body))
+            .then(() => this.logger.info(`[wiki_write] entity extraction complete for "${title}"`))
+            .catch(err => this.logger.warn(`[wiki_write] entity extraction failed for "${title}": ${err.message}`));
+        };
         try {
           // Parse slash-separated title: "People/John Smith" → parent "People", leaf "John Smith"
           const titleParts = args.page_title.split('/');
@@ -2802,6 +2812,7 @@ class ToolRegistry {
               } catch { /* best effort */ }
             }
 
+            populateGraph(args.page_title, writeContent);
             const updateUrl = wiki.buildPageUrl(existing.page.title, existing.page.id);
             return `Updated wiki page "${args.page_title}" at ${existing.path}. [View](${updateUrl})`;
           }
@@ -2842,6 +2853,7 @@ class ToolRegistry {
             if (existingByList.id) {
               await wiki.touchPage(collectiveId, existingByList.id);
             }
+            populateGraph(args.page_title, writeContent);
             const dedupUrl = wiki.buildPageUrl(existingByList.title, existingByList.id);
             return `Updated wiki page "${leafTitle}" (dedup: found via list scan). [View](${dedupUrl})`;
           }
@@ -2877,6 +2889,7 @@ class ToolRegistry {
             } catch { /* best effort */ }
           }
 
+          populateGraph(args.page_title, writeContent);
           const createUrl = wiki.buildPageUrl(leafTitle, created.id);
           return `Created wiki page "${leafTitle}" (page #${created.id})${parentHint ? ` under ${parentHint}` : ''}. [View](${createUrl})`;
         } catch (err) {
