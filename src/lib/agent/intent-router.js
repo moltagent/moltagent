@@ -64,6 +64,10 @@ const CLASSIFICATION_EXAMPLES = {
   "Move the onboarding card to Done" → action, domain: deck
   "Give it the due date tomorrow" → action, domain: deck
   "Set the deadline to Friday" → action, domain: deck
+  "Do I have any open tasks?" → action, domain: deck
+  "What's on my board?" → action, domain: deck
+  "Which boards do I have?" → action, domain: deck
+  "Show me overdue tasks" → action, domain: deck
   "Save this to the wiki" → action, domain: wiki
   "Upload the report" → action, domain: file`,
     compound: `
@@ -77,7 +81,6 @@ const CLASSIFICATION_EXAMPLES = {
   Examples (ALL factual questions are knowledge — "What is X?", "Who does X?", "How does X work?"):
   "Who is Alex?" → knowledge
   "What's the status of onboarding?" → knowledge
-  "What boards do I have?" → knowledge
   "What's the weather in Lisbon?" → knowledge
   "What is HeartbeatManager?" → knowledge
   "Who works on Moltagent?" → knowledge
@@ -110,6 +113,10 @@ const CLASSIFICATION_EXAMPLES = {
   "Verschiebe die Onboarding-Karte nach Erledigt" → action, domain: deck
   "Setze die Frist auf Freitag" → action, domain: deck
   "Gib ihr das Fälligkeitsdatum morgen" → action, domain: deck
+  "Habe ich offene Aufgaben?" → action, domain: deck
+  "Was ist auf meinem Board?" → action, domain: deck
+  "Welche Boards habe ich?" → action, domain: deck
+  "Zeig mir überfällige Aufgaben" → action, domain: deck
   "Speichere das im Wiki" → action, domain: wiki
   "Lade den Bericht hoch" → action, domain: file`,
     compound: `
@@ -122,7 +129,6 @@ const CLASSIFICATION_EXAMPLES = {
   Beispiele (ALLE Sachfragen sind knowledge — "Was ist X?", "Wer macht X?", "Wie funktioniert X?"):
   "Wer ist Alex?" → knowledge
   "Wie ist der Stand beim Onboarding?" → knowledge
-  "Welche Boards habe ich?" → knowledge
   "Wie ist das Wetter in Berlin?" → knowledge
   "Was ist der HeartbeatManager?" → knowledge
   "Wer arbeitet an Moltagent?" → knowledge
@@ -150,6 +156,10 @@ const CLASSIFICATION_EXAMPLES = {
   "Quando é a minha próxima reunião?" → action, domain: calendar
   "Move o cartão de onboarding para Concluído" → action, domain: deck
   "Define o prazo para sexta-feira" → action, domain: deck
+  "Tenho tarefas em aberto?" → action, domain: deck
+  "O que está no meu board?" → action, domain: deck
+  "Que boards é que tenho?" → action, domain: deck
+  "Mostra tarefas atrasadas" → action, domain: deck
   "Guarda isto no wiki" → action, domain: wiki
   "Carrega o relatório" → action, domain: file`,
     compound: `
@@ -162,7 +172,6 @@ const CLASSIFICATION_EXAMPLES = {
   Exemplos (TODAS as perguntas factuais são knowledge — "O que é X?", "Quem faz X?", "Como funciona X?"):
   "Quem é o Alex?" → knowledge
   "Qual é o estado do onboarding?" → knowledge
-  "Que boards é que tenho?" → knowledge
   "Como está o tempo em Lisboa?" → knowledge
   "O que é o HeartbeatManager?" → knowledge
   "Como funciona a ingestão de documentos?" → knowledge
@@ -291,6 +300,8 @@ THE CRITICAL TEST:
   "What is X?" "Who is X?" "How does X work?" → ALWAYS knowledge, NEVER thinking.
   4. Calendar questions (events today? free at X? next meeting? what's on my schedule?) → action, domain: calendar
      These READ the calendar — that's an action, not knowledge.
+  5. Deck/board questions (open tasks? what's on my board? overdue items? task progress? which boards?) → action, domain: deck
+     These READ the live board state — that's an action, not knowledge.
 
 CONTEXT-AWARE RULES:
 - Read the <conversation> block FIRST. The user's message usually continues the current topic.
@@ -318,18 +329,22 @@ class IntentRouter {
    * @param {Object} opts.provider - OllamaToolsProvider (uses .chat() with model override)
    * @param {Object} [opts.llmRouter] - LLMRouter instance for job-based routing
    * @param {Function} [opts.getLanguage] - Returns current cockpit language (e.g. 'EN', 'DE')
+   * @param {Function} [opts.getTrust] - Returns the trust verdict for classification
+   *   ('local-only' | 'cloud-ok'), sourced from the ModelResolver (the single
+   *   control). Null/undefined return → fall back to the provider census. See #132.
    * @param {Object} [opts.config]
    * @param {number} [opts.config.classifyTimeout=10000]
    * @param {string} [opts.config.fastModel='qwen2.5:3b'] - Fast model for explicit intents
    * @param {string} [opts.config.smartModel='qwen3:8b'] - Smart model for ambiguous intents
    */
-  constructor({ provider, config = {}, getLanguage, llmRouter } = {}) {
+  constructor({ provider, config = {}, getLanguage, getTrust, llmRouter } = {}) {
     this.provider = provider;
     this.llmRouter = llmRouter || null;
     this.timeout = config.classifyTimeout || 10000;
     this.fastModel = config.fastModel || 'qwen2.5:3b';
     this.smartModel = config.smartModel || 'qwen3:8b';
     this.getLanguage = getLanguage || (() => 'EN');
+    this.getTrust = getTrust || (() => null);
   }
 
   /**
@@ -348,9 +363,20 @@ class IntentRouter {
     message = message || '';
 
     try {
-      // Cloud-ok: Haiku classifies correctly every time. No escalation needed.
-      // Local-only: qwen3:8b first, qwen2.5:3b fallback, regex last resort.
-      const cloudOk = this.llmRouter?.hasCloudPlayers?.();
+      // The trust boundary is the single control (#132): the classification path
+      // follows the trust verdict, not the registered-provider census. Under
+      // trust:local-only the classifier is the local smart model (qwen3:8b)
+      // directly; a credential-less cloud entry in providers.json can no longer
+      // make hasCloudPlayers() true and degrade classification to qwen2.5:3b.
+      //   cloud-ok: Haiku via the router, classifies correctly every time.
+      //   local-only: qwen3:8b first, qwen2.5:3b fallback, regex last resort.
+      // The resolver is the trust authority; when it is absent (early boot or a
+      // direct test caller) fall back to the legacy provider census.
+      const trust = this.getTrust();
+      const cloudOk = trust
+        ? trust !== 'local-only'
+        : this.llmRouter?.hasCloudPlayers?.();
+      console.log(`[IntentRouter] Trust=${trust || 'census'} → classification path: ${cloudOk ? 'cloud/router (Haiku)' : 'local smart (qwen3:8b)'}`);
 
       if (cloudOk && this.llmRouter) {
         return await this._classifyViaRouter(message, recentContext);
@@ -573,7 +599,7 @@ class IntentRouter {
       } else if (gate === 'compound') {
         result = { gate: 'compound', domain: domain || null, needsHistory: false, confidence, compound: true };
       } else if (gate === 'knowledge') {
-        result = { gate: 'knowledge', domain: null, needsHistory: false, confidence, compound };
+        result = { gate: 'knowledge', domain: domain || null, needsHistory: false, confidence, compound };
       } else if (gate === 'confirmation' || gate === 'confirmation_declined' || gate === 'selection') {
         result = { gate, domain: null, needsHistory: gate === 'confirmation' || gate === 'selection', confidence, compound };
       } else if (gate === 'complex') {

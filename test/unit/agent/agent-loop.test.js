@@ -1674,6 +1674,311 @@ asyncTest('terminal strip: 🔐 marker never reaches the user even if staged twi
 });
 
 // ============================================================
+// #133: Domain-scoped tool selection and system-prompt verdict
+// ============================================================
+
+console.log('\n--- #133: Domain-scoped tool selection ---\n');
+
+// Domain-aware mock registry: 'calendar' and 'deck' have a small known subset;
+// all others return empty (hasDomainTools false).
+const CALENDAR_TOOLS = ['calendar_list_events', 'calendar_create_event'];
+const DECK_TOOLS = ['deck_list_cards', 'deck_create_card'];
+const ALL_DOMAIN_TOOLS = [...CALENDAR_TOOLS, ...DECK_TOOLS, 'wiki_read', 'web_search'];
+
+function createDomainMockToolRegistry(extraTools = {}) {
+  // Build tool map: domain tools + any extra
+  const allTools = {};
+  for (const name of ALL_DOMAIN_TOOLS) {
+    allTools[name] = async () => ({ success: true, result: `Result from ${name}` });
+  }
+  for (const [name, fn] of Object.entries(extraTools)) {
+    allTools[name] = fn;
+  }
+
+  const makeDef = (name) => ({ type: 'function', function: { name, description: `Tool: ${name}`, parameters: {} } });
+
+  return {
+    getToolDefinitions: () => Object.keys(allTools).map(makeDef),
+    getToolSubset: (domain) => {
+      if (domain === 'calendar') return CALENDAR_TOOLS.map(makeDef);
+      if (domain === 'deck') return DECK_TOOLS.map(makeDef);
+      return [];
+    },
+    hasDomainTools: (domain) => domain === 'calendar' || domain === 'deck',
+    execute: async (name, args) => {
+      if (allTools[name]) return allTools[name](args);
+      return { success: false, result: '', error: `Unknown tool: ${name}` };
+    },
+    has: (name) => name in allTools
+  };
+}
+
+// Capture what tools the provider receives
+function createCapturingProvider(finalContent = 'Done.') {
+  const calls = [];
+  return {
+    chat: async ({ tools, system, messages }) => {
+      calls.push({ tools: tools ? tools.map(t => t.function.name) : [], system });
+      return { content: finalContent, toolCalls: null };
+    },
+    getCalls: () => calls
+  };
+}
+
+asyncTest('#133: known domain (calendar) scopes tools to calendar subset', async () => {
+  const registry = createDomainMockToolRegistry();
+  const provider = createCapturingProvider('Events listed.');
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  await loop.process('What meetings do I have?', 'room-abc', { domain: 'calendar', compound: false });
+  const { tools } = provider.getCalls()[0];
+  assert.ok(tools.includes('calendar_list_events'), 'calendar_list_events should be in scoped tools');
+  assert.ok(tools.includes('calendar_create_event'), 'calendar_create_event should be in scoped tools');
+  assert.ok(!tools.includes('deck_list_cards'), 'deck tools should NOT be in calendar-scoped set');
+  assert.ok(!tools.includes('wiki_read'), 'wiki tools should NOT be in calendar-scoped set');
+});
+
+asyncTest('#133: null domain → full registry advertised', async () => {
+  const registry = createDomainMockToolRegistry();
+  const provider = createCapturingProvider('Done.');
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  await loop.process('Help me', 'room-abc', { domain: null, compound: false });
+  const { tools } = provider.getCalls()[0];
+  assert.ok(tools.includes('calendar_list_events'), 'full registry: calendar tools present');
+  assert.ok(tools.includes('deck_list_cards'), 'full registry: deck tools present');
+  assert.ok(tools.includes('wiki_read'), 'full registry: wiki tools present');
+  assert.strictEqual(tools.length, ALL_DOMAIN_TOOLS.length, 'full registry count must match');
+});
+
+asyncTest('#133: unknown domain (astrology, hasDomainTools false) → full registry', async () => {
+  const registry = createDomainMockToolRegistry();
+  const provider = createCapturingProvider('Done.');
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  await loop.process('Tell me my fortune', 'room-abc', { domain: 'astrology', compound: false });
+  const { tools } = provider.getCalls()[0];
+  // hasDomainTools('astrology') returns false → full registry
+  assert.strictEqual(tools.length, ALL_DOMAIN_TOOLS.length, 'unknown domain must use full registry');
+});
+
+asyncTest('#133: compound:true with a domain → full registry (not scoped)', async () => {
+  const registry = createDomainMockToolRegistry();
+  const provider = createCapturingProvider('Done.');
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  await loop.process('Create a card and send an email', 'room-abc', { domain: 'deck', compound: true });
+  const { tools } = provider.getCalls()[0];
+  // compound: true → guard fires, full registry used
+  assert.strictEqual(tools.length, ALL_DOMAIN_TOOLS.length, 'compound turn must use full registry');
+  assert.ok(tools.includes('wiki_read'), 'compound must not exclude non-domain tools');
+});
+
+asyncTest('#133: execution uncaged — scope to calendar but provider can call a deck tool', async () => {
+  // Provider receives calendar subset advertised, but then calls deck_list_cards.
+  // toolRegistry.execute must still be invoked (execution is not gated on the subset).
+  let deckToolExecuted = false;
+  let callIndex = 0;
+
+  const allTools = {
+    calendar_list_events: async () => ({ success: true, result: 'no events' }),
+    deck_list_cards: async () => { deckToolExecuted = true; return { success: true, result: 'cards' }; }
+  };
+
+  const registry = {
+    getToolDefinitions: () => Object.keys(allTools).map(n => ({ type: 'function', function: { name: n, description: '', parameters: {} } })),
+    getToolSubset: (domain) => domain === 'calendar'
+      ? [{ type: 'function', function: { name: 'calendar_list_events', description: '', parameters: {} } }]
+      : [],
+    hasDomainTools: (domain) => domain === 'calendar',
+    execute: async (name, args) => {
+      if (allTools[name]) return allTools[name](args);
+      return { success: false, result: '', error: `Unknown tool: ${name}` };
+    },
+    has: (name) => name in allTools
+  };
+
+  const provider = {
+    chat: async () => {
+      callIndex++;
+      if (callIndex === 1) {
+        // LLM calls deck_list_cards even though it wasn't in advertised subset
+        return { content: null, toolCalls: [{ id: 'call_1', name: 'deck_list_cards', arguments: {} }] };
+      }
+      return { content: 'Cards fetched.', toolCalls: null };
+    }
+  };
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  await loop.process('Check cards', 'room-abc', { domain: 'calendar', compound: false });
+  assert.ok(deckToolExecuted, 'deck tool must execute even when not in advertised subset (uncaged execution)');
+});
+
+asyncTest('#133: system prompt — known domain injects ## This Turn block for calendar', async () => {
+  const registry = createDomainMockToolRegistry();
+  const provider = createCapturingProvider('Done.');
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  await loop.process('Book a meeting', 'room-abc', { domain: 'calendar', compound: false });
+  const { system } = provider.getCalls()[0];
+  assert.ok(system.includes('The user\'s request is about calendar'), 'system prompt must include the domain verdict line');
+  assert.ok(system.includes('## This Turn'), 'system prompt must include ## This Turn heading');
+  // Declarative register — must never forbid
+  assert.ok(!/never|only use|do not use/i.test(system.split('## This Turn')[1] || ''),
+    '## This Turn block must not contain "never", "only use", or "do not use"');
+});
+
+asyncTest('#133: system prompt — absent domain produces no ## This Turn block', async () => {
+  const registry = createDomainMockToolRegistry();
+  const provider = createCapturingProvider('Done.');
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  await loop.process('Hello', 'room-abc', { domain: null });
+  const { system } = provider.getCalls()[0];
+  assert.ok(!system.includes('## This Turn'), 'no domain → no ## This Turn block in system prompt');
+});
+
+asyncTest('#133: system prompt — unknown domain (astrology) produces no ## This Turn block', async () => {
+  const registry = createDomainMockToolRegistry();
+  const provider = createCapturingProvider('Done.');
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  await loop.process('Tell me about stars', 'room-abc', { domain: 'astrology', compound: false });
+  const { system } = provider.getCalls()[0];
+  assert.ok(!system.includes('## This Turn'), 'unknown domain → no ## This Turn block in system prompt');
+});
+
+// ============================================================
+// #164 — text-form tool call must be parsed (canonical "arguments" shape),
+// not shipped to Talk as the raw envelope.
+// ============================================================
+
+function makeParserLoop() {
+  const registry = createMockToolRegistry({
+    calendar_create_event: async () => ({ success: true, result: 'Scheduled.' }),
+    deck_move_card: async () => ({ success: true, result: 'Moved.' })
+  });
+  return new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: createMockProvider({ content: '', toolCalls: null }),
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+}
+
+test('#164: parser recognizes canonical {"name","arguments"} JSON shape', () => {
+  const loop = makeParserLoop();
+  const parsed = loop._parseToolCallFromText(
+    '{"name": "deck_move_card", "arguments": {"card": "#44", "target_stack": "Done"}}'
+  );
+  assert.ok(parsed, 'arguments-shape call must parse (not null)');
+  assert.strictEqual(parsed.name, 'deck_move_card');
+  assert.strictEqual(parsed.arguments.card, '#44');
+});
+
+test('#164: parser recognizes a <tool_call>-wrapped arguments-shape call', () => {
+  const loop = makeParserLoop();
+  const parsed = loop._parseToolCallFromText(
+    '<tool_call>\n{"name": "calendar_create_event", "arguments": {"title": "Check backend"}}\n</tool_call>'
+  );
+  assert.ok(parsed, '<tool_call>-wrapped call must parse');
+  assert.strictEqual(parsed.name, 'calendar_create_event');
+  assert.strictEqual(parsed.arguments.title, 'Check backend');
+});
+
+test('#164: parser still recognizes the legacy {"name","parameters"} shape (regression)', () => {
+  const loop = makeParserLoop();
+  const parsed = loop._parseToolCallFromText(
+    '{"name": "deck_move_card", "parameters": {"card": "#7"}}'
+  );
+  assert.ok(parsed, 'parameters-shape call must still parse');
+  assert.strictEqual(parsed.name, 'deck_move_card');
+});
+
+asyncTest('#164: text-form call on a gate=action turn is invoked, reply is synthesized text (not the envelope)', async () => {
+  // Iteration 1 emits the call as TEXT (qwen3:8b shape); iteration 2 synthesizes.
+  // Pre-fix: parser missed it → action guard re-prompts once → envelope shipped.
+  const provider = createMockProvider([
+    { content: '<tool_call>\n{"name": "calendar_create_event", "arguments": {"title": "Check backend", "start": "2026-06-17T19:00"}}\n</tool_call>', toolCalls: null },
+    { content: 'Scheduled "Check backend" for tomorrow at 19:00.', toolCalls: null }
+  ]);
+  let executed = false;
+  const registry = createDomainMockToolRegistry({
+    calendar_create_event: async () => { executed = true; return { success: true, result: 'Scheduled.' }; }
+  });
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('Set up a task tomorrow 19:00', 'room-abc', { gate: 'action', domain: 'calendar', compound: false });
+  assert.ok(executed, 'the text-form call must be routed to execution');
+  assert.ok(!/<tool_call>|"arguments"\s*:|"name"\s*:\s*"/.test(response), 'reply must not contain the raw tool-call envelope');
+  assert.strictEqual(response, 'Scheduled "Check backend" for tomorrow at 19:00.');
+});
+
+// ============================================================
 // Cleanup & Summary
 // ============================================================
 

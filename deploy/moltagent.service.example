@@ -42,14 +42,23 @@ Environment=CLAUDE_MODEL_PREMIUM=claude-opus-4-6
 Environment=CLAUDE_MODEL_STANDARD=claude-sonnet-4-5-20250929
 Environment=WHISPER_URL=http://YOUR_OLLAMA_IP:8014
 Environment=SPEACHES_URL=http://YOUR_OLLAMA_IP:8014
-Environment=DECK_BOARD_ID=8
+Environment=DECK_BOARD_ID=0  # set to your workflow board id
 Environment=HEARTBEAT_INTERVAL=300000
 Environment=INITIATIVE_LEVEL=2
 Environment=SEARXNG_URL=http://localhost:8080
 # Primary Talk room for proactive messages (digest, alerts). Replies go to
 # whichever room the user messaged from; this room is for bot-initiated messages.
 # Environment=TALK_PRIMARY_ROOM=your-primary-room-token
-Environment=KNOWLEDGE_ADMIN_USER=Funana
+# Admin-share targets — OPTIONAL, empty by default (leave commented for NO
+# sharing). When set to a real NC username, the agent shares its OWN control
+# surface to that user: ADMIN_USER grants edit/share/manage on the Cockpit,
+# Personal, and Tasks boards; KNOWLEDGE_ADMIN_USER adds them to the Knowledge
+# collective. Set these to your OWN NC admin only if you want a human co-owner;
+# a stranger's username here is a write-ACL on your control plane (#148). The
+# config boundary also treats a leftover YOUR_* value as empty, so an unedited
+# copy never shares.
+# Environment=ADMIN_USER=
+# Environment=KNOWLEDGE_ADMIN_USER=
 Environment=TEST_NC_PASSWORDS=false
 
 # Graceful shutdown: LLM summary + trust pipeline needs up to 90s per session

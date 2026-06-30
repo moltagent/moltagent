@@ -81,16 +81,13 @@ class NCFilesClient {
       // Already an NCFilesError
       if (err instanceof NCFilesError) throw err;
 
-      // NCRequestManager rejects on 403 with "Authentication error: 403"
-      const statusMatch = err.message && err.message.match(/(\d{3})/);
-      if (statusMatch) {
-        const code = parseInt(statusMatch[1], 10);
-        if (code === 403) {
-          throw new NCFilesError('Permission denied', 403);
-        }
-        if (code === 401) {
-          throw new NCFilesError('Authentication failed', 401);
-        }
+      // The chokepoint carries the HTTP status on the error (#176), so read it
+      // directly rather than re-deriving it from the message.
+      if (err?.statusCode === 403) {
+        throw new NCFilesError('Permission denied', 403);
+      }
+      if (err?.statusCode === 401) {
+        throw new NCFilesError('Authentication failed', 401);
       }
 
       throw err;

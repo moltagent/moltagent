@@ -81,7 +81,9 @@ function mockNcFiles() {
 
 function mockAuditLog() {
   const entries = [];
-  const fn = async (entry) => { entries.push(entry); return entries; };
+  // Mirror the REAL consoleAuditLog(event, data) signature (#152). A mock that
+  // accepted a single object hid the activator's object-form bug.
+  const fn = async (event, data) => { entries.push({ event, data }); return entries; };
   fn._entries = entries;
   return fn;
 }
@@ -275,9 +277,54 @@ asyncTest('activate: fires audit log with skill_forge_activation action', async 
   assert.strictEqual(auditLog._entries.length, 1, 'exactly one audit entry must be written');
   const entry = auditLog._entries[0];
   assert.strictEqual(entry.event, 'skill_activated', 'audit event must be skill_activated');
-  assert.strictEqual(entry.skillId, 'test-skill');
-  assert.ok(Array.isArray(entry.toolsRegistered));
-  assert.ok(entry.timestamp, 'audit entry must have timestamp');
+  assert.strictEqual(entry.data.skillId, 'test-skill');
+  assert.ok(Array.isArray(entry.data.toolsRegistered));
+  assert.ok(entry.data.timestamp, 'audit entry must have timestamp');
+});
+
+// -----------------------------------------------------------------------------
+// activate() health gate — atomicity & rollback (#127)
+// -----------------------------------------------------------------------------
+
+asyncTest('activate: a build throw on a later operation registers NOTHING (#127)', async () => {
+  const registry = mockToolRegistry();
+  const activator = makeActivator({ toolRegistry: registry });
+
+  // Reproduce the credentialed-template failure: a later operation throws
+  // undefined.substring while building. With all-or-nothing build, the earlier
+  // operation must not be left live.
+  const realBuild = activator._buildOperationConfig.bind(activator);
+  activator._buildOperationConfig = (template, operation, params) => {
+    if (operation.name === 'create item') {
+      throw new TypeError("Cannot read properties of undefined (reading 'substring')");
+    }
+    return realBuild(template, operation, params);
+  };
+
+  await assert.rejects(() => activator.activate(sampleTemplate, {}), /substring/);
+  assert.strictEqual(registry._tools.size, 0, 'no operation may be left live when a later one fails to build');
+});
+
+asyncTest('reconcile: pulls live tools for skillIds in errorSkillIds, leaves others (#127)', async () => {
+  const registry = mockToolRegistry();
+  const activator = makeActivator({ toolRegistry: registry });
+
+  registry.register({ name: 'ghost_op', metadata: { source: 'skill-forge', skillId: 'ghost' }, handler: async () => {} });
+  registry.register({ name: 'keep_op', metadata: { source: 'skill-forge', skillId: 'keep' }, handler: async () => {} });
+
+  const quarantined = activator.reconcile({ errorSkillIds: ['ghost'] });
+
+  assert.deepStrictEqual(quarantined, [{ skillId: 'ghost', removed: ['ghost_op'] }]);
+  assert.ok(!registry.has('ghost_op'), 'failed-skill tools must be pulled');
+  assert.ok(registry.has('keep_op'), 'unrelated skill must be untouched');
+});
+
+asyncTest('reconcile: clean (empty) when failed skills left no live tools (#127)', async () => {
+  const registry = mockToolRegistry();
+  const activator = makeActivator({ toolRegistry: registry });
+
+  const quarantined = activator.reconcile({ errorSkillIds: ['brave-search', 'google-calendar'] });
+  assert.deepStrictEqual(quarantined, [], 'nothing to pull when nothing leaked');
 });
 
 // -----------------------------------------------------------------------------
@@ -346,9 +393,9 @@ asyncTest('deactivate: fires audit log with skill_forge_deactivation action', as
   assert.strictEqual(auditLog._entries.length, 1, 'exactly one audit entry for deactivation');
   const entry = auditLog._entries[0];
   assert.strictEqual(entry.event, 'skill_deactivated');
-  assert.strictEqual(entry.skillId, 'test-skill');
-  assert.ok(Array.isArray(entry.toolsRemoved));
-  assert.ok(entry.timestamp);
+  assert.strictEqual(entry.data.skillId, 'test-skill');
+  assert.ok(Array.isArray(entry.data.toolsRemoved));
+  assert.ok(entry.data.timestamp);
 });
 
 // -----------------------------------------------------------------------------
@@ -567,6 +614,31 @@ asyncTest('integration: full lifecycle — activate registers tools, handler exe
   assert.strictEqual(auditLog._entries.length, 2, 'must have one audit entry per lifecycle event');
   assert.strictEqual(auditLog._entries[0].event, 'skill_activated');
   assert.strictEqual(auditLog._entries[1].event, 'skill_deactivated');
+});
+
+// -----------------------------------------------------------------------------
+// Signature regression tests (#152)
+// -----------------------------------------------------------------------------
+
+asyncTest('activate: calls auditLog with two-arg (event, data) signature — not object-form (#152)', async () => {
+  const calls = [];
+  const auditLog = async (event, data) => { calls.push([event, data]); };
+  const activator = makeActivator({ auditLog });
+  await activator.activate(sampleTemplate, {});
+  assert.strictEqual(calls.length, 1, 'one audit call');
+  const [event, data] = calls[0];
+  assert.strictEqual(typeof event, 'string', 'first arg must be the event string, not an object');
+  assert.strictEqual(event, 'skill_activated');
+  assert.strictEqual(typeof data, 'object', 'second arg must be the data object');
+  assert.strictEqual(data.skillId, 'test-skill');
+});
+
+asyncTest('audit: a two-arg logger receiving undefined data must not throw (#152 chokepoint invariant)', async () => {
+  const safeLog = async (event, data) => {
+    const serialized = data === undefined ? '' : String(JSON.stringify(data)).substring(0, 200);
+    return `${event}:${serialized}`;
+  };
+  await assert.doesNotReject(() => safeLog('skill_activated', undefined));
 });
 
 // -----------------------------------------------------------------------------

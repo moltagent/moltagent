@@ -28,6 +28,7 @@ const { TalkSendQueue } = require('./src/lib/talk/talk-send-queue');
 const appConfig = require('./src/lib/config');
 const { createServerComponents } = require('./src/lib/server/index');
 const { resolveOllamaEndpoint, _isPlaceholder } = require('./src/lib/shared/resolve-ollama-endpoint');
+const { ensureDeploymentConfig } = require('./src/lib/shared/ensure-deployment-config');
 
 // Knowledge modules for agent memory context
 let ContextLoader, LearningLog;
@@ -93,6 +94,8 @@ try {
   console.warn('[WARN] NewsClient not available');
   NewsClient = null;
 }
+
+const NCMailClient = require('./src/lib/integrations/nc-mail-client');
 
 let NCFilesClient, NCSearchClient, TextExtractor;
 try {
@@ -545,8 +548,10 @@ let dailyDigest = null; // Episodic Memory: daily digest page generation
 
 // Simple console audit logger fallback
 async function consoleAuditLog(event, data) {
+  // Audit is observability; it must never throw and take down its caller (See #152, #127).
   const timestamp = new Date().toISOString();
-  console.log(`[AUDIT] ${timestamp} ${event}:`, JSON.stringify(data).substring(0, 200));
+  const serialized = data === undefined ? '' : String(JSON.stringify(data)).substring(0, 200);
+  console.log(`[AUDIT] ${timestamp} ${event}:`, serialized);
 }
 
 /**
@@ -639,6 +644,12 @@ async function initialize() {
   console.log('           Moltagent Webhook Server Initializing...                   ');
   console.log('======================================================================');
   console.log('');
+
+  // 0. Ensure deployment config present (copy-on-missing from .example templates).
+  // CLAUDE.md Rule 5: single chokepoint, runs ONCE before any config reader
+  // (loadLLMConfig ~776, providers.json parse ~1502). True-absence only; never
+  // overwrites an existing file. The .service unit is not node-read and is excluded.
+  ensureDeploymentConfig({ rootDir: __dirname });
 
   // 1. Initialize NCRequestManager FIRST (new resilience layer)
   console.log('[INIT] Setting up NC Request Manager...');
@@ -1499,7 +1510,22 @@ async function initialize() {
     try {
       // Read providers.json for config
       const providersPath = path.join(__dirname, 'config', 'providers.json');
-      const providersConfig = JSON.parse(fs.readFileSync(providersPath, 'utf-8'));
+      let providersConfig;
+      try {
+        providersConfig = JSON.parse(fs.readFileSync(providersPath, 'utf-8'));
+      } catch (parseErr) {
+        // Decision 1: in-memory fallback, never on-disk. The broken file stays
+        // UNTOUCHED so the human can diff/repair it; overwriting would destroy
+        // their real endpoint config exactly when they need it. Copy-on-missing
+        // (ensureDeploymentConfig) handles TRUE absence; this handles corruption.
+        const examplePath = path.join(__dirname, 'config', 'providers.json.example');
+        console.error(
+          `[INIT] config/providers.json is unreadable (${parseErr.message}). ` +
+          'Check for merge conflict markers or invalid JSON. ' +
+          'Running on defaults from providers.json.example until the file is repaired.'
+        );
+        providersConfig = JSON.parse(fs.readFileSync(examplePath, 'utf-8'));
+      }
       const ollamaConfig = providersConfig.providers?.ollama || {};
       // claudeConfig: first anthropic-adapter provider found, for legacy ProviderChain fallback path
       const claudeConfig = Object.values(providersConfig.providers || {}).find(p => p.adapter === 'anthropic') || providersConfig.providers?.claude || {};
@@ -1524,7 +1550,8 @@ async function initialize() {
           endpoint: ollamaEndpoint,
           model: ollamaConfig.model || CONFIG.ollama.model,
           timeout: CONFIG.ollama.timeout,
-          toolTimeout: CONFIG.ollama.toolTimeout
+          toolTimeout: CONFIG.ollama.toolTimeout,
+          keep_alive: ollamaConfig.keep_alive  // #124: per-provider knob; undefined → server governs
         });
         console.log(`[INIT] OllamaToolsProvider ready (${ollamaEndpoint}, ${ollamaConfig.model || CONFIG.ollama.model})`);
       }
@@ -1536,7 +1563,8 @@ async function initialize() {
           endpoint: ollamaEndpoint,
           model: CONFIG.ollama.modelCredential,
           timeout: CONFIG.ollama.timeout,
-          toolTimeout: CONFIG.ollama.toolTimeout
+          toolTimeout: CONFIG.ollama.toolTimeout,
+          keep_alive: ollamaConfig.keep_alive  // #124
         });
         console.log(`[INIT] OllamaToolsProvider (credential) ready (${CONFIG.ollama.modelCredential})`);
       }
@@ -1550,7 +1578,8 @@ async function initialize() {
           endpoint: ollamaEndpoint,
           model: fastModel,
           timeout: 30000,
-          toolTimeout: 30000
+          toolTimeout: 30000,
+          keep_alive: ollamaConfig.keep_alive  // #124
         });
         console.log(`[INIT] OllamaToolsProvider (fast) ready (${fastModel})`);
       }
@@ -1563,6 +1592,10 @@ async function initialize() {
         provider: intentProvider,
         llmRouter: llmRouter,
         getLanguage: () => cockpitManager?.cachedConfig?.persona?.language || 'EN',
+        // Trust is the single control for the classification path (#132). Lazy
+        // thunk: modelResolver is constructed later in this bootstrap, so read it
+        // at classify time, not now. Returns 'local-only' | 'cloud-ok' | null.
+        getTrust: () => modelResolver?.resolveTrust?.('classification') || null,
         config: {
           classifyTimeout: appConfig.ollama.classifyTimeout,
           fastModel: appConfig.ollama.classifyModel || 'qwen2.5:3b',
@@ -1859,6 +1892,16 @@ async function initialize() {
             }
             if (discovery.errors.length > 0) {
               console.warn(`[INIT] SkillForge discovery errors: ${discovery.errors.join('; ')}`);
+              // Reconciliation pass (#127): a skill that failed discovery must not
+              // leave live tools behind. Pull anything its failed activation left
+              // registered, so the failure signal reaches the registry instead of
+              // being logged and discarded.
+              const quarantined = toolActivator.reconcile(discovery);
+              if (quarantined.length > 0) {
+                console.warn(`[INIT] SkillForge reconciliation pulled live tools from failed skills: ${quarantined.map(q => `${q.skillId} (${q.removed.join(', ')})`).join('; ')}`);
+              } else {
+                console.log('[INIT] SkillForge reconciliation: failed skills left no live tools (clean)');
+              }
             }
           } catch (discErr) {
             console.warn(`[INIT] SkillForge auto-discovery failed: ${discErr.message}`);
@@ -1946,6 +1989,8 @@ async function initialize() {
         agentLoop,
         talkSendQueue: talkQueue,
         talkToken: defaultTalkToken,
+        emailHandler,
+        ncMailClient: ncRequestManager ? new NCMailClient(ncRequestManager) : null,
         budgetEnforcer: llmRouter?.router?.budget || null,
         config: { botUsername: CONFIG.nc.username, adminUser: appConfig.cockpit?.adminUser || appConfig.knowledge?.adminUser || '', dataDir: true }
       });

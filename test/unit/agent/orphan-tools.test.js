@@ -1,9 +1,10 @@
 /**
  * Orphan Tools Integration Tests
  *
- * Tests the 7 newly wired tools: calendar_check_availability,
- * calendar_quick_schedule, calendar_schedule_meeting, calendar_cancel_meeting,
+ * Tests the wired tools: calendar_check_availability, calendar_cancel_meeting,
  * deck_complete_task, deck_complete_review, contacts_resolve.
+ * (#169 retired calendar_quick_schedule + calendar_schedule_meeting; their
+ * capabilities are now folded into calendar_create_event.)
  *
  * Run: node --test test/unit/agent/orphan-tools.test.js
  */
@@ -63,7 +64,7 @@ test('calendar_check_availability registered when calDAVClient provided', () => 
 asyncTest('calendar_check_availability returns free when no conflicts', async () => {
   const cal = createMockCalDAVClient({ availability: { isFree: true, conflicts: [] } });
   const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
-  const result = await registry.execute('calendar_check_availability', { date_time: '2026-03-01T14:00:00' });
+  const result = await registry.execute('calendar_check_availability', { start: '2026-03-01T14:00:00' });
   assert.ok(result.success);
   assert.ok(result.result.includes('free'));
   assert.ok(result.result.includes('No conflicts'));
@@ -79,95 +80,37 @@ asyncTest('calendar_check_availability returns conflicts when busy', async () =>
     }
   });
   const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
-  const result = await registry.execute('calendar_check_availability', { date_time: '2026-03-01T14:00:00' });
+  const result = await registry.execute('calendar_check_availability', { start: '2026-03-01T14:00:00' });
   assert.ok(result.success);
   assert.ok(result.result.includes('Not available'));
   assert.ok(result.result.includes('Team standup'));
 });
 
 // ============================================================
-// Calendar: calendar_quick_schedule
+// Calendar: retired create/schedule tools (#169)
+// calendar_quick_schedule and calendar_schedule_meeting are consolidated into
+// calendar_create_event (check_availability + duration_minutes + attendees).
+// Consolidated behavior is covered in tool-registry.test.js.
 // ============================================================
 
-test('calendar_quick_schedule registered', () => {
+test('calendar_quick_schedule and calendar_schedule_meeting are retired (#169)', () => {
   const registry = new ToolRegistry({ calDAVClient: createMockCalDAVClient(), logger: silentLogger });
-  assert.ok(registry.has('calendar_quick_schedule'));
+  assert.ok(!registry.has('calendar_quick_schedule'), 'calendar_quick_schedule retired');
+  assert.ok(!registry.has('calendar_schedule_meeting'), 'calendar_schedule_meeting retired');
 });
 
-asyncTest('calendar_quick_schedule creates event when free', async () => {
-  const cal = createMockCalDAVClient({
-    quickSchedule: { success: true, event: { uid: 'qs-1', summary: 'Team sync' } }
-  });
+asyncTest('calendar_create_event absorbs availability-checked scheduling', async () => {
+  const cal = createMockCalDAVClient({ availability: { isFree: true, conflicts: [] } });
   const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
-  const result = await registry.execute('calendar_quick_schedule', {
-    summary: 'Team sync',
-    date_time: '2026-03-01T14:00:00'
+  const start = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const result = await registry.execute('calendar_create_event', {
+    title: 'Team sync',
+    start: start.toISOString(),
+    duration_minutes: 30,
+    check_availability: true
   });
   assert.ok(result.success);
-  assert.ok(result.result.includes('Scheduled'));
   assert.ok(result.result.includes('Team sync'));
-});
-
-asyncTest('calendar_quick_schedule returns conflicts when busy', async () => {
-  const cal = createMockCalDAVClient({
-    quickSchedule: {
-      success: false,
-      reason: 'conflict',
-      conflicts: [
-        { uid: 'ev1', summary: 'Existing call', start: '2026-03-01T14:00:00Z', end: '2026-03-01T15:00:00Z' }
-      ]
-    }
-  });
-  const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
-  const result = await registry.execute('calendar_quick_schedule', {
-    summary: 'Team sync',
-    date_time: '2026-03-01T14:00:00'
-  });
-  assert.ok(result.success);
-  assert.ok(result.result.includes('not available'));
-  assert.ok(result.result.includes('Existing call'));
-});
-
-// ============================================================
-// Calendar: calendar_schedule_meeting
-// ============================================================
-
-test('calendar_schedule_meeting registered', () => {
-  const registry = new ToolRegistry({ calDAVClient: createMockCalDAVClient(), logger: silentLogger });
-  assert.ok(registry.has('calendar_schedule_meeting'));
-});
-
-asyncTest('calendar_schedule_meeting creates meeting with invitations', async () => {
-  const cal = createMockCalDAVClient({
-    scheduleMeeting: { uid: 'mtg-1', summary: 'Q1 Review' }
-  });
-  const ncMgr = createMockNCRequestManager({ userEmails: { testuser: 'molti@example.com' } });
-  const registry = new ToolRegistry({ calDAVClient: cal, ncRequestManager: ncMgr, logger: silentLogger });
-  const result = await registry.execute('calendar_schedule_meeting', {
-    summary: 'Q1 Review',
-    start: '2026-03-01T10:00:00',
-    end: '2026-03-01T11:00:00',
-    attendees: ['alice@example.com', 'bob@example.com']
-  });
-  assert.ok(result.success);
-  assert.ok(result.result.includes('Meeting scheduled'));
-  assert.ok(result.result.includes('Q1 Review'));
-  assert.ok(result.result.includes('alice@example.com'));
-  assert.ok(result.result.includes('Invitations sent'));
-});
-
-asyncTest('calendar_schedule_meeting fails without organizer email', async () => {
-  const cal = createMockCalDAVClient();
-  // No ncRequestManager → no organizer email
-  const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
-  const result = await registry.execute('calendar_schedule_meeting', {
-    summary: 'Q1 Review',
-    start: '2026-03-01T10:00:00',
-    end: '2026-03-01T11:00:00',
-    attendees: ['alice@example.com']
-  });
-  assert.ok(result.success);
-  assert.ok(result.result.includes('could not resolve organizer email'));
 });
 
 // ============================================================
@@ -196,7 +139,7 @@ asyncTest('calendar_cancel_meeting cancels and returns confirmation', async () =
 // Calendar subset
 // ============================================================
 
-test('calendar subset includes new scheduling tools', () => {
+test('calendar subset reflects the consolidated tool set (#169)', () => {
   const cal = createMockCalDAVClient();
   const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
   const subset = registry.getToolSubset('calendar');
@@ -204,8 +147,8 @@ test('calendar subset includes new scheduling tools', () => {
   assert.ok(names.includes('calendar_list_events'), 'Should include calendar_list_events');
   assert.ok(names.includes('calendar_create_event'), 'Should include calendar_create_event');
   assert.ok(names.includes('calendar_check_availability'), 'Should include calendar_check_availability');
-  assert.ok(names.includes('calendar_quick_schedule'), 'Should include calendar_quick_schedule');
-  assert.ok(names.includes('calendar_schedule_meeting'), 'Should include calendar_schedule_meeting');
+  assert.ok(!names.includes('calendar_quick_schedule'), 'calendar_quick_schedule retired');
+  assert.ok(!names.includes('calendar_schedule_meeting'), 'calendar_schedule_meeting retired');
 });
 
 // ============================================================
@@ -329,11 +272,12 @@ asyncTest('contacts_resolve no match returns not found', async () => {
 // REQUIRES_APPROVAL tools have TOOL_APPROVAL_LABELS
 // ============================================================
 
-test('all REQUIRES_APPROVAL calendar tools have TOOL_APPROVAL_LABELS', () => {
+test('surviving calendar approval tools have TOOL_APPROVAL_LABELS (#169)', () => {
   const { TOOL_APPROVAL_LABELS } = require('../../../src/lib/agent/guardrail-enforcer');
-  assert.ok(TOOL_APPROVAL_LABELS.calendar_quick_schedule, 'calendar_quick_schedule label');
-  assert.ok(TOOL_APPROVAL_LABELS.calendar_schedule_meeting, 'calendar_schedule_meeting label');
   assert.ok(TOOL_APPROVAL_LABELS.calendar_cancel_meeting, 'calendar_cancel_meeting label');
+  // Retired tools must not linger as ghost references.
+  assert.ok(!TOOL_APPROVAL_LABELS.calendar_quick_schedule, 'calendar_quick_schedule label removed');
+  assert.ok(!TOOL_APPROVAL_LABELS.calendar_schedule_meeting, 'calendar_schedule_meeting label removed');
 });
 
 // ============================================================

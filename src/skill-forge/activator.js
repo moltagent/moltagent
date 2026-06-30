@@ -433,7 +433,7 @@ class ToolActivator {
    * @param {Object} options.toolRegistry - ToolRegistry with .register() and .unregister()
    * @param {Object} options.httpExecutor - HttpToolExecutor with .execute(opConfig, params)
    * @param {Object} options.ncFiles - NC file client: async .write(path, content), .read(path), .delete(path), .list(dir)
-   * @param {Function} options.auditLog - async (entry) => Promise audit log function
+   * @param {Function} options.auditLog - async (event, data) => Promise audit log function (event string, data object)
    * @param {Object} [options.egressGuard] - EgressGuard with .addAllowedDomain() and .removeBySource()
    */
   constructor({ toolRegistry, httpExecutor, ncFiles, auditLog, egressGuard = null }) {
@@ -476,14 +476,23 @@ class ToolActivator {
     const templateVersion = template.version || '1.0.0';
     const toolsRegistered = [];
 
+    // Health gate (#127): build EVERY operation's tool definition before
+    // registering ANY. The build helpers (_buildSchema / _buildOperationConfig)
+    // are where credentialed/OAuth templates throw `undefined.substring`; doing
+    // all the building first means a throw on a later operation can't leave the
+    // earlier operations live in the registry. Activation is all-or-nothing.
+    const pending = [];
     for (const operation of operations) {
       const toolName = `${skillId}_${this._slugify(operation.name)}`;
       const schema = this._buildSchema(operation);
       const opConfig = this._buildOperationConfig(template, operation, resolvedParams);
-
       // Capture opConfig in closure — each operation gets its own config snapshot
       const executeFn = async (params) => this.httpExecutor.execute(opConfig, params);
+      pending.push({ toolName, operation, schema, executeFn });
+    }
 
+    // Every operation built cleanly — commit them as a unit.
+    for (const { toolName, operation, schema, executeFn } of pending) {
       this.toolRegistry.register({
         name: toolName,
         description: operation.description || `${operation.name} operation from skill ${skillId}`,
@@ -496,7 +505,6 @@ class ToolActivator {
           activatedAt: new Date().toISOString(),
         },
       });
-
       toolsRegistered.push(toolName);
     }
 
@@ -513,8 +521,7 @@ class ToolActivator {
     await this._persistConfig(skillId, template, resolvedParams);
 
     // Audit log the activation
-    await this.auditLog({
-      event: 'skill_activated',
+    await this.auditLog('skill_activated', {
       skillId,
       templateVersion,
       toolsRegistered,
@@ -561,14 +568,56 @@ class ToolActivator {
     await this._removeConfig(skillId);
 
     // Audit log the deactivation
-    await this.auditLog({
-      event: 'skill_deactivated',
+    await this.auditLog('skill_deactivated', {
       skillId,
       toolsRemoved,
       timestamp: new Date().toISOString(),
     });
 
     return { skillId, toolsRemoved, success: true };
+  }
+
+  /**
+   * Unregister every live tool belonging to a skill, directly from the registry
+   * (no NC config required, unlike deactivate). Used by the activation rollback
+   * and the reconciliation pass to pull a skill whose discovery failed (#127).
+   *
+   * @param {string} skillId
+   * @returns {string[]} names of tools removed
+   */
+  _unregisterSkillTools(skillId) {
+    const removed = [];
+    if (!skillId || typeof this.toolRegistry.listBySource !== 'function') return removed;
+    for (const tool of this.toolRegistry.listBySource('skill-forge')) {
+      if (tool.metadata && tool.metadata.skillId === skillId) {
+        this.toolRegistry.unregister(tool.name);
+        removed.push(tool.name);
+      }
+    }
+    if (removed.length && this.egressGuard) {
+      this.egressGuard.removeBySource('skill-forge', skillId);
+    }
+    return removed;
+  }
+
+  /**
+   * Reconciliation pass (#127): after autoDiscover, pull any tools left live by
+   * a skill whose discovery failed. With the all-or-nothing activate() this is
+   * normally a no-op for build-time throws, but it closes the remaining gaps —
+   * a skill that registered through one path then failed another, or any future
+   * non-atomic site — so the failure signal in discovery.errors finally reaches
+   * the registry instead of being console.warn'd and discarded.
+   *
+   * @param {{ errorSkillIds?: string[] }} discoveryResult - result from autoDiscover
+   * @returns {Array<{ skillId: string, removed: string[] }>} skills whose live tools were pulled
+   */
+  reconcile(discoveryResult) {
+    const quarantined = [];
+    for (const skillId of (discoveryResult?.errorSkillIds || [])) {
+      const removed = this._unregisterSkillTools(skillId);
+      if (removed.length) quarantined.push({ skillId, removed });
+    }
+    return quarantined;
   }
 
   /**
@@ -615,7 +664,9 @@ class ToolActivator {
     let yaml;
     try { yaml = require('js-yaml'); } catch { return { activated: [], metaTools: [], skipped: [], errors: ['js-yaml not available'] }; }
 
-    const results = { activated: [], metaTools: [], skipped: [], errors: [] };
+    // errorSkillIds: skillIds (where known) of templates that threw — fed to
+    // reconcile() so the reconciliation pass can pull any live tools they left.
+    const results = { activated: [], metaTools: [], skipped: [], errors: [], errorSkillIds: [] };
 
     let files;
     try {
@@ -626,6 +677,7 @@ class ToolActivator {
     }
 
     for (const file of files) {
+      let skillId = null;
       try {
         const raw = fs.readFileSync(path.join(templatesDir, file), 'utf8');
         const template = yaml.load(raw);
@@ -633,7 +685,7 @@ class ToolActivator {
           continue; // Not a new-format template
         }
 
-        const skillId = template.skill_id;
+        skillId = template.skill_id;
 
         // Skip if already activated (tools already in registry from reloadAll)
         const firstToolName = `${skillId}_${this._slugify(template.operations[0].name)}`;
@@ -697,6 +749,7 @@ class ToolActivator {
         }
       } catch (err) {
         results.errors.push(`${file}: ${err.message}`);
+        if (skillId) results.errorSkillIds.push(skillId);
       }
     }
 

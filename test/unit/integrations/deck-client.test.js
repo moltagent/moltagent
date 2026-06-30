@@ -1676,6 +1676,75 @@ asyncTest('TC-UCC-006: missing identifiers throw DeckApiError', async () => {
   assert.ok(threw, 'should throw when boardId is missing');
 });
 
+asyncTest('TC-UCC-007: done in changes is sent (incl. null to clear), present-only when absent (#139)', async () => {
+  const bodies = [];
+  const mockNC = createDeckMockNC({
+    'PUT:/index.php/apps/deck/api/v1.0/boards/10/stacks/20/cards/35': (path, options) => {
+      bodies.push(options.body);
+      return { status: 200, body: {}, headers: {} };
+    }
+  });
+  const client = new DeckClient(mockNC);
+  const card = { id: 35, title: 'D', type: 'plain', description: '', owner: 'u', order: 0 };
+
+  // explicit done timestamp in changes
+  await client.updateCardComplete(10, 20, 35, card, { done: '2026-06-09T10:00:00Z' });
+  // explicit null clears done — must still be sent because 'done' in changes
+  await client.updateCardComplete(10, 20, 35, card, { done: null });
+  // done neither in changes nor on card → key omitted
+  await client.updateCardComplete(10, 20, 35, card, {});
+
+  assert.strictEqual(bodies[0].done, '2026-06-09T10:00:00Z', 'done from changes is sent');
+  assert.ok('done' in bodies[1] && bodies[1].done === null, 'done:null in changes is sent to clear');
+  assert.ok(!('done' in bodies[2]), 'done key omitted when absent from changes and card');
+});
+
+asyncTest('TC-UCC-008: done present on card is preserved; card.done null is omitted (#139)', async () => {
+  const bodies = [];
+  const mockNC = createDeckMockNC({
+    'PUT:/index.php/apps/deck/api/v1.0/boards/10/stacks/20/cards/36': (path, options) => {
+      bodies.push(options.body);
+      return { status: 200, body: {}, headers: {} };
+    }
+  });
+  const client = new DeckClient(mockNC);
+  const doneCard = { id: 36, title: 'E', type: 'plain', description: '', owner: 'u', order: 0, done: '2026-06-01T00:00:00Z' };
+  const nullDoneCard = { id: 36, title: 'E', type: 'plain', description: '', owner: 'u', order: 0, done: null };
+
+  await client.updateCardComplete(10, 20, 36, doneCard, { description: 'x' });
+  await client.updateCardComplete(10, 20, 36, nullDoneCard, { description: 'x' });
+
+  assert.strictEqual(bodies[0].done, '2026-06-01T00:00:00Z', 'card.done preserved when not in changes');
+  assert.ok(!('done' in bodies[1]), 'card.done null is omitted (not a real completion timestamp)');
+});
+
+asyncTest('TC-UCC-009: duedate in changes is sent (incl. null to clear); card.duedate preserved (#139)', async () => {
+  const bodies = [];
+  const mockNC = createDeckMockNC({
+    'PUT:/index.php/apps/deck/api/v1.0/boards/10/stacks/20/cards/37': (path, options) => {
+      bodies.push(options.body);
+      return { status: 200, body: {}, headers: {} };
+    }
+  });
+  const client = new DeckClient(mockNC);
+  const card = { id: 37, title: 'F', type: 'plain', description: '', owner: 'u', order: 0, duedate: '2026-07-01T00:00:00Z' };
+  const noDueCard = { id: 37, title: 'F', type: 'plain', description: '', owner: 'u', order: 0 };
+
+  // explicit duedate in changes wins
+  await client.updateCardComplete(10, 20, 37, card, { duedate: '2026-08-15T00:00:00Z' });
+  // null in changes clears
+  await client.updateCardComplete(10, 20, 37, card, { duedate: null });
+  // not in changes → card.duedate preserved
+  await client.updateCardComplete(10, 20, 37, card, {});
+  // absent on both → key omitted
+  await client.updateCardComplete(10, 20, 37, noDueCard, {});
+
+  assert.strictEqual(bodies[0].duedate, '2026-08-15T00:00:00Z', 'duedate from changes wins');
+  assert.ok('duedate' in bodies[1] && bodies[1].duedate === null, 'duedate:null in changes clears');
+  assert.strictEqual(bodies[2].duedate, '2026-07-01T00:00:00Z', 'card.duedate preserved');
+  assert.ok(!('duedate' in bodies[3]), 'duedate omitted when undefined on both');
+});
+
 // --- Summary ---
 setTimeout(() => {
   summary();

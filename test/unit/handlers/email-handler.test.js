@@ -935,6 +935,191 @@ asyncTest('TC-ERROR-001: Error handler returns safe message', async () => {
   assert.ok(!result.message.includes('ECONNREFUSED'));
 });
 
+// --- Folder Parameter Tests (TC-FOLDER) ---
+console.log('\n--- Folder Parameter Tests (TC-FOLDER) ---\n');
+
+asyncTest('TC-FOLDER-001: parseIntent preserves already-normalized INBOX.INQUIRIES', async () => {
+  const mockLLM = createMockLLMRouter({
+    email_parse: { response: '{"action":"check_inbox","folder":"INBOX.INQUIRIES"}' }
+  });
+
+  const handler = new EmailHandler(
+    createMockCredentialBroker(),
+    mockLLM
+  );
+
+  const intent = await handler.parseIntent('check my INQUIRIES folder');
+
+  assert.strictEqual(intent.folder, 'INBOX.INQUIRIES');
+});
+
+asyncTest('TC-FOLDER-002: parseIntent normalizes bare folder name to INBOX.INQUIRIES', async () => {
+  const mockLLM = createMockLLMRouter({
+    email_parse: { response: '{"action":"check_inbox","folder":"INQUIRIES"}' }
+  });
+
+  const handler = new EmailHandler(
+    createMockCredentialBroker(),
+    mockLLM
+  );
+
+  const intent = await handler.parseIntent('check my INQUIRIES folder');
+
+  assert.strictEqual(intent.folder, 'INBOX.INQUIRIES');
+});
+
+asyncTest('TC-FOLDER-003: parseIntent leaves plain INBOX alone (not INBOX.INBOX)', async () => {
+  const mockLLM = createMockLLMRouter({
+    email_parse: { response: '{"action":"check_inbox","folder":"INBOX"}' }
+  });
+
+  const handler = new EmailHandler(
+    createMockCredentialBroker(),
+    mockLLM
+  );
+
+  const intent = await handler.parseIntent('check my inbox');
+
+  assert.strictEqual(intent.folder, 'INBOX');
+});
+
+asyncTest('TC-FOLDER-004: parseIntent with no folder field leaves folder undefined', async () => {
+  const mockLLM = createMockLLMRouter({
+    email_parse: { response: '{"action":"check_inbox"}' }
+  });
+
+  const handler = new EmailHandler(
+    createMockCredentialBroker(),
+    mockLLM
+  );
+
+  const intent = await handler.parseIntent('check my inbox');
+
+  assert.strictEqual(intent.folder, undefined);
+});
+
+asyncTest('TC-FOLDER-005: parseIntent DE — INBOX.SUPPORT preserved as-is', async () => {
+  const mockLLM = createMockLLMRouter({
+    email_parse: { response: '{"action":"check_inbox","folder":"INBOX.SUPPORT"}' }
+  });
+
+  const handler = new EmailHandler(
+    createMockCredentialBroker(),
+    mockLLM
+  );
+
+  const intent = await handler.parseIntent('Schau in den SUPPORT Ordner');
+
+  assert.strictEqual(intent.folder, 'INBOX.SUPPORT');
+});
+
+asyncTest('TC-FOLDER-006: parseIntent PT — bare PARCERIAS normalized to INBOX.PARCERIAS', async () => {
+  const mockLLM = createMockLLMRouter({
+    email_parse: { response: '{"action":"check_inbox","folder":"PARCERIAS"}' }
+  });
+
+  const handler = new EmailHandler(
+    createMockCredentialBroker(),
+    mockLLM
+  );
+
+  const intent = await handler.parseIntent('Verifica a pasta PARCERIAS');
+
+  assert.strictEqual(intent.folder, 'INBOX.PARCERIAS');
+});
+
+test('TC-FOLDER-007: _normalizeFolder unit checks', () => {
+  const handler = new EmailHandler(
+    createMockCredentialBroker(),
+    createMockLLMRouter()
+  );
+
+  assert.strictEqual(handler._normalizeFolder('X'), 'INBOX.X');
+  assert.strictEqual(handler._normalizeFolder('INBOX.X'), 'INBOX.X');
+  assert.strictEqual(handler._normalizeFolder('INBOX'), 'INBOX');
+  assert.strictEqual(handler._normalizeFolder('  '), undefined);
+  assert.strictEqual(handler._normalizeFolder(''), undefined);
+  assert.strictEqual(handler._normalizeFolder(null), undefined);
+  assert.strictEqual(handler._normalizeFolder(42), undefined);
+});
+
+test('TC-FOLDER-008: fallbackIntentParse folder capture', () => {
+  const handler = new EmailHandler(
+    createMockCredentialBroker(),
+    createMockLLMRouter()
+  );
+
+  // EN: word after "folder"
+  const intentEN = handler.fallbackIntentParse('check the SUPPORT folder');
+  assert.strictEqual(intentEN.action, 'check_inbox');
+  assert.strictEqual(intentEN.folder, 'SUPPORT');
+
+  // DE: word after "Ordner"
+  const intentDE = handler.fallbackIntentParse('Schau in den SUPPORT Ordner');
+  assert.strictEqual(intentDE.folder, 'SUPPORT');
+
+  // No keyword → folder undefined
+  const intentNoFolder = handler.fallbackIntentParse('check my inbox');
+  assert.strictEqual(intentNoFolder.folder, undefined);
+});
+
+asyncTest('TC-FOLDER-009: folder forwarded to _fetchEmails by handleCheckInbox', async () => {
+  const handler = new EmailHandler(
+    createMockCredentialBroker(),
+    createMockLLMRouter(),
+    createMockAuditLog()
+  );
+
+  let captured = null;
+  handler._fetchEmails = (opts) => {
+    captured = opts;
+    return Promise.resolve([]);
+  };
+
+  // With folder
+  await handler.handleCheckInbox({ action: 'check_inbox', folder: 'INBOX.INQUIRIES' }, 'user');
+  assert.strictEqual(captured.folder, 'INBOX.INQUIRIES');
+
+  // Without folder — regression: undefined propagates, _fetchEmails default kicks in
+  await handler.handleCheckInbox({ action: 'check_inbox' }, 'user');
+  assert.strictEqual(captured.folder, undefined);
+});
+
+asyncTest('TC-FOLDER-010: folder forwarded by all four read handlers (and absent → undefined)', async () => {
+  // Each read handler receives the same one-line `folder: intent.folder || undefined`
+  // edit; this guards every one of them against a copy-paste slip, not just check_inbox.
+  // search_emails needs a search criterion or it returns before _fetchEmails.
+  const handlers = [
+    { method: 'handleCheckInbox', base: { action: 'check_inbox' } },
+    { method: 'handleCheckUnread', base: { action: 'check_unread' } },
+    { method: 'handleSearchEmails', base: { action: 'search_emails', from: 'John' } },
+    { method: 'handleSummarizeEmails', base: { action: 'summarize_emails', topic: 'project' } }
+  ];
+
+  for (const { method, base } of handlers) {
+    const handler = new EmailHandler(
+      createMockCredentialBroker(),
+      createMockLLMRouter(),
+      createMockAuditLog()
+    );
+
+    let captured = null;
+    handler._fetchEmails = (opts) => {
+      captured = opts;
+      return Promise.resolve([]);
+    };
+
+    // With folder → forwarded verbatim
+    await handler[method]({ ...base, folder: 'INBOX.PARCERIAS' }, 'user');
+    assert.strictEqual(captured.folder, 'INBOX.PARCERIAS', `${method} must forward intent.folder`);
+
+    // Without folder → undefined so _fetchEmails' INBOX default holds (regression)
+    captured = null;
+    await handler[method]({ ...base }, 'user');
+    assert.strictEqual(captured.folder, undefined, `${method} must pass undefined when no folder`);
+  }
+});
+
 // Summary
 setTimeout(() => {
   summary();

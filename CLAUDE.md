@@ -1,3 +1,5 @@
+TAO.md is why these rules are shaped this way. Read it first.
+
 # Moltagent: Claude Code Context
 
 **Project:** Moltagent, a sovereign AI agent platform on Nextcloud.  
@@ -58,7 +60,7 @@ The full rule set is the auto-loaded skill at `.claude/skills/moltagent-dev-rule
 - **Read before writing.** Paths, names, and API shapes come from the codebase, not memory. Search first.
 - **Run the pre-commit checklist** (the Anti-Pattern Checklist in the dev-rules skill) before any commit.
 - **Run the Verification Gate** (in the dev-rules skill) before declaring a session done.
-- **Run the privacy pass** (see `.claude/skills/public-content-discipline/SKILL.md`) before drafting any content bound for a public surface: GitHub issues, PRs, README, docs, external communications. Abstract named individuals, client organizations, internal codenames, and knowledge-base quotes before they enter a public draft, not after.
+- **Run the privacy pass** (see `.claude/skills/public-content-discipline/SKILL.md`) before drafting any content bound for a public surface: GitHub issues, PRs, README, docs, external communications, **and commit messages** (they are public on `next`/`main`). Abstract named individuals, client organizations, internal codenames, and knowledge-base quotes before they enter a public draft, not after. In `[VERIFIED]` blocks, name hosts as placeholders (`[OLLAMA_HOST]`, `[NC_HOST]`) — never literal IPs or hostnames; a production IP in a public commit message is a leak (commit `23a5496` carries one).
 - **File issues for anything outside the current briefing.** Scope is the briefing.
 - **Small commits over large ones.** If a commit adds more lines than it removes, question whether the altitude is right.
 

@@ -26,7 +26,7 @@ send_message() {
   local random_hex=$(openssl rand -hex 32)
 
   local body=$(cat <<ENDJSON
-{"type":"Create","actor":{"type":"Person","id":"users/Funana","name":"Funana"},"object":{"type":"Note","id":"${msg_id}","name":"","content":"${message}","mediaType":"text/markdown","message":{"id":"${msg_id}","token":"${ROOM}","actorType":"users","actorId":"Funana","actorDisplayName":"Funana","message":"${message}","messageParameters":{}}},"target":{"type":"Collection","id":"${ROOM}","name":"Test Room"}}
+{"type":"Create","actor":{"type":"Person","id":"users/testuser","name":"testuser"},"object":{"type":"Note","id":"${msg_id}","name":"","content":"${message}","mediaType":"text/markdown","message":{"id":"${msg_id}","token":"${ROOM}","actorType":"users","actorId":"testuser","actorDisplayName":"testuser","message":"${message}","messageParameters":{}}},"target":{"type":"Collection","id":"${ROOM}","name":"Test Room"}}
 ENDJSON
 )
 

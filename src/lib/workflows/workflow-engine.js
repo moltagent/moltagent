@@ -1,13 +1,37 @@
 'use strict';
 
-const fs   = require('fs');
-const path = require('path');
+const fs     = require('fs');
+const path   = require('path');
+const crypto = require('crypto');
 const GateDetector = require('./gate-detector');
 const { ScheduleHandler, parseScheduleBlock, findConfigCard, stripHtml } = require('./schedule-handler');
 const { isStructuralCard, hasLabel } = require('../integrations/deck-card-classifier');
 const DeckClient = require('../integrations/deck-client');
+const { proposeSlots, parseHoursMarker } = require('./slot-proposer');
 
 const DEFAULT_DATA_DIR = path.resolve(process.cwd(), 'data');
+
+// Upper bound for a CONFIG-declared MAX_ITERATIONS. A research stage legitimately
+// needs more steps than the pipeline default of 3, but a typo (70 vs 7) must not
+// run cloud cost away — the cap is clamped to this ceiling.
+const MAX_ITERATION_CEILING = 15;
+
+/**
+ * Extract a CONFIG/WORKFLOW marker value from a plain-text block.
+ * Matches `^NAME: value$` (case-insensitive, multiline) and trims the capture —
+ * trailing whitespace in a marker value is never meaningful. Returns null when
+ * the marker is absent. Shared by the scheduling and iteration-cap resolvers so
+ * a single reader owns marker extraction.
+ * @param {string} text
+ * @param {string} name
+ * @returns {string|null}
+ */
+function getConfigMarker(text, name) {
+  if (!text) return null;
+  const re = new RegExp(`^${name}:\\s*(.+)$`, 'im');
+  const m = text.match(re);
+  return m ? m[1].trim() : null;
+}
 
 /**
  * WorkflowEngine
@@ -34,9 +58,13 @@ class WorkflowEngine {
    * @param {import('../agent/agent-loop').AgentLoop} options.agentLoop
    * @param {import('../talk/talk-send-queue').TalkSendQueue} options.talkSendQueue
    * @param {string} options.talkToken - Primary Talk room token for notifications
+   * @param {Object} [options.emailHandler] - EmailHandler instance; when provided, boards with a
+   *   TRIGGER: email:<folder> line will have new emails ingested as cards each pulse.
+   * @param {Object} [options.ncMailClient] - NCMailClient instance; when provided, ingested cards
+   *   receive a best-effort deep-link back to the original message in NC Mail.
    * @param {Object} [options.config]
    */
-  constructor({ workflowDetector, deckClient, agentLoop, talkSendQueue, talkToken, config, budgetEnforcer }) {
+  constructor({ workflowDetector, deckClient, agentLoop, talkSendQueue, talkToken, emailHandler, ncMailClient, config, budgetEnforcer }) {
     this.detector = workflowDetector;
     this.deck = deckClient;
     this.agent = agentLoop;
@@ -44,7 +72,9 @@ class WorkflowEngine {
     this.talkToken = talkToken || null;
     this.config = config || {};
     this.budgetEnforcer = budgetEnforcer || null;
-    this.botUsername = this.config.botUsername || 'moltagent';
+    this.botUsername    = this.config.botUsername || 'moltagent';
+    this.emailHandler   = emailHandler || null;
+    this.ncMailClient   = ncMailClient || null;
 
     // Resolve data directory. Disk persistence is only enabled when config.dataDir
     // is explicitly provided (or config.dataDir === true to use the default).
@@ -79,6 +109,16 @@ class WorkflowEngine {
       ? path.join(this._dataDir, 'workflow-notified-gates.json')
       : null;
     this._notifiedGates = this._loadNotifiedGates();
+
+    // Track emails already ingested as cards to guarantee idempotency.
+    // On-disk shape: { "<boardId>": ["<msgId>", ...] }
+    // In memory: Map<string, Set<string>>
+    // Keyed by Message-ID (or a sha1 fallback for emails that lack one).
+    // Persisted to disk so service restarts don't re-ingest.
+    this._ingestedEmailsFile = this._dataDir
+      ? path.join(this._dataDir, 'workflow-ingested-emails.json')
+      : null;
+    this._ingestedEmails = this._loadIngestedEmails(); // Map<boardId(string), Set<messageId>>
 
     // Reentrancy guard — prevents concurrent processAll() when a pulse
     // outlasts the heartbeat interval.
@@ -135,6 +175,13 @@ class WorkflowEngine {
       results.errors.push({ board: 'detection', error: err.message });
     } finally {
       this._processing = false;
+      // A1: invalidate the board-snapshot cache after any pulse that mutated card
+      // positions so the next pulse reads live state rather than the stale snapshot.
+      // The board list was fetched once at the top of this function, so invalidation
+      // here only affects the next pulse — exactly the goal.
+      if (results.cardsProcessed > 0 || results.gatesResolved > 0 || results.schedulesExecuted > 0) {
+        this.detector.invalidateCache();
+      }
     }
 
     if (results.boardsProcessed > 0) {
@@ -165,9 +212,39 @@ class WorkflowEngine {
       console.warn(`[Workflow] Board "${board.title}" — rules card not resolvable (id=${wb.rulesCardId}), treating as PAUSED`);
       return result;
     }
-    if (hasLabel(rulesCard, 'PAUSED')) {
-      console.log(`[Workflow] Board "${board.title}" is PAUSED — skipping`);
-      return result;
+    // A3: Fresh PAUSED check. The cached snapshot is up to 5 minutes stale — a
+    // human who pauses the board should not wait up to one full cache window.
+    // Read via the PLURAL stacks endpoint (getStacks), which hydrates per-card
+    // labels. The singular card endpoint does NOT reliably hydrate labels (#22),
+    // so reading the rules card with getCardById here could see labels:null and
+    // silently miss a real PAUSED — worse than the stale snapshot, which is at
+    // least label-hydrated. On any error, fall back to the snapshot (hydrated,
+    // just stale) so a transient network hiccup never skips a board silently.
+    {
+      let pausedCheckCard = rulesCard; // snapshot fallback (hydrated, possibly stale)
+      try {
+        const freshStacks = await this.deck.getStacks(board.id);
+        const freshArr = (freshStacks.body || freshStacks) || [];
+        const freshRules = freshArr
+          .flatMap(s => s.cards || [])
+          .find(c => c.id === wb.rulesCardId);
+        if (freshRules) pausedCheckCard = freshRules;
+      } catch (err) {
+        console.warn(`[Workflow] Board "${board.title}" — could not fresh-check PAUSED: ${err.message} (using snapshot)`);
+      }
+      if (hasLabel(pausedCheckCard, 'PAUSED')) {
+        console.log(`[Workflow] Board "${board.title}" is PAUSED — skipping`);
+        return result;
+      }
+    }
+
+    // External-event ingestion: a TRIGGER: line pulls emails from a folder into
+    // this board as cards, once per email (idempotent on Message-ID), before the
+    // per-card processing loop. Inherits the board PAUSED gate above.
+    try {
+      await this._ingestTriggerEmails(wb);
+    } catch (err) {
+      console.error('[Workflow] Email trigger ingestion error on "' + board.title + '": ' + err.message);
     }
 
     for (const stack of stacks) {
@@ -330,6 +407,16 @@ class WorkflowEngine {
    */
   async _processCard(wb, stack, card) {
     const { board, description, stacks } = wb;
+
+    // Terminal stack: the pipeline's end. A card resting here has nothing
+    // further to do, so skip the beat entirely — no LLM call, no cost. A stack
+    // is terminal only when its CONFIG card explicitly declares TERMINAL: true
+    // (opt-in; the default is non-terminal).
+    if (this._isTerminalStack(stack)) {
+      console.log(`[Workflow] Skipping terminal stack "${stack.title}" for card "${card.title}"`);
+      return;
+    }
+
     let { forceLocal } = this._getRoleForCard(wb, card);
 
     // Budget check before cloud processing
@@ -341,8 +428,10 @@ class WorkflowEngine {
       }
     }
 
-    // Iteration cap: procedures get more steps (multi-phase), pipelines less
-    const maxIterations = wb.workflowType === 'procedure' ? 5 : 3;
+    // Iteration cap: stack CONFIG → board WORKFLOW → code default. A research/
+    // grounding stage writes a profile to two surfaces, attributes web sources,
+    // drafts a reply and moves the card — more steps than the pipeline default.
+    const maxIterations = this._resolveMaxIterations(wb, stack);
 
     console.log(`[Workflow] Processing card "${card.title}" in "${board.title}" / "${stack.title}" (maxIter=${maxIterations})`);
 
@@ -468,7 +557,9 @@ class WorkflowEngine {
       '**Instructions:**',
       'Follow the CONFIG instructions for this stack. The CONFIG card defines',
       'exactly what to do with cards in this stack.',
-      'Use workflow_deck_update_card to write or rewrite the card description.',
+      'Use workflow_deck_update_card to append the profile to the card description.',
+      'The section after the --- line (From, Date, and the "Open in Mail" link if present) is system-owned.',
+      'Do NOT rewrite or reformat that footer — append profile prose below the existing footer.',
       'Use workflow_deck_* tools with numeric IDs to move cards, add comments, etc.',
       'Comment on the card with what you did.',
       'If the CONFIG says to notify in Talk, use the talk_send tool.',
@@ -479,8 +570,182 @@ class WorkflowEngine {
       'and assign the human reviewer. Do not proceed past the GATE point.',
     ].filter(Boolean).join('\n');
 
+    // ── Research grounding block (Part 5 / #188) ─────────────────────────────
+    // Self-scoping: only injected when the card description contains a parseable
+    // From: footer line (structural signal that this is an ingested inquiry card).
+    // Generic cards and other boards receive no grounding block.
+    //
+    // The From: footer is written by the email trigger ingest path (#185) as:
+    //   <body>\n\n---\nFrom: <Name> <addr>\nDate: ...\n[Open the original email in Mail](...)
+    // We parse from the RAW description (not the stripHtml version) because
+    // stripHtml strips angle-bracket content (e.g. <alice@acme.com> → stripped).
+    // This is structural parsing of a machine-authored marker — Rule 1 clean.
+    //
+    // Custody: the parse is bound to the trailing footer segment (after the last
+    // "\n---\n" delimiter the ingest path appends), NOT the whole description.
+    // A quoted/forwarded inbound body can contain its own "From: x@other.com"
+    // line; matching that would let third-party content masquerade as the
+    // established contact fact and steer the web_search domain anchor. The footer
+    // is always the final segment, so .pop() isolates the machine-authored region.
+    const searchPolicy = this.agent.cockpitManager?.cachedConfig?.system?.searchPolicy || 'research';
+    let groundingBlock = '';
+    const rawCardDesc = card.description || '';
+    const footerSegment = rawCardDesc.split(/\n---\n/).pop();
+    const fromFooterMatch = footerSegment.match(/^From:\s*(.+)$/im);
+    if (fromFooterMatch) {
+      const fromRaw = fromFooterMatch[1].trim();
+      // Parse "Name <addr>" or "<addr>" or "addr" forms structurally.
+      let contactName    = '';
+      let contactAddress = '';
+      const angleMatch = fromRaw.match(/^(.*?)\s*<([^>]+)>\s*$/);
+      if (angleMatch) {
+        contactName    = angleMatch[1].trim();
+        contactAddress = angleMatch[2].trim();
+      } else {
+        // No angle-bracket form — treat the whole string as the address
+        contactAddress = fromRaw;
+      }
+
+      // Mail link: the NC Mail deep-link is on a separate line in the footer
+      // as "[Open the original email in Mail](url)".  Extract it structurally.
+      let mailLinkLine = '';
+      const mailLinkMatch = footerSegment.match(/\[Open the original email in Mail\]\(([^)]+)\)/i);
+      if (mailLinkMatch) {
+        mailLinkLine = `\n- Source: [NC Mail thread](${mailLinkMatch[1]})`;
+      }
+
+      // ── Section A: structured contact facts (always present when From present)
+      const sectionA = [
+        '## Known contact details (from the inbound message)',
+        `- Name: ${contactName || '(not provided)'}`,
+        `- Email: ${contactAddress}`,
+        mailLinkLine || '',
+        '',
+        'These details are established facts. Include them in the profile as-is.',
+        'Do not omit or fabricate the email address.',
+      ].filter(s => s !== null).join('\n');
+
+      // ── Section B: research instructions (web-dependent)
+      let sectionB;
+      if (searchPolicy !== 'sovereign') {
+        // Derive the domain from the sender address as a concrete company anchor.
+        const domainMatch = contactAddress.match(/@([^@>]+)$/);
+        const senderDomain = domainMatch ? domainMatch[1] : '';
+        sectionB = [
+          '## Research task',
+          'Find publicly available information about the company associated with this inquiry.',
+          senderDomain ? `The sender's email domain is @${senderDomain} — use this as a concrete anchor.` : '',
+          'Identify the company from the inquiry text (do NOT fabricate a company name if one is not clear).',
+          '',
+          'Useful signals: what the company does, its size/stage, its relevance to the inquiry topic,',
+          'any public contact or team pages.',
+          '',
+          'Source attribution rules (strictly enforced):',
+          '- Every claim from web results MUST include its source URL.',
+          '- Claims without a source URL are NOT included in the profile.',
+          '- Keep internal facts (from the email), provided contact details, and web findings',
+          '  as distinct attributed sections in both the card description and the Collectives page.',
+          '',
+          'Write the profile to BOTH:',
+          '  1. The card description (appended below the system-owned footer) — the reviewer\'s primary surface.',
+          '  2. The partner\'s Collectives page — the durable record.',
+          'For the Collectives link written into the card description: use the exact URL returned by',
+          'the wiki_write tool result (the [View](...) URL in the tool response).',
+          'Do NOT construct a [[wikilink]] — NC Collectives has no wikilink resolver',
+          'and [[...]] syntax will not render as a link.',
+        ].filter(Boolean).join('\n');
+      } else {
+        sectionB = [
+          '## Research note',
+          'Web research is disabled by system policy (sovereign mode).',
+          'Compile the profile from the email content and internal knowledge only.',
+          'Write the profile to both the card description and the Collectives page.',
+          'For the Collectives link written into the card description: use the exact URL returned by',
+          'the wiki_write tool result (the [View](...) URL in the tool response).',
+          'Do NOT construct a [[wikilink]] — NC Collectives has no wikilink resolver',
+          'and [[...]] syntax will not render as a link.',
+        ].join('\n');
+      }
+
+      // ── Section C: scheduling slots (only when hoursExplicit)
+      let sectionC = '';
+      const schedulingCfg = this._resolveSchedulingConfig(wb, stack);
+      if (schedulingCfg.hoursExplicit) {
+        // Fetch busy events via CalDAV client (guard for null / absent client)
+        let busyBlocks = [];
+        const calClient = this.agent.toolRegistry?.clients?.calDAVClient;
+        if (calClient) {
+          try {
+            const now       = new Date();
+            // Search 5 business days forward (matches proposeSlots default windowDays)
+            const WINDOW_DAYS = 5;
+            const rangeEnd  = new Date(now.getTime() + WINDOW_DAYS * 24 * 60 * 60 * 1000);
+            // getEvents needs a calendarId; use the default calendar name.
+            // Fall back to 'personal' if not configured.
+            const calId     = calClient.defaultCalendar || 'personal';
+            const events    = await calClient.getEvents(calId, now, rangeEnd);
+            // Drop events with missing start/end (malformed ICS yields null DTSTART/
+            // DTEND → new Date(null) = epoch, a spurious busy block). proposeSlots
+            // also re-filters NaN, but excluding incomplete events here is cleaner.
+            busyBlocks = (events || [])
+              .filter(e => e && e.start && e.end)
+              .map(e => ({
+                start: e.start instanceof Date ? e.start : new Date(e.start),
+                end:   e.end   instanceof Date ? e.end   : new Date(e.end)
+              }));
+          } catch (err) {
+            console.warn(`[Workflow] Could not fetch calendar events for slot proposal: ${err.message}`);
+          }
+        }
+
+        // Detect locale from card language — but since the model handles language
+        // and the contact details determine the response language, we default to
+        // 'en' here and let the model render them in the appropriate language.
+        // The slot strings carry machine-correct dates; the model may translate
+        // surrounding prose but must not recompute the dates.
+        const slots = proposeSlots({
+          busyBlocks,
+          hours:        schedulingCfg.hours,
+          timezone:     schedulingCfg.timezone,
+          slotDuration: schedulingCfg.slotDuration,
+          locale:       'en',
+          now:          new Date(),
+          maxSlots:     3,
+          windowDays:   5
+        });
+
+        if (slots.length > 0) {
+          sectionC = [
+            '## Available meeting slots',
+            'The following slots are confirmed available and correctly labeled.',
+            'Include these in the profile as proposed meeting times.',
+            'Weekday labels are pre-computed and correct — do NOT recompute them.',
+            ...slots.map(s => `- ${s}`),
+          ].join('\n');
+        } else {
+          sectionC = '## Available meeting slots\nNo availability found in the current window. Omit scheduling from the profile.';
+        }
+      }
+
+      groundingBlock = [
+        '',
+        '---',
+        '## Structured Research Grounding',
+        '',
+        sectionA,
+        '',
+        sectionB,
+        sectionC ? '' : null,
+        sectionC || null,
+      ].filter(s => s !== null).join('\n');
+    }
+
+    const finalSystemAddition = groundingBlock
+      ? systemAddition + groundingBlock
+      : systemAddition;
+
     await this.agent.processWorkflowTask({
-      systemAddition,
+      systemAddition: finalSystemAddition,
       task: `Process workflow card: "${card.title}" according to the board rules.`,
       boardId: board.id,
       cardId: card.id,
@@ -488,7 +753,8 @@ class WorkflowEngine {
       forceLocal,
       allowCloud,
       cloudTier,
-      maxIterations
+      maxIterations,
+      searchPolicy
     });
   }
 
@@ -500,12 +766,33 @@ class WorkflowEngine {
   async _handleGate(wb, stack, card) {
     const { board } = wb;
 
-    // Label-based resolution check — synchronous, no comment scanning
-    const resolution = GateDetector.checkGateResolution(card);
+    // Resolution check (#197): two sources, evaluated in GateDetector —
+    //   via 'label' → legacy APPROVED/REJECTED stamp (backward-compat)
+    //   via 'move'  → reviewer dragged the GATE card OUT of the gate stack.
+    // The engine computes whether the card's CURRENT stack is a declared
+    // rejection target; GateDetector decides gate-stack membership from `stack`.
+    const isRejectionStack = this._isRejectionStack(stack);
+    const resolution = GateDetector.checkGateResolution(card, stack, isRejectionStack);
 
     if (resolution.resolved && resolution.decision) {
-      // Human has applied APPROVED or REJECTED label
-      console.log(`[Workflow] GATE resolved: "${card.title}" -> ${resolution.decision}`);
+      // Post-resolution label swap (#197, Part 2). Only for via==='move' — a
+      // 'label' resolution already carries its record-keeping label, so re-stamping
+      // would be redundant. Run BEFORE the processWorkflowTask handoff so the
+      // record-keeping state is deterministic regardless of what the LLM does downstream.
+      if (resolution.via === 'move') {
+        await this._removeLabelFromCard(board.id, stack.id, card.id, 'GATE');
+        await this._addLabelToCard(board.id, stack.id, card.id,
+          resolution.decision === 'rejected' ? 'REJECTED' : 'APPROVED');
+        // Idempotency: removing the GATE label makes isGate() false next pulse,
+        // so the card is not re-handled. Known edge: isGate() also matches a
+        // "GATE:" TITLE prefix, so a move-resolved card whose title starts
+        // "GATE:" could re-enter via the APPROVED label path — tracked in #200.
+        console.log(`[Workflow] GATE resolved: card "${card.title}" ` +
+          `${resolution.decision} (moved from gate stack to "${stack.title}")`);
+      } else {
+        // Legacy label-stamp resolution (backward-compat path).
+        console.log(`[Workflow] GATE resolved: "${card.title}" -> ${resolution.decision}`);
+      }
 
       // Clear notification dedup so card can be re-gated later if needed
       const gateKey = `${board.id}:${card.id}`;
@@ -514,8 +801,10 @@ class WorkflowEngine {
 
       // Handoff back: unassign human, assign bot for automated processing
       const botUser = this.deck.username || this.botUsername;
-      const humanUser = wb.board.owner?.uid || wb.board.owner || this._getHumanUser();
-      await this._safeUnassign(board.id, stack.id, card.id, humanUser);
+      const humanUser = this._resolveGateReviewer(wb, stack);
+      if (humanUser && humanUser !== botUser) {
+        await this._safeUnassign(board.id, stack.id, card.id, humanUser);
+      }
       await this._safeAssign(board.id, stack.id, card.id, botUser);
       console.log(`[Workflow] GATE resolution handoff: "${card.title}" → ${botUser}`);
 
@@ -582,13 +871,18 @@ class WorkflowEngine {
     // Not resolved (has GATE label, no APPROVED/REJECTED) — notify human once
     const gateKey = `${board.id}:${card.id}`;
     if (!this._notifiedGates.has(gateKey)) {
-      // Label presence IS the notification state — no comment scan needed.
+      // Notification text reflects the new gesture (#197, Part 4): the approval
+      // signal is the stack MOVE, not a label. These are fixed system strings
+      // (not NL classification), so a static template is acceptable.
+      const rej = wb.stacks.find(s => this._isRejectionStack(s));
+      const declineLine = rej ? `\nMove to "${rej.title}" to decline.` : '';
+
       // Notify in Talk once per process lifecycle (in-memory dedup via _notifiedGates).
       if (this.talkQueue && this.talkToken) {
         await this.talkQueue.enqueue(this.talkToken,
           `\u23F8\uFE0F Workflow "${wb.board.title}" is waiting for your review.\n` +
           `Card: **${card.title}**\n` +
-          'Apply the \u2705 APPROVED or \u274C REJECTED label on the card to continue.'
+          'Move this card forward to approve.' + declineLine
         );
       }
 
@@ -598,7 +892,7 @@ class WorkflowEngine {
         try {
           await this.deck.addComment(card.id,
             `\u23F8\uFE0F **GATE**: Waiting for human review.\n` +
-            'Apply the APPROVED or REJECTED label to continue the workflow.'
+            'Move this card forward to approve.' + declineLine
           );
         } catch (_err) {
           // Non-fatal — Talk notification is the primary channel
@@ -612,13 +906,22 @@ class WorkflowEngine {
 
     // Safety net: if GATE card is still assigned to bot, reassign to human.
     // This catches cases where the LLM stamped GATE but forgot to reassign.
-    const botUser = this.deck.username || this.botUsername;
-    const assignedUids = (card.assignedUsers || []).map(u => u.participant?.uid);
-    if (assignedUids.includes(botUser)) {
-      const humanUser = wb.board.owner?.uid || wb.board.owner || this._getHumanUser();
-      await this._safeUnassign(board.id, stack.id, card.id, botUser);
-      await this._safeAssign(board.id, stack.id, card.id, humanUser);
-      console.log(`[Workflow] GATE safety net: reassigned "${card.title}" from ${botUser} to ${humanUser}`);
+    {
+      const bot = this.deck.username || this.botUsername;
+      const assignedUids = (card.assignedUsers || []).map(u => u.participant?.uid).filter(Boolean);
+      // Terminal: already assigned to a real (non-bot) human → done, never touch.
+      if (!assignedUids.some(uid => uid !== bot)) {
+        // Only act if the card is still assigned to the bot.
+        if (assignedUids.includes(bot)) {
+          const human = this._resolveGateReviewer(wb, stack);
+          // No human resolvable → do NOT churn (notification already fired once above).
+          if (human && human !== bot) {
+            await this._safeUnassign(board.id, stack.id, card.id, bot);
+            await this._safeAssign(board.id, stack.id, card.id, human);
+            console.log(`[Workflow] GATE safety net: reassigned "${card.title}" from ${bot} to ${human}`);
+          }
+        }
+      }
     }
 
     return false;
@@ -756,6 +1059,279 @@ class WorkflowEngine {
     } catch (err) {
       console.error('[Workflow] Failed to persist notified gates:', err.message);
     }
+  }
+
+  // ===========================================================================
+  // Ingested Emails Persistence  (email-trigger-bridge)
+  // ===========================================================================
+
+  /**
+   * Load the per-board ingested-email sets from disk.
+   * On-disk shape: { "<boardId>": ["<msgId>", ...] }
+   * Returns Map<string, Set<string>>; starts fresh on missing/corrupt file.
+   * @private
+   */
+  _loadIngestedEmails() {
+    if (!this._ingestedEmailsFile) return new Map();
+    try {
+      const raw = fs.readFileSync(this._ingestedEmailsFile, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const map = new Map();
+        for (const [boardId, ids] of Object.entries(parsed)) {
+          map.set(boardId, new Set(Array.isArray(ids) ? ids : []));
+        }
+        return map;
+      }
+    } catch (_err) {
+      // Missing file or corrupt JSON — start fresh
+    }
+    return new Map();
+  }
+
+  /**
+   * Persist the ingested-emails Map to disk (atomic tmp + rename).
+   * @private
+   */
+  _saveIngestedEmails() {
+    if (!this._ingestedEmailsFile) return;
+    try {
+      if (!fs.existsSync(this._dataDir)) {
+        fs.mkdirSync(this._dataDir, { recursive: true });
+      }
+      const obj = {};
+      for (const [boardId, set] of this._ingestedEmails.entries()) {
+        obj[boardId] = [...set];
+      }
+      const tmp = this._ingestedEmailsFile + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8');
+      fs.renameSync(tmp, this._ingestedEmailsFile);
+    } catch (err) {
+      console.error('[Workflow] Failed to persist ingested emails:', err.message);
+    }
+  }
+
+  /**
+   * Check whether an email has already been ingested for a given board.
+   * @param {string|number} boardId
+   * @param {string} msgId
+   * @returns {boolean}
+   * @private
+   */
+  _isEmailIngested(boardId, msgId) {
+    const set = this._ingestedEmails.get(String(boardId));
+    return set ? set.has(msgId) : false;
+  }
+
+  /**
+   * Mark an email as ingested for a given board and persist to disk.
+   * Caps each board's set at 1000 most-recent entries (insertion-order).
+   * @param {string|number} boardId
+   * @param {string} msgId
+   * @private
+   */
+  _markEmailIngested(boardId, msgId) {
+    const key = String(boardId);
+    let set = this._ingestedEmails.get(key);
+    if (!set) {
+      set = new Set();
+      this._ingestedEmails.set(key, set);
+    }
+    set.add(msgId);
+    // Cap at 1000 most-recent entries to prevent unbounded growth
+    if (set.size > 1000) {
+      this._ingestedEmails.set(key, new Set([...set].slice(-1000)));
+    }
+    this._saveIngestedEmails();
+  }
+
+  // ===========================================================================
+  // Email Trigger Bridge  (email-trigger-bridge)
+  // ===========================================================================
+
+  /**
+   * Parse a TRIGGER: line from the board rules. Structured metadata, not NL.
+   * Form: TRIGGER: <kind>:<locator>  (optionally  -> <stack name>)
+   * The locator is a folder path (e.g. INBOX.INQUIRIES) for email triggers.
+   * The locator must be whitespace-free (dotted IMAP paths like INBOX.INQUIRIES);
+   * folder names containing spaces are not supported by this unquoted form, and
+   * the optional stack-target separator is ASCII "->" (not the Unicode arrow).
+   * Returns { kind, locator, stackName } or null.
+   * @private
+   */
+  _parseTrigger(wb) {
+    const desc = wb._plainDescription || stripHtml(wb.description || '');
+    const m = desc.match(/^TRIGGER:\s*(\w+):(\S+?)(?:\s*->\s*(.+?))?\s*$/im);
+    if (!m) return null;
+    return { kind: m[1].toLowerCase(), locator: m[2], stackName: m[3] ? m[3].trim() : null };
+  }
+
+  /**
+   * Compute a stable fallback dedup key for emails that lack a Message-ID.
+   * Uses a sha1 of folder|uid|date|from|subject so the same physical email
+   * always maps to the same key across pulses.
+   * @private
+   */
+  _fallbackEmailKey(folder, email) {
+    const parts = [
+      folder,
+      String(email.id ?? ''),
+      String(email.date ?? ''),
+      String(email.from ?? ''),
+      String(email.subject ?? '')
+    ].join('|');
+    return 'nomsgid:' + crypto.createHash('sha1').update(parts).digest('hex');
+  }
+
+  /**
+   * Ingest emails from a TRIGGER: email:<folder> declaration into this board as
+   * Deck cards. Idempotent on the Message-ID store (data/workflow-ingested-emails.json),
+   * NOT on the IMAP \Seen flag (#194) — a flag the engine does not own. The mailbox
+   * is opened read-only and \Seen is never mutated. On a board's first pulse the
+   * folder's existing contents are seeded into the store (zero cards) so historical
+   * mail is not bulk-ingested.
+   * @param {Object} wb - WorkflowBoard descriptor
+   * @returns {Promise<number>} Number of cards created this pulse
+   * @private
+   */
+  async _ingestTriggerEmails(wb) {
+    const trigger = this._parseTrigger(wb);
+    if (!trigger) return 0;
+
+    // Dispatch on kind — only 'email' is implemented; future kinds add here.
+    if (trigger.kind !== 'email') {
+      console.warn('[Workflow] Unsupported TRIGGER kind: ' + trigger.kind + ' — skipping');
+      return 0;
+    }
+
+    // Graceful no-op when emailHandler was not injected (e.g. unit tests).
+    if (!this.emailHandler) return 0;
+
+    // Resolve the entry stack: named target takes precedence; else first by order.
+    let stack;
+    if (trigger.stackName) {
+      stack = (wb.stacks || []).find(
+        s => s.title.toLowerCase() === trigger.stackName.toLowerCase()
+      );
+    } else {
+      const sorted = [...(wb.stacks || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      stack = sorted[0];
+    }
+
+    if (!stack) {
+      console.warn('[Workflow] Email trigger: no entry stack resolved for board "' + wb.board.title + '" (stackName=' + (trigger.stackName || 'null') + ')');
+      return 0;
+    }
+
+    // Fetch ALL emails in the folder — opens the mailbox READ-ONLY (never mutates
+    // \Seen). Dedup is the Message-ID store's job (#194), not the \Seen flag's: a
+    // human who reads then curates a mail into the trigger folder leaves it \Seen,
+    // and the old unreadOnly filter made that mail permanently invisible.
+    let emails;
+    try {
+      emails = await this.emailHandler._fetchEmails({
+        folder: trigger.locator,
+        unreadOnly: false,
+        limit: 50
+      });
+    } catch (err) {
+      console.error('[Workflow] Email trigger fetch failed for board "' + wb.board.title + '": ' + err.message);
+      return 0;
+    }
+
+    if (emails.length === 50) {
+      // Soft warning: a full fetch window may silently cap a backlog.
+      console.warn('[Workflow] Email trigger fetch hit the limit (50) for folder ' + trigger.locator + ' — older mail may wait for the next pulse');
+    }
+
+    // Process oldest-first so card order on the board reflects email arrival order.
+    // _fetchEmails returns newest-first (sorted descending); reverse to get oldest-first.
+    const orderedEmails = [...emails].reverse();
+
+    // First-run seeding (#194): now that the fetch returns ALL mail, a board whose
+    // trigger folder already holds messages would bulk-create a card per message on
+    // its first pulse. A board is on its first pulse when the store holds no entry
+    // for it (the .has() signal — NOT an empty set, which an empty starting folder
+    // would also produce, re-triggering seeding forever). Record the folder's
+    // current Message-IDs, persist the board entry even when the folder is empty,
+    // and create zero cards. Genuinely new mail arriving on later pulses ingests
+    // normally because the store entry now exists.
+    if (!this._ingestedEmails.has(String(wb.boardId))) {
+      for (const email of orderedEmails) {
+        const key = email.messageId || this._fallbackEmailKey(trigger.locator, email);
+        this._markEmailIngested(wb.boardId, key);
+      }
+      // Guarantee a board entry persists even when the folder was empty, so an
+      // email arriving on a later pulse is ingested rather than re-seeded.
+      if (!this._ingestedEmails.has(String(wb.boardId))) {
+        this._ingestedEmails.set(String(wb.boardId), new Set());
+        this._saveIngestedEmails();
+      }
+      console.log('[Workflow] Seeded ingested-emails store for board ' + wb.boardId + ' with ' + orderedEmails.length + ' existing Message-ID(s)');
+      return 0;
+    }
+
+    let ingested = 0;
+    for (const email of orderedEmails) {
+      const key = email.messageId || this._fallbackEmailKey(trigger.locator, email);
+
+      if (this._isEmailIngested(wb.boardId, key)) continue;
+
+      // Build the card title and description.
+      const title = email.subject || '(No subject)';
+      const bodyText = (email.body || '').slice(0, 2000);
+
+      // Custody fix (#185): carry the canonical fromAddress so downstream beats
+      // do not need to re-derive or fabricate it. Use RFC 5322 "Name <addr>" form.
+      // Invariant: when the display string already contains the address, do NOT
+      // duplicate it (handles the common "Name <addr>" production from IMAP).
+      const fromDisplay = email.from || '';
+      const fromAddr    = email.fromAddress || '';
+      let fromLine;
+      if (!fromAddr || fromDisplay.includes(fromAddr)) {
+        // Address absent or already embedded in the display string — preserve as-is.
+        fromLine = fromDisplay;
+      } else if (fromDisplay) {
+        fromLine = fromDisplay + ' <' + fromAddr + '>';
+      } else {
+        fromLine = '<' + fromAddr + '>';
+      }
+
+      let description = bodyText + '\n\n---\nFrom: ' + fromLine +
+        '\nDate: ' + (email.date || '');
+
+      // Best-effort: append a deep-link back to the original message in NC Mail.
+      // Only attempt resolution when the real Message-ID header is available
+      // (key may be a sha1 fallback when messageId is absent — not resolvable).
+      if (this.ncMailClient && email.messageId) {
+        try {
+          const mailUrl = await this.ncMailClient.resolveThreadUrl(trigger.locator, email.messageId);
+          if (mailUrl) {
+            description += '\n[Open the original email in Mail](' + mailUrl + ')';
+          } else {
+            console.log('[Workflow] NC Mail back-link: no match for Message-ID ' + email.messageId + ' (message may not yet be synced) — omitting Mail link');
+          }
+        } catch (err) {
+          console.log('[Workflow] NC Mail back-link: resolution errored for Message-ID ' + email.messageId + ': ' + err.message + ' — omitting Mail link');
+        }
+      }
+
+      const card = await this.deck.createCardOnBoard(wb.boardId, stack.id, title, { description });
+
+      if (card) {
+        // Only mark ingested after successful card creation.
+        // If createCardOnBoard returned null (entry stack is PAUSED) we do NOT
+        // mark, so the email is retried on the next pulse when unpaused.
+        this._markEmailIngested(wb.boardId, key);
+        ingested++;
+      }
+    }
+
+    if (ingested > 0) {
+      console.log('[Workflow] Email trigger ingested ' + ingested + ' card(s) into "' + wb.board.title + '" from ' + trigger.locator);
+    }
+
+    return ingested;
   }
 
   /**
@@ -924,21 +1500,78 @@ class WorkflowEngine {
   }
 
   /**
+   * GET the card from `fallbackStackId`, resolve the card's live stack from the
+   * response body, and PUT using the live stack path.  This prevents hygiene
+   * writes (due-date, archive) from silently relocating a card that the agent
+   * has already moved to a different stack — a stack-scoped Deck PUT sets the
+   * card's stack to the path stack, so writing with a stale stack id is a move.
+   *
+   * Fallback chain:
+   *  1. GET from `fallbackStackId`.  If the body carries `stackId`, use that.
+   *  2. If the GET fails (card already moved), list the board's stacks and
+   *     locate the card there; use that stack for the PUT.
+   *  3. If the board-level lookup also fails, re-throw the original GET error so
+   *     the caller's try/catch can log it cleanly.
+   *
+   * @param {number} boardId
+   * @param {number} fallbackStackId - Stack id from the (possibly stale) snapshot
+   * @param {number} cardId - Deck card id (always a number; strict-equality used in the board-level search)
+   * @param {function(Object): Object} buildBody - Called with the current card data;
+   *   must return the complete PUT body (all fields required by Deck API).
+   * @private
+   */
+  async _putCardToLiveStack(boardId, fallbackStackId, cardId, buildBody) {
+    const fallbackPath = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${fallbackStackId}/cards/${cardId}`;
+    let liveStackId = fallbackStackId;
+    let cardData;
+
+    try {
+      const current = await this.deck._request('GET', fallbackPath);
+      cardData = current.body || current;
+      // Deck card objects carry `stackId` — use it to write to the card's true stack.
+      // If absent (unexpected for this Deck build), the fallback is the parameter stack,
+      // which risks the stale-stack write this helper prevents. If that ever fires in
+      // the live journal, investigate whether the Deck version omits stackId on GET.
+      liveStackId = cardData.stackId ?? fallbackStackId;
+    } catch (getErr) {
+      // Card may have moved out of the fallback stack — locate it via the board listing.
+      try {
+        const stacksResult = await this.deck.getStacks(boardId);
+        const stacksArr = (stacksResult.body || stacksResult) || [];
+        for (const s of stacksArr) {
+          const found = (s.cards || []).find(c => c.id === cardId);
+          if (found) {
+            liveStackId = s.id;
+            cardData = found;
+            break;
+          }
+        }
+      } catch (listErr) {
+        console.warn(`[Workflow] _putCardToLiveStack: board-level fallback failed for card ${cardId}: ${listErr.message}`);
+      }
+      if (!cardData) {
+        // Could not locate the card anywhere — re-throw the original error.
+        throw getErr;
+      }
+    }
+
+    const livePath = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${liveStackId}/cards/${cardId}`;
+    await this.deck._request('PUT', livePath, buildBody(cardData));
+  }
+
+  /**
    * Update a card's due date via the Deck API.
+   * Routes through _putCardToLiveStack so a stale stack id never relocates the card.
    * @private
    */
   async _updateCardDueDate(boardId, stackId, cardId, duedate) {
-    const path = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}`;
-    const current = await this.deck._request('GET', path);
-    const cardData = current.body || current;
-
-    await this.deck._request('PUT', path, {
+    await this._putCardToLiveStack(boardId, stackId, cardId, (cardData) => ({
       title: cardData.title,
       type: cardData.type || 'plain',
       owner: cardData.owner?.uid || cardData.owner || '',
       description: cardData.description || '',
       duedate
-    });
+    }));
   }
 
   /**
@@ -953,7 +1586,8 @@ class WorkflowEngine {
     const isDone = this._isDoneStack(wb, stack);
     if (isDone) return; // Don't assign Done cards
 
-    const userId = isGate ? this._getHumanUser() : (this.deck.username || this.botUsername);
+    const userId = isGate ? this._resolveGateReviewer(wb, stack) : (this.deck.username || this.botUsername);
+    if (!userId) return;
     await this._safeAssign(wb.board.id, stack.id, card.id, userId);
   }
 
@@ -988,11 +1622,225 @@ class WorkflowEngine {
   }
 
   /**
-   * Get the human user for GATE assignments.
+   * Resolve the declared GATE reviewer uid for a given stack/board.
+   * Never returns the bot uid — the convergence guard depends on this guarantee.
+   *
+   * Source of truth: a structural `REVIEWER: <uid>` marker declared in the board
+   * WORKFLOW rules card or the stack CONFIG card — same convention as TRIGGER:/MODEL:/
+   * SLA:/LLM: markers.  Board ownership and ACL are NOT consulted (declared intent
+   * is the only authority; inferring from NC ownership was the #183 generator).
+   *
+   * Resolution order (first hit wins):
+   * 1. Stack CONFIG card `REVIEWER: <uid>` — most specific override.
+   * 2. Board WORKFLOW rules `REVIEWER: <uid>` from wb._plainDescription.
+   * 3. config.adminUser, if explicitly set and !== bot.
+   * 4. null — no resolvable reviewer; callers must NOT churn assignments.
+   *
+   * @param {Object} wb    - Workflow board descriptor (wb._plainDescription)
+   * @param {Object} stack - Current stack (used to locate the CONFIG card)
+   * @returns {string|null}
    * @private
    */
-  _getHumanUser() {
-    return this.config.adminUser || 'admin';
+  _resolveGateReviewer(wb, stack) {
+    const bot = this.deck.username || this.botUsername;
+
+    // Step 1: stack CONFIG card — most specific (mirrors _extractStackLlmRouting pattern).
+    const configCard = findConfigCard(stack);
+    if (configCard?.description) {
+      const plain = stripHtml(configCard.description);
+      const m = plain.match(/^REVIEWER:\s*(\S+)\s*$/im);
+      if (m) {
+        const uid = m[1].trim();
+        // A declared reviewer that equals the bot uid is a misconfiguration — treat as absent.
+        if (uid && uid !== bot) return uid;
+      }
+    }
+
+    // Step 2: board WORKFLOW rules card.
+    const boardDesc = wb._plainDescription || '';
+    const bm = boardDesc.match(/^REVIEWER:\s*(\S+)\s*$/im);
+    if (bm) {
+      const uid = bm[1].trim();
+      if (uid && uid !== bot) return uid;
+    }
+
+    // Step 3: deterministic config default — only the explicitly configured
+    // value, never a fallback sentinel that could resolve to a non-existent user.
+    const admin = this.config.adminUser;
+    if (admin && admin !== bot) return admin;
+
+    // Step 4: unresolvable — return null so callers never churn.
+    return null;
+  }
+
+  /**
+   * Is this stack a declared terminal stack?
+   *
+   * A terminal stack is the pipeline's end (e.g. "Replied"): a card resting
+   * there needs no further processing. Declared by a TERMINAL: true marker on
+   * the stack's CONFIG card. This is explicit opt-in only — there is no
+   * resolution chain and no code default. TERMINAL: false or an absent marker
+   * both mean non-terminal.
+   *
+   * @param {Object} stack - Current stack (used to locate the CONFIG card)
+   * @returns {boolean}
+   * @private
+   */
+  _isTerminalStack(stack) {
+    const configCard = findConfigCard(stack);
+    const stackPlain = configCard?.description ? stripHtml(configCard.description) : '';
+    const raw = getConfigMarker(stackPlain, 'TERMINAL');
+    return raw !== null && raw.trim().toLowerCase() === 'true';
+  }
+
+  /**
+   * Is this stack a declared rejection target for GATE drag-to-decline (#197)?
+   *
+   * A stack is a rejection target when its CONFIG card declares `REJECTED: true`.
+   * The marker MUST live on the SAME CONFIG card as #196 TERMINAL — i.e. located
+   * via findConfigCard (the 'CONFIG:' title-prefix card), NOT GateDetector's
+   * 'System'-label gate-stack card — so a deployer declares all stack policy in
+   * one place. Explicit opt-in only: `REJECTED: false` or an absent marker both
+   * mean "not a rejection stack" (all other moves out of the gate stack are
+   * approvals).
+   *
+   * @param {Object} stack - Stack to test (used to locate the CONFIG card)
+   * @returns {boolean}
+   * @private
+   */
+  _isRejectionStack(stack) {
+    const configCard = findConfigCard(stack);
+    const stackPlain = configCard?.description ? stripHtml(configCard.description) : '';
+    const raw = getConfigMarker(stackPlain, 'REJECTED');
+    return raw !== null && raw.trim().toLowerCase() === 'true';
+  }
+
+  /**
+   * Resolve the per-card iteration cap for a stack.
+   *
+   * Resolution chain (mirrors _resolveSchedulingConfig):
+   *   1. Stack CONFIG card `MAX_ITERATIONS:` — most specific override
+   *   2. Board WORKFLOW rules card `MAX_ITERATIONS:` — board-wide default
+   *   3. Code default: procedure ? 5 : 3
+   *
+   * The pipeline default of 3 is too few for a research/grounding stage that
+   * web-researches, writes a profile to two surfaces, drafts a reply and moves
+   * the card. Boards declare the cap they need in CONFIG rather than the cap
+   * being hardcoded per workflow type. The resolved value is clamped to
+   * [1, MAX_ITERATION_CEILING] so a typo cannot run cloud cost away.
+   *
+   * @param {Object} wb    - Workflow board descriptor (wb._plainDescription, wb.workflowType)
+   * @param {Object} stack - Current stack (used to locate the CONFIG card)
+   * @returns {number}
+   * @private
+   */
+  _resolveMaxIterations(wb, stack) {
+    const codeDefault = wb.workflowType === 'procedure' ? 5 : 3;
+
+    const configCard = findConfigCard(stack);
+    const stackPlain = configCard?.description ? stripHtml(configCard.description) : '';
+    const boardPlain = wb._plainDescription || '';
+
+    const raw = getConfigMarker(stackPlain, 'MAX_ITERATIONS')
+      || getConfigMarker(boardPlain, 'MAX_ITERATIONS');
+    if (raw === null) return codeDefault;
+
+    const parsed = parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      // Non-integer or non-positive → fall through to code default
+      return codeDefault;
+    }
+    if (parsed > MAX_ITERATION_CEILING) {
+      console.warn(`[Workflow] MAX_ITERATIONS ${parsed} exceeds ceiling ${MAX_ITERATION_CEILING} — clamping`);
+      return MAX_ITERATION_CEILING;
+    }
+    return parsed;
+  }
+
+  /**
+   * Resolve scheduling CONFIG markers for a given stack/board.
+   *
+   * Reads HOURS:, TIMEZONE:, and SLOT_DURATION: markers from:
+   *   1. Stack CONFIG card  — most specific override
+   *   2. Board WORKFLOW rules card (wb._plainDescription) — board-wide default
+   *   3. System timezone from Intl  (TIMEZONE only)
+   *   4. Code defaults: Mon-Fri 09:00-17:00, system tz, 30 min
+   *
+   * Each marker resolves independently — a stack CONFIG can override TIMEZONE
+   * while the board WORKFLOW card supplies HOURS.
+   *
+   * `hoursExplicit` is true only when a HOURS: marker was actually found
+   * (at stack or board level).  The grounding block (Part 5) uses this flag
+   * to decide whether to inject Section C (scheduling slots).
+   *
+   * @param {Object} wb    - Workflow board descriptor (wb._plainDescription)
+   * @param {Object} stack - Current stack (used to locate the CONFIG card)
+   * @returns {{
+   *   hours: { days: Set<number>, startMinutes: number, endMinutes: number },
+   *   timezone: string,
+   *   slotDuration: number,
+   *   hoursExplicit: boolean
+   * }}
+   * @private
+   */
+  _resolveSchedulingConfig(wb, stack) {
+    const DEFAULT_HOURS     = { days: new Set([1, 2, 3, 4, 5]), startMinutes: 9 * 60, endMinutes: 17 * 60 };
+    const DEFAULT_SLOT      = 30;
+    const systemTz          = (() => {
+      try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
+      catch (_) { return 'UTC'; }
+    })();
+
+    const configCard  = findConfigCard(stack);
+    const stackPlain  = configCard?.description ? stripHtml(configCard.description) : '';
+    const boardPlain  = wb._plainDescription || '';
+
+    // Marker extraction (trim included) is shared via module-level getConfigMarker.
+    const _getMarker = getConfigMarker;
+
+    // ── HOURS ──────────────────────────────────────────────────────────────
+    // Resolution: stack CONFIG → board WORKFLOW → code default
+    let hours = null;
+    let hoursExplicit = false;
+    const hoursRaw = _getMarker(stackPlain, 'HOURS') || _getMarker(boardPlain, 'HOURS');
+    if (hoursRaw) {
+      const parsed = parseHoursMarker(hoursRaw);
+      if (parsed) {
+        hours = parsed;
+        hoursExplicit = true;
+      }
+      // Invalid value → fall through to code default (hoursExplicit stays false)
+    }
+    if (!hours) hours = DEFAULT_HOURS;
+
+    // ── TIMEZONE ───────────────────────────────────────────────────────────
+    // Resolution: stack CONFIG → board WORKFLOW → system tz → 'UTC'
+    let timezone = systemTz;
+    const tzRaw = _getMarker(stackPlain, 'TIMEZONE') || _getMarker(boardPlain, 'TIMEZONE');
+    if (tzRaw) {
+      // Validate: Intl.DateTimeFormat throws on unknown identifiers
+      try {
+        Intl.DateTimeFormat(undefined, { timeZone: tzRaw }).resolvedOptions();
+        timezone = tzRaw;
+      } catch (_) {
+        // Unknown timezone string — fall through to system tz (already set)
+        console.warn(`[Workflow] Unknown TIMEZONE value "${tzRaw}" — falling back to system tz`);
+      }
+    }
+
+    // ── SLOT_DURATION ──────────────────────────────────────────────────────
+    // Resolution: stack CONFIG → board WORKFLOW → code default (30 min)
+    let slotDuration = DEFAULT_SLOT;
+    const sdRaw = _getMarker(stackPlain, 'SLOT_DURATION') || _getMarker(boardPlain, 'SLOT_DURATION');
+    if (sdRaw !== null) {
+      const parsed = parseInt(sdRaw, 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        slotDuration = parsed;
+      }
+      // Non-integer or non-positive → fall through to default
+    }
+
+    return { hours, timezone, slotDuration, hoursExplicit };
   }
 
   /**
@@ -1014,18 +1862,14 @@ class WorkflowEngine {
         const lastMod = new Date(card.lastModified || 0).getTime();
         if (lastMod < cutoff) {
           try {
-            const path = `/index.php/apps/deck/api/v1.0/boards/${wb.board.id}/stacks/${stack.id}/cards/${card.id}`;
-            const current = await this.deck._request('GET', path);
-            const cardData = current.body || current;
-
-            await this.deck._request('PUT', path, {
+            await this._putCardToLiveStack(wb.board.id, stack.id, card.id, (cardData) => ({
               title: cardData.title,
               type: cardData.type || 'plain',
               owner: cardData.owner?.uid || cardData.owner || '',
               description: cardData.description || '',
               duedate: cardData.duedate || null,
               archived: true
-            });
+            }));
             console.log(`[Workflow] Archived stale card: "${card.title}" (${archiveAfterDays}+ days in Done)`);
           } catch (err) {
             console.warn(`[Workflow] Could not archive card ${card.id}: ${err.message}`);
@@ -1064,7 +1908,15 @@ class WorkflowEngine {
 
   /**
    * Remove a workflow label from a card by title.
-   * Looks up the label ID from the full board then calls the DELETE API.
+   * Looks up the label ID from the full board then calls the Deck removeLabel API.
+   *
+   * The Deck label-removal endpoint is `PUT .../cards/{id}/removeLabel` (the
+   * mirror of `PUT .../assignLabel` for adding). An earlier implementation used
+   * `DELETE .../assignLabel`, which this Nextcloud/Deck build rejects with HTTP
+   * 405 Method Not Allowed — the error was swallowed by the catch below, so the
+   * label silently persisted (breaking, among others, #197's GATE→APPROVED swap
+   * and its idempotency). DeckClient.removeLabel already uses the PUT endpoint;
+   * this aligns with it.
    * @private
    */
   async _removeLabelFromCard(boardId, stackId, cardId, labelTitle) {
@@ -1077,8 +1929,8 @@ class WorkflowEngine {
         console.warn(`[Workflow] Label "${labelTitle}" not found on board ${boardId} — nothing to remove`);
         return;
       }
-      const apiPath = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/assignLabel`;
-      await this.deck._request('DELETE', apiPath, { labelId: label.id });
+      const apiPath = `/index.php/apps/deck/api/v1.0/boards/${boardId}/stacks/${stackId}/cards/${cardId}/removeLabel`;
+      await this.deck._request('PUT', apiPath, { labelId: label.id });
       console.log(`[Workflow] Removed label "${labelTitle}" from card ${cardId}`);
     } catch (err) {
       console.warn(`[Workflow] Could not remove label "${labelTitle}" from card ${cardId}: ${err.message}`);

@@ -711,29 +711,6 @@ function createMockTalkQueue() {
     assert.strictEqual(putCalls.length, 0, 'Should never archive the rules card');
   });
 
-  // --- _getHumanUser ---
-
-  test('_getHumanUser() returns configured admin or default', () => {
-    const engine1 = new WorkflowEngine({
-      workflowDetector: createMockDetector(),
-      deckClient: createMockDeck(),
-      agentLoop: createMockAgentLoop(),
-      talkSendQueue: createMockTalkQueue(),
-      talkToken: 'test-token',
-      config: { adminUser: 'jordan' }
-    });
-    assert.strictEqual(engine1._getHumanUser(), 'jordan');
-
-    const engine2 = new WorkflowEngine({
-      workflowDetector: createMockDetector(),
-      deckClient: createMockDeck(),
-      agentLoop: createMockAgentLoop(),
-      talkSendQueue: createMockTalkQueue(),
-      talkToken: 'test-token'
-    });
-    assert.strictEqual(engine2._getHumanUser(), 'admin');
-  });
-
   // ─── _extractStackLlmRouting tests ────────────────────────────────────
 
   await asyncTest('_extractStackLlmRouting: extracts LLM: cloud from CONFIG card', async () => {
@@ -1042,6 +1019,754 @@ function createMockTalkQueue() {
     const relevant = warnings.filter(w => w.includes('Could not unassign'));
     assert.strictEqual(relevant.length, 1, 'Should log a warning for 403 error');
     assert.ok(relevant[0].includes('403'), 'Warning should include status code');
+  });
+
+  // ---------------------------------------------------------------------------
+  // TC-GATE-183 — _resolveGateReviewer (declared REVIEWER: marker) + safety-net convergence guard
+  // ---------------------------------------------------------------------------
+
+  // TC-GATE-183-01: no REVIEWER declared in WORKFLOW or CONFIG, no adminUser set, bot-assigned card
+  // → resolver returns null → safety net makes ZERO assign/unassign PUTs (the #183 regression).
+  // (board.owner is intentionally the bot here to confirm ownership is never consulted.)
+  await asyncTest('TC-GATE-183-01: no REVIEWER declared, no adminUser → safety net makes zero PUTs', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+      // no config.adminUser
+    });
+    // deck.username is set to 'moltagent' via botUsername default
+    engine.deck.username = 'moltagent';
+
+    const wb = {
+      board: { id: 1, title: 'Test', owner: 'moltagent' /* owner IS the bot */ },
+      stacks: [],
+      description: 'WORKFLOW: pipeline',
+      _plainDescription: 'RULES: ...'
+    };
+    // Gate CONFIG card gives isGateStack() a true result so the card is held
+    // (unresolved) rather than treated as "moved out → approved" (#197).
+    const stack = { id: 10, title: 'Review', cards: [
+      { id: 901, title: 'CONFIG: GATE review', description: 'Gate review step', labels: [{ title: 'System' }] }
+    ] };
+    // GATE label (not resolved), assigned to the bot
+    const card = {
+      id: 200,
+      title: 'GATE: Needs Review',
+      labels: [{ title: 'GATE' }],
+      assignedUsers: [{ participant: { uid: 'moltagent' } }]
+    };
+
+    // Seed the gate as already notified so the Talk/comment path is skipped
+    engine._notifiedGates.add('1:200');
+
+    await engine._handleGate(wb, stack, card);
+
+    const puts = requestCalls.filter(c => c.method === 'PUT');
+    assert.strictEqual(puts.length, 0, 'TC-GATE-183-01: must make zero assign/unassign PUTs');
+  });
+
+  // TC-GATE-183-02: no REVIEWER declared, config.adminUser='jordan' → falls through to step 3
+  // → exactly one unassign(moltagent) + one assign(jordan).
+  await asyncTest('TC-GATE-183-02: config.adminUser=jordan (no REVIEWER declared) → unassign bot, assign jordan', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token',
+      config: { adminUser: 'jordan' }
+    });
+    engine.deck.username = 'moltagent';
+
+    const wb = {
+      board: { id: 1, title: 'Test', owner: 'moltagent' },
+      stacks: [],
+      description: 'WORKFLOW: pipeline',
+      _plainDescription: 'RULES: ...'
+    };
+    const stack = { id: 10, title: 'Review', cards: [
+      { id: 901, title: 'CONFIG: GATE review', description: 'Gate review step', labels: [{ title: 'System' }] }
+    ] };
+    const card = {
+      id: 200,
+      title: 'GATE: Needs Review',
+      labels: [{ title: 'GATE' }],
+      assignedUsers: [{ participant: { uid: 'moltagent' } }]
+    };
+
+    engine._notifiedGates.add('1:200');
+
+    await engine._handleGate(wb, stack, card);
+
+    const puts = requestCalls.filter(c => c.method === 'PUT');
+    assert.strictEqual(puts.length, 2, 'TC-GATE-183-02: expect exactly 2 PUTs');
+    const unassign = puts.find(c => c.path.includes('unassignUser'));
+    const assign   = puts.find(c => c.path.endsWith('/assignUser'));
+    assert.ok(unassign, 'TC-GATE-183-02: must have an unassign call');
+    assert.strictEqual(unassign.body.userId, 'moltagent', 'TC-GATE-183-02: must unassign bot');
+    assert.ok(assign, 'TC-GATE-183-02: must have an assign call');
+    assert.strictEqual(assign.body.userId, 'jordan', 'TC-GATE-183-02: must assign jordan');
+  });
+
+  // TC-GATE-183-03: card already assigned to 'jordan' → zero PUTs; run twice → still zero.
+  await asyncTest('TC-GATE-183-03: already-assigned-to-human card → zero PUTs across two runs', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token',
+      config: { adminUser: 'jordan' }
+    });
+    engine.deck.username = 'moltagent';
+
+    const wb = {
+      board: { id: 1, title: 'Test', owner: 'moltagent' },
+      stacks: [],
+      description: 'WORKFLOW: pipeline',
+      _plainDescription: 'RULES: ...'
+    };
+    const stack = { id: 10, title: 'Review', cards: [
+      { id: 901, title: 'CONFIG: GATE review', description: 'Gate review step', labels: [{ title: 'System' }] }
+    ] };
+    const card = {
+      id: 200,
+      title: 'GATE: Needs Review',
+      labels: [{ title: 'GATE' }],
+      assignedUsers: [{ participant: { uid: 'jordan' } }]
+    };
+
+    engine._notifiedGates.add('1:200');
+
+    await engine._handleGate(wb, stack, card);
+    await engine._handleGate(wb, stack, card);
+
+    const puts = requestCalls.filter(c => c.method === 'PUT');
+    assert.strictEqual(puts.length, 0, 'TC-GATE-183-03: zero PUTs across both runs');
+  });
+
+  // TC-GATE-183-04: no REVIEWER declared, adminUser===bot → all three resolver steps exhausted → null → zero PUTs.
+  // (board.owner is also bot, confirming ownership is not a fallback.)
+  await asyncTest('TC-GATE-183-04: adminUser===bot, no REVIEWER declared → resolver returns null → zero PUTs', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token',
+      config: { adminUser: 'moltagent' } // adminUser IS the bot — resolver must skip
+    });
+    engine.deck.username = 'moltagent';
+
+    const wb = {
+      board: { id: 1, title: 'Test', owner: 'moltagent' },
+      stacks: [],
+      description: 'WORKFLOW: pipeline',
+      _plainDescription: 'RULES: ...'
+    };
+    const stack = { id: 10, title: 'Review', cards: [
+      { id: 901, title: 'CONFIG: GATE review', description: 'Gate review step', labels: [{ title: 'System' }] }
+    ] };
+    const card = {
+      id: 200,
+      title: 'GATE: Needs Review',
+      labels: [{ title: 'GATE' }],
+      assignedUsers: [{ participant: { uid: 'moltagent' } }]
+    };
+
+    engine._notifiedGates.add('1:200');
+
+    await engine._handleGate(wb, stack, card);
+
+    const puts = requestCalls.filter(c => c.method === 'PUT');
+    assert.strictEqual(puts.length, 0, 'TC-GATE-183-04: no bot→bot reassign');
+  });
+
+  // TC-GATE-183-05a: stack CONFIG card declares `REVIEWER: sam`, board owner=bot, no adminUser
+  // → resolver reads CONFIG card first and assigns sam.
+  // Confirms board ownership is NOT consulted (owner is bot, yet a human is assigned).
+  await asyncTest('TC-GATE-183-05a: CONFIG card REVIEWER:sam + owner=bot → assigns sam (not owner)', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+      // no adminUser
+    });
+    engine.deck.username = 'moltagent';
+
+    const wb = {
+      board: { id: 1, title: 'Test', owner: 'moltagent' /* bot — must not be used */ },
+      stacks: [],
+      description: 'WORKFLOW: pipeline',
+      _plainDescription: 'RULES: ...'
+    };
+    // Stack with a CONFIG card that carries REVIEWER: sam.
+    // System label + "GATE" in title satisfies isGateStack() (#197) so the card
+    // is held (unresolved) rather than treated as a post-move approval.
+    const stack = {
+      id: 10,
+      title: 'Review',
+      cards: [
+        { id: 901, title: 'CONFIG: GATE Review Stack', description: 'REVIEWER: sam\nLLM: local', labels: [{ title: 'System' }] }
+      ]
+    };
+    const card = {
+      id: 200,
+      title: 'GATE: Needs Review',
+      labels: [{ title: 'GATE' }],
+      assignedUsers: [{ participant: { uid: 'moltagent' } }]
+    };
+
+    engine._notifiedGates.add('1:200');
+
+    await engine._handleGate(wb, stack, card);
+
+    const puts = requestCalls.filter(c => c.method === 'PUT');
+    assert.strictEqual(puts.length, 2, 'TC-GATE-183-05a: expect 2 PUTs (unassign bot + assign sam)');
+    const assign = puts.find(c => c.path.endsWith('/assignUser'));
+    assert.ok(assign, 'TC-GATE-183-05a: must have an assign call');
+    assert.strictEqual(assign.body.userId, 'sam', 'TC-GATE-183-05a: must assign sam from CONFIG card');
+  });
+
+  // TC-GATE-183-05b: board WORKFLOW rules declare `REVIEWER: dana`, no CONFIG card override
+  // → resolver reads WORKFLOW rules (step 2) and assigns dana.
+  await asyncTest('TC-GATE-183-05b: board WORKFLOW REVIEWER:dana (no CONFIG) → assigns dana', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+      // no adminUser
+    });
+    engine.deck.username = 'moltagent';
+
+    const wb = {
+      board: { id: 1, title: 'Test', owner: 'moltagent' },
+      stacks: [],
+      description: 'WORKFLOW: pipeline',
+      _plainDescription: 'WORKFLOW: pipeline\nREVIEWER: dana\nRULES: ...'
+    };
+    // Gate CONFIG card satisfies isGateStack() (#197). No REVIEWER on CONFIG card
+    // so the resolver falls through to wb._plainDescription (REVIEWER: dana).
+    const stack = { id: 10, title: 'Review', cards: [
+      { id: 901, title: 'CONFIG: GATE review', description: 'Gate review step', labels: [{ title: 'System' }] }
+    ] };
+    const card = {
+      id: 200,
+      title: 'GATE: Needs Review',
+      labels: [{ title: 'GATE' }],
+      assignedUsers: [{ participant: { uid: 'moltagent' } }]
+    };
+
+    engine._notifiedGates.add('1:200');
+
+    await engine._handleGate(wb, stack, card);
+
+    const puts = requestCalls.filter(c => c.method === 'PUT');
+    assert.strictEqual(puts.length, 2, 'TC-GATE-183-05b: expect 2 PUTs (unassign bot + assign dana)');
+    const assign = puts.find(c => c.path.endsWith('/assignUser'));
+    assert.ok(assign, 'TC-GATE-183-05b: must have an assign call');
+    assert.strictEqual(assign.body.userId, 'dana', 'TC-GATE-183-05b: must assign dana from WORKFLOW rules');
+  });
+
+  // TC-GATE-183-05c: CONFIG card REVIEWER:quinn overrides board WORKFLOW REVIEWER:dana
+  // → stack-specific wins (step 1 before step 2).
+  await asyncTest('TC-GATE-183-05c: CONFIG REVIEWER:quinn overrides WORKFLOW REVIEWER:dana', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+    engine.deck.username = 'moltagent';
+
+    const wb = {
+      board: { id: 1, title: 'Test', owner: 'moltagent' },
+      stacks: [],
+      description: 'WORKFLOW: pipeline',
+      _plainDescription: 'WORKFLOW: pipeline\nREVIEWER: dana\nRULES: ...'
+    };
+    // Stack CONFIG card declares a different reviewer — must win over board-level.
+    // System label + "GATE" in title satisfies isGateStack() (#197).
+    const stack = {
+      id: 10,
+      title: 'Review',
+      cards: [
+        { id: 901, title: 'CONFIG: GATE Review Stack', description: 'REVIEWER: quinn', labels: [{ title: 'System' }] }
+      ]
+    };
+    const card = {
+      id: 200,
+      title: 'GATE: Needs Review',
+      labels: [{ title: 'GATE' }],
+      assignedUsers: [{ participant: { uid: 'moltagent' } }]
+    };
+
+    engine._notifiedGates.add('1:200');
+
+    await engine._handleGate(wb, stack, card);
+
+    const puts = requestCalls.filter(c => c.method === 'PUT');
+    assert.strictEqual(puts.length, 2, 'TC-GATE-183-05c: expect 2 PUTs (unassign bot + assign quinn)');
+    const assign = puts.find(c => c.path.endsWith('/assignUser'));
+    assert.ok(assign, 'TC-GATE-183-05c: must have an assign call');
+    assert.strictEqual(assign.body.userId, 'quinn', 'TC-GATE-183-05c: CONFIG REVIEWER wins over WORKFLOW REVIEWER');
+  });
+
+  // TC-GATE-183-05d: board owner = real human 'pat', but REVIEWER: quinn declared
+  // → assigns quinn, NOT pat. Proves board.owner is never consulted.
+  await asyncTest('TC-GATE-183-05d: declared REVIEWER:quinn wins even when owner=pat (owner ignored)', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+      // no adminUser
+    });
+    engine.deck.username = 'moltagent';
+
+    const wb = {
+      board: { id: 1, title: 'Test', owner: 'pat' /* real human — must NOT be picked */ },
+      stacks: [],
+      description: 'WORKFLOW: pipeline',
+      _plainDescription: 'WORKFLOW: pipeline\nREVIEWER: quinn\nRULES: ...'
+    };
+    // Gate CONFIG card satisfies isGateStack() (#197). No REVIEWER on CONFIG card
+    // so the resolver falls through to wb._plainDescription (REVIEWER: quinn).
+    const stack = { id: 10, title: 'Review', cards: [
+      { id: 901, title: 'CONFIG: GATE review', description: 'Gate review step', labels: [{ title: 'System' }] }
+    ] };
+    const card = {
+      id: 200,
+      title: 'GATE: Needs Review',
+      labels: [{ title: 'GATE' }],
+      assignedUsers: [{ participant: { uid: 'moltagent' } }]
+    };
+
+    engine._notifiedGates.add('1:200');
+
+    await engine._handleGate(wb, stack, card);
+
+    const puts = requestCalls.filter(c => c.method === 'PUT');
+    assert.strictEqual(puts.length, 2, 'TC-GATE-183-05d: expect 2 PUTs');
+    const assign = puts.find(c => c.path.endsWith('/assignUser'));
+    assert.ok(assign, 'TC-GATE-183-05d: must have an assign call');
+    assert.strictEqual(assign.body.userId, 'quinn', 'TC-GATE-183-05d: must assign quinn, not the board owner pat');
+  });
+
+  // TC-GATE-183-06: APPROVED card → final assign is bot, processWorkflowTask invoked.
+  await asyncTest('TC-GATE-183-06: APPROVED label → handoff to bot, processWorkflowTask called', async () => {
+    const agentLoop = createMockAgentLoop();
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+    // getBoard is called to fetch board labels on the resolution path
+    mockDeck.getBoard = async () => ({ labels: [] });
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop,
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token',
+      config: { adminUser: 'jordan' }
+    });
+    engine.deck.username = 'moltagent';
+
+    const wb = {
+      board: { id: 1, title: 'Partner Inquiries', owner: 'jordan' },
+      stacks: [{ id: 10, title: 'Review', cards: [] }],
+      description: 'WORKFLOW: pipeline',
+      _plainDescription: 'RULES: After APPROVED move to Done.'
+    };
+    const stack = { id: 10, title: 'Review', cards: [] };
+    // Card has APPROVED label — resolution path fires
+    const card = {
+      id: 200,
+      title: 'GATE: Review Partner Proposal',
+      labels: [{ title: 'GATE' }, { title: 'APPROVED' }],
+      assignedUsers: [{ participant: { uid: 'jordan' } }]
+    };
+
+    const resolved = await engine._handleGate(wb, stack, card);
+
+    assert.strictEqual(resolved, true, 'TC-GATE-183-06: resolved gate must return true');
+    assert.strictEqual(agentLoop._calls.length, 1, 'TC-GATE-183-06: processWorkflowTask must be called');
+
+    const puts = requestCalls.filter(c => c.method === 'PUT');
+    // unassign jordan + assign moltagent
+    const unassign = puts.find(c => c.path.includes('unassignUser'));
+    const assign   = puts.find(c => c.path.endsWith('/assignUser'));
+    assert.ok(unassign, 'TC-GATE-183-06: must unassign human on resolution');
+    assert.strictEqual(unassign.body.userId, 'jordan', 'TC-GATE-183-06: unassigns jordan');
+    assert.ok(assign, 'TC-GATE-183-06: must assign bot on resolution');
+    assert.strictEqual(assign.body.userId, 'moltagent', 'TC-GATE-183-06: assigns moltagent');
+  });
+
+  // TC-GATE-183-07: _ensureAssignment on fresh unassigned GATE card uses _resolveGateReviewer.
+  // With adminUser===bot + no REVIEWER declared → resolver null → no assign PUT.
+  // With adminUser='jordan' → step 3 → assign(jordan).
+  await asyncTest('TC-GATE-183-07: _ensureAssignment GATE branch uses _resolveGateReviewer', async () => {
+    // Case A: no resolvable human → no PUT
+    {
+      const mockDeck = createMockDeck();
+      const requestCallsA = [];
+      mockDeck._request = async (method, path, body) => {
+        requestCallsA.push({ method, path, body });
+        return {};
+      };
+      const engineA = new WorkflowEngine({
+        workflowDetector: createMockDetector(),
+        deckClient: mockDeck,
+        agentLoop: createMockAgentLoop(),
+        talkSendQueue: createMockTalkQueue(),
+        talkToken: 'test-token',
+        config: { adminUser: 'moltagent' } // admin IS the bot
+      });
+      engineA.deck.username = 'moltagent';
+
+      const wb = {
+        board: { id: 1, title: 'Test', owner: 'moltagent' },
+        stacks: [],
+        description: 'WORKFLOW: pipeline'
+      };
+      const stack = { id: 10, title: 'Review' };
+      const card = { id: 200, title: 'GATE: Approval', labels: [{ title: 'GATE' }], assignedUsers: [] };
+
+      await engineA._ensureAssignment(wb, stack, card);
+
+      const putsA = requestCallsA.filter(c => c.method === 'PUT');
+      assert.strictEqual(putsA.length, 0, 'TC-GATE-183-07a: no PUT when no REVIEWER declared and adminUser===bot');
+    }
+
+    // Case B: adminUser='jordan' → assign(jordan)
+    {
+      const mockDeck = createMockDeck();
+      const requestCallsB = [];
+      mockDeck._request = async (method, path, body) => {
+        requestCallsB.push({ method, path, body });
+        return {};
+      };
+      const engineB = new WorkflowEngine({
+        workflowDetector: createMockDetector(),
+        deckClient: mockDeck,
+        agentLoop: createMockAgentLoop(),
+        talkSendQueue: createMockTalkQueue(),
+        talkToken: 'test-token',
+        config: { adminUser: 'jordan' }
+      });
+      engineB.deck.username = 'moltagent';
+
+      const wb = {
+        board: { id: 1, title: 'Test', owner: 'moltagent' },
+        stacks: [],
+        description: 'WORKFLOW: pipeline'
+      };
+      const stack = { id: 10, title: 'Review' };
+      const card = { id: 200, title: 'GATE: Approval', labels: [{ title: 'GATE' }], assignedUsers: [] };
+
+      await engineB._ensureAssignment(wb, stack, card);
+
+      const putsB = requestCallsB.filter(c => c.method === 'PUT' && c.path.includes('assignUser'));
+      assert.strictEqual(putsB.length, 1, 'TC-GATE-183-07b: exactly one assign PUT');
+      assert.strictEqual(putsB[0].body.userId, 'jordan', 'TC-GATE-183-07b: assigns jordan');
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // A4 — stale-cache stack revert (#205)
+  // ---------------------------------------------------------------------------
+
+  // A4.1: _ensureDueDate PUTs to the card's live stack (from GET body), not the
+  // stale stack id passed as a parameter.  This is the core regression guard for
+  // the hygiene-write relocation bug.
+  await asyncTest('A4.1: _ensureDueDate() PUTs to live stack from GET body, not stale parameter stack', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      requestCalls.push({ method, path, body });
+      if (method === 'GET') {
+        // GET returns a card body that carries the card's live stackId = 'LIVE'
+        return { title: 'Moved Card', type: 'plain', owner: '', description: '', stackId: 'LIVE' };
+      }
+      return {};
+    };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    // card has no duedate → _ensureDueDate will call _updateCardDueDate → _putCardToLiveStack
+    const card = { id: 100, title: 'Active Card', labels: [] };
+    const wb = { board: { id: 1 }, stacks: [], description: 'WORKFLOW: pipeline' };
+    const stack = { id: 'STALE', title: 'Inbox' };
+
+    await engine._ensureDueDate(wb, stack, card);
+
+    const putCall = requestCalls.find(c => c.method === 'PUT');
+    assert.ok(putCall, 'Should issue a PUT to set the due date');
+    assert.ok(putCall.path.includes('/stacks/LIVE/'), 'PUT path must use the live stack id from the GET body');
+    assert.ok(!putCall.path.includes('/stacks/STALE/'), 'PUT path must NOT use the stale stack parameter');
+  });
+
+  // A4.2: processAll() invalidates the detector cache after a productive pulse
+  // (cardsProcessed > 0) and does NOT invalidate after a no-work pulse.
+  await asyncTest('A4.2: processAll() invalidates cache after productive pulse, skips on no-work pulse', async () => {
+    // Sub-test: no-work pulse (empty board list) → zero invalidations
+    let invalidateCount = 0;
+    const engine1 = new WorkflowEngine({
+      workflowDetector: {
+        getWorkflowBoards: async () => [],
+        invalidateCache: () => { invalidateCount++; }
+      },
+      deckClient: createMockDeck(),
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+    await engine1.processAll();
+    assert.strictEqual(invalidateCount, 0, 'No-work pulse must not call invalidateCache');
+
+    // Sub-test: productive pulse (1 card processed) → at least 1 invalidation
+    let invalidateCount2 = 0;
+    const agentLoop2 = createMockAgentLoop();
+    // Build the board inline with an explicit rules card so createMockDetector
+    // does not auto-inject one at a different id.
+    const boards = [{
+      board: { id: 1, title: 'Test' },
+      stacks: [{
+        id: 10, title: 'Inbox',
+        cards: [
+          { id: 900, title: 'WORKFLOW: pipeline', description: 'RULES', labels: [] },
+          { id: 100, title: 'Work Card', description: 'task', labels: [], lastModified: new Date().toISOString() }
+        ]
+      }],
+      description: 'WORKFLOW: pipeline\nRULES: Go.',
+      workflowType: 'pipeline',
+      boardId: 1,
+      rulesCardId: 900
+    }];
+    // Use a custom detector spy rather than createMockDetector so we can count.
+    const mockDeck2 = createMockDeck();
+    mockDeck2._request = async () => ({});
+    // Fresh PAUSED check (A3) reads via the plural getStacks; rules card has no PAUSED.
+    mockDeck2.getStacks = async () => ([
+      { id: 10, title: 'Inbox', cards: [
+        { id: 900, title: 'WORKFLOW: pipeline', description: 'RULES', labels: [] }
+      ] }
+    ]);
+    const engine2 = new WorkflowEngine({
+      workflowDetector: {
+        getWorkflowBoards: async () => boards,
+        invalidateCache: () => { invalidateCount2++; }
+      },
+      deckClient: mockDeck2,
+      agentLoop: agentLoop2,
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+    await engine2.processAll();
+    assert.ok(agentLoop2._calls.length >= 1, 'Agent should have been called for the work card');
+    assert.ok(invalidateCount2 >= 1, `Cache must be invalidated after productive pulse (count=${invalidateCount2})`);
+  });
+
+  // A4.3: _processBoard() honors a PAUSED applied to the rules card between pulses,
+  // read via the PLURAL getStacks (hydrated labels), NOT the singular card endpoint.
+  // Regression guard: getCardById is mocked with the real #22 shape (labels:null),
+  // so if the fresh read ever reverts to getCardById it will MISS PAUSED and fail here.
+  await asyncTest('A4.3: _processBoard() honors freshly-applied PAUSED via hydrated getStacks, not getCardById', async () => {
+    const agentLoop = createMockAgentLoop();
+    const mockDeck = createMockDeck();
+    mockDeck._request = async () => ({});
+
+    // Singular card endpoint shape (#22): labels NOT hydrated. Using this path
+    // would miss the PAUSED label — this mock makes that failure observable.
+    mockDeck.getCardById = async (_boardId, _stackId, cardId) => ({
+      id: cardId, title: 'WORKFLOW: pipeline', description: 'RULES', labels: null
+    });
+
+    // Plural stacks endpoint shape: per-card labels hydrated; rules card has PAUSED.
+    mockDeck.getStacks = async (_boardId) => ([
+      { id: 10, title: 'Inbox', cards: [
+        { id: 900, title: 'WORKFLOW: pipeline', description: 'RULES', labels: [{ title: 'PAUSED' }] },
+        { id: 100, title: 'Work Card', description: 'task', labels: [], lastModified: new Date().toISOString() }
+      ] }
+    ]);
+
+    // Snapshot rules card has NO PAUSED label (the pause was applied after the snapshot).
+    const rulesCard = { id: 900, title: 'WORKFLOW: pipeline', description: 'RULES', labels: [] };
+    const boards = [{
+      board: { id: 1, title: 'Test Board' },
+      stacks: [{ id: 10, title: 'Inbox', cards: [
+        rulesCard,
+        { id: 100, title: 'Work Card', description: 'task', labels: [], lastModified: new Date().toISOString() }
+      ] }],
+      description: 'WORKFLOW: pipeline\nRULES: Go.',
+      workflowType: 'pipeline',
+      boardId: 1,
+      rulesCardId: 900
+    }];
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(boards),
+      deckClient: mockDeck,
+      agentLoop,
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const result = await engine.processAll();
+
+    assert.strictEqual(result.cardsProcessed, 0, 'Board must be skipped: PAUSED read from hydrated getStacks');
+    assert.strictEqual(agentLoop._calls.length, 0, 'AgentLoop must not be called on a freshly-PAUSED board');
+  });
+
+  // A4.4: GET on the stale stack fails (card has moved); board-level getStacks
+  // locates the card under its MOVED stack → PUT must target the MOVED stack.
+  // This is the exact #205 scenario: the card was moved to a new stack by the
+  // prior pulse, and the hygiene write must follow it rather than pull it back.
+  await asyncTest('A4.4: _putCardToLiveStack() follows card to MOVED stack when stale GET fails', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      if (method === 'GET') {
+        // Simulate a 404 / rejection when the card is no longer in the stale stack
+        throw new Error('404 card not found in stale stack');
+      }
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+    // Board-level stack listing: the card now lives in stack 'MOVED'
+    mockDeck.getStacks = async (boardId) => [
+      { id: 'STALE', cards: [] },
+      { id: 'MOVED', cards: [{ id: 100, title: 'Moved Card', type: 'plain', owner: '', description: '' }] }
+    ];
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const card = { id: 100, title: 'Moved Card', labels: [] }; // no duedate
+    const wb = { board: { id: 1 }, stacks: [], description: 'WORKFLOW: pipeline' };
+    const stack = { id: 'STALE', title: 'Old Stack' };
+
+    await engine._ensureDueDate(wb, stack, card);
+
+    const putCall = requestCalls.find(c => c.method === 'PUT');
+    assert.ok(putCall, 'Should still issue a PUT after locating the card via getStacks');
+    assert.ok(putCall.path.includes('/stacks/MOVED/'), 'PUT path must use the MOVED stack, not the stale parameter');
+    assert.ok(!putCall.path.includes('/stacks/STALE/'), 'PUT path must NOT use the stale stack parameter');
+  });
+
+  // A4.5: GET on the stale stack fails AND the board-level getStacks also fails
+  // (or does not contain the card) → the helper must re-throw the original GET
+  // error so the caller's error handler sees it (no silent swallow, no write).
+  await asyncTest('A4.5: _putCardToLiveStack() re-throws original GET error when getStacks also fails', async () => {
+    const mockDeck = createMockDeck();
+    const requestCalls = [];
+    mockDeck._request = async (method, path, body) => {
+      if (method === 'GET') throw new Error('GET failed: stale stack 404');
+      requestCalls.push({ method, path, body });
+      return {};
+    };
+    // getStacks also rejects — the card cannot be located anywhere
+    mockDeck.getStacks = async () => { throw new Error('board listing failed'); };
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector(),
+      deckClient: mockDeck,
+      agentLoop: createMockAgentLoop(),
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    // Call _updateCardDueDate directly to observe the re-throw without
+    // _ensureDueDate's wrapping try/catch swallowing it.
+    let thrown = null;
+    try {
+      await engine._updateCardDueDate(1, 99, 100, '2026-01-01T00:00:00Z');
+    } catch (err) {
+      thrown = err;
+    }
+
+    assert.ok(thrown, 'Helper must re-throw when card cannot be located anywhere');
+    assert.ok(thrown.message.includes('GET failed'), 'Re-thrown error must be the original GET error, not the listing error');
+    assert.strictEqual(requestCalls.filter(c => c.method === 'PUT').length, 0, 'Must not issue any PUT when card is not found');
   });
 
   summary();

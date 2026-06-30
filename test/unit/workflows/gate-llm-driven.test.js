@@ -67,7 +67,11 @@ function createMockTalkQueue() {
   };
 }
 
-// Build a minimal workflow board object for tests
+// Build a minimal workflow board object for tests.
+// The stack includes a CONFIG card with the 'System' label whose title contains
+// "GATE" — required by GateDetector.isGateStack() so that GATE-labelled content
+// cards are correctly classified as UNRESOLVED (held) under #197's stack-move
+// detection, rather than mistaken for cards that have already been dragged out.
 function makeBoard({ cardLabels = [], assignedUsers = [], extraCards = [] } = {}) {
   return {
     board: { id: 1, title: 'Test Workflow', owner: { uid: 'jordan' } },
@@ -75,6 +79,12 @@ function makeBoard({ cardLabels = [], assignedUsers = [], extraCards = [] } = {}
       id: 10,
       title: 'Inbox',
       cards: [
+        {
+          id: 901,
+          title: 'CONFIG: GATE review',
+          description: 'Gate review step',
+          labels: [{ title: 'System' }]
+        },
         {
           id: 100,
           title: 'Content Card',
@@ -86,7 +96,7 @@ function makeBoard({ cardLabels = [], assignedUsers = [], extraCards = [] } = {}
         ...extraCards
       ]
     }],
-    description: 'WORKFLOW: pipeline\nRULES: Process cards.',
+    description: 'WORKFLOW: pipeline\nREVIEWER: jordan\nRULES: Process cards.',
     workflowType: 'pipeline',
     boardId: 1
   };
@@ -322,6 +332,267 @@ function makeBoard({ cardLabels = [], assignedUsers = [], extraCards = [] } = {}
 
     assert.ok(result.startsWith('Failed to assign label:'), 'Should return failure message');
     assert.ok(result.includes('Network error'), 'Should include the original error message');
+  });
+
+  // ── Stack-move (drag-to-approve) tests (#197) ────────────────────────────────
+
+  /**
+   * Build a multi-stack workflow board for move-detection tests.
+   * @param {Object} opts
+   * @param {boolean} opts.cardInGateStack  - Place GATE card in gate stack (unresolved)
+   *                                         vs destination stack (resolved via move)
+   * @param {boolean} opts.hasRejectionStack - Add a second stack with REJECTED: true CONFIG
+   */
+  function makeGateBoard({ cardInGateStack = false, hasRejectionStack = false } = {}) {
+    const gateConfigCard = {
+      id: 901,
+      title: 'CONFIG: Gate',
+      description: 'GATE review step',
+      labels: [{ title: 'System' }]
+    };
+    const contentCard = {
+      id: 100,
+      title: 'Enquiry Card',
+      description: 'Some content',
+      labels: [{ title: 'GATE' }],
+      assignedUsers: [],
+      lastModified: new Date(Date.now() + 60000).toISOString()
+    };
+
+    const gateStack = {
+      id: 10,
+      title: 'Review',
+      cards: [
+        // WORKFLOW rules card (prevents createMockDetector prepend via rulesCardId set below)
+        { id: 900, title: 'WORKFLOW: pipeline', description: 'REVIEWER: jordan\nRULES: Send reply.', labels: [] },
+        gateConfigCard,
+        ...(cardInGateStack ? [contentCard] : [])
+      ]
+    };
+
+    const destStack = {
+      id: 20,
+      title: hasRejectionStack ? 'Rejected' : 'Replied',
+      cards: [
+        ...(hasRejectionStack ? [{ id: 902, title: 'CONFIG: Rejected', description: 'REJECTED: true', labels: [] }] : []),
+        ...(!cardInGateStack ? [contentCard] : [])
+      ]
+    };
+
+    const stacks = [gateStack, destStack];
+
+    return {
+      board: { id: 1, title: 'Test Workflow', owner: { uid: 'jordan' } },
+      stacks,
+      description: 'WORKFLOW: pipeline\nREVIEWER: jordan\nRULES: Send reply.',
+      _plainDescription: 'WORKFLOW: pipeline\nREVIEWER: jordan\nRULES: Send reply.',
+      workflowType: 'pipeline',
+      boardId: 1,
+      rulesCardId: 900  // prevents createMockDetector from prepending a second rules card
+    };
+  }
+
+  // Helper: create a deck mock with board labels pre-populated for label ops
+  function createMockDeckWithLabels() {
+    const mock = createMockDeck();
+    mock.getBoard = async () => ({
+      labels: [
+        { id: 1, title: 'GATE' },
+        { id: 2, title: 'APPROVED' },
+        { id: 3, title: 'REJECTED' }
+      ]
+    });
+    return mock;
+  }
+
+  // Test 9: Approval via move — GATE card dragged to non-gate stack → label swap + handoff
+  await asyncTest('Approval via move: GATE card in non-gate stack → GATE removed, APPROVED added, processWorkflowTask called', async () => {
+    const agentLoop = createMockAgentLoop();
+    const mockDeck = createMockDeckWithLabels();
+    const wb = makeGateBoard({ cardInGateStack: false, hasRejectionStack: false });
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([wb]),
+      deckClient: mockDeck,
+      agentLoop,
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const results = await engine.processAll();
+
+    assert.strictEqual(results.gatesFound, 1, 'One gate found');
+    assert.strictEqual(results.gatesResolved, 1, 'Gate should be resolved');
+    assert.strictEqual(agentLoop._calls.length, 1, 'processWorkflowTask should be called once');
+
+    // Label swap: remove GATE (id:1) via PUT /removeLabel, then add APPROVED (id:2) via PUT /assignLabel
+    const gateRemoval = mockDeck._requestCalls.find(c =>
+      c.method === 'PUT' && c.path.includes('/removeLabel') && c.body && c.body.labelId === 1);
+    const approvedAdd = mockDeck._requestCalls.find(c =>
+      c.method === 'PUT' && c.path.includes('/assignLabel') && c.body && c.body.labelId === 2);
+    assert.ok(gateRemoval, 'Should remove GATE label via PUT /removeLabel');
+    assert.ok(approvedAdd,  'Should add APPROVED label via PUT /assignLabel');
+
+    // Handoff context mentions approved
+    const call = agentLoop._calls[0];
+    assert.ok(call.systemAddition.toLowerCase().includes('approved'), 'systemAddition should mention approved');
+  });
+
+  // Test 10: Rejection via move — destination stack has REJECTED: true → REJECTED label applied
+  await asyncTest('Rejection via move: GATE card moved to REJECTED stack → GATE removed, REJECTED added', async () => {
+    const agentLoop = createMockAgentLoop();
+    const mockDeck = createMockDeckWithLabels();
+    const wb = makeGateBoard({ cardInGateStack: false, hasRejectionStack: true });
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([wb]),
+      deckClient: mockDeck,
+      agentLoop,
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const results = await engine.processAll();
+
+    assert.strictEqual(results.gatesResolved, 1, 'Gate should be resolved');
+
+    const gateRemoval = mockDeck._requestCalls.find(c =>
+      c.method === 'PUT' && c.path.includes('/removeLabel') && c.body && c.body.labelId === 1);
+    const rejectedAdd = mockDeck._requestCalls.find(c =>
+      c.method === 'PUT' && c.path.includes('/assignLabel') && c.body && c.body.labelId === 3);
+    assert.ok(gateRemoval, 'Should remove GATE label via PUT /removeLabel');
+    assert.ok(rejectedAdd, 'Should add REJECTED label via PUT /assignLabel (not APPROVED)');
+
+    const call = agentLoop._calls[0];
+    assert.ok(call.systemAddition.toLowerCase().includes('rejected'), 'systemAddition should mention rejected');
+  });
+
+  // Test 11: Idempotency — card post-swap (APPROVED label, no GATE) is not re-processed as a gate
+  await asyncTest('Idempotency: APPROVED-only card is not treated as a gate (isGate returns false)', async () => {
+    const agentLoop = createMockAgentLoop();
+    const mockDeck = createMockDeckWithLabels();
+
+    // Card has only APPROVED label — simulates post-swap state where GATE was removed
+    const wb = makeBoard({ cardLabels: [{ title: 'APPROVED' }] });
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([wb]),
+      deckClient: mockDeck,
+      agentLoop,
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const results = await engine.processAll();
+
+    assert.strictEqual(results.gatesFound, 0, 'APPROVED-only card should NOT be counted as a gate');
+    // No gate label ops should occur
+    const labelOps = mockDeck._requestCalls.filter(c => c.path.includes('assignLabel'));
+    const gateSwapOps = labelOps.filter(c => c.body && (c.body.labelId === 1));
+    assert.strictEqual(gateSwapOps.length, 0, 'No GATE label operations should happen on post-swap card');
+  });
+
+  // Test 12: Unresolved gate in gate stack — no label swap, no processWorkflowTask
+  await asyncTest('Unresolved gate: GATE card still in gate stack → no label swap, no processWorkflowTask', async () => {
+    const agentLoop = createMockAgentLoop();
+    const mockDeck = createMockDeckWithLabels();
+    const wb = makeGateBoard({ cardInGateStack: true, hasRejectionStack: false });
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([wb]),
+      deckClient: mockDeck,
+      agentLoop,
+      talkSendQueue: createMockTalkQueue(),
+      talkToken: 'test-token'
+    });
+
+    const results = await engine.processAll();
+
+    assert.strictEqual(results.gatesFound, 1, 'Gate should be found');
+    assert.strictEqual(results.gatesResolved, 0, 'Gate should NOT be resolved');
+    assert.strictEqual(agentLoop._calls.length, 0, 'processWorkflowTask should NOT be called');
+
+    // No GATE label swap
+    const labelOps = mockDeck._requestCalls.filter(c => c.path.includes('assignLabel'));
+    assert.strictEqual(labelOps.length, 0, 'No label swap should occur for unresolved gate');
+  });
+
+  // Test 13: Comment text — says "Move this card forward to approve" (not old label instruction)
+  await asyncTest('Comment text says "Move this card forward to approve" for unresolved gate', async () => {
+    const agentLoop = createMockAgentLoop();
+    const mockDeck = createMockDeckWithLabels();
+    const talkQueue = createMockTalkQueue();
+    const wb = makeGateBoard({ cardInGateStack: true, hasRejectionStack: false });
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([wb]),
+      deckClient: mockDeck,
+      agentLoop,
+      talkSendQueue: talkQueue,
+      talkToken: 'test-token'
+    });
+
+    await engine.processAll();
+
+    // Card comment
+    assert.ok(mockDeck._comments.length > 0, 'Should add a comment to the card');
+    const comment = mockDeck._comments[0].message;
+    assert.ok(comment.includes('Move this card forward to approve'), 'Comment should say "Move this card forward to approve"');
+    assert.ok(!comment.toLowerCase().includes('apply'), 'Comment should NOT say "apply ... label"');
+
+    // Talk message
+    assert.ok(talkQueue._messages.length > 0, 'Should send a Talk notification');
+    const talkMsg = talkQueue._messages[0].msg;
+    assert.ok(talkMsg.includes('Move this card forward to approve'), 'Talk message should say "Move this card forward to approve"');
+  });
+
+  // Test 14: Comment includes decline line when rejection stack exists
+  await asyncTest('Comment includes rejection stack decline instruction when REJECTED stack declared', async () => {
+    const agentLoop = createMockAgentLoop();
+    const mockDeck = createMockDeckWithLabels();
+    const talkQueue = createMockTalkQueue();
+    // Gate card in gate stack; board also has a rejection stack
+    const wb = makeGateBoard({ cardInGateStack: true, hasRejectionStack: true });
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([wb]),
+      deckClient: mockDeck,
+      agentLoop,
+      talkSendQueue: talkQueue,
+      talkToken: 'test-token'
+    });
+
+    await engine.processAll();
+
+    const comment = (mockDeck._comments[0] || {}).message || '';
+    assert.ok(comment.includes('Rejected'), 'Comment should include the rejection stack name');
+    assert.ok(comment.includes('to decline'), 'Comment should include "to decline" instruction');
+
+    const talkMsg = (talkQueue._messages[0] || {}).msg || '';
+    assert.ok(talkMsg.includes('Rejected'), 'Talk message should include the rejection stack name');
+  });
+
+  // Test 15: Comment omits decline line when no rejection stack declared
+  await asyncTest('Comment omits decline line when no REJECTED stack on board', async () => {
+    const agentLoop = createMockAgentLoop();
+    const mockDeck = createMockDeckWithLabels();
+    const talkQueue = createMockTalkQueue();
+    const wb = makeGateBoard({ cardInGateStack: true, hasRejectionStack: false });
+
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([wb]),
+      deckClient: mockDeck,
+      agentLoop,
+      talkSendQueue: talkQueue,
+      talkToken: 'test-token'
+    });
+
+    await engine.processAll();
+
+    const comment = (mockDeck._comments[0] || {}).message || '';
+    assert.ok(!comment.includes('to decline'), 'Comment should NOT include "to decline" when no rejection stack');
+
+    const talkMsg = (talkQueue._messages[0] || {}).msg || '';
+    assert.ok(!talkMsg.includes('to decline'), 'Talk message should NOT include "to decline" when no rejection stack');
   });
 
   setTimeout(() => { summary(); exitWithCode(); }, 500);

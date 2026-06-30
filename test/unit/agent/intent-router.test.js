@@ -515,4 +515,41 @@ asyncTest('classify() uses smart model first', async () => {
   assert.strictEqual(models[0], 'qwen3:8b', 'Smart model should be used first');
 });
 
+// === #133: domain custody through the knowledge gate ===
+console.log('\n--- #133: domain custody through the knowledge gate ---\n');
+
+// Knowledge verdict with a deck domain keeps result.domain === 'deck'
+test('#133: knowledge verdict with deck domain preserves domain', () => {
+  const router = createRouter('');
+  // Simulate LLM returning gate:knowledge with domain:deck
+  const result = router._parseClassification('{"gate":"knowledge","intent":"deck","domain":"deck","confidence":0.8}');
+  assert.strictEqual(result.gate, 'knowledge', 'gate must be knowledge');
+  assert.strictEqual(result.domain, 'deck', 'domain must survive the knowledge gate');
+});
+
+// That same knowledge verdict still has result.intent === 'knowledge' (regression guard for the shim)
+test('#133: knowledge verdict with deck domain still has intent===knowledge (shim regression guard)', () => {
+  const router = createRouter('');
+  const result = router._parseClassification('{"gate":"knowledge","intent":"deck","domain":"deck","confidence":0.8}');
+  assert.strictEqual(result.intent, 'knowledge', 'intent shim must stay knowledge for knowledge gate');
+});
+
+// Knowledge verdict with no domain → result.domain === null, intent 'knowledge'
+test('#133: knowledge verdict with no domain → domain null, intent knowledge', () => {
+  const router = createRouter('');
+  const result = router._parseClassification('{"gate":"knowledge","confidence":0.7}');
+  assert.strictEqual(result.gate, 'knowledge');
+  assert.strictEqual(result.domain, null, 'absent domain must remain null');
+  assert.strictEqual(result.intent, 'knowledge');
+});
+
+// Action verdict unchanged: domain survives, intent === domain
+test('#133: action verdict domain survives unchanged', () => {
+  const router = createRouter('');
+  const result = router._parseClassification('{"intent":"calendar","confidence":0.9}');
+  assert.strictEqual(result.gate, 'action');
+  assert.strictEqual(result.domain, 'calendar');
+  assert.strictEqual(result.intent, 'calendar', 'action intent shim must stay domain name');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 100);

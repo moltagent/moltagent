@@ -91,7 +91,7 @@ class BotEnroller {
       }
       return { enrolled };
     } catch (err) {
-      const statusCode = this._extractStatusCode(err);
+      const statusCode = err?.statusCode;
       this._enrolledRooms.add(roomToken); // Don't retry
       if (statusCode === 403 || statusCode === 400) {
         // Expected: not moderator or bot already active
@@ -157,8 +157,7 @@ class BotEnroller {
           results.skipped++;
         }
       } catch (err) {
-        // Parse HTTP status from NCRequestManager error messages
-        const statusCode = this._extractStatusCode(err);
+        const statusCode = err?.statusCode;
 
         if (statusCode === 400 || statusCode === 403) {
           // 400 = bot already enabled or not available
@@ -287,27 +286,6 @@ class BotEnroller {
       // Can't list bots in this room -- likely not moderator
     }
     return false;
-  }
-
-  /**
-   * Extract HTTP status code from NCRequestManager error messages.
-   * NCRequestManager rejects with Error messages like:
-   * - "Authentication error: 403"
-   * - "HTTP 400: Bad Request"
-   *
-   * @param {Error} err
-   * @returns {number|null} HTTP status code or null
-   * @private
-   */
-  _extractStatusCode(err) {
-    if (!err || !err.message) return null;
-    // Match "Authentication error: 403" or "Authentication error: 401"
-    const authMatch = err.message.match(/Authentication error:\s*(\d{3})/);
-    if (authMatch) return parseInt(authMatch[1], 10);
-    // Match "HTTP 400: ..."
-    const httpMatch = err.message.match(/HTTP\s+(\d{3})/);
-    if (httpMatch) return parseInt(httpMatch[1], 10);
-    return null;
   }
 
   /**

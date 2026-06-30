@@ -21,14 +21,14 @@
 
 'use strict';
 
+// Canonical placeholder primitive lives in ./placeholder (a leaf shared with
+// config.js). Re-exported below as `_isPlaceholder` so existing importers
+// (webhook-server voice path) are unaffected.
+const { isPlaceholder: _isPlaceholder, PLACEHOLDER_MARKER } = require('./placeholder');
+
 const DEFAULT_FALLBACK = 'http://localhost:11434';
-const PLACEHOLDER_MARKER = 'YOUR_';
 
 const _warnedOnce = new Set();
-
-function _isPlaceholder(value) {
-  return typeof value === 'string' && value.includes(PLACEHOLDER_MARKER);
-}
 
 function _warnOnce(key, message, logger) {
   if (_warnedOnce.has(key)) return;

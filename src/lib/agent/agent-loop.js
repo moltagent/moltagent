@@ -122,7 +122,16 @@ class AgentLoop {
 
     // 2. Build initial messages array
     const systemPrompt = this._buildSystemPrompt(memoryContext, briefingContext, options, warmMemoryContext, history);
-    const tools = this.toolRegistry.getToolDefinitions();
+    // #133: scope the advertised tools to the verdict's domain when it is a single,
+    // known, non-compound domain. Null/unknown/compound → full registry. Execution
+    // is uncaged (ToolRegistry.execute reads the full map), so this guides the
+    // model's first choice without stranding the turn.
+    const scopeDomain = (options.domain && !options.compound && this.toolRegistry.hasDomainTools(options.domain))
+      ? options.domain
+      : null;
+    const tools = scopeDomain
+      ? this.toolRegistry.getToolSubset(scopeDomain)
+      : this.toolRegistry.getToolDefinitions();
 
     const messages = [
       ...history.map(m => ({ role: m.role, content: m.content })),
@@ -428,7 +437,7 @@ class AgentLoop {
    * @param {number} [params.maxIterations] - Override max iterations (default: this.maxIterations)
    * @returns {Promise<string>} The agent's final text response
    */
-  async processWorkflowTask({ systemAddition, task, boardId, cardId, stackId, forceLocal, allowCloud, cloudTier, maxIterations }) {
+  async processWorkflowTask({ systemAddition, task, boardId, cardId, stackId, forceLocal, allowCloud, cloudTier, maxIterations, searchPolicy }) {
     const startTime = Date.now();
     const iterLimit = maxIterations || this.maxIterations;
     this.logger.info(`[AgentLoop] Workflow task: board=${boardId} card=${cardId} maxIter=${iterLimit}`);
@@ -453,7 +462,8 @@ class AgentLoop {
       tools = this.toolRegistry.getWorkflowToolDefinitions({ includeUpdateCard: cardId > 0 });
     } else {
       // Per-card processing (cardId > 0) gets update_card; schedules (cardId === 0) don't.
-      tools = this.toolRegistry.getCloudWorkflowToolDefinitions(systemAddition, { includeUpdateCard: cardId > 0 });
+      // searchPolicy gates web_search/web_read: excluded only when 'sovereign'.
+      tools = this.toolRegistry.getCloudWorkflowToolDefinitions(systemAddition, { includeUpdateCard: cardId > 0, searchPolicy });
     }
 
     const messages = [
@@ -784,6 +794,15 @@ class AgentLoop {
       prompt += `\n\n${briefingContext}`;
     }
 
+    // Turn verdict (declarative register — name the subject, never forbid tools).
+    // The domain comes from the classification verdict carried in options (#133);
+    // scoping the advertised tools is handled at the tools-build site, this only
+    // tells the model what the turn is about. No domain → no line.
+    if (options.domain && this.toolRegistry.hasDomainTools(options.domain)) {
+      prompt += `\n\n## This Turn\n\nThe user's request is about ${options.domain}. `
+        + 'The tools you need for it are available; reach for them first.';
+    }
+
     // Voice input context: help LLM interpret transcribed speech
     if (options.inputType === 'voice') {
       prompt += '\n\n## Voice Input Context\n\n'
@@ -832,7 +851,7 @@ class AgentLoop {
   /**
    * Parse a tool call from LLM text output (resilience for smaller models).
    * Detects two formats:
-   *   JSON: {"name": "tool_name", "parameters": {...}}
+   *   JSON: {"name": "tool_name", "arguments": {...}} (also accepts "parameters")
    *   Function-style: tool_name({"key": "value"})
    *
    * Only returns a match if the tool name exists in the registry.
@@ -844,9 +863,13 @@ class AgentLoop {
   _parseToolCallFromText(text) {
     if (!text) return null;
 
-    // Pattern 1: JSON object with name + parameters
-    // e.g. {"name": "deck_move_card", "parameters": {"card": "#44", "target_stack": "Done"}}
-    const jsonMatch = text.match(/\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*(\{[^}]*\})\s*\}/);
+    // Pattern 1: JSON object with name + an args key.
+    // Accept BOTH "arguments" (the canonical OpenAI/Ollama shape qwen3:8b emits,
+    // optionally wrapped in <tool_call> tags — matched here via search) and the
+    // older "parameters" shape. Without "arguments", a text-form call sailed past
+    // the parser and the loop shipped the raw envelope to Talk as the reply (#164).
+    // e.g. {"name": "deck_move_card", "arguments": {"card": "#44", "target_stack": "Done"}}
+    const jsonMatch = text.match(/\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"(?:arguments|parameters)"\s*:\s*(\{[^}]*\})\s*\}/);
     if (jsonMatch) {
       const resolved = this._resolveToolName(jsonMatch[1]);
       if (resolved) {

@@ -56,6 +56,7 @@ const { JOBS } = require('../llm/router');
  * @property {number} [limit] - Number of emails to fetch
  * @property {string} [content] - Content for reply/email
  * @property {string} [tone] - Email tone (formal, casual, friendly)
+ * @property {string} [folder] - IMAP folder to read from (e.g. INBOX.SUPPORT)
  */
 
 /**
@@ -214,7 +215,8 @@ Return JSON only (no markdown, no explanation):
   "topic": "topic to search or summarize",
   "limit": "number of emails if mentioned",
   "content": "what to say in reply/email",
-  "tone": "formal|casual|friendly if mentioned"
+  "tone": "formal|casual|friendly if mentioned",
+  "folder": "IMAP folder name if a specific folder is named"
 }
 
 Only include relevant fields.
@@ -225,8 +227,12 @@ Examples:
 - "find emails from John" → {"action": "search_emails", "from": "John"}
 - "summarize emails about the project" → {"action": "summarize_emails", "topic": "project"}
 - "draft an email to john@example.com about the meeting" → {"action": "draft_email", "to": "john@example.com", "topic": "meeting"}
-- "reply to that saying I agree" → {"action": "draft_reply", "content": "agreement"}`;
+- "reply to that saying I agree" → {"action": "draft_reply", "content": "agreement"}
+- "check my INQUIRIES folder" → {"action": "check_inbox", "folder": "INBOX.INQUIRIES"}
+- "Schau in den SUPPORT Ordner" → {"action": "check_inbox", "folder": "INBOX.SUPPORT"}
+- "Verifica a pasta PARCERIAS" → {"action": "check_inbox", "folder": "INBOX.PARCERIAS"}`;
 
+    let intent;
     try {
       const response = await this.llm.route({
         job: JOBS.TOOLS,
@@ -246,11 +252,33 @@ Examples:
         .replace(/<think>[\s\S]*?<\/think>/g, '')
         .trim();
 
-      return JSON.parse(cleaned);
+      intent = JSON.parse(cleaned);
     } catch (e) {
       console.error('[Email] Intent parse failed:', e.message);
-      return this.fallbackIntentParse(message);
+      intent = this.fallbackIntentParse(message);
     }
+    if (intent && intent.folder) {
+      intent.folder = this._normalizeFolder(intent.folder);
+    }
+    return intent;
+  }
+
+  /**
+   * Normalize an IMAP folder name to the INBOX.<name> convention.
+   * The LLM is taught (via parseIntent examples) to emit the full path;
+   * this is the safety net for a bare name. Pure string plumbing on an
+   * already-extracted structured field — not natural-language parsing.
+   * @param {string} name - Folder name from parsed intent
+   * @returns {string|undefined} Normalized folder, or undefined if empty
+   * @private
+   */
+  _normalizeFolder(name) {
+    if (typeof name !== 'string') return undefined;
+    const trimmed = name.trim();
+    if (!trimmed) return undefined;
+    // Already INBOX itself or an absolute path under it — leave as-is.
+    if (/^INBOX(\.|$)/i.test(trimmed)) return trimmed;
+    return `INBOX.${trimmed}`;
   }
 
   /**
@@ -260,6 +288,13 @@ Examples:
    */
   fallbackIntentParse(message) {
     const lower = message.toLowerCase();
+
+    // Minimal folder capture: word adjacent to folder/ordner/pasta keyword.
+    // Handles "SUPPORT folder" (word before) and "pasta PARCERIAS" (word after).
+    // Normalization happens centrally in parseIntent — not here.
+    const folderAfterMatch = message.match(/(?:folder|ordner|pasta)\s+["']?([A-Za-z0-9._-]+)/i);
+    const folderBeforeMatch = message.match(/([A-Za-z0-9._-]+)\s+(?:folder|ordner)/i);
+    const folder = folderAfterMatch ? folderAfterMatch[1] : (folderBeforeMatch ? folderBeforeMatch[1] : undefined);
 
     // Check for send/draft FIRST (higher priority than generic "mail")
     if (lower.includes('send') || lower.includes('draft') || lower.includes('write') || lower.includes('compose')) {
@@ -274,6 +309,7 @@ Examples:
       const bodyMatch = message.match(/(?:body|saying|message)[:\s]+["']([^"']+)["']/i) ||
                        message.match(/(?:body|saying|message)[:\s]+(.+?)(?:\.|$)/i);
 
+      // Folder is not meaningful for composing — omit it here
       return {
         action: 'draft_email',
         to: emailMatch ? emailMatch[0] : undefined,
@@ -282,23 +318,24 @@ Examples:
       };
     }
     if (lower.includes('reply')) {
+      // Folder is not meaningful for drafting a reply — omit it here
       return { action: 'draft_reply' };
     }
     if (lower.includes('unread')) {
-      return { action: 'check_unread' };
+      return { action: 'check_unread', folder };
     }
     if (lower.includes('search') || lower.includes('find')) {
-      return { action: 'search_emails' };
+      return { action: 'search_emails', folder };
     }
     if (lower.includes('summarize') || lower.includes('summary')) {
-      return { action: 'summarize_emails' };
+      return { action: 'summarize_emails', folder };
     }
     if (lower.includes('inbox') || lower.includes('check')) {
-      return { action: 'check_inbox' };
+      return { action: 'check_inbox', folder };
     }
 
     // Default: if "mail" or "email" is mentioned, check inbox
-    return { action: 'check_inbox' };
+    return { action: 'check_inbox', folder };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -331,6 +368,8 @@ Examples:
       unreadOnly = false,
       searchCriteria = null
     } = options;
+
+    console.log(`[Email] Fetching from folder: ${folder} (limit=${limit}, unreadOnly=${unreadOnly})`);
 
     const cred = await this._getImapCredentials();
 
@@ -387,6 +426,13 @@ Examples:
               struct: true
             });
 
+            // Collect a parse promise per message. simpleParser is async, so
+            // without awaiting these the fetch 'end' below resolves before any
+            // parse completes — returning an empty/partial list even when the
+            // search found messages. The EmailMonitor read loop guards the same
+            // way; this mirrors it. (resolve-before-async-parse race)
+            const parsePromises = [];
+
             fetch.on('message', (msg, seqno) => {
               let buffer = '';
               let attrs = null;
@@ -401,32 +447,38 @@ Examples:
                 attrs = a;
               });
 
-              msg.once('end', async () => {
-                try {
-                  const parsed = await simpleParser(buffer);
-                  emails.push({
-                    id: attrs.uid,
-                    seqno,
-                    messageId: parsed.messageId,
-                    from: parsed.from?.text || '',
-                    fromAddress: parsed.from?.value?.[0]?.address || '',
-                    to: parsed.to?.text || '',
-                    subject: parsed.subject || '(No subject)',
-                    date: parsed.date,
-                    snippet: this._getSnippet(parsed.text, 200),
-                    body: parsed.text || '',
-                    hasAttachments: (parsed.attachments?.length || 0) > 0,
-                    attachmentCount: parsed.attachments?.length || 0,
-                    isRead: attrs.flags.includes('\\Seen'),
-                    isStarred: attrs.flags.includes('\\Flagged')
-                  });
-                } catch (e) {
-                  console.error('[Email] Parse error:', e.message);
-                }
+              const parsePromise = new Promise((resolveMsg) => {
+                msg.once('end', async () => {
+                  try {
+                    const parsed = await simpleParser(buffer);
+                    emails.push({
+                      id: attrs.uid,
+                      seqno,
+                      messageId: parsed.messageId,
+                      from: parsed.from?.text || '',
+                      fromAddress: parsed.from?.value?.[0]?.address || '',
+                      to: parsed.to?.text || '',
+                      subject: parsed.subject || '(No subject)',
+                      date: parsed.date,
+                      snippet: this._getSnippet(parsed.text, 200),
+                      body: parsed.text || '',
+                      hasAttachments: (parsed.attachments?.length || 0) > 0,
+                      attachmentCount: parsed.attachments?.length || 0,
+                      isRead: attrs.flags.includes('\\Seen'),
+                      isStarred: attrs.flags.includes('\\Flagged')
+                    });
+                  } catch (e) {
+                    console.error('[Email] Parse error:', e.message);
+                  }
+                  resolveMsg();
+                });
               });
+              parsePromises.push(parsePromise);
             });
 
-            fetch.once('end', () => {
+            fetch.once('end', async () => {
+              // Wait for all in-flight parses before resolving (see parsePromises).
+              await Promise.all(parsePromises);
               imap.end();
               // Sort by date descending
               emails.sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -475,6 +527,7 @@ Examples:
    */
   async handleCheckInbox(intent, user) {
     const emails = await this._fetchEmails({
+      folder: intent.folder || undefined,
       limit: intent.limit || 10,
       unreadOnly: false
     });
@@ -505,6 +558,7 @@ Examples:
    */
   async handleCheckUnread(intent, user) {
     const emails = await this._fetchEmails({
+      folder: intent.folder || undefined,
       limit: 20,
       unreadOnly: true
     });
@@ -549,6 +603,7 @@ Examples:
     }
 
     const emails = await this._fetchEmails({
+      folder: intent.folder || undefined,
       limit: intent.limit || 20,
       searchCriteria
     });
@@ -620,6 +675,7 @@ Examples:
     }
 
     const emails = await this._fetchEmails({
+      folder: intent.folder || undefined,
       limit: 20,
       searchCriteria
     });

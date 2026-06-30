@@ -380,6 +380,20 @@ class CalDAVClient {
    * @returns {Promise<Object>} Created event
    */
   async createEvent(event) {
+    // Past-date guard at the substrate (#169). Every creation path — createEvent,
+    // quickSchedule, scheduleMeeting — routes through here, so the guard fires once
+    // and all paths inherit it (previously it lived in only one of four tool
+    // handlers). Reject starts more than 24h in the past: a likely LLM date
+    // hallucination. The message names the current datetime so the model can
+    // self-correct. Throwing matches createEvent's existing failure contract;
+    // ToolRegistry.execute() surfaces it to the model as an actionable error.
+    const startDate = event.start instanceof Date ? event.start : new Date(event.start);
+    const now = new Date();
+    const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    if (!isNaN(startDate.getTime()) && startDate < twentyFourHoursAgo) {
+      throw new Error(`Rejected: start date ${startDate.toISOString()} is in the past. Current date/time is ${now.toISOString()}. Please use the correct date.`);
+    }
+
     const calendarId = event.calendarId || this.defaultCalendar;
     const uid = this._generateUID();
     const ics = this._buildICS({
@@ -1189,6 +1203,11 @@ class CalDAVClient {
 
   /**
    * Quick schedule: "Schedule a meeting with X tomorrow at 2pm"
+   *
+   * @deprecated (#169) No longer called by any tool handler — calendar_create_event
+   * now absorbs the availability-check + create flow via its check_availability
+   * option. Retained as a public convenience method in case external integrations
+   * rely on it; the past-date guard is inherited from createEvent.
    */
   async quickSchedule(summary, dateTime, durationMinutes = 60, attendees = []) {
     const start = new Date(dateTime);
