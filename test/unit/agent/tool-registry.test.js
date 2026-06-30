@@ -593,6 +593,32 @@ test("getToolSubset('calendar') reflects the consolidated set (#169)", () => {
   assert.ok(!names.includes('calendar_check_conflicts'));
 });
 
+test("getToolSubset('deck') exposes the F1-ported lifecycle + compound tools", () => {
+  // Regression: the 7 ports were registered but absent from the deck subset,
+  // so AgentLoop's domain-scoped tool list (#133) never showed them to the model
+  // ("I don't have a function to rename a stack"). The subset is the model-visible gate.
+  const registry = new ToolRegistry({
+    deckClient: createMockDeckClient(),
+    logger: silentLogger
+  });
+  const names = registry.getToolSubset('deck').map(t => t.function.name);
+  for (const t of [
+    'deck_rename_board', 'deck_archive_board', 'deck_delete_board',
+    'deck_rename_stack', 'deck_delete_stack', 'deck_setup_workflow', 'deck_troubleshoot'
+  ]) {
+    assert.ok(names.includes(t), `deck subset must expose ${t}`);
+  }
+});
+
+test('constructor keeps entityExtractor in clients (wiki_write graph population)', () => {
+  // Regression: entityExtractor was passed at the construction site but dropped
+  // by the constructor destructure, so this.clients.entityExtractor was undefined
+  // and wiki_write's populateGraph silently no-opped (no graph population on Path A).
+  const fakeExtractor = { extractFromPage: () => {} };
+  const registry = new ToolRegistry({ entityExtractor: fakeExtractor, logger: silentLogger });
+  assert.strictEqual(registry.clients.entityExtractor, fakeExtractor);
+});
+
 asyncTest('tag_file tags successfully', async () => {
   const registry = new ToolRegistry({
     systemTagsClient: createMockSystemTagsClient(),
