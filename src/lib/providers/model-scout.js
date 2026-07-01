@@ -1,82 +1,17 @@
 /**
- * ModelScout — Auto-discover installed Ollama models and map capabilities.
+ * ModelScout — Sense installed Ollama models and rank them per job.
  *
- * Queries the Ollama `/api/tags` endpoint, parses model metadata,
- * and generates a local roster mapping jobs to model names.
+ * Queries `/api/tags` for the installed models, then `/api/show` per model for
+ * its declared `capabilities` (Layer 0). Partitions the pool by capability
+ * class and ranks within class by a per-job size prior (Layer 1) to produce a
+ * local roster. Capability is read from what each model declares, never guessed
+ * from its family name — see docs/briefings adaptive-model-selection §2, §4, §5.
  *
  * @module providers/model-scout
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 'use strict';
-
-/**
- * Job affinity map: which model families/sizes are suited to which jobs.
- * Each entry lists families in preference order with optional min param size.
- * Fallback: the largest discovered model fills any unmapped job.
- */
-const JOB_AFFINITY_MAP = Object.freeze({
-  quick: {
-    description: 'Fast, low-latency responses — smallest viable model wins',
-    preferred: [
-      { family: 'qwen2', maxParams: 4 },
-      { family: 'gemma', maxParams: 3 },
-      { family: 'phi', maxParams: 4 },
-      { family: 'qwen3', maxParams: 4 },
-      { family: 'qwen2', maxParams: 14 },
-      { family: 'llama', maxParams: 8 },
-      { family: 'qwen3', maxParams: 14 }
-    ]
-  },
-  tools: {
-    description: 'Tool calling and structured output',
-    preferred: [
-      { family: 'phi', maxParams: 14 },
-      { family: 'qwen3' },
-      { family: 'qwen2.5' },
-      { family: 'mistral' },
-      { family: 'llama', minParams: 8 }
-    ]
-  },
-  thinking: {
-    description: 'Multi-step reasoning',
-    preferred: [
-      { family: 'qwen3', minParams: 14 },
-      { family: 'deepseek', minParams: 14 },
-      { family: 'llama', minParams: 14 },
-      { family: 'qwen3' },
-      { family: 'mistral' }
-    ]
-  },
-  writing: {
-    description: 'Long-form text generation',
-    preferred: [
-      { family: 'qwen3', minParams: 14 },
-      { family: 'llama', minParams: 14 },
-      { family: 'mistral', minParams: 7 },
-      { family: 'qwen3' }
-    ]
-  },
-  research: {
-    description: 'Information synthesis and analysis',
-    preferred: [
-      { family: 'qwen3', minParams: 14 },
-      { family: 'deepseek' },
-      { family: 'llama', minParams: 14 },
-      { family: 'qwen3' }
-    ]
-  },
-  coding: {
-    description: 'Code generation and analysis',
-    preferred: [
-      { family: 'deepseek-coder' },
-      { family: 'codellama' },
-      { family: 'qwen2.5-coder' },
-      { family: 'qwen3' },
-      { family: 'deepseek' }
-    ]
-  }
-});
 
 class ModelScout {
   /**
@@ -92,8 +27,8 @@ class ModelScout {
   }
 
   /**
-   * Discover installed Ollama models via /api/tags.
-   * Caches the result in _discovered.
+   * Discover installed Ollama models via /api/tags, then sense each model's
+   * declared capabilities via /api/show. Caches the result in _discovered.
    * @returns {Promise<Array>} Array of parsed model descriptors
    */
   async discover() {
@@ -112,7 +47,7 @@ class ModelScout {
       const data = await response.json();
       const models = data.models || [];
 
-      this._discovered = models.map(m => ({
+      const base = models.map(m => ({
         name: m.name || m.model,
         family: this._extractFamily(m),
         paramSize: this._extractParamSize(m),
@@ -120,7 +55,14 @@ class ModelScout {
         modifiedAt: m.modified_at || null
       }));
 
-      this.logger.log(`[ModelScout] Discovered ${this._discovered.length} model(s): ${this._discovered.map(m => m.name).join(', ')}`);
+      // Layer 0 (Declared): ask each model what it can do rather than inferring
+      // from its name. One /api/show per model, at boot, in parallel.
+      this._discovered = await Promise.all(base.map(async (m) => {
+        const { capabilities, contextLength } = await this._probeCapabilities(m.name);
+        return { ...m, capabilities, contextLength };
+      }));
+
+      this.logger.log(`[ModelScout] Discovered ${this._discovered.length} model(s): ${this._discovered.map(m => `${m.name}[${m.capabilities.join('/')}]`).join(', ')}`);
       return this._discovered;
     } catch (err) {
       this.logger.warn(`[ModelScout] Discovery failed: ${err.message}`);
@@ -130,9 +72,10 @@ class ModelScout {
   }
 
   /**
-   * Generate a local roster mapping job names to model name arrays.
-   * Compatible with LLMRouter.setLocalRoster().
-   * @returns {Object|null} { quick: ['model1'], thinking: ['model2'], ... } or null if no models
+   * Generate a local roster mapping job names to model-name arrays, ranked
+   * best-first. Compatible with LLMRouter.setLocalRoster() and
+   * ModelResolver._readScoutRoster() (which takes the first element per job).
+   * @returns {Object|null} { quick: ['model1', ...], ... } or null if no models
    */
   generateLocalRoster() {
     if (!this._discovered || this._discovered.length === 0) {
@@ -140,22 +83,55 @@ class ModelScout {
       return null;
     }
 
-    const roster = {};
-    const largest = this._getLargestModel();
+    // Layer 0 — capability gate (Declared): each job draws only from models that
+    // declare the capability it needs. Embedding and vision models are excluded
+    // from text-generation jobs, which they have no business serving.
+    const textGen = this._discovered.filter(m => this._isTextGen(m));
+    const toolCapable = textGen.filter(m => this._capsOf(m).includes('tools'));
 
-    for (const [job, affinity] of Object.entries(JOB_AFFINITY_MAP)) {
-      const matched = this._getModelAffinity(job, affinity);
-      if (matched.length > 0) {
-        roster[job] = matched.map(m => m.name);
-      } else if (largest) {
-        // Fallback: use the largest model for unmapped jobs
-        roster[job] = [largest.name];
-      }
+    // Layer 1 — capacity prior (Described): rank by size. Strength varies per job.
+    const smallestFirst = [...textGen].sort((a, b) => this._compareSize(a, b));
+    const largestFirst = [...textGen].sort((a, b) => this._compareSize(b, a));
+    const toolsLargestFirst = [...toolCapable].sort((a, b) => this._compareSize(b, a));
+    const names = list => list.map(m => m.name);
+
+    const roster = {};
+
+    // quick / classification: latency wins and classification needs no depth,
+    // so the smallest capable model leads. (context_length is carried per model
+    // for future long-context gating; no current job declares a minimum.)
+    if (smallestFirst.length > 0) {
+      roster.quick = names(smallestFirst);
+      roster.classification = names(smallestFirst);
     }
 
-    // credentials job always gets the largest model (most capable for sensitive ops)
-    if (largest) {
-      roster.credentials = [largest.name];
+    // thinking / writing / research: size is a STRONG prior — bigger models
+    // reason and write better on average — so the largest capable model leads.
+    // credentials stays local (enforced in ModelResolver) and wants the most
+    // capable model on the box.
+    if (largestFirst.length > 0) {
+      roster.thinking = names(largestFirst);
+      roster.writing = names(largestFirst);
+      roster.research = names(largestFirst);
+      roster.credentials = names(largestFirst);
+    }
+
+    // tools / coding: size is a WEAK prior — a fine-tuned mid-size model
+    // routinely beats a larger generalist, and that specialization is invisible
+    // in size or a capability flag. Largest tool-capable is a placeholder only;
+    // Session 3 replaces it with measured performance. If no model declares
+    // `tools`, fall back to the general text roster so the box never goes dark.
+    const toolRoster = toolsLargestFirst.length > 0 ? names(toolsLargestFirst) : names(largestFirst);
+    if (toolRoster.length > 0) {
+      roster.tools = toolRoster;
+      roster.coding = toolRoster;
+    }
+
+    // A box with only embedding/vision models can serve no job here: keep the
+    // return contract single-valued (null, never an empty object).
+    if (Object.keys(roster).length === 0) {
+      this._roster = null;
+      return null;
     }
 
     this._roster = roster;
@@ -173,7 +149,8 @@ class ModelScout {
 
     const lines = this._discovered.map(m => {
       const size = m.paramSize ? `${m.paramSize}B` : '?B';
-      return `${m.name} (${m.family}, ${size})`;
+      const caps = this._capsOf(m).join('/');
+      return `${m.name} (${m.family}, ${size}, ${caps})`;
     });
 
     const rosterInfo = this._roster
@@ -203,6 +180,71 @@ class ModelScout {
   // ---------------------------------------------------------------------------
 
   /**
+   * Sense a model's declared capabilities via /api/show. On any failure, treat
+   * the model as text-generation-capable so the box never goes dark, and log
+   * the gap rather than inferring capability from the model's name.
+   * @param {string} name - Model name (e.g. 'qwen3:8b')
+   * @returns {Promise<{capabilities: string[], contextLength: number|null}>}
+   */
+  async _probeCapabilities(name) {
+    try {
+      const response = await fetch(`${this.ollamaEndpoint}/api/show`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ model: name }),
+        signal: AbortSignal.timeout(10000)
+      });
+      if (!response.ok) {
+        throw new Error(`/api/show returned ${response.status}`);
+      }
+      const data = await response.json();
+      const capabilities = (Array.isArray(data.capabilities) && data.capabilities.length > 0)
+        ? data.capabilities.map(c => String(c).toLowerCase())
+        : ['completion'];
+      return { capabilities, contextLength: this._extractContextLength(data) };
+    } catch (err) {
+      this.logger.warn(`[ModelScout] /api/show unavailable for ${name} (${err.message}); treating as text-generation-capable`);
+      return { capabilities: ['completion'], contextLength: null };
+    }
+  }
+
+  /**
+   * Extract the context window length from an /api/show response. Ollama nests
+   * it under model_info as `<family>.context_length`.
+   * @param {Object} showData - Parsed /api/show response
+   * @returns {number|null}
+   */
+  _extractContextLength(showData) {
+    const info = showData.model_info || {};
+    for (const [key, value] of Object.entries(info)) {
+      if (key.endsWith('context_length') && Number.isFinite(value)) return value;
+    }
+    if (Number.isFinite(showData.context_length)) return showData.context_length;
+    return null;
+  }
+
+  /** Declared capabilities of a model, defaulting to text-generation. */
+  _capsOf(model) {
+    return Array.isArray(model.capabilities) && model.capabilities.length > 0
+      ? model.capabilities
+      : ['completion'];
+  }
+
+  /** Whether a model may serve text jobs (embedding-only and vision excluded). */
+  _isTextGen(model) {
+    const caps = this._capsOf(model);
+    return caps.includes('completion') && !caps.includes('embedding') && !caps.includes('vision');
+  }
+
+  /** Compare by capacity ascending (param size, then file size). (b,a) => largest-first. */
+  _compareSize(a, b) {
+    const sa = a.paramSize || 0;
+    const sb = b.paramSize || 0;
+    if (sa !== sb) return sa - sb;
+    return (a.sizeBytes || 0) - (b.sizeBytes || 0);
+  }
+
+  /**
    * Extract model family from Ollama model metadata.
    * @param {Object} model - Raw Ollama model object
    * @returns {string}
@@ -215,8 +257,6 @@ class ModelScout {
     // Fallback: parse from model name (e.g. 'qwen3:8b' → 'qwen3')
     const name = model.name || model.model || '';
     const base = name.split(':')[0];
-    // Remove trailing numbers that represent size (e.g. 'llama3.1' → 'llama')
-    // But keep version numbers like 'qwen2.5' or 'qwen3'
     return base.toLowerCase();
   }
 
@@ -242,62 +282,6 @@ class ModelScout {
 
     return null;
   }
-
-  /**
-   * Check if a model matches a preferred entry from JOB_AFFINITY_MAP.
-   * @param {Object} model - Parsed model descriptor
-   * @param {Object} pref - { family, minParams?, maxParams? }
-   * @returns {boolean}
-   */
-  _modelMatches(model, pref) {
-    if (model.family !== pref.family && !model.family.startsWith(pref.family)) {
-      return false;
-    }
-    if (pref.minParams && model.paramSize && model.paramSize < pref.minParams) {
-      return false;
-    }
-    if (pref.maxParams && model.paramSize && model.paramSize > pref.maxParams) {
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * Get the largest discovered model (by param size, then file size).
-   * @returns {Object|null}
-   */
-  _getLargestModel() {
-    if (!this._discovered || this._discovered.length === 0) return null;
-    return this._discovered.reduce((best, m) => {
-      const bestSize = best.paramSize || 0;
-      const mSize = m.paramSize || 0;
-      if (mSize > bestSize) return m;
-      if (mSize === bestSize && m.sizeBytes > best.sizeBytes) return m;
-      return best;
-    }, this._discovered[0]);
-  }
-
-  /**
-   * Find models matching an affinity spec, ordered by preference.
-   * @param {string} job - Job name
-   * @param {Object} affinity - Affinity entry from JOB_AFFINITY_MAP
-   * @returns {Array} Matching model descriptors (may be empty)
-   */
-  _getModelAffinity(job, affinity) {
-    const matched = [];
-    const seen = new Set();
-
-    for (const pref of affinity.preferred) {
-      for (const model of this._discovered) {
-        if (!seen.has(model.name) && this._modelMatches(model, pref)) {
-          matched.push(model);
-          seen.add(model.name);
-        }
-      }
-    }
-
-    return matched;
-  }
 }
 
-module.exports = { ModelScout, JOB_AFFINITY_MAP };
+module.exports = { ModelScout };

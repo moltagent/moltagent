@@ -2,223 +2,227 @@
 
 const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
-const { ModelScout, JOB_AFFINITY_MAP } = require('../../../src/lib/providers/model-scout');
+const { ModelScout } = require('../../../src/lib/providers/model-scout');
 
-const MOCK_TAGS_RESPONSE = {
-  models: [
-    {
-      name: 'phi4-mini',
-      model: 'phi4-mini',
-      size: 4915200000,
-      modified_at: '2025-01-15T10:00:00Z',
-      details: { family: 'phi3', parameter_size: '4B', format: 'gguf' }
-    },
-    {
-      name: 'deepseek-coder:6.7b',
-      model: 'deepseek-coder:6.7b',
-      size: 3800000000,
-      modified_at: '2025-01-10T10:00:00Z',
-      details: { family: 'deepseek-coder', parameter_size: '6.7B', format: 'gguf' }
-    },
-    {
-      name: 'llama3.1:70b',
-      model: 'llama3.1:70b',
-      size: 40000000000,
-      modified_at: '2025-01-20T10:00:00Z',
-      details: { family: 'llama', parameter_size: '70B', format: 'gguf' }
-    }
-  ]
+// A realistic mixed pool: two tool-capable chat models of different sizes, a
+// small text-only chat model, an embedding model, and a vision model.
+const TAGS_MODELS = [
+  { name: 'qwen3:8b', model: 'qwen3:8b', size: 5200000000, modified_at: '2025-01-20T10:00:00Z', details: { family: 'qwen3', parameter_size: '8.2B', format: 'gguf' } },
+  { name: 'qwen2.5:3b', model: 'qwen2.5:3b', size: 2000000000, modified_at: '2025-01-15T10:00:00Z', details: { family: 'qwen2', parameter_size: '3.1B', format: 'gguf' } },
+  { name: 'gemma2:2b', model: 'gemma2:2b', size: 1600000000, modified_at: '2025-01-10T10:00:00Z', details: { family: 'gemma2', parameter_size: '2.6B', format: 'gguf' } },
+  { name: 'nomic-embed-text:latest', model: 'nomic-embed-text:latest', size: 270000000, modified_at: '2025-01-05T10:00:00Z', details: { family: 'nomic-bert', parameter_size: '137M', format: 'gguf' } },
+  { name: 'llava:7b', model: 'llava:7b', size: 4700000000, modified_at: '2025-01-12T10:00:00Z', details: { family: 'llama', parameter_size: '7B', format: 'gguf' } }
+];
+
+const SHOW_BY_MODEL = {
+  'qwen3:8b': { capabilities: ['completion', 'tools', 'thinking'], model_info: { 'qwen3.context_length': 40960 } },
+  'qwen2.5:3b': { capabilities: ['completion', 'tools'], model_info: { 'qwen2.context_length': 32768 } },
+  'gemma2:2b': { capabilities: ['completion'], model_info: { 'gemma2.context_length': 8192 } },
+  'nomic-embed-text:latest': { capabilities: ['embedding'], model_info: { 'nomic-bert.context_length': 2048 } },
+  'llava:7b': { capabilities: ['completion', 'vision'], model_info: { 'llama.context_length': 8192 } }
 };
 
 const silentLogger = { log() {}, warn() {}, error() {} };
 
-// -- Test 1: discover() parses Ollama /api/tags response --
-asyncTest('discover() parses Ollama /api/tags response', async () => {
-  // Mock global fetch
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => ({
-    ok: true,
-    json: async () => MOCK_TAGS_RESPONSE
-  });
+// These tests swap globalThis.fetch, so they must run sequentially — the async
+// discover() now probes /api/show per model, widening the window in which a
+// concurrent test could clobber the shared fetch mock. main() awaits each in order.
+const suite = [];
+function scenario(name, fn) { suite.push({ name, fn }); }
 
+/**
+ * Build a fetch mock that routes /api/tags and /api/show by URL.
+ * @param {Array} tags - models for /api/tags
+ * @param {Object} showByModel - model name → /api/show payload
+ * @param {Object} [opts] - { showFails: true } to make /api/show error
+ */
+function mockFetch(tags, showByModel, opts = {}) {
+  return async (url, options) => {
+    if (String(url).includes('/api/tags')) {
+      return { ok: true, json: async () => ({ models: tags }) };
+    }
+    if (String(url).includes('/api/show')) {
+      if (opts.showFails) return { ok: false, status: 500, json: async () => ({}) };
+      const body = JSON.parse(options.body);
+      return { ok: true, json: async () => (showByModel[body.model] || {}) };
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+}
+
+async function withMock(fetchImpl, fn) {
+  const original = globalThis.fetch;
+  globalThis.fetch = fetchImpl;
   try {
+    return await fn();
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+// -- discover() parses /api/tags and senses capabilities via /api/show --
+scenario('discover() parses tags and attaches declared capabilities', async () => {
+  await withMock(mockFetch(TAGS_MODELS, SHOW_BY_MODEL), async () => {
     const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
     const result = await scout.discover();
 
-    assert.strictEqual(result.length, 3);
-    assert.strictEqual(result[0].name, 'phi4-mini');
-    assert.strictEqual(result[0].family, 'phi3');
-    assert.strictEqual(result[0].paramSize, 4);
-    assert.strictEqual(result[1].name, 'deepseek-coder:6.7b');
-    assert.strictEqual(result[1].paramSize, 6.7);
-    assert.strictEqual(result[2].paramSize, 70);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+    assert.strictEqual(result.length, 5);
+    const qwen3 = result.find(m => m.name === 'qwen3:8b');
+    assert.strictEqual(qwen3.paramSize, 8.2);
+    assert.strictEqual(qwen3.family, 'qwen3');
+    assert.deepStrictEqual(qwen3.capabilities, ['completion', 'tools', 'thinking']);
+    assert.strictEqual(qwen3.contextLength, 40960);
+
+    const nomic = result.find(m => m.name === 'nomic-embed-text:latest');
+    assert.deepStrictEqual(nomic.capabilities, ['embedding']);
+  });
 });
 
-// -- Test 2: discover() handles Ollama offline gracefully --
-asyncTest('discover() handles Ollama offline gracefully', async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => { throw new Error('Connection refused'); };
-
-  try {
+// -- discover() handles Ollama offline gracefully --
+scenario('discover() handles Ollama offline gracefully', async () => {
+  await withMock(async () => { throw new Error('Connection refused'); }, async () => {
     const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
     const result = await scout.discover();
-
     assert.ok(Array.isArray(result));
     assert.strictEqual(result.length, 0);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  });
 });
 
-// -- Test 3: _extractFamily() parses model name variants --
+// -- discover() falls back to text-capable when /api/show is unreachable --
+scenario('discover() defaults to text-generation when /api/show fails', async () => {
+  await withMock(mockFetch(TAGS_MODELS, SHOW_BY_MODEL, { showFails: true }), async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    const result = await scout.discover();
+    // Every model should be treated as text-generation-capable, never dark.
+    assert.ok(result.every(m => m.capabilities.includes('completion')));
+    assert.ok(result.every(m => m.contextLength === null));
+  });
+});
+
+// -- _extractFamily() parses model name variants --
 test('_extractFamily() parses model name variants', () => {
   const scout = new ModelScout({ logger: silentLogger });
-
-  // With details.family
   assert.strictEqual(scout._extractFamily({ details: { family: 'Qwen3' } }), 'qwen3');
-
-  // Without details, parse from name
   assert.strictEqual(scout._extractFamily({ name: 'mistral:7b' }), 'mistral');
   assert.strictEqual(scout._extractFamily({ name: 'llama3.1:70b' }), 'llama3.1');
   assert.strictEqual(scout._extractFamily({ name: 'deepseek-coder:6.7b' }), 'deepseek-coder');
 });
 
-// -- Test 4: _extractParamSize() extracts parameter sizes --
+// -- _extractParamSize() extracts parameter sizes --
 test('_extractParamSize() extracts parameter sizes', () => {
   const scout = new ModelScout({ logger: silentLogger });
-
-  // From details.parameter_size
   assert.strictEqual(scout._extractParamSize({ details: { parameter_size: '8B' } }), 8);
   assert.strictEqual(scout._extractParamSize({ details: { parameter_size: '70B' } }), 70);
   assert.strictEqual(scout._extractParamSize({ details: { parameter_size: '6.7B' } }), 6.7);
-
-  // From name tag
   assert.strictEqual(scout._extractParamSize({ name: 'qwen3:8b' }), 8);
-  assert.strictEqual(scout._extractParamSize({ name: 'llama:70b' }), 70);
-
-  // No size info
   assert.strictEqual(scout._extractParamSize({ name: 'custom-model' }), null);
 });
 
-// -- Test 5: generateLocalRoster() assigns models to jobs --
-asyncTest('generateLocalRoster() assigns models to jobs based on affinity', async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => ({
-    ok: true,
-    json: async () => MOCK_TAGS_RESPONSE
-  });
+// -- _extractContextLength() reads model_info --
+test('_extractContextLength() reads the family context_length key', () => {
+  const scout = new ModelScout({ logger: silentLogger });
+  assert.strictEqual(scout._extractContextLength({ model_info: { 'qwen3.context_length': 40960 } }), 40960);
+  assert.strictEqual(scout._extractContextLength({ context_length: 8192 }), 8192);
+  assert.strictEqual(scout._extractContextLength({}), null);
+});
 
-  try {
+// -- capability gate: embedding and vision models excluded from text jobs --
+scenario('generateLocalRoster() excludes embedding and vision from text jobs', async () => {
+  await withMock(mockFetch(TAGS_MODELS, SHOW_BY_MODEL), async () => {
     const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
     await scout.discover();
     const roster = scout.generateLocalRoster();
 
-    assert.ok(roster !== null);
-    // quick should include phi4-mini (preferred for quick via phi family)
-    assert.ok(roster.quick.includes('phi4-mini'), `quick roster should include phi4-mini, got: ${roster.quick}`);
-    // coding should include deepseek-coder
-    assert.ok(roster.coding.includes('deepseek-coder:6.7b'), `coding roster should include deepseek-coder:6.7b, got: ${roster.coding}`);
-    // thinking should include the large model
-    assert.ok(roster.thinking.includes('llama3.1:70b'), `thinking roster should include llama3.1:70b, got: ${roster.thinking}`);
-    // credentials always gets the largest model
-    assert.ok(roster.credentials.includes('llama3.1:70b'));
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+    const everyModel = Object.values(roster).flat();
+    assert.ok(!everyModel.includes('nomic-embed-text:latest'), 'embedding model must not appear in any job');
+    assert.ok(!everyModel.includes('llava:7b'), 'vision model must not appear in any job');
+  });
 });
 
-// -- Test 6: generateLocalRoster() uses largest model as fallback --
-asyncTest('generateLocalRoster() uses largest model as fallback for unmapped jobs', async () => {
-  const originalFetch = globalThis.fetch;
-  // Only one model with unusual family that doesn't match any affinity
-  globalThis.fetch = async () => ({
-    ok: true,
-    json: async () => ({
-      models: [{
-        name: 'unusual-model:7b',
-        model: 'unusual-model:7b',
-        size: 5000000000,
-        details: { family: 'unusual', parameter_size: '7B' }
-      }]
-    })
-  });
-
-  try {
+// -- per-job prior: smallest for quick/classification, largest for depth jobs --
+scenario('generateLocalRoster() applies the per-job size prior', async () => {
+  await withMock(mockFetch(TAGS_MODELS, SHOW_BY_MODEL), async () => {
     const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
     await scout.discover();
     const roster = scout.generateLocalRoster();
 
-    assert.ok(roster !== null);
-    // All jobs should fall back to the only available model
-    assert.deepStrictEqual(roster.quick, ['unusual-model:7b']);
-    assert.deepStrictEqual(roster.thinking, ['unusual-model:7b']);
-    assert.deepStrictEqual(roster.coding, ['unusual-model:7b']);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+    // Smallest text-gen model leads latency jobs (gemma2:2b at 2.6B).
+    assert.strictEqual(roster.quick[0], 'gemma2:2b');
+    assert.strictEqual(roster.classification[0], 'gemma2:2b');
+
+    // Largest text-gen model leads depth jobs (qwen3:8b at 8.2B).
+    assert.strictEqual(roster.thinking[0], 'qwen3:8b');
+    assert.strictEqual(roster.writing[0], 'qwen3:8b');
+    assert.strictEqual(roster.research[0], 'qwen3:8b');
+    assert.strictEqual(roster.credentials[0], 'qwen3:8b');
+  });
 });
 
-// -- Test 7: generateLocalRoster() handles single-model scenario --
-asyncTest('generateLocalRoster() handles single-model scenario', async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => ({
-    ok: true,
-    json: async () => ({
-      models: [{
-        name: 'phi4-mini',
-        model: 'phi4-mini',
-        size: 4915200000,
-        details: { family: 'phi3', parameter_size: '4B' }
-      }]
-    })
-  });
-
-  try {
+// -- tools/coding draw only from tool-capable models, largest first --
+scenario('generateLocalRoster() routes tools/coding to tool-capable models only', async () => {
+  await withMock(mockFetch(TAGS_MODELS, SHOW_BY_MODEL), async () => {
     const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
     await scout.discover();
     const roster = scout.generateLocalRoster();
 
-    assert.ok(roster !== null);
-    // phi3/phi4-mini matches quick and tools affinities
-    assert.ok(roster.quick.includes('phi4-mini'));
-    assert.ok(roster.tools.includes('phi4-mini'));
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+    // Only qwen3:8b and qwen2.5:3b declare `tools`; gemma2:2b (text-only) excluded.
+    assert.deepStrictEqual(roster.tools, ['qwen3:8b', 'qwen2.5:3b']);
+    assert.deepStrictEqual(roster.coding, ['qwen3:8b', 'qwen2.5:3b']);
+    assert.ok(!roster.tools.includes('gemma2:2b'), 'non-tool model must not serve tools');
+  });
 });
 
-// -- Test 8: hasModel() matches by name and family --
-asyncTest('hasModel() matches by name and family', async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => ({
-    ok: true,
-    json: async () => MOCK_TAGS_RESPONSE
-  });
-
-  try {
+// -- fallback: no tool-capable model → tools reuses the text roster (never dark) --
+scenario('generateLocalRoster() falls back to text roster when no tool-capable model', async () => {
+  const tags = [TAGS_MODELS[2], TAGS_MODELS[3]]; // gemma2:2b (text-only) + nomic (embedding)
+  await withMock(mockFetch(tags, SHOW_BY_MODEL), async () => {
     const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
     await scout.discover();
+    const roster = scout.generateLocalRoster();
 
-    // Exact name match
-    assert.strictEqual(scout.hasModel('phi4-mini'), true);
-    // Family match
-    assert.strictEqual(scout.hasModel('phi3'), true);
-    // Non-existent model
+    assert.deepStrictEqual(roster.tools, ['gemma2:2b']);
+    assert.deepStrictEqual(roster.coding, ['gemma2:2b']);
+    assert.strictEqual(roster.quick[0], 'gemma2:2b');
+  });
+});
+
+// -- returns null when nothing is discovered --
+scenario('generateLocalRoster() returns null with no models', async () => {
+  await withMock(async () => { throw new Error('offline'); }, async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout.discover();
+    assert.strictEqual(scout.generateLocalRoster(), null);
+  });
+});
+
+// -- returns null (not {}) when models exist but none can serve a text job --
+scenario('generateLocalRoster() returns null when only non-text models exist', async () => {
+  const tags = [TAGS_MODELS[3], TAGS_MODELS[4]]; // nomic (embedding) + llava (vision)
+  await withMock(mockFetch(tags, SHOW_BY_MODEL), async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout.discover();
+    assert.strictEqual(scout.generateLocalRoster(), null);
+  });
+});
+
+// -- hasModel() matches by name and family --
+scenario('hasModel() matches by name and family', async () => {
+  await withMock(mockFetch(TAGS_MODELS, SHOW_BY_MODEL), async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout.discover();
+    assert.strictEqual(scout.hasModel('qwen3:8b'), true);
+    assert.strictEqual(scout.hasModel('qwen3'), true);
     assert.strictEqual(scout.hasModel('gpt-4'), false);
-    // Before discover
     const scout2 = new ModelScout({ logger: silentLogger });
-    assert.strictEqual(scout2.hasModel('phi4-mini'), false);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+    assert.strictEqual(scout2.hasModel('qwen3:8b'), false);
+  });
 });
 
-// Use setTimeout to allow all asyncTest promises to resolve before exiting.
-// This matches the pattern used in audio-converter.test.js and whisper-client.test.js.
-setTimeout(() => {
+// Run the fetch-mocking scenarios sequentially, then report.
+(async () => {
+  for (const { name, fn } of suite) {
+    await asyncTest(name, fn);
+  }
   summary();
   exitWithCode();
-}, 100);
+})();
