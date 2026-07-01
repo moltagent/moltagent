@@ -275,7 +275,10 @@ const config = {
     domainToolTimeout: envInt('OLLAMA_DOMAIN_TOOL_TIMEOUT', 90000),
     classifyTimeout: envInt('OLLAMA_CLASSIFY_TIMEOUT', 30000),
     classifyModel: envStr('OLLAMA_CLASSIFY_MODEL', 'qwen2.5:3b'),
-    smartModel: envStr('OLLAMA_SMART_MODEL', 'qwen3:8b'),
+    // OLLAMA_SMART_MODEL retired: classification model selection now lives in
+    // ModelResolver (resolve('classification')), the single source of truth, so
+    // this key had become a silent no-op. Pin the classification model via the
+    // Cockpit Models card or the resolver's config instead.
     synthesisProvider: envStr('SYNTHESIS_PROVIDER', 'local')
   },
 

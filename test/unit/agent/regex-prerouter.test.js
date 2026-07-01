@@ -110,7 +110,9 @@ asyncTest('messages with memory verbs use smart model first', async () => {
         return { content: '{"gate":"action","domain":"wiki","confidence":0.9}' };
       }
     },
-    config: { classifyTimeout: 5000 }
+    // Models injected via the direct-injection seam (post Cleanup B: the router
+    // holds no hardcoded model defaults — selection comes from ModelResolver).
+    config: { classifyTimeout: 5000, smartModel: 'qwen3:8b', fastModel: 'qwen2.5:3b' }
   });
   await router.classify('Remember that Sarah prefers video calls');
   assert.strictEqual(models[0], 'qwen3:8b', 'Smart model used first');
@@ -126,7 +128,9 @@ asyncTest('contextual references use smart model first', async () => {
         return { content: '{"gate":"action","domain":"deck","confidence":0.9}' };
       }
     },
-    config: { classifyTimeout: 5000 }
+    // Models injected via the direct-injection seam (post Cleanup B: the router
+    // holds no hardcoded model defaults — selection comes from ModelResolver).
+    config: { classifyTimeout: 5000, smartModel: 'qwen3:8b', fastModel: 'qwen2.5:3b' }
   });
   await router.classify('move the most recent one to done', [
     { role: 'assistant', content: 'Here are your tasks: Fix bug, Update docs' }
@@ -144,7 +148,9 @@ asyncTest('explicit action messages use smart model', async () => {
         return { content: '{"gate":"action","domain":"calendar","confidence":0.95}' };
       }
     },
-    config: { classifyTimeout: 5000 }
+    // Models injected via the direct-injection seam (post Cleanup B: the router
+    // holds no hardcoded model defaults — selection comes from ModelResolver).
+    config: { classifyTimeout: 5000, smartModel: 'qwen3:8b', fastModel: 'qwen2.5:3b' }
   });
   await router.classify('Delete the Team Sync meeting');
   assert.strictEqual(models[0], 'qwen3:8b');

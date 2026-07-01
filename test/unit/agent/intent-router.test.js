@@ -162,7 +162,9 @@ asyncTest('classify() retries on timeout then falls back to regex', async () => 
   let callCount = 0;
   const router = new IntentRouter({
     provider: { chat: async () => { callCount++; throw new Error('Request timed out'); } },
-    config: { classifyTimeout: 100 }
+    // Distinct primary/fallback models exercise the two-call ladder (the fast
+    // fallback only fires when it differs from the model the primary just ran).
+    config: { classifyTimeout: 100, smartModel: 'qwen3:8b', fastModel: 'qwen2.5:3b' }
   });
   const result = await router.classify('what is on my schedule today');
   assert.strictEqual(callCount, 2, 'Should have tried twice (initial + retry)');
@@ -182,7 +184,9 @@ asyncTest('classify() succeeds on retry after first timeout', async () => {
         return { content: '{"intent":"greeting"}' };
       }
     },
-    config: { classifyTimeout: 100 }
+    // Distinct primary/fallback models exercise the two-call ladder (the fast
+    // fallback only fires when it differs from the model the primary just ran).
+    config: { classifyTimeout: 100, smartModel: 'qwen3:8b', fastModel: 'qwen2.5:3b' }
   });
   const result = await router.classify('hey there');
   assert.strictEqual(callCount, 2, 'Should have tried twice');
@@ -195,7 +199,9 @@ asyncTest('classify() tries other model on error, then regex fallback', async ()
   let callCount = 0;
   const router = new IntentRouter({
     provider: { chat: async () => { callCount++; throw new Error('Connection refused'); } },
-    config: { classifyTimeout: 100 }
+    // Distinct primary/fallback models exercise the two-call ladder (the fast
+    // fallback only fires when it differs from the model the primary just ran).
+    config: { classifyTimeout: 100, smartModel: 'qwen3:8b', fastModel: 'qwen2.5:3b' }
   });
   const result = await router.classify('check my email');
   assert.strictEqual(callCount, 2, 'Should try both models before regex fallback');
@@ -215,7 +221,9 @@ asyncTest('classify() fallback model uses appropriate timeout', async () => {
         return { content: '{"intent":"deck"}' };
       }
     },
-    config: { classifyTimeout: 5000 }
+    // Models injected via the direct-injection seam (post Cleanup B: the router
+    // holds no hardcoded model defaults — selection comes from ModelResolver).
+    config: { classifyTimeout: 5000, smartModel: 'qwen3:8b', fastModel: 'qwen2.5:3b' }
   });
   await router.classify('create a card');
   assert.strictEqual(calls.length, 2);
@@ -504,7 +512,9 @@ asyncTest('classify() uses smart model first', async () => {
         return { content: '{"intent":"file_query"}' };
       }
     },
-    config: { classifyTimeout: 5000 }
+    // Models injected via the direct-injection seam (post Cleanup B: the router
+    // holds no hardcoded model defaults — selection comes from ModelResolver).
+    config: { classifyTimeout: 5000, smartModel: 'qwen3:8b', fastModel: 'qwen2.5:3b' }
   });
 
   await router.classify('read the most recent one and tell me what you learned', [

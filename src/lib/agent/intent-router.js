@@ -332,19 +332,33 @@ class IntentRouter {
    * @param {Function} [opts.getTrust] - Returns the trust verdict for classification
    *   ('local-only' | 'cloud-ok'), sourced from the ModelResolver (the single
    *   control). Null/undefined return → fall back to the provider census. See #132.
+   * @param {Function} [opts.getFastModel] - Returns the fast/fallback classifier
+   *   model name from ModelResolver (resolve('quick')). Lazy thunk: the resolver
+   *   is built after this router in the bootstrap. Null return → config seam.
+   * @param {Function} [opts.getSmartModel] - Returns the primary classifier model
+   *   name from ModelResolver (resolve('classification')). Same lazy-thunk reason.
    * @param {Object} [opts.config]
    * @param {number} [opts.config.classifyTimeout=10000]
-   * @param {string} [opts.config.fastModel='qwen2.5:3b'] - Fast model for explicit intents
-   * @param {string} [opts.config.smartModel='qwen3:8b'] - Smart model for ambiguous intents
+   * @param {string} [opts.config.fastModel] - Direct-injection seam for tests /
+   *   last resort when no resolver is wired. No model name is hardcoded here.
+   * @param {string} [opts.config.smartModel] - As above, for the primary model.
    */
-  constructor({ provider, config = {}, getLanguage, getTrust, llmRouter } = {}) {
+  constructor({ provider, config = {}, getLanguage, getTrust, getFastModel, getSmartModel, llmRouter } = {}) {
     this.provider = provider;
     this.llmRouter = llmRouter || null;
     this.timeout = config.classifyTimeout || 10000;
-    this.fastModel = config.fastModel || 'qwen2.5:3b';
-    this.smartModel = config.smartModel || 'qwen3:8b';
     this.getLanguage = getLanguage || (() => 'EN');
     this.getTrust = getTrust || (() => null);
+    // Classification model selection lives in ModelResolver, the single source of
+    // truth for "which model serves job X" (design doc §8). These accessors are
+    // lazy thunks because the resolver is constructed after the router in the
+    // bootstrap — the same reason getTrust is a thunk. resolve('classification')
+    // is the primary classifier; resolve('quick') is the fast fallback. The
+    // config.fastModel/smartModel values remain only as a direct-injection seam
+    // for tests and a last resort when no resolver is wired; no model name is
+    // hardcoded in this class.
+    this.getFastModel = getFastModel || (() => config.fastModel || null);
+    this.getSmartModel = getSmartModel || (() => config.smartModel || null);
   }
 
   /**
@@ -362,36 +376,49 @@ class IntentRouter {
   async classify(message, recentContext = [], _context = {}) {
     message = message || '';
 
+    // The model the primary attempt ran on the local provider (null when the
+    // primary went through the cloud router). The fast fallback below reads this
+    // so it never re-runs the identical model on a shorter timeout — a doomed
+    // retry once the resolver maps 'quick' and 'classification' to the same local
+    // model. After a cloud-router failure this stays null, so the local fallback
+    // still fires (the router is not a local model that was already tried).
+    let primaryLocalModel = null;
+
     try {
       // The trust boundary is the single control (#132): the classification path
       // follows the trust verdict, not the registered-provider census. Under
-      // trust:local-only the classifier is the local smart model (qwen3:8b)
+      // trust:local-only the classifier is the local primary (smart) model
       // directly; a credential-less cloud entry in providers.json can no longer
-      // make hasCloudPlayers() true and degrade classification to qwen2.5:3b.
+      // make hasCloudPlayers() true and degrade classification to the fast model.
       //   cloud-ok: Haiku via the router, classifies correctly every time.
-      //   local-only: qwen3:8b first, qwen2.5:3b fallback, regex last resort.
+      //   local-only: primary model first, fast fallback, regex last resort.
       // The resolver is the trust authority; when it is absent (early boot or a
       // direct test caller) fall back to the legacy provider census.
       const trust = this.getTrust();
       const cloudOk = trust
         ? trust !== 'local-only'
         : this.llmRouter?.hasCloudPlayers?.();
-      console.log(`[IntentRouter] Trust=${trust || 'census'} → classification path: ${cloudOk ? 'cloud/router (Haiku)' : 'local smart (qwen3:8b)'}`);
+      console.log(`[IntentRouter] Trust=${trust || 'census'} → classification path: ${cloudOk ? 'cloud/router (Haiku)' : `local smart (${this.getSmartModel() || this.provider?.model || 'unset'})`}`);
 
       if (cloudOk && this.llmRouter) {
         return await this._classifyViaRouter(message, recentContext);
       }
 
-      // Local-only path: fast model → smart model → regex
-      const result = this.provider
-        ? await this._classifyWithModel(this.smartModel, message, recentContext)
-        : await this._classifyViaRouter(message, recentContext);
-      return result;
+      // Local-only path: primary (smart) model → fast fallback → regex
+      if (this.provider) {
+        primaryLocalModel = this.getSmartModel();
+        return await this._classifyWithModel(primaryLocalModel, message, recentContext, { slow: true });
+      }
+      return await this._classifyViaRouter(message, recentContext);
     } catch (err) {
-      // Primary failed — try fast model, then regex
+      // Primary failed. Fall back to the fast model, but only when it is a
+      // genuinely different model from the one the primary already ran — a
+      // same-model retry on a shorter timeout cannot do better and only delays
+      // the regex last resort.
       try {
-        if (this.provider) {
-          return await this._classifyWithModel(this.fastModel, message, recentContext);
+        const fastModel = this.getFastModel();
+        if (this.provider && fastModel && fastModel !== primaryLocalModel) {
+          return await this._classifyWithModel(fastModel, message, recentContext, { slow: false });
         }
       } catch (_fallbackErr) {
         // intentional fall-through
@@ -432,9 +459,12 @@ class IntentRouter {
    * @returns {Promise<{intent: string, domain: string|null, needsHistory: boolean, confidence: number}>}
    * @private
    */
-  async _classifyWithModel(model, message, recentContext = []) {
+  async _classifyWithModel(model, message, recentContext = [], { slow = false } = {}) {
     const userContent = this._buildUserContent(message, recentContext);
-    const timeout = model === this.smartModel ? this.timeout * 4 : this.timeout;
+    // The primary (smart) classifier gets 4x the timeout; the fast fallback runs
+    // on the base timeout. The caller signals which via `slow`, so timeout
+    // scaling no longer depends on comparing against a hardcoded model name.
+    const timeout = slow ? this.timeout * 4 : this.timeout;
 
     const result = await this.provider.chat({
       model,
