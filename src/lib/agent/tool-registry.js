@@ -86,7 +86,7 @@ class ToolRegistry {
     this.clients = { deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter, newsClient, entityExtractor };
     this.logger = logger || console;
 
-    /** @type {Map<string, {name: string, description: string, parameters: Object, handler: Function}>} */
+    /** @type {Map<string, {name: string, description: string, parameters: Object, handler: Function, domains?: string[], universal?: boolean}>} */
     this.tools = new Map();
 
     /** Per-request context (user identity, etc.) — set by AgentLoop at start of each request */
@@ -219,112 +219,28 @@ class ToolRegistry {
   /**
    * Get a focused tool subset for a domain-specific intent.
    * Returns 3-8 tools optimized for local models (Qwen 8B).
-   * Every subset includes memory_search as a universal context helper.
    *
-   * @param {string} intent - Domain intent: deck, calendar, email, wiki, file, search
+   * Membership is derived from each tool's own registration metadata — the
+   * `domains` array a tool declares at its `register()` site — so there is a
+   * single home for "which tools a domain sees" (#221). A tool is in the
+   * subset when it declares `intent` in `domains`, or when it is a `universal`
+   * helper (e.g. web_search, present in every subset). Universal helpers are
+   * appended only for a known domain: an intent no tool claims yields `[]`,
+   * matching the prior "no such subset" behavior so hasDomainTools stays honest.
+   *
+   * @param {string} intent - Domain intent: deck, calendar, email, wiki, file, search, news
    * @returns {Array<{type: 'function', function: {name: string, description: string, parameters: Object}}>}
    */
   getToolSubset(intent) {
-    // Keep subsets focused — fewer tools = faster LLM reasoning.
-    // web_search is available in all domain subsets.
-    const SUBSETS = {
-      deck: [
-        'deck_list_boards',
-        'deck_create_board',
-        'deck_create_card',
-        'deck_assign_user',
-        'deck_unassign_user',
-        'deck_list_cards',
-        'deck_get_board',
-        'deck_get_card',
-        'deck_list_stacks',
-        'deck_create_stack',
-        'deck_rename_stack',
-        'deck_delete_stack',
-        'deck_rename_board',
-        'deck_archive_board',
-        'deck_delete_board',
-        'deck_setup_workflow',
-        'deck_troubleshoot',
-        'deck_create_label',
-        'deck_remove_label',
-        'deck_move_card',
-        'deck_mark_done',
-        'deck_complete_task',
-        'deck_complete_review',
-        'deck_update_card',
-        'deck_delete_card',
-        'deck_set_due_date',
-        'deck_add_comment',
-        'deck_list_comments',
-        'deck_my_assigned_cards',
-        'deck_overdue_cards',
-        'deck_overview',
-        'web_search'
-      ],
-      calendar: [
-        'calendar_list_events',
-        'calendar_create_event',
-        'calendar_check_availability',
-        'calendar_update_event',
-        'calendar_delete_event',
-        'meeting_compose',
-        'meeting_check_rsvp',
-        'web_search'
-      ],
-      email: [
-        'mail_send',
-        'contacts_search',
-        'contacts_get',
-        'contacts_resolve',
-        'memory_search',
-        'web_search'
-      ],
-      wiki: [
-        'wiki_read',
-        'wiki_write',
-        'wiki_search',
-        'wiki_list',
-        'wiki_delete',
-        'memory_search',
-        'web_search'
-      ],
-      file: [
-        'file_read',
-        'file_write',
-        'file_list',
-        'file_move',
-        'file_copy',
-        'file_delete',
-        'file_info',
-        'file_extract',
-        'file_share',
-        'web_search'
-      ],
-      search: [
-        'memory_search',
-        'memory_recall',
-        'unified_search',
-        'contacts_search',
-        'web_read',
-        'wiki_list',
-        'web_search',
-        'web_read'
-      ],
-      news: [
-        'news_get_items',
-        'news_list_feeds',
-        'news_mark_read',
-        'deck_create_card',
-        'web_search'
-      ]
-    };
+    if (!intent) return [];
+    const all = Array.from(this.tools.values());
+    // Unknown domain (no tool claims it) → no subset, so universal helpers are
+    // not surfaced on their own and hasDomainTools reports false.
+    const isKnownDomain = all.some(t => (t.domains || []).includes(intent));
+    if (!isKnownDomain) return [];
 
-    const toolNames = SUBSETS[intent];
-    if (!toolNames) return [];
-
-    return Array.from(this.tools.values())
-      .filter(t => toolNames.includes(t.name))
+    return all
+      .filter(t => (t.domains || []).includes(intent) || t.universal)
       .map(t => ({
         type: 'function',
         function: {
@@ -396,7 +312,23 @@ class ToolRegistry {
 
   /**
    * Register a custom tool dynamically.
+   *
+   * `domains` and `universal` are the declarative source for getToolSubset:
+   * declaring a tool's visibility IS registering it, so registration and
+   * per-domain visibility cannot drift (#221). A tool with no `domains` and no
+   * `universal` flag is registered on the full surface (getToolDefinitions) but
+   * appears in no domain subset.
+   *
    * @param {Object} toolDef
+   * @param {string} toolDef.name
+   * @param {Function} toolDef.handler
+   * @param {string} [toolDef.description]
+   * @param {Object} [toolDef.parameters]
+   * @param {string[]} [toolDef.domains] - Domain subsets this tool belongs to
+   *   (multi-valued for cross-domain tools, e.g. ['deck', 'news']).
+   * @param {boolean} [toolDef.universal] - Include in every domain subset
+   *   (a cross-cutting helper such as web_search), not a domain of its own.
+   * @param {Object} [toolDef.metadata]
    */
   register(toolDef) {
     if (!toolDef.name || !toolDef.handler) {
@@ -701,6 +633,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_list_cards',
+      domains: ['deck'],
       description: 'List all cards on a board, grouped by stack. Defaults to the task board. Use the board parameter to query other boards (e.g. "Cockpit", "Moltagent Cockpit"). Omit the stack parameter to search all stacks (preferred default).',
       parameters: {
         type: 'object',
@@ -795,6 +728,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_move_card',
+      domains: ['deck'],
       description: 'Move a card to a different stack. Use this when asked to close, finish, start, or queue a task. The card can be identified by title (partial match) or ID. Defaults to the task board; pass `board` to operate on a shared board.',
       parameters: {
         type: 'object',
@@ -859,6 +793,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_create_card',
+      domains: ['deck', 'news'],
       description: 'Create a new card (task) on a board. ALWAYS include a description with relevant context from the conversation — findings, results, next steps, or details discussed. If the user asks to save findings or results to a card, include that content in the description field. Cards are created in the Inbox stack by default.',
       parameters: {
         type: 'object',
@@ -932,6 +867,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_list_boards',
+      domains: ['deck'],
       description: 'List all Deck boards accessible to you (owned and shared). Returns board names, IDs, and ownership info.',
       parameters: { type: 'object', properties: {}, required: [] },
       handler: async () => {
@@ -952,6 +888,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_get_board',
+      domains: ['deck'],
       description: 'Get details of a specific Deck board including its stacks, labels, and sharing settings. Accepts board name (partial match) or ID.',
       parameters: {
         type: 'object',
@@ -983,6 +920,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_create_board',
+      domains: ['deck'],
       description: 'Create a new Deck board. You will own this board.',
       parameters: {
         type: 'object',
@@ -1010,6 +948,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_rename_board',
+      domains: ['deck'],
       description: 'Rename an existing Deck board.',
       parameters: {
         type: 'object',
@@ -1034,6 +973,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_archive_board',
+      domains: ['deck'],
       description: 'Archive a Deck board. Archived boards are hidden from the default view but not deleted.',
       parameters: {
         type: 'object',
@@ -1057,6 +997,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_delete_board',
+      domains: ['deck'],
       description: 'Permanently delete a Deck board and all its stacks and cards. This is irreversible and requires confirmation.',
       parameters: {
         type: 'object',
@@ -1082,6 +1023,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_list_stacks',
+      domains: ['deck'],
       description: 'List all stacks (columns) in a Deck board with card counts. Accepts board name (partial match) or ID.',
       parameters: {
         type: 'object',
@@ -1110,6 +1052,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_create_stack',
+      domains: ['deck'],
       description: 'Create a new stack (column) in a Deck board.',
       parameters: {
         type: 'object',
@@ -1136,6 +1079,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_rename_stack',
+      domains: ['deck'],
       description: 'Rename a stack (column) in a Deck board.',
       parameters: {
         type: 'object',
@@ -1168,6 +1112,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_delete_stack',
+      domains: ['deck'],
       description: 'Permanently delete a stack (column) and all its cards from a Deck board. This is irreversible and requires confirmation.',
       parameters: {
         type: 'object',
@@ -1201,6 +1146,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_get_card',
+      domains: ['deck'],
       description: 'Get full details of a card including description, due date, assigned users, labels, and comments. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to read from a shared board.',
       parameters: {
         type: 'object',
@@ -1251,6 +1197,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_update_card',
+      domains: ['deck'],
       description: 'Update a card\'s title, description, or due date. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to update a card on a shared board.',
       parameters: {
         type: 'object',
@@ -1302,6 +1249,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_delete_card',
+      domains: ['deck'],
       description: 'Delete a card from the board. This is destructive and requires confirmation. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to delete a card on a shared board.',
       parameters: {
         type: 'object',
@@ -1332,6 +1280,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_assign_user',
+      domains: ['deck'],
       description: 'Assign a user to a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to assign on a shared board.',
       parameters: {
         type: 'object',
@@ -1377,6 +1326,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_unassign_user',
+      domains: ['deck'],
       description: 'Remove a user assignment from a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to unassign on a shared board.',
       parameters: {
         type: 'object',
@@ -1411,6 +1361,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_set_due_date',
+      domains: ['deck'],
       description: 'Set or clear the due date on a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to update a card on a shared board.',
       parameters: {
         type: 'object',
@@ -1463,6 +1414,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_add_label',
+      domains: ['deck'],
       description: 'Add a label to a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to operate on a shared board. The label must already exist on the target board (use deck_create_label first if needed).',
       parameters: {
         type: 'object',
@@ -1501,6 +1453,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_remove_label',
+      domains: ['deck'],
       description: 'Remove a label from a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to operate on a shared board.',
       parameters: {
         type: 'object',
@@ -1538,6 +1491,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_create_label',
+      domains: ['deck'],
       description: 'Create a new label on a board. Use this when the board needs a label that doesn\'t exist yet.',
       parameters: {
         type: 'object',
@@ -1563,6 +1517,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_add_comment',
+      domains: ['deck'],
       description: 'Add a comment to a card. Use this to leave notes, updates, or communicate about a task. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to comment on a shared board.',
       parameters: {
         type: 'object',
@@ -1590,6 +1545,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_list_comments',
+      domains: ['deck'],
       description: 'List all comments on a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to read comments on a shared board.',
       parameters: {
         type: 'object',
@@ -1627,6 +1583,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_share_board',
+      domains: ['deck'],
       description: 'Share a board you own with another user or group. Requires confirmation.',
       parameters: {
         type: 'object',
@@ -1665,6 +1622,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_overview',
+      domains: ['deck'],
       description: 'Get a summary of all accessible boards: board names, card counts per stack, and overdue items. Use when asked for a board overview or status summary.',
       parameters: { type: 'object', properties: {}, required: [] },
       handler: async () => {
@@ -1701,6 +1659,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_my_assigned_cards',
+      domains: ['deck'],
       description: 'List all cards assigned to a user across all accessible boards. Defaults to you if no user specified.',
       parameters: {
         type: 'object',
@@ -1735,6 +1694,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_overdue_cards',
+      domains: ['deck'],
       description: 'List all cards with past due dates across all accessible boards.',
       parameters: { type: 'object', properties: {}, required: [] },
       handler: async () => {
@@ -1760,6 +1720,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_mark_done',
+      domains: ['deck'],
       description: 'Mark a card as done by moving it to the Done stack. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to mark a card on a shared board (requires a stack titled "Done" on that board).',
       parameters: {
         type: 'object',
@@ -1802,6 +1763,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_complete_task',
+      domains: ['deck'],
       description: 'Mark a task as complete: moves the card to Done and adds a completion comment.',
       parameters: {
         type: 'object',
@@ -1824,6 +1786,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_complete_review',
+      domains: ['deck'],
       description: 'Complete the review process: moves a card from Review to Done with an optional final note.',
       parameters: {
         type: 'object',
@@ -1848,6 +1811,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_setup_workflow',
+      domains: ['deck'],
       description: 'Create a new board with a set of named stacks (columns), optionally seed it with cards in the first stack, and optionally share it with a user. Use when asked to set up a workflow or project board with a defined column structure. Requires confirmation.',
       parameters: {
         type: 'object',
@@ -1928,6 +1892,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_troubleshoot',
+      domains: ['deck'],
       description: 'Diagnose board access and visibility issues. Lists accessible boards and reports whether a specific board exists. Does NOT perform sharing — if a share is needed, use deck_share_board.',
       parameters: {
         type: 'object',
@@ -1985,6 +1950,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_list_events',
+      domains: ['calendar'],
       description: 'List upcoming calendar events. Returns event titles, times, and descriptions.',
       parameters: {
         type: 'object',
@@ -2021,6 +1987,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_create_event',
+      domains: ['calendar'],
       description: 'Create a calendar event. Optionally checks availability first (set check_availability: true). Supports attendees with automatic invitation emails. Use duration_minutes OR end to set the event length (default: 60 minutes).',
       parameters: {
         type: 'object',
@@ -2156,6 +2123,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_update_event',
+      domains: ['calendar'],
       description: 'Update an existing calendar event. Use to reschedule, rename, change duration, add attendees, or modify any event property.',
       parameters: {
         type: 'object',
@@ -2263,6 +2231,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_delete_event',
+      domains: ['calendar'],
       description: 'Delete a calendar event.',
       parameters: {
         type: 'object',
@@ -2293,6 +2262,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_check_availability',
+      domains: ['calendar'],
       description: 'Check whether a time slot is free. Returns availability and any conflicting events. If end is omitted, checks a 1-hour window from start.',
       parameters: {
         type: 'object',
@@ -2341,6 +2311,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_cancel_meeting',
+      domains: ['calendar'],
       description: 'Cancel a scheduled meeting and send cancellation notices to all attendees.',
       parameters: {
         type: 'object',
@@ -2373,6 +2344,7 @@ class ToolRegistry {
 
     this.register({
       name: 'meeting_compose',
+      domains: ['calendar'],
       description: 'Start or continue a smart meeting scheduling flow. Resolves participant names from Nextcloud Contacts, checks calendar conflicts, asks for confirmation, creates the event, sends invitations, and tracks RSVPs on Deck. Works in multiple languages (EN/DE/PT). Use this for natural language meeting requests like "Schedule a meeting with João and Maria next Tuesday at 2pm".',
       parameters: {
         type: 'object',
@@ -2409,6 +2381,7 @@ class ToolRegistry {
 
     this.register({
       name: 'meeting_check_rsvp',
+      domains: ['calendar'],
       description: 'Check RSVP status for a scheduled meeting. Shows who accepted, declined, or hasn\'t responded yet.',
       parameters: {
         type: 'object',
@@ -2475,6 +2448,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_read',
+      domains: ['file'],
       description: 'Read the contents of a text file from Nextcloud. Works with .txt, .md, .json, .csv, .yaml, .html, .xml, and similar text files. For PDF or Word documents, use file_extract instead.',
       parameters: {
         type: 'object',
@@ -2512,6 +2486,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_list',
+      domains: ['file'],
       description: 'List files and folders in a Nextcloud directory. Shows name, size, modified date, and type.',
       parameters: {
         type: 'object',
@@ -2576,6 +2551,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_write',
+      domains: ['file'],
       description: 'Write content to a file in your Nextcloud workspace. Creates the file if it doesn\'t exist, overwrites if it does.',
       parameters: {
         type: 'object',
@@ -2620,6 +2596,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_info',
+      domains: ['file'],
       description: 'Get metadata about a file: size, last modified, type, permissions, and whether it\'s shared.',
       parameters: {
         type: 'object',
@@ -2661,6 +2638,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_move',
+      domains: ['file'],
       description: 'Move or rename a file within Nextcloud.',
       parameters: {
         type: 'object',
@@ -2683,6 +2661,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_copy',
+      domains: ['file'],
       description: 'Copy a file to a new location.',
       parameters: {
         type: 'object',
@@ -2705,6 +2684,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_delete',
+      domains: ['file'],
       description: 'Delete a file or folder. Requires confirmation.',
       parameters: {
         type: 'object',
@@ -2726,6 +2706,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_mkdir',
+      domains: ['file'],
       description: 'Create a new folder in your workspace.',
       parameters: {
         type: 'object',
@@ -2747,6 +2728,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_share',
+      domains: ['file'],
       description: 'Share a file or folder with a user. Uses NC\'s native sharing. Requires confirmation.',
       parameters: {
         type: 'object',
@@ -2773,6 +2755,7 @@ class ToolRegistry {
     if (extractor) {
       this.register({
         name: 'file_extract',
+        domains: ['file'],
         description: 'Extract text content from PDF, Word (.docx), or Excel (.xlsx) files. Downloads the file and extracts readable text.',
         parameters: {
           type: 'object',
@@ -2825,6 +2808,7 @@ class ToolRegistry {
 
     this.register({
       name: 'unified_search',
+      domains: ['search'],
       description: 'Search across everything in Nextcloud — files, tasks, calendar events, contacts, chat messages. Use when you don\'t know which app contains what you\'re looking for.',
       parameters: {
         type: 'object',
@@ -2891,6 +2875,7 @@ class ToolRegistry {
 
     this.register({
       name: 'tag_file',
+      domains: ['file'],
       description: 'Assign a system tag to a file. Tags: pending, processed, needs-review, ai-flagged.',
       parameters: {
         type: 'object',
@@ -2927,6 +2912,7 @@ class ToolRegistry {
 
     this.register({
       name: 'memory_recall',
+      domains: ['search'],
       description: 'Search the learning log for information about a topic. Use this when you need to recall something previously learned.',
       parameters: {
         type: 'object',
@@ -2972,6 +2958,7 @@ class ToolRegistry {
 
     this.register({
       name: 'wiki_read',
+      domains: ['wiki'],
       description: 'Read a page from the Moltagent Knowledge wiki. Returns page content with frontmatter metadata summary.',
       parameters: {
         type: 'object',
@@ -3013,6 +3000,7 @@ class ToolRegistry {
 
     this.register({
       name: 'wiki_write',
+      domains: ['wiki'],
       description: 'Create or update a page in the Moltagent Knowledge wiki. Content can include YAML frontmatter between --- delimiters. To ADD to an existing page rather than replace it, call wiki_read first, then wiki_write with the merged content.',
       parameters: {
         type: 'object',
@@ -3176,6 +3164,7 @@ class ToolRegistry {
 
     this.register({
       name: 'wiki_search',
+      domains: ['wiki'],
       description: 'Search the Moltagent Knowledge wiki for pages matching a query.',
       parameters: {
         type: 'object',
@@ -3264,6 +3253,7 @@ class ToolRegistry {
 
     this.register({
       name: 'wiki_list',
+      domains: ['wiki', 'search'],
       description: 'List pages in a section of the Moltagent Knowledge wiki. Sections: People, Projects, Procedures, Research, Meta.',
       parameters: {
         type: 'object',
@@ -3323,6 +3313,7 @@ class ToolRegistry {
 
     this.register({
       name: 'wiki_delete',
+      domains: ['wiki'],
       description: 'Delete (trash) a page from the Moltagent Knowledge wiki. This action cannot be undone.',
       parameters: {
         type: 'object',
@@ -3366,6 +3357,7 @@ class ToolRegistry {
     if (searxng) {
       this.register({
         name: 'web_search',
+        universal: true,
         description: 'Search the web via SearXNG (default) or commercial providers. Use provider="multi" to query all available sources in parallel with deduplication.',
         parameters: {
           type: 'object',
@@ -3475,6 +3467,7 @@ class ToolRegistry {
     if (webReader) {
       this.register({
         name: 'web_read',
+        domains: ['search'],
         description: 'Fetch and extract readable content from a URL. Returns article text, title, and metadata.',
         parameters: {
           type: 'object',
@@ -3508,6 +3501,7 @@ class ToolRegistry {
 
     this.register({
       name: 'contacts_search',
+      domains: ['email', 'search'],
       description: 'Search Nextcloud Contacts (address book) by name. Returns matching contacts with name, email, phone, and organization. Use when you need to find someone\'s email or contact details.',
       parameters: {
         type: 'object',
@@ -3555,6 +3549,7 @@ class ToolRegistry {
 
     this.register({
       name: 'contacts_get',
+      domains: ['email'],
       description: 'Get full details for a specific contact by their CardDAV href. Use after contacts_search to get complete contact information.',
       parameters: {
         type: 'object',
@@ -3608,6 +3603,7 @@ class ToolRegistry {
 
     this.register({
       name: 'contacts_resolve',
+      domains: ['email'],
       description: 'Look up a contact by name. Returns email, phone, and other details. Handles partial names and disambiguates if multiple matches are found.',
       parameters: {
         type: 'object',
@@ -3653,6 +3649,7 @@ class ToolRegistry {
 
     this.register({
       name: 'memory_search',
+      domains: ['email', 'wiki', 'search'],
       description: 'Search across your knowledge wiki, Talk conversations, files, tasks, and calendar. Use to recall past decisions, people, project details, conversations, or events. Supports time filtering with since/until.',
       parameters: {
         type: 'object',
@@ -3724,6 +3721,7 @@ class ToolRegistry {
 
     this.register({
       name: 'workflow_deck_move_card',
+      domains: ['workflow'],
       description: 'Move a card to a different stack using raw numeric IDs. Use this in workflow processing to move cards between stacks on any board.',
       parameters: {
         type: 'object',
@@ -3750,6 +3748,7 @@ class ToolRegistry {
 
     this.register({
       name: 'workflow_deck_add_comment',
+      domains: ['workflow'],
       description: 'Add a comment to a card using its numeric ID. Use this in workflow processing to log actions on cards in any board.',
       parameters: {
         type: 'object',
@@ -3775,6 +3774,7 @@ class ToolRegistry {
 
     this.register({
       name: 'workflow_deck_create_card',
+      domains: ['workflow'],
       description: 'Create a card on any board. Provide board_id and either stack (name) or stack_id. Stack names are resolved against the target board to avoid cross-board ID mismatches.',
       parameters: {
         type: 'object',
@@ -3845,6 +3845,7 @@ class ToolRegistry {
 
     this.register({
       name: 'workflow_deck_update_card',
+      domains: ['workflow'],
       description: 'Update a card on any board using raw numeric IDs. Use this in workflow processing to modify card title, description, or due date.',
       parameters: {
         type: 'object',
@@ -3908,6 +3909,7 @@ class ToolRegistry {
 
     this.register({
       name: 'workflow_deck_assign_label',
+      domains: ['workflow'],
       description: 'Assign a label to a card using raw numeric IDs. Use this in workflow processing to add labels (e.g. GATE, APPROVED) to cards on any board.',
       parameters: {
         type: 'object',
@@ -3943,6 +3945,7 @@ class ToolRegistry {
     if (emailHandler) {
       this.register({
         name: 'mail_send',
+        domains: ['email'],
         description: 'Send an email. REQUIRES human approval before execution. Provide recipient, subject, and body. The email will be sent via SMTP from the configured Moltagent email account.',
         parameters: {
           type: 'object',
@@ -3980,6 +3983,7 @@ class ToolRegistry {
     if (newsClient) {
       this.register({
         name: 'news_get_items',
+        domains: ['news'],
         description: 'Get recent unread articles from NC News RSS feeds. Returns title, URL, body summary, and feed source for each item.',
         parameters: {
           type: 'object',
@@ -4016,6 +4020,7 @@ class ToolRegistry {
 
       this.register({
         name: 'news_list_feeds',
+        domains: ['news'],
         description: 'List all RSS feeds subscribed in NC News with their unread counts.',
         parameters: {
           type: 'object',
@@ -4043,6 +4048,7 @@ class ToolRegistry {
 
       this.register({
         name: 'news_mark_read',
+        domains: ['news'],
         description: 'Mark a news item as read after it has been evaluated or turned into a Deck card.',
         parameters: {
           type: 'object',
