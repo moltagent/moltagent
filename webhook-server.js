@@ -1596,13 +1596,18 @@ async function initialize() {
         // thunk: modelResolver is constructed later in this bootstrap, so read it
         // at classify time, not now. Returns 'local-only' | 'cloud-ok' | null.
         getTrust: () => modelResolver?.resolveTrust?.('classification') || null,
+        // Classification models come from ModelResolver, the single source of
+        // truth for per-job model selection (design doc §8). Same lazy-thunk
+        // reason as getTrust: the resolver is built further down this bootstrap.
+        // resolve('classification') is the primary classifier; resolve('quick')
+        // the fast fallback. No model name is hardcoded at the call site.
+        getSmartModel: () => modelResolver?.resolveModel?.('classification') || null,
+        getFastModel: () => modelResolver?.resolveModel?.('quick') || null,
         config: {
-          classifyTimeout: appConfig.ollama.classifyTimeout,
-          fastModel: appConfig.ollama.classifyModel || 'qwen2.5:3b',
-          smartModel: appConfig.ollama.smartModel || 'qwen3:8b'
+          classifyTimeout: appConfig.ollama.classifyTimeout
         }
       }) : null;
-      if (intentRouter) console.log(`[INIT] IntentRouter ready (fast: ${appConfig.ollama.classifyModel || 'qwen2.5:3b'}, smart: ${appConfig.ollama.smartModel || 'qwen3:8b'}, timeout: ${appConfig.ollama.classifyTimeout}ms)`);
+      if (intentRouter) console.log(`[INIT] IntentRouter ready (classification models via ModelResolver, timeout: ${appConfig.ollama.classifyTimeout}ms)`);
 
       // claudeProvider: first anthropic provider, kept for ProviderChain fallback path below
       const claudeProvider = claudeConfig.adapter === 'anthropic' && claudeConfig.credentialName
@@ -2027,7 +2032,7 @@ async function initialize() {
         if (modelResolver) {
           modelResolver.modelScout = modelScout;
           modelResolver.refresh();
-          const { summary, divergences } = modelResolver.describe(['tools', 'thinking', 'quick']);
+          const { summary, divergences } = modelResolver.describe(['tools', 'thinking', 'quick', 'classification']);
           console.log(`[INIT] Model resolver: ${summary}`);
           for (const d of divergences) {
             console.warn(`[WARN] ${d}`);

@@ -223,4 +223,77 @@ asyncTest('fast model gets base timeout when used as fallback', async () => {
   assert.strictEqual(timeouts[1].timeout, 5000, 'Fast model uses base timeout');
 });
 
+// -- Test 13: resolver accessors drive model selection (Cleanup B) --
+asyncTest('resolver-provided models drive classification (getSmartModel/getFastModel)', async () => {
+  const calls = [];
+  const provider = {
+    chat: async ({ model }) => {
+      calls.push(model);
+      if (calls.length === 1) throw new Error('primary down'); // force fallback
+      return { content: JSON.stringify({ intent: 'deck_move' }) };
+    }
+  };
+  const router = new IntentRouter({
+    provider,
+    config: { classifyTimeout: 1000 },
+    getSmartModel: () => 'resolved-smart',
+    getFastModel: () => 'resolved-fast'
+  });
+  const result = await router.classify('Move the onboarding task to done');
+  assert.strictEqual(calls[0], 'resolved-smart', 'primary classify uses resolver classification model');
+  assert.strictEqual(calls[1], 'resolved-fast', 'fallback uses resolver quick model');
+  assert.strictEqual(result.domain, 'deck');
+});
+
+// -- Test 14: identical primary/fallback model skips the doomed retry (Cleanup B) --
+// When the resolver maps 'classification' and 'quick' to the same local model,
+// re-running it on a shorter timeout after it just failed cannot help. The
+// fallback is skipped and classification drops straight to the regex last resort.
+asyncTest('identical primary/fallback model skips the doomed retry', async () => {
+  const calls = [];
+  const provider = {
+    chat: async ({ model }) => { calls.push(model); throw new Error('model down'); }
+  };
+  const router = new IntentRouter({
+    provider,
+    getTrust: () => 'local-only',
+    getSmartModel: () => 'gemma2:2b',
+    getFastModel: () => 'gemma2:2b', // same model — a second attempt would be doomed
+    config: { classifyTimeout: 1000 }
+  });
+  const result = await router.classify('send an email to the team about the update');
+  assert.strictEqual(calls.length, 1, 'Only the primary call fires; the identical fallback is skipped');
+  assert.strictEqual(calls[0], 'gemma2:2b');
+  // regex last resort catches "send" (action verb) + "email" (domain)
+  assert.strictEqual(result.gate, 'action');
+  assert.strictEqual(result.domain, 'email');
+});
+
+// -- Test 15: cloud-router failure still falls back to the local model --
+// The primary ran through the router (not a local model), so primaryLocalModel is
+// null and the local fallback must still fire — the same-model skip must NOT eat
+// the cloud→local safety net.
+asyncTest('cloud-router failure falls back to the local model', async () => {
+  const calls = [];
+  const provider = {
+    chat: async ({ model }) => { calls.push(model); return { content: JSON.stringify({ intent: 'deck_move' }) }; }
+  };
+  const llmRouter = {
+    hasCloudPlayers: () => true,
+    route: async () => { throw new Error('cloud down'); }
+  };
+  const router = new IntentRouter({
+    provider,
+    llmRouter,
+    getTrust: () => 'cloud-ok',
+    getSmartModel: () => 'gemma2:2b',
+    getFastModel: () => 'gemma2:2b',
+    config: { classifyTimeout: 1000 }
+  });
+  const result = await router.classify('Move the onboarding task to done');
+  assert.strictEqual(calls.length, 1, 'Local fallback fires after cloud failure (router is not a tried local model)');
+  assert.strictEqual(calls[0], 'gemma2:2b');
+  assert.strictEqual(result.domain, 'deck');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);
