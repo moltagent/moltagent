@@ -1,0 +1,49 @@
+{
+  "_comment": "Golden-set classification fixture (#golden-set-probe). Ground truth for the install-time probe that selects the classification model by measured per-language accuracy, not by size. The 12 messages are PARALLEL across EN/DE/PT (same intents, translated) so a per-language accuracy gap reflects a model's language handling, not different difficulty. Scoring: a prediction is correct when predicted.gate === expected.gate AND (expected.domain === null OR predicted.domain === expected.domain). Gates: knowledge|action|compound|thinking|greeting. Domains: deck|calendar|email|wiki|file|null. Calendar/deck READS classify as action (#134). HUMAN DEPENDENCY: the DE and PT labels are the operational definition of correctness per language — a mislabeled example silently selects the wrong model for that language. These need a native-speaker read (Fu) before merge.",
+  "version": 1,
+  "threshold": 0.75,
+  "languages": {
+    "EN": [
+      { "id": 1,  "message": "What is a sovereign AI agent?",                                  "gate": "knowledge", "domain": null },
+      { "id": 2,  "message": "How does the trust boundary work?",                              "gate": "knowledge", "domain": null },
+      { "id": 3,  "message": "Who leads the marketing project?",                               "gate": "knowledge", "domain": null },
+      { "id": 4,  "message": "Summarize the notes from yesterday's meeting.",                  "gate": "knowledge", "domain": null },
+      { "id": 5,  "message": "Create a card for the website redesign.",                        "gate": "action",    "domain": "deck" },
+      { "id": 6,  "message": "Send an email to Alex about the budget.",                        "gate": "action",    "domain": "email" },
+      { "id": 7,  "message": "Schedule a meeting with the design team on Friday.",            "gate": "action",    "domain": "calendar" },
+      { "id": 8,  "message": "Write a wiki page about the onboarding process.",               "gate": "action",    "domain": "wiki" },
+      { "id": 9,  "message": "List the files in the Projects folder.",                         "gate": "action",    "domain": "file" },
+      { "id": 10, "message": "Should we focus on the mobile app or the web platform this quarter?", "gate": "thinking", "domain": null },
+      { "id": 11, "message": "Create a task for the report and email Alex about it.",          "gate": "compound",  "domain": null },
+      { "id": 12, "message": "Good morning!",                                                  "gate": "greeting",  "domain": null }
+    ],
+    "DE": [
+      { "id": 1,  "message": "Was ist ein souveräner KI-Agent?",                               "gate": "knowledge", "domain": null },
+      { "id": 2,  "message": "Wie funktioniert die Vertrauensgrenze?",                         "gate": "knowledge", "domain": null },
+      { "id": 3,  "message": "Wer leitet das Marketing-Projekt?",                              "gate": "knowledge", "domain": null },
+      { "id": 4,  "message": "Fasse die Notizen vom gestrigen Meeting zusammen.",             "gate": "knowledge", "domain": null },
+      { "id": 5,  "message": "Erstelle eine Karte für das Website-Redesign.",                 "gate": "action",    "domain": "deck" },
+      { "id": 6,  "message": "Schick eine E-Mail an Alex wegen des Budgets.",                 "gate": "action",    "domain": "email" },
+      { "id": 7,  "message": "Plane am Freitag ein Meeting mit dem Design-Team.",             "gate": "action",    "domain": "calendar" },
+      { "id": 8,  "message": "Schreib eine Wiki-Seite über den Onboarding-Prozess.",          "gate": "action",    "domain": "wiki" },
+      { "id": 9,  "message": "Liste die Dateien im Projekte-Ordner auf.",                      "gate": "action",    "domain": "file" },
+      { "id": 10, "message": "Sollten wir uns dieses Quartal auf die mobile App oder die Web-Plattform konzentrieren?", "gate": "thinking", "domain": null },
+      { "id": 11, "message": "Erstelle eine Aufgabe für den Bericht und schick Alex eine E-Mail dazu.", "gate": "compound", "domain": null },
+      { "id": 12, "message": "Guten Morgen!",                                                  "gate": "greeting",  "domain": null }
+    ],
+    "PT": [
+      { "id": 1,  "message": "O que é um agente de IA soberano?",                              "gate": "knowledge", "domain": null },
+      { "id": 2,  "message": "Como funciona a fronteira de confiança?",                        "gate": "knowledge", "domain": null },
+      { "id": 3,  "message": "Quem lidera o projeto de marketing?",                            "gate": "knowledge", "domain": null },
+      { "id": 4,  "message": "Resume as notas da reunião de ontem.",                           "gate": "knowledge", "domain": null },
+      { "id": 5,  "message": "Cria um cartão para o redesign do site.",                        "gate": "action",    "domain": "deck" },
+      { "id": 6,  "message": "Envia um e-mail ao Alex sobre o orçamento.",                     "gate": "action",    "domain": "email" },
+      { "id": 7,  "message": "Agenda uma reunião com a equipa de design na sexta-feira.",     "gate": "action",    "domain": "calendar" },
+      { "id": 8,  "message": "Escreve uma página wiki sobre o processo de integração.",        "gate": "action",    "domain": "wiki" },
+      { "id": 9,  "message": "Lista os ficheiros na pasta Projetos.",                          "gate": "action",    "domain": "file" },
+      { "id": 10, "message": "Devemos focar-nos na app móvel ou na plataforma web este trimestre?", "gate": "thinking", "domain": null },
+      { "id": 11, "message": "Cria uma tarefa para o relatório e envia um e-mail ao Alex sobre isso.", "gate": "compound", "domain": null },
+      { "id": 12, "message": "Bom dia!",                                                       "gate": "greeting",  "domain": null }
+    ]
+  }
+}

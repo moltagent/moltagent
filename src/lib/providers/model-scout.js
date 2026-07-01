@@ -52,7 +52,8 @@ class ModelScout {
         family: this._extractFamily(m),
         paramSize: this._extractParamSize(m),
         sizeBytes: m.size || 0,
-        modifiedAt: m.modified_at || null
+        modifiedAt: m.modified_at || null,
+        digest: m.digest || null
       }));
 
       // Layer 0 (Declared): ask each model what it can do rather than inferring
@@ -136,6 +137,20 @@ class ModelScout {
 
     this._roster = roster;
     return roster;
+  }
+
+  /**
+   * Capability-eligible text-generation models, sorted smallest-first, for
+   * the golden-set probe (which measures classification accuracy per
+   * language rather than assuming smallest-is-best from a size prior).
+   * @returns {Array<{name: string, paramSize: number|null, digest: string|null}>}
+   */
+  getClassificationCandidates() {
+    if (!this._discovered || this._discovered.length === 0) return [];
+    return this._discovered
+      .filter(m => this._isTextGen(m))
+      .sort((a, b) => this._compareSize(a, b))
+      .map(m => ({ name: m.name, paramSize: m.paramSize, digest: m.digest || null }));
   }
 
   /**

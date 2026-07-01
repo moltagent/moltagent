@@ -421,18 +421,20 @@ try {
 const CostTracker = require('./src/lib/llm/cost-tracker');
 
 // Local Intelligence: ModelScout + MicroPipeline + DeferralQueue
-let ModelScout, MicroPipeline, MemoryContextEnricher, DeferralQueue;
+let ModelScout, MicroPipeline, MemoryContextEnricher, DeferralQueue, GoldenSetProbe;
 try {
   ({ ModelScout } = require('./src/lib/providers/model-scout'));
   MicroPipeline = require('./src/lib/agent/micro-pipeline');
   MemoryContextEnricher = require('./src/lib/agent/memory-context-enricher');
   DeferralQueue = require('./src/lib/agent/deferral-queue');
+  GoldenSetProbe = require('./src/lib/llm/golden-set-probe');
 } catch (err) {
   console.warn(`[WARN] Local Intelligence modules not available: ${err.message}`);
   ModelScout = null;
   MicroPipeline = null;
   MemoryContextEnricher = null;
   DeferralQueue = null;
+  GoldenSetProbe = null;
 }
 
 // Configuration (NO secrets - only non-sensitive config)
@@ -2036,6 +2038,32 @@ async function initialize() {
           console.log(`[INIT] Model resolver: ${summary}`);
           for (const d of divergences) {
             console.warn(`[WARN] ${d}`);
+          }
+        }
+
+        // Golden-set probe: measure classification accuracy per language and select
+        // the smallest local model that clears the bar (ground truth beats size).
+        // Non-blocking — boot and first requests proceed on ModelScout's size-prior
+        // pick; the probe's finding (if any) overrides it once it lands.
+        if (GoldenSetProbe && modelResolver && intentRouter) {
+          try {
+            const fixture = GoldenSetProbe.loadFixture(path.join(__dirname, 'test/fixtures/golden-set/classification-golden-set.json'));
+            const probe = new GoldenSetProbe({
+              classifyFn: (m, msg, lang) => intentRouter.probeClassify(m, msg, lang),
+              fixture,
+              cacheDir: path.join(__dirname, 'data'),
+              logger: console,
+            });
+            probe.run(modelScout.getClassificationCandidates())
+              .then(sel => {
+                if (sel && sel.model) {
+                  modelResolver.setGroundTruthOverride('classification', sel.model);
+                  console.log(`[INIT] Golden-set probe: classification -> ${sel.model} (EN ${sel.scores?.EN} DE ${sel.scores?.DE} PT ${sel.scores?.PT}, ${sel.passed ? 'passed' : sel.reason})`);
+                }
+              })
+              .catch(err => console.warn(`[INIT] Golden-set probe failed: ${err.message}`));
+          } catch (err) {
+            console.warn(`[INIT] Golden-set probe setup failed: ${err.message}`);
           }
         }
       }).catch(err => {
