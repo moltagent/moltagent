@@ -13,6 +13,8 @@
 
 'use strict';
 
+const { normalizeCapabilities, isDedicatedTextGenerator } = require('./capability-classes');
+
 class ModelScout {
   /**
    * @param {Object} config
@@ -240,15 +242,16 @@ class ModelScout {
 
   /** Declared capabilities of a model, defaulting to text-generation. */
   _capsOf(model) {
-    return Array.isArray(model.capabilities) && model.capabilities.length > 0
-      ? model.capabilities
-      : ['completion'];
+    return normalizeCapabilities(model.capabilities);
   }
 
-  /** Whether a model may serve text jobs (embedding-only and vision excluded). */
+  /**
+   * Whether a model may serve local text jobs. Delegates to the shared
+   * capability-class policy (a dedicated text generator — embedding-only and
+   * vision specialists excluded), so local and cloud speak one vocabulary.
+   */
   _isTextGen(model) {
-    const caps = this._capsOf(model);
-    return caps.includes('completion') && !caps.includes('embedding') && !caps.includes('vision');
+    return isDedicatedTextGenerator(model.capabilities);
   }
 
   /** Compare by capacity ascending (param size, then file size). (b,a) => largest-first. */

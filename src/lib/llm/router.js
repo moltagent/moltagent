@@ -16,6 +16,8 @@
  */
 
 const { createProvider } = require('./providers');
+const { cloudCapabilities } = require('../providers/cloud-model-descriptor');
+const { isToolCapable, classesOf } = require('../providers/capability-classes');
 const RateLimitTracker = require('./rate-limit-tracker');
 const BudgetEnforcer = require('./budget-enforcer');
 const BackoffStrategy = require('./backoff-strategy');
@@ -121,6 +123,10 @@ class LLMRouter {
     this._roster = null;
     this._activePreset = null;
 
+    // Cloud providers whose capabilities are not in the descriptor — logged once
+    // each (a maintainer adds them) rather than re-warned on every roster rebuild.
+    this._loggedUnknownCloudCaps = new Set();
+
     // Stats
     this.stats = {
       totalCalls: 0,
@@ -152,6 +158,11 @@ class LLMRouter {
           ...providerConfig,
           getCredential
         });
+
+        // Record the adapter the deployer configured so the cloud capability
+        // gate can look this player up in the descriptor (a datasheet keyed on
+        // the API contract, not a guess from the model name).
+        provider.adapter = adapter;
 
         this.providers.set(id, provider);
       } catch (error) {
@@ -643,8 +654,12 @@ class LLMRouter {
 
       // Tools: cheapest cloud first (Haiku — reliable structured output, 2-3s),
       // local fallback for sovereign mode. Local models (qwen3:8b) take 60-70s
-      // and produce unreliable structured JSON.
-      roster[JOBS.TOOLS] = [...new Set([cheapest, ...local].filter(Boolean))];
+      // and produce unreliable structured JSON. Capability gate (Declared, cloud):
+      // the tools job draws only from tool-capable cloud models, so a non-tool
+      // cloud model (an embedding endpoint) never lands in the tools roster.
+      const toolCloud = this._classifyCloudProviders(this._toolCapableCloudIds(cloudIds));
+      const toolCheapest = [...toolCloud.rest].reverse()[0] || toolCloud.workhorse || toolCloud.heavy;
+      roster[JOBS.TOOLS] = [...new Set([toolCheapest, ...local].filter(Boolean))];
 
       // Research: cheapest cloud (Haiku — sufficient quality, ~10x cheaper than Sonnet)
       roster[JOBS.RESEARCH] = [...new Set([cheapest, ...local].filter(Boolean))];
@@ -686,6 +701,66 @@ class LLMRouter {
   }
 
   /**
+   * Declared capabilities of a cloud provider, read from the descriptor keyed on
+   * the adapter the deployer configured (and any per-model override). Returns
+   * null for a local provider; `source: 'unknown'` when the model is not in the
+   * datasheet.
+   * @private
+   * @param {string} id - Provider ID
+   * @returns {{ capabilities: string[]|null, source: string }|null}
+   */
+  _cloudCapabilitiesOf(id) {
+    const provider = this.providers.get(id);
+    if (!provider || provider.type === 'local') return null;
+    return cloudCapabilities({ adapter: provider.adapter, model: provider.model });
+  }
+
+  /**
+   * Filter cloud provider IDs to those a datasheet declares tool-capable. A
+   * model the descriptor does not know is kept (never drop a working provider on
+   * a gap in the datasheet) but logged once so a maintainer adds it. A model the
+   * descriptor declares non-tool (e.g. an embedding endpoint) is excluded.
+   * @private
+   * @param {string[]} cloudIds
+   * @returns {string[]}
+   */
+  _toolCapableCloudIds(cloudIds) {
+    return cloudIds.filter((id) => {
+      const caps = this._cloudCapabilitiesOf(id);
+      if (!caps || caps.source === 'unknown' || caps.capabilities === null) {
+        if (!this._loggedUnknownCloudCaps.has(id)) {
+          this._loggedUnknownCloudCaps.add(id);
+          const model = this.providers.get(id)?.model || '(unknown model)';
+          console.log(`[LLMRouter] Cloud model not in capability descriptor: ${id} (${model}); assuming tool-capable and keeping it in the tools roster. Add it to cloud-model-descriptor.js.`);
+        }
+        return true;
+      }
+      return isToolCapable(caps.capabilities);
+    });
+  }
+
+  /**
+   * Report each cloud provider's capability classes, for the startup log and the
+   * verification gate. Uses the same shared classifier as the local roster, so a
+   * local and a cloud model are classed by one function.
+   * @returns {Array<{ id: string, model: string, classes: string[], source: string }>}
+   */
+  describeCloudCapabilityClasses() {
+    const out = [];
+    for (const [id, provider] of this.providers) {
+      if (provider.type === 'local') continue;
+      const caps = cloudCapabilities({ adapter: provider.adapter, model: provider.model });
+      out.push({
+        id,
+        model: provider.model || '(unknown)',
+        classes: caps.capabilities ? classesOf(caps.capabilities) : ['unknown'],
+        source: caps.source,
+      });
+    }
+    return out;
+  }
+
+  /**
    * Build a flat cloud-fast roster: cheapest + mid-tier cloud, no heavy (Opus).
    * Every job gets the same chain — no escalation.
    * @private
@@ -710,6 +785,14 @@ class LLMRouter {
     for (const job of VALID_JOBS) {
       roster[job] = [...chain];
     }
+
+    // Capability gate (Declared, cloud): the tools job draws only from
+    // tool-capable cloud models. Same policy as smart-mix/cloud-first.
+    const toolCloud = this._classifyCloudProviders(this._toolCapableCloudIds(cloudIds));
+    const toolCheapest = [...toolCloud.rest].reverse()[0] || toolCloud.workhorse || toolCloud.heavy;
+    const toolMid = toolCloud.rest.length > 0 ? toolCloud.workhorse : (toolCloud.workhorse !== toolCloud.heavy ? toolCloud.workhorse : null);
+    roster[JOBS.TOOLS] = [...new Set([toolCheapest, toolMid, ...localIds].filter(Boolean))];
+
     return roster;
   }
 
@@ -994,6 +1077,16 @@ class LLMRouter {
     this._roster = this._resolvePreset(presetName);
     this._activePreset = presetName;
     console.log(`[LLMRouter] Preset activated: ${presetName}`);
+
+    // Presets that route to cloud pass through the capability gate: log the
+    // classed cloud roster so the gate's decision is observable in production.
+    if (presetName === 'smart-mix' || presetName === 'cloud-first') {
+      const classed = this.describeCloudCapabilityClasses();
+      if (classed.length > 0) {
+        const summary = classed.map(c => `${c.id}[${c.classes.join('/')}]`).join(', ');
+        console.log(`[LLMRouter] Cloud capability classes (${presetName}): ${summary}`);
+      }
+    }
   }
 
   /**
