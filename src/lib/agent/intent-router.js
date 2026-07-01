@@ -456,19 +456,24 @@ class IntentRouter {
    * @param {string} model - Ollama model name
    * @param {string} message - User message
    * @param {Array} recentContext - Recent conversation context
+   * @param {Object} [opts]
+   * @param {boolean} [opts.slow=false]
+   * @param {string} [opts.language] - Force a specific language's examples
+   *   (e.g. for the golden-set probe). Defaults to the cockpit language.
    * @returns {Promise<{intent: string, domain: string|null, needsHistory: boolean, confidence: number}>}
    * @private
    */
-  async _classifyWithModel(model, message, recentContext = [], { slow = false } = {}) {
+  async _classifyWithModel(model, message, recentContext = [], { slow = false, language } = {}) {
     const userContent = this._buildUserContent(message, recentContext);
     // The primary (smart) classifier gets 4x the timeout; the fast fallback runs
     // on the base timeout. The caller signals which via `slow`, so timeout
     // scaling no longer depends on comparing against a hardcoded model name.
     const timeout = slow ? this.timeout * 4 : this.timeout;
+    const lang = language || this.getLanguage();
 
     const result = await this.provider.chat({
       model,
-      system: buildClassificationPrompt(this.getLanguage()),
+      system: buildClassificationPrompt(lang),
       messages: [{ role: 'user', content: userContent }],
       timeout,
       format: INTENT_SCHEMA,
@@ -479,6 +484,23 @@ class IntentRouter {
     });
 
     return this._parseClassification(result.content || '', message);
+  }
+
+  /**
+   * Classify one message with a specific model + language, for the
+   * golden-set probe (measured per-language accuracy, not size, picks the
+   * classification model). Runs the SAME classification path production
+   * uses so the probe scores exactly what production consumes.
+   * @param {string} model - Ollama model name
+   * @param {string} message - Message to classify
+   * @param {string} language - Language code the fixture example is written
+   *   in (e.g. 'EN', 'DE', 'PT') — forces the matching example set rather
+   *   than reading the cockpit's current persona language.
+   * @returns {Promise<{gate: string, domain: string|null}>}
+   */
+  async probeClassify(model, message, language) {
+    const r = await this._classifyWithModel(model, message, [], { slow: true, language });
+    return { gate: r.gate, domain: r.domain ?? null };
   }
 
   /**

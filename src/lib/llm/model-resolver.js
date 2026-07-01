@@ -101,7 +101,30 @@ class ModelResolver {
     // card changes (heartbeat). resolve() reads the cache between refreshes, so
     // no LLM call ever pays for re-reading config files or re-running ModelScout.
     this._cache = new Map();
+
+    // Ground-truth overrides (job → model name), set by the golden-set probe
+    // once it has MEASURED per-language classification accuracy rather than
+    // proxying correctness by model size. Deliberately NOT cleared by
+    // refresh() — refresh() re-snapshots ModelScout/Cockpit, which have no
+    // opinion on measured accuracy; the probe's finding survives until the
+    // probe itself revises or clears it.
+    this._groundTruthOverrides = {};
+
     this.refresh();
+  }
+
+  /**
+   * Set (or clear) the ground-truth override for a job, sourced from a
+   * measured probe (e.g. GoldenSetProbe) rather than size or config.
+   * Invalidates the job's cache entry so the next resolve() picks it up.
+   * @param {string} job
+   * @param {string|null} model - Pass null/falsy to clear the override.
+   */
+  setGroundTruthOverride(job, model) {
+    if (!job) return;
+    if (model) this._groundTruthOverrides[job] = model;
+    else delete this._groundTruthOverrides[job];
+    this._cache.delete(job);
   }
 
   /**
@@ -201,12 +224,17 @@ class ModelResolver {
   _resolveUncached(job) {
     const scout = this._scoutRoster ? (this._scoutRoster[job] || null) : null;
     const cockpit = this._cockpitModel || null; // explicit local model from the card, if any
+    // Measured per-language classification accuracy (GoldenSetProbe), when the
+    // probe has run for this job. Ground truth beats a size prior, but the
+    // human's deliberate Cockpit override still wins over a measurement.
+    const probePick = this._groundTruthOverrides[job] || null;
 
     const derivation = {
       deployerConfig: this.deployerModel,
       envOverride: this.envModel,
       modelScout: scout,
       cockpitCard: cockpit,
+      probePick,
       resolved: null,
     };
 
@@ -216,10 +244,14 @@ class ModelResolver {
       ? LOCAL_ONLY
       : (this._cockpitTrust || DEFAULT_TRUST);
 
-    // Model precedence (later wins): cockpit > model-scout > env > deployer > fallback.
+    // Model precedence (later wins): cockpit > golden-set-probe > model-scout
+    // > env > deployer > fallback. The probe sits above model-scout because it
+    // measured accuracy for the exact roster scout produced; it sits below
+    // cockpit because an explicit human override is always deliberate intent.
     let model = null;
     let source = 'fallback';
     if (cockpit) { model = cockpit; source = 'cockpit-card'; }
+    else if (probePick) { model = probePick; source = 'golden-set-probe'; }
     else if (scout) { model = scout; source = 'model-scout'; }
     else if (this.envModel) { model = this.envModel; source = 'env-override'; }
     else if (this.deployerModel) { model = this.deployerModel; source = 'deployer-config'; }
