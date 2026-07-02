@@ -1345,6 +1345,25 @@ if (LegacyLLMRouter) {
     assert.ok(ids.includes('claude-haiku'), 'cloud-fast: Haiku included');
   });
 
+  test('cloud-fast roster keeps credentials local-only (no cloud id in the chain)', () => {
+    const router = new LLMRouter({ auditLog: createMockAuditLog(), notifyUser: createMockNotifyUser() });
+    router.providers.set('anthropic-claude', opusProvider);
+    router.providers.set('claude-sonnet', sonnetProvider);
+    router.providers.set('claude-haiku', cloudProvider);
+    router.providers.set('ollama-fast', localProvider);
+
+    // Roster-level pin: the cloud-fast roster itself never lists cloud under
+    // credentials (key material never leaves the box), independent of the
+    // buildProviderChain enforcement that also blocks it downstream.
+    const roster = router._buildCloudFastRoster();
+    const cloudIds = ['anthropic-claude', 'claude-sonnet', 'claude-haiku'];
+    assert.ok(roster.credentials.length > 0, 'cloud-fast: credentials chain non-empty');
+    assert.ok(
+      roster.credentials.every(id => !cloudIds.includes(id)),
+      'cloud-fast roster: credentials chain is local-only'
+    );
+  });
+
   test('buildProviderChain: cloudTier fast uses flat roster (no job escalation)', () => {
     const router = new LLMRouter({ auditLog: createMockAuditLog(), notifyUser: createMockNotifyUser() });
     router.providers.set('anthropic-claude', opusProvider);
@@ -1372,6 +1391,23 @@ if (LegacyLLMRouter) {
     const { chain } = router.buildProviderChain('writing', { allowCloud: true });
     const ids = chain.map(e => e.id);
     assert.ok(ids.includes('anthropic-claude'), 'smart-mix writing: Opus included');
+  });
+
+  test('buildProviderChain: forceLocal on a smart-mix roster with a cloud primary returns no cloud provider (trust-narrowing invariant)', () => {
+    // A cloud-primary job (tools) under a smart-mix roster normally leads with
+    // cloud. forceLocal must narrow the chain to local-only regardless — this is
+    // the router-level guarantee the trust chokepoint (RouterChatBridge) relies on.
+    const router = new LLMRouter({ auditLog: createMockAuditLog(), notifyUser: createMockNotifyUser() });
+    router.providers.set('claude-haiku', cloudProvider);
+    router.providers.set('ollama-fast', localProvider);
+    router.providers.set('ollama-local', localProvider2);
+    router.setPreset('smart-mix');
+
+    const { chain } = router.buildProviderChain('tools', { forceLocal: true });
+    assert.ok(chain.length > 0, 'forceLocal must still yield a usable chain');
+    for (const entry of chain) {
+      assert.strictEqual(entry.provider.type, 'local', `forceLocal chain must contain only local providers, found ${entry.id}`);
+    }
   });
 }
 

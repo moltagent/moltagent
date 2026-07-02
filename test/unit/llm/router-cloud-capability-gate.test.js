@@ -59,13 +59,56 @@ test('cloud-first tools job excludes the non-tool cloud model', () => {
   assert.ok(!roster.tools.includes('openai-embed'));
 });
 
-test('non-tools cloud jobs are untouched this session (scope: tools gate only)', () => {
-  // Session 1 gates only the tools job. Other jobs keep cost-tier selection
-  // unchanged (broader per-job capability gating is Session 2). The cheapest
-  // cloud provider still leads a non-tool job.
+test('embedding endpoint excluded from ALL text job chains (Session 2: broader per-job gating)', () => {
+  // Session 1 gated only the tools job. Session 2 generalizes the gate to every
+  // job: the embedding endpoint (known capabilities: ['embedding']) must not
+  // appear in ANY text-generation chain, not just tools.
   const router = routerWithEmbeddingTrap();
   const roster = router._resolvePreset('smart-mix');
-  assert.strictEqual(roster.thinking[0], 'claude-haiku', 'depth job unchanged (Haiku is the priciest → heavy tier here)');
+  const textJobs = ['quick', 'classification', 'synthesis', 'decomposition', 'research', 'thinking', 'writing'];
+  for (const job of textJobs) {
+    assert.ok(!roster[job].includes('openai-embed'), `${job} chain must exclude the embedding endpoint`);
+    assert.strictEqual(roster[job][0], 'claude-haiku', `${job} chain should lead with the tool-capable/text-gen cloud, not the cheaper embedding endpoint`);
+  }
+});
+
+/**
+ * Router with a local model and two descriptor-known, tool-capable cloud
+ * models at different price points (anthropic Haiku pricier, google Gemini
+ * Flash cheaper) — exercises the cost-tier chain (_costTiers/_cloudDepthChain)
+ * against real adapters rather than the bare mock providers in router-jobs.test.js.
+ */
+function routerWithTwoCapableClouds() {
+  const router = new LLMRouter({
+    providers: {
+      'ollama-local': { adapter: 'ollama', type: 'local', model: 'qwen3:8b', endpoint: 'http://localhost:11434' },
+      'claude-haiku': { adapter: 'anthropic', type: 'api', model: 'claude-haiku-4-5-20251001', costModel: { type: 'per_token', inputPer1M: 0.8, outputPer1M: 4.0 } },
+      'gemini-flash': { adapter: 'google', type: 'api', model: 'gemini-1.5-flash', costModel: { type: 'per_token', inputPer1M: 0.075, outputPer1M: 0.3 } },
+    },
+  });
+  return router;
+}
+
+test('quick picks the cheapest capable cloud', () => {
+  const router = routerWithTwoCapableClouds();
+  const roster = router._resolvePreset('smart-mix');
+  assert.strictEqual(roster.quick[0], 'gemini-flash', 'cheapest capable cloud (Gemini Flash) leads quick');
+  assert.ok(!roster.quick.includes('claude-haiku'), 'cheapest depth is single-hop — the pricier cloud is not a fallback here');
+});
+
+test('thinking picks costliest-first (depth)', () => {
+  const router = routerWithTwoCapableClouds();
+  const roster = router._resolvePreset('smart-mix');
+  assert.strictEqual(roster.thinking[0], 'claude-haiku', 'depth job leads with the costliest capable cloud');
+  assert.strictEqual(roster.thinking[1], 'gemini-flash', 'mid/cheaper cloud is the next fallback');
+  assert.strictEqual(roster.thinking[2], 'ollama-local', 'local last (last-local rule)');
+});
+
+test('coding is tool-capable-gated (mid-first)', () => {
+  const router = routerWithEmbeddingTrap();
+  const roster = router._resolvePreset('smart-mix');
+  assert.ok(!roster.coding.includes('openai-embed'), 'embedding endpoint excluded from coding');
+  assert.strictEqual(roster.coding[0], 'claude-haiku', 'coding leads with the tool-capable cloud (mid-tier policy)');
 });
 
 test('unrecognized cloud model is kept in the tools roster (never dark) + logged once', () => {

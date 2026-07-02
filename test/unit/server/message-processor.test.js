@@ -1256,14 +1256,16 @@ asyncTest('TC-D133-04: _smartMixClassify returns domain on compound+domain path'
   assert.ok('domain' in result, 'domain key must be present');
 });
 
-asyncTest('TC-D133-05: _smartMixClassify catch-all cloud path — calendar action carries domain', async () => {
+asyncTest('TC-D133-05: _smartMixClassify catch-all path — calendar action carries domain', async () => {
   // Specimen: {gate:'action',intent:'calendar',domain:'calendar',compound:false}
-  // → domain==='calendar', useLocal===false
+  // → domain==='calendar', useLocalPipeline===false. This routes to the
+  // agent-loop path (not the local pipeline); trust is decided at the
+  // chokepoint (RouterChatBridge), not by this classifier.
   const proc = createSmartMixProcessor({ gate: 'action', intent: 'calendar', domain: 'calendar', needsHistory: false, confidence: 0.9, compound: false });
   const result = await proc._smartMixClassify('book a meeting', null, null, null);
   assert.ok('domain' in result, 'domain key must be present on catch-all cloud path');
   assert.strictEqual(result.domain, 'calendar', 'domain must be calendar');
-  assert.strictEqual(result.useLocal, false, 'calendar action must route to cloud in smart-mix mode');
+  assert.strictEqual(result.useLocalPipeline, false, 'calendar action routes to the agent-loop path, not the local pipeline');
 });
 
 asyncTest('TC-D133-06: _smartMixClassify classify-throws → {gate:null, domain:null, intent:\'error\'} no crash', async () => {
@@ -1305,6 +1307,55 @@ asyncTest('TC-D133-07: _smartMixClassify universal invariant — every path has 
     const result = await proc._smartMixClassify('test', null, null, null);
     assert.ok('domain' in result, `domain key missing for shape: ${JSON.stringify(shape)}`);
   }
+});
+
+asyncTest('_smartMixClassify returns useLocalPipeline (not useLocal) — the lying boolean is gone', async () => {
+  // Structural proof: the returned shape names a pipeline, not a trust
+  // destination. There is no useLocal key anywhere in the result.
+  const proc = createSmartMixProcessor({ gate: 'action', intent: 'calendar', domain: 'calendar', needsHistory: false, confidence: 0.9, compound: false });
+  const result = await proc._smartMixClassify('book a meeting', null, null, null);
+  assert.ok('useLocalPipeline' in result, 'result must carry useLocalPipeline');
+  assert.ok(!('useLocal' in result), 'the old useLocal key must not leak into the returned shape');
+});
+
+asyncTest('action path is not hardcoded to a trust destination', async () => {
+  // The catch-all action path names a PIPELINE (agent-loop), not a cloud
+  // decision — there is no trust field in the returned shape at all. The
+  // absence of a trust field IS the honesty property: the classifier stopped
+  // asserting a destination it does not control.
+  const proc = createSmartMixProcessor({ gate: 'action', intent: 'calendar', domain: 'calendar', needsHistory: false, confidence: 0.9, compound: false });
+  const result = await proc._smartMixClassify('book a meeting', null, null, null);
+  assert.strictEqual(result.useLocalPipeline, false, 'catch-all action does not use the local pipeline');
+  assert.strictEqual(result.useDomainTools, false, 'catch-all action does not use the dedicated domain-tools subset');
+  assert.ok(!('trust' in result), 'no trust field — the chokepoint decides trust, not the classifier');
+  assert.ok(!('useLocal' in result), 'no useLocal leak');
+});
+
+asyncTest('_resolveJobTrust degrades to \'unknown\' without a resolver, reads a stub resolver when present', async () => {
+  // No modelResolver on agentLoop.llmProvider (legacy wiring / tests) → guarded,
+  // never throws, returns 'unknown' so callers never assume a destination.
+  const procNoResolver = createSmartMixProcessor({ gate: 'action', intent: 'calendar', domain: 'calendar', needsHistory: false, confidence: 0.9, compound: false });
+  assert.strictEqual(procNoResolver._resolveJobTrust('tools'), 'unknown', 'no resolver → unknown, never throws');
+
+  // With a stub resolver present, the helper reads through to it.
+  const procWithResolver = createProcessor({
+    intentRouter: { classify: async () => ({ gate: 'action', intent: 'calendar', domain: 'calendar', needsHistory: false, confidence: 0.9, compound: false }) },
+    microPipeline: {
+      _classifyFallback: async () => ({ intent: 'chitchat' }),
+      memoryContextEnricher: null,
+      process: async () => 'local response'
+    },
+    agentLoop: {
+      llmProvider: {
+        resetConversation: function () {},
+        skipLocalForConversation: function () {},
+        chatProviders: new Map([['local', {}], ['cloud', {}]]),
+        modelResolver: { resolveTrust: () => 'local-only' }
+      },
+      process: async () => 'agent response'
+    }
+  });
+  assert.strictEqual(procWithResolver._resolveJobTrust('tools'), 'local-only', 'stub resolver value is read through');
 });
 
 // Summary

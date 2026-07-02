@@ -696,8 +696,14 @@ class MessageProcessor {
         // Smart-mix: three-path routing (local text / local tools / cloud)
         // Build live context ONCE — passed to classifier, probes, synthesis, guard
         const liveContext = earlyLiveContext || (session ? buildLiveContext(session, pipelineMessage) : null);
-        const { useLocal, useDomainTools, intent, compound, gate, domain } = await this._smartMixClassify(pipelineMessage, session, extracted.token, liveContext);
-        console.log(`[Message] Smart-mix classification: ${intent} → ${useLocal ? (useDomainTools ? 'local-tools' : 'local') : 'cloud'}${compound ? ' [COMPOUND]' : ''}${gate ? ` (gate=${gate})` : ''}`);
+        const { useLocalPipeline, useDomainTools, intent, compound, gate, domain } = await this._smartMixClassify(pipelineMessage, session, extracted.token, liveContext);
+        // The classifier names a PIPELINE, not a trust destination — the agent-loop
+        // path's actual model/trust is resolved at the chokepoint (RouterChatBridge),
+        // so the log reads the resolver rather than assuming 'cloud'.
+        const pipelineLabel = useLocalPipeline
+          ? (useDomainTools ? 'local-pipeline+tools' : 'local-pipeline')
+          : `agent-loop (trust=${this._resolveJobTrust('tools')})`;
+        console.log(`[Message] Smart-mix classification: ${intent} → ${pipelineLabel}${compound ? ' [COMPOUND]' : ''}${gate ? ` (gate=${gate})` : ''}`);
 
         // Intent-specific feedback: acknowledge the user immediately (fire-and-forget)
         const lang = this._getLanguage();
@@ -725,7 +731,7 @@ class MessageProcessor {
           });
           result = { intent: `smart_mix_flush:${intent}`, provider: 'agent' };
           response = response || 'Sorry, I encountered an error processing your message.';
-        } else if (compound && useLocal && useDomainTools) {
+        } else if (compound && useLocalPipeline && useDomainTools) {
           // Path 2c: Compound intent — decompose into multi-step plan
           if (this.agentLoop?.llmProvider?.clearLocalSkip) {
             this.agentLoop.llmProvider.clearLocalSkip();
@@ -795,7 +801,7 @@ class MessageProcessor {
               response = response || 'Sorry, I encountered an error processing your message.';
             }
           }
-        } else if (useLocal && useDomainTools && intent === 'confirmation') {
+        } else if (useLocalPipeline && useDomainTools && intent === 'confirmation') {
           // Direct execution from Living Context — bypass AgentLoop entirely
           const offerText = liveContext?.lastAssistantAction?.offer || '';
           console.log(`[Message] Confirmation: executing from context — "${offerText.substring(0, 80)}"`);
@@ -840,7 +846,7 @@ class MessageProcessor {
             result = { intent: 'smart_mix_escalated:confirmation', provider: 'agent' };
             response = response || 'Sorry, I encountered an error processing your message.';
           }
-        } else if (useLocal && useDomainTools && intent === 'knowledge') {
+        } else if (useLocalPipeline && useDomainTools && intent === 'knowledge') {
           // Path 2a: Knowledge query — synthesize from enricher + multi-source probes
           if (this.agentLoop?.llmProvider?.clearLocalSkip) {
             this.agentLoop.llmProvider.clearLocalSkip();
@@ -873,7 +879,7 @@ class MessageProcessor {
             result = { intent: 'smart_mix_escalated:knowledge', provider: 'agent' };
             response = response || 'Sorry, I encountered an error processing your message.';
           }
-        } else if (useLocal && useDomainTools) {
+        } else if (useLocalPipeline && useDomainTools) {
           // Path 2b: Domain-specific — local tool-calling with focused subset
           if (this.agentLoop.llmProvider?.clearLocalSkip) {
             this.agentLoop.llmProvider.clearLocalSkip();
@@ -919,7 +925,7 @@ class MessageProcessor {
             result = { intent: `smart_mix_escalated:${intent}`, provider: 'agent' };
             response = response || 'Sorry, I encountered an error processing your message.';
           }
-        } else if (useLocal) {
+        } else if (useLocalPipeline) {
           // Path 1: Greeting/chitchat — MicroPipeline handles locally (fast, no cloud)
           if (this.agentLoop.llmProvider?.clearLocalSkip) {
             this.agentLoop.llmProvider.clearLocalSkip();
@@ -977,7 +983,7 @@ class MessageProcessor {
             } else {
               response = thinkingResult || "I need a moment to think about that — could you ask again?";
             }
-            result = { intent: 'smart_mix_thinking', provider: 'cloud' };
+            result = { intent: 'smart_mix_thinking', provider: this._resolveJobTrust('thinking') === 'local-only' ? 'local' : 'cloud' };
           } catch (thinkErr) {
             console.warn(`[Message] Thinking query failed, escalating to agentLoop: ${thinkErr.message}`);
             response = await this.agentLoop.process(pipelineMessage, extracted.token, {
@@ -993,10 +999,11 @@ class MessageProcessor {
             response = response || 'Sorry, I encountered an error processing your message.';
           }
         } else {
-          // Path 5: Cloud via AgentLoop — trust boundary handles routing.
-          // Do NOT skipLocalForConversation: the tools job chain includes Haiku
-          // after local providers. Skipping local removes the chain entirely
-          // when Ollama is down, preventing Haiku from handling tool calls.
+          // Path 5: AgentLoop path — the trust chokepoint (RouterChatBridge) resolves the
+          // model per job. Under cloud-ok the tools chain is cheapest-tool-capable-cloud
+          // → local; under local-only it is the best local tool-capable model. Do NOT
+          // skipLocalForConversation: the tools chain includes cloud AFTER local, so
+          // skipping local would empty the chain when Ollama is down.
 
           // Pre-enrich: run MemoryContextEnricher so cloud path sees wiki + deck knowledge
           let cloudSuffix = focusContext
@@ -1606,6 +1613,21 @@ class MessageProcessor {
   }
 
   /**
+   * Resolved trust ('local-only'|'cloud-ok') for a job, read from the single
+   * authority (ModelResolver via the RouterChatBridge). Returns 'unknown' when
+   * the resolver is absent (legacy wiring / tests) so callers never assume a
+   * destination — the chokepoint remains the real enforcement.
+   * @param {string} job
+   * @returns {string}
+   * @private
+   */
+  _resolveJobTrust(job) {
+    const resolver = this.agentLoop && this.agentLoop.llmProvider && this.agentLoop.llmProvider.modelResolver;
+    if (!resolver || typeof resolver.resolveTrust !== 'function') return 'unknown';
+    try { return resolver.resolveTrust(job); } catch { return 'unknown'; }
+  }
+
+  /**
    * Record action(s) from a structured executor response onto the session ledger.
    * Handles both single actionRecord objects and arrays.
    *
@@ -1698,7 +1720,7 @@ class MessageProcessor {
    *
    * @param {string} message
    * @param {Object} [session] - SessionManager session for conversation context
-   * @returns {Promise<{useLocal: boolean, useDomainTools: boolean, intent: string}>}
+   * @returns {Promise<{useLocalPipeline: boolean, useDomainTools: boolean, intent: string}>}
    * @private
    */
   async _smartMixClassify(message, session, roomToken, liveContext) {
@@ -1732,30 +1754,34 @@ class MessageProcessor {
 
       let { gate, intent, domain, compound } = classification;
 
-      // Trust boundary: in smart-mix mode (cloud available), everything goes
-      // through cloud except knowledge (dedicated probe pipeline) and compound
-      // (dedicated decompose pipeline). MicroPipeline only fires in local-only.
+      // The classifier chooses the PIPELINE, never a trust destination. Knowledge →
+      // probe pipeline; compound → decompose pipeline; confirmation/selection/declined
+      // → dedicated handlers; everything else → the AgentLoop path, where
+      // RouterChatBridge resolves the model per job WITHIN the trust boundary (the
+      // one chokepoint). Under local-only the AgentLoop path runs a LOCAL model; this
+      // decision does NOT send anything to cloud.
 
-      // Confirmation/selection → cloud (needs full history)
+      // Confirmation/selection → dedicated handler (needs full history)
       if (intent === 'confirmation' || intent === 'selection') {
-        return { useLocal: false, useDomainTools: false, intent, compound: false, gate, domain };
+        return { useLocalPipeline: false, useDomainTools: false, intent, compound: false, gate, domain };
       }
       if (intent === 'confirmation_declined') {
-        return { useLocal: true, useDomainTools: false, intent: 'confirmation_declined', compound: false, gate, domain };
+        return { useLocalPipeline: true, useDomainTools: false, intent: 'confirmation_declined', compound: false, gate, domain };
       }
       // Knowledge → dedicated handler (probes, deep reads, web fallback, synthesis)
       if (intent === 'knowledge') {
-        return { useLocal: true, useDomainTools: true, intent, compound: !!compound, gate, domain };
+        return { useLocalPipeline: true, useDomainTools: true, intent, compound: !!compound, gate, domain };
       }
       // Compound + domain → compound handler (already cloud-powered)
       if (compound && DOMAIN_INTENTS.has(intent)) {
-        return { useLocal: true, useDomainTools: true, intent, compound: true, gate, domain };
+        return { useLocalPipeline: true, useDomainTools: true, intent, compound: true, gate, domain };
       }
-      // Everything else → cloud via AgentLoop (Haiku, full tools, web search)
-      return { useLocal: false, useDomainTools: false, intent: intent || 'complex', compound: !!compound, gate, domain };
+      // Everything else → AgentLoop path (full tools). The model + trust are the
+      // chokepoint's call per job; this is a pipeline choice, not a cloud decision.
+      return { useLocalPipeline: false, useDomainTools: false, intent: intent || 'complex', compound: !!compound, gate, domain };
     } catch (err) {
       console.warn(`[Message] Smart-mix classification failed: ${err.message}`);
-      return { useLocal: false, useDomainTools: false, intent: 'error', compound: false, gate: null, domain: null };
+      return { useLocalPipeline: false, useDomainTools: false, intent: 'error', compound: false, gate: null, domain: null };
     }
   }
 

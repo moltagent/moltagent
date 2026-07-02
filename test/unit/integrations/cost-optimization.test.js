@@ -141,22 +141,24 @@ test('_handleThinkingQuery skips enricher (slim Opus context)', () => {
 // Test 5: Classification roster puts cheapest provider first
 // ---------------------------------------------------------------------------
 test('Router roster: CLASSIFICATION uses cheapest-first chain', () => {
-  const src = require('fs').readFileSync(
-    require.resolve('../../../src/lib/llm/router.js'),
-    'utf8'
-  );
+  // Behavioral assertion (Session 2 replaced the hand-rolled per-job tier
+  // assignments with the ONE generating function — _buildCloudJobChains —
+  // so there is no longer a literal "roster[JOBS.CLASSIFICATION] = ..." line
+  // to grep for; CLOUD_DEPTH.classification = 'cheapest' governs this instead).
+  // Same cost setup as before: two cloud providers of different price, plus
+  // local — the cheapest capable cloud must lead the classification chain.
+  const LLMRouter = require('../../../src/lib/llm/router');
+  const router = new LLMRouter({
+    providers: {
+      'ollama-local': { adapter: 'ollama', type: 'local', model: 'qwen3:8b', endpoint: 'http://localhost:11434' },
+      'claude-haiku': { adapter: 'anthropic', type: 'api', model: 'claude-haiku-4-5-20251001', costModel: { type: 'per_token', inputPer1M: 0.8, outputPer1M: 4.0 } },
+      'gemini-flash': { adapter: 'google', type: 'api', model: 'gemini-1.5-flash', costModel: { type: 'per_token', inputPer1M: 0.075, outputPer1M: 0.3 } },
+    },
+  });
+  const roster = router._resolvePreset('smart-mix');
 
-  // Match the CLASSIFICATION roster assignment line
-  // e.g. roster[JOBS.CLASSIFICATION] = [...new Set([cheapest, ...local].filter(Boolean))];
-  const match = src.match(/roster\[JOBS\.CLASSIFICATION\]\s*=\s*\[\.\.\.new Set\(\[(.*?)\]/);
-  assert.ok(match, 'CLASSIFICATION roster assignment must be found in router.js');
-
-  // The first element in the array literal must be `cheapest`
-  const arrayContents = match[1].trim();
-  assert.ok(
-    arrayContents.startsWith('cheapest'),
-    `cheapest provider must be first in CLASSIFICATION roster, got: "${arrayContents}"`
-  );
+  assert.strictEqual(roster.classification[0], 'gemini-flash', 'cheapest capable cloud must lead the CLASSIFICATION roster');
+  assert.ok(!roster.classification.includes('claude-haiku'), 'cheapest depth is single-hop — the pricier cloud is not a fallback here');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);
