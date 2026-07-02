@@ -1677,6 +1677,10 @@ async function initialize() {
       // Wire CostTracker into LLMRouter so all route() calls are metered
       if (llmRouter) {
         llmRouter.costTracker = costTracker;
+        // Session 4: route() is the second LLM egress (Talk thinking path);
+        // it captures judged-job samples into the same queue the bridge uses.
+        llmRouter.judgeQueue = judgeQueue;
+        llmRouter.getLanguage = () => cockpitManager?.cachedConfig?.persona?.language || 'EN';
       }
       console.log('[INIT] CostTracker ready');
 

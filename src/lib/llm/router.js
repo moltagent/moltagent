@@ -123,6 +123,14 @@ class LLMRouter {
     // CostTracker (optional, set post-construction)
     this.costTracker = null;
 
+    // JudgeQueue + language snapshot (optional, set post-construction —
+    // Session 4). route() is the second LLM egress beside
+    // RouterChatBridge.chat (the Talk thinking path routes here directly),
+    // so judged-job samples are captured at BOTH egresses into the one
+    // queue, exactly as both egresses record to CostTracker.
+    this.judgeQueue = null;
+    this.getLanguage = null;
+
     // Output verifier
     this.outputVerifier = new OutputVerifier({
       auditLog: this.auditLog,
@@ -425,6 +433,24 @@ class LLMRouter {
           outputVerified: true,
           outputWarnings: verifyResult.warnings?.length || 0
         });
+
+        // Session 4: retain judged-job samples for the heartbeat-idle judge.
+        // Sits AFTER the output verifier so blocked output is never retained;
+        // the queue itself gates on judged jobs (writing/thinking) and must
+        // never break the request path.
+        if (this.judgeQueue && typeof result.result === 'string' && result.result) {
+          try {
+            this.judgeQueue.enqueue({
+              job: job || task || null,
+              model: result.model || provider.model || providerId,
+              provider: providerId,
+              isLocal: provider.type === 'local',
+              language: this.getLanguage ? this.getLanguage() : null,
+              prompt: typeof content === 'string' ? content : null,
+              response: result.result,
+            });
+          } catch (_e) { /* capture is best-effort */ }
+        }
 
         return {
           result: result.result,
