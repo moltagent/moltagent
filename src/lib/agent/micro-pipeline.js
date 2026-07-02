@@ -91,6 +91,11 @@ class MicroPipeline {
     this.toolRegistry = config.toolRegistry || null;
     this.ollamaToolsProvider = config.ollamaToolsProvider || null;
     this.costTracker = config.costTracker || null;
+    // ModelScorecard (maturation loop): the domain tool-calling loop records
+    // mechanical tools outcomes (valid call / hallucinated name / timeout)
+    // for the provider model it ran — this path bypasses RouterChatBridge,
+    // so it attributes its own samples.
+    this.modelScorecard = config.modelScorecard || null;
     this.guardrailEnforcer = config.guardrailEnforcer || null;
     this.toolGuard = config.toolGuard || null;
     this.executors = config.executors || {};
@@ -736,6 +741,16 @@ Sub-questions:`;
           });
         }
 
+        // Maturation loop: envelope-level tools sample for this provider
+        // model. Valid tool calls (all names in the focused subset) promote;
+        // a hallucinated name demotes. A tool-less reply is neutral — domain
+        // tasks may legitimately answer from context after tool results.
+        if (this.modelScorecard && toolsProvider.model &&
+            Array.isArray(llmResult.toolCalls) && llmResult.toolCalls.length > 0) {
+          const hallucinated = llmResult.toolCalls.some(tc => !tc || !allowedNames.has(tc.name));
+          this.modelScorecard.recordSample('tools', toolsProvider.model, null, !hallucinated);
+        }
+
         // If no tool calls, we have the final response
         if (!llmResult.toolCalls || llmResult.toolCalls.length === 0) {
           // Invalidate deck cache — tool-calling loop may have mutated board state
@@ -797,6 +812,13 @@ Sub-questions:`;
     } catch (err) {
       this.logger.warn(`[MicroPipeline] Domain tool-calling failed (${intent}): ${err.message}`);
       this.stats.errors++;
+
+      // Maturation loop: a throw here is dominated by LLM timeouts/errors on
+      // the tools provider — a mechanical failure of the (tools, model)
+      // pairing this path ran.
+      if (this.modelScorecard && toolsProvider.model) {
+        this.modelScorecard.recordSample('tools', toolsProvider.model, null, false);
+      }
 
       // Escalation signal — let MessageProcessor know this should go to cloud
       const escalationErr = new Error(`Domain escalation: ${err.message}`);

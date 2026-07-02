@@ -274,6 +274,14 @@ class MessageProcessor {
     /** @type {Object|null} - IntentRouter instance */
     this.intentRouter = deps.intentRouter || null;
 
+    // ModelScorecard (maturation loop): records the escalation-correction
+    // signal for classification — a verdict whose chosen pipeline completed
+    // is a positive sample for the classifying model; one that escalated is
+    // a (half-weight) negative. Attribution comes from the verdict's own
+    // model/language fields (computed once at IntentRouter).
+    /** @type {Object|null} - ModelScorecard instance */
+    this.modelScorecard = deps.modelScorecard || null;
+
     /** @type {Function} - Returns cockpit language code (EN, DE, PT, etc.) */
     this._getLanguage = deps.intentRouter?.getLanguage || (() => 'EN');
 
@@ -696,7 +704,7 @@ class MessageProcessor {
         // Smart-mix: three-path routing (local text / local tools / cloud)
         // Build live context ONCE — passed to classifier, probes, synthesis, guard
         const liveContext = earlyLiveContext || (session ? buildLiveContext(session, pipelineMessage) : null);
-        const { useLocalPipeline, useDomainTools, intent, compound, gate, domain } = await this._smartMixClassify(pipelineMessage, session, extracted.token, liveContext);
+        const { useLocalPipeline, useDomainTools, intent, compound, gate, domain, clsModel, clsLanguage, clsParseFailed } = await this._smartMixClassify(pipelineMessage, session, extracted.token, liveContext);
         // The classifier names a PIPELINE, not a trust destination — the agent-loop
         // path's actual model/trust is resolved at the chokepoint (RouterChatBridge),
         // so the log reads the resolver rather than assuming 'cloud'.
@@ -1059,9 +1067,18 @@ class MessageProcessor {
               }
             }
           });
-          result = { intent: `smart_mix_cloud:${intent}`, provider: 'agent' };
+          // An empty AgentLoop return is an execution failure, not evidence
+          // about the classifier — the fallback apology below must not score
+          // this turn as a classification success (neutral, like flush).
+          result = { intent: response ? `smart_mix_cloud:${intent}` : `smart_mix_cloud_error:${intent}`, provider: 'agent' };
           response = response || 'Sorry, I encountered an error processing your message.';
         }
+
+        // Maturation loop: one classification sample per smart-mix turn,
+        // recorded here where every dispatch path converges. The result
+        // marker is the structural outcome signal — escalation markers are
+        // the negative (half-weight) escalation-correction samples.
+        this._recordClassificationOutcome(result, clsModel, clsLanguage, clsParseFailed);
       } else if (this.agentLoop) {
         // Session 14: AgentLoop handles all natural language via tool-calling LLM
         // Generic feedback — no classification available in this path
@@ -1723,6 +1740,32 @@ class MessageProcessor {
    * @returns {Promise<{useLocalPipeline: boolean, useDomainTools: boolean, intent: string}>}
    * @private
    */
+  /**
+   * Record the escalation-correction outcome of one smart-mix turn with the
+   * maturation loop. Success = the verdict's chosen pipeline completed
+   * (full-weight positive). Escalation/fallback = the chosen pipeline
+   * failed downstream (half-weight negative — the executing model, not the
+   * classifier, may be at fault; tools carries its own cleaner signal).
+   * Neutral: flush overrides (the verdict was bypassed, not judged) and
+   * empty-confirmation context. Parse-failed verdicts were already scored
+   * structurally at IntentRouter and prove nothing further here.
+   * @param {Object} result - Dispatch result carrying the smart_mix_* marker
+   * @param {string|null} model - Verdict's producing model
+   * @param {string|null} language - Verdict's prompt language
+   * @param {boolean} parseFailed
+   * @private
+   */
+  _recordClassificationOutcome(result, model, language, parseFailed) {
+    if (!this.modelScorecard || !model || parseFailed) return;
+    const marker = typeof result?.intent === 'string' ? result.intent : '';
+    if (!marker.startsWith('smart_mix')) return;
+    if (marker.startsWith('smart_mix_flush') || marker === 'smart_mix_confirmation_empty' ||
+        marker.startsWith('smart_mix_cloud_error')) return;
+    const escalated = marker.startsWith('smart_mix_escalated') || marker === 'smart_mix_compound_fallback';
+    this.modelScorecard.recordSample('classification', model, language, !escalated,
+      escalated ? { weight: this.modelScorecard.escalationWeight } : undefined);
+  }
+
   async _smartMixClassify(message, session, roomToken, liveContext) {
     try {
       const recentContext = this._extractRecentContext(session);
@@ -1754,6 +1797,16 @@ class MessageProcessor {
 
       let { gate, intent, domain, compound } = classification;
 
+      // Verdict custody pass-through (maturation loop): which model produced
+      // this verdict, in which prompt language, and whether it parse-failed
+      // (a parse-failed verdict already yielded its structural negative at
+      // IntentRouter; the fallback verdict proves nothing further).
+      const clsMeta = {
+        clsModel: classification.model || null,
+        clsLanguage: classification.language || null,
+        clsParseFailed: !!classification.parseFailed,
+      };
+
       // The classifier chooses the PIPELINE, never a trust destination. Knowledge →
       // probe pipeline; compound → decompose pipeline; confirmation/selection/declined
       // → dedicated handlers; everything else → the AgentLoop path, where
@@ -1763,22 +1816,22 @@ class MessageProcessor {
 
       // Confirmation/selection → dedicated handler (needs full history)
       if (intent === 'confirmation' || intent === 'selection') {
-        return { useLocalPipeline: false, useDomainTools: false, intent, compound: false, gate, domain };
+        return { useLocalPipeline: false, useDomainTools: false, intent, compound: false, gate, domain, ...clsMeta };
       }
       if (intent === 'confirmation_declined') {
-        return { useLocalPipeline: true, useDomainTools: false, intent: 'confirmation_declined', compound: false, gate, domain };
+        return { useLocalPipeline: true, useDomainTools: false, intent: 'confirmation_declined', compound: false, gate, domain, ...clsMeta };
       }
       // Knowledge → dedicated handler (probes, deep reads, web fallback, synthesis)
       if (intent === 'knowledge') {
-        return { useLocalPipeline: true, useDomainTools: true, intent, compound: !!compound, gate, domain };
+        return { useLocalPipeline: true, useDomainTools: true, intent, compound: !!compound, gate, domain, ...clsMeta };
       }
       // Compound + domain → compound handler (already cloud-powered)
       if (compound && DOMAIN_INTENTS.has(intent)) {
-        return { useLocalPipeline: true, useDomainTools: true, intent, compound: true, gate, domain };
+        return { useLocalPipeline: true, useDomainTools: true, intent, compound: true, gate, domain, ...clsMeta };
       }
       // Everything else → AgentLoop path (full tools). The model + trust are the
       // chokepoint's call per job; this is a pipeline choice, not a cloud decision.
-      return { useLocalPipeline: false, useDomainTools: false, intent: intent || 'complex', compound: !!compound, gate, domain };
+      return { useLocalPipeline: false, useDomainTools: false, intent: intent || 'complex', compound: !!compound, gate, domain, ...clsMeta };
     } catch (err) {
       console.warn(`[Message] Smart-mix classification failed: ${err.message}`);
       return { useLocalPipeline: false, useDomainTools: false, intent: 'error', compound: false, gate: null, domain: null };

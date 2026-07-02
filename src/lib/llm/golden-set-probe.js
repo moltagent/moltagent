@@ -296,6 +296,44 @@ class GoldenSetProbe {
     return { model: best.candidate.name, scores: best.scores, passed: false, reason };
   }
 
+  /**
+   * Per-model per-language accuracies for the given candidates, from this
+   * probe's collected/cached scores. The maturation loop (ModelScorecard)
+   * seeds its classification pairings from this — the probe's one-shot
+   * fixture measurement and the loop's continuous production measurement are
+   * the same signal at different cadences, so the fixture result is the
+   * loop's warm start. Goes through the candidate list because the on-disk
+   * cache is keyed by digest, which does not map back to a model name.
+   * @param {Array<{name: string, digest?: string}>} candidates
+   * @returns {Array<{name: string, scores: Object<string, number>}>} only
+   *   candidates with a complete measurement (unmeasured ones are omitted,
+   *   never reported as zeros).
+   */
+  getMeasuredScores(candidates) {
+    const list = Array.isArray(candidates) ? candidates.filter(c => c && typeof c.name === 'string') : [];
+    const out = [];
+    for (const candidate of list) {
+      const scores = this._scores[this._cacheKey(candidate)];
+      if (scores && Object.keys(scores).length > 0) {
+        out.push({ name: candidate.name, scores: { ...scores } });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Per-language fixture example counts — the evidential weight (sample
+   * size) behind each accuracy in getMeasuredScores().
+   * @returns {Object<string, number>} e.g. { EN: 12, DE: 12, PT: 12 }
+   */
+  getExampleCounts() {
+    const counts = {};
+    for (const [lang, items] of Object.entries(this.fixture?.languages || {})) {
+      counts[lang] = Array.isArray(items) ? items.length : 0;
+    }
+    return counts;
+  }
+
   // ---------------------------------------------------------------------------
   // Internal
   // ---------------------------------------------------------------------------

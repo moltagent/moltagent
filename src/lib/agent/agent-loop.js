@@ -51,6 +51,11 @@ class AgentLoop {
     this.llmProvider = options.llmProvider;
     this.statusIndicator = options.statusIndicator || null;
     this.activityLogger = options.activityLogger || null;
+    // ModelScorecard (maturation loop): envelope-level tools outcomes — a
+    // valid tool call promotes the (tools, model) pairing, a hallucinated
+    // tool name or a tool-less action turn demotes it. The model identity
+    // comes from response._routing.model (computed once at RouterChatBridge).
+    this.modelScorecard = options.modelScorecard || null;
     this.config = options.config || {};
     this.logger = options.logger || console;
     this.maxIterations = this.config.maxIterations || 8;
@@ -158,13 +163,14 @@ class AgentLoop {
 
       this.logger.info(`[AgentLoop] Iteration ${iteration}/${maxIter}`);
 
+      const job = options.job || this._classifyJob(messages, tools);
       let response;
       try {
         response = await this.llmProvider.chat({
           system: systemPrompt,
           messages,
           tools,
-          job: options.job || this._classifyJob(messages, tools)
+          job
         });
       } catch (llmErr) {
         // Salvage: if previous iterations completed tool calls successfully,
@@ -193,6 +199,8 @@ class AgentLoop {
           response.toolCalls = [parsed];
         }
       }
+
+      this._recordToolsEnvelope(job, response);
 
       // Check if LLM wants to call tools (native or parsed from text)
       if (response.toolCalls && response.toolCalls.length > 0) {
@@ -355,6 +363,11 @@ class AgentLoop {
           ? 'response staged HITL marker without destructive tool call'
           : 'zero tool calls (gate=action)';
         this.logger.warn(`[AgentLoop] Action-hallucination guard fired at iteration ${iteration} — re-prompting (${reason})`);
+        // Maturation loop: the guard firing is a structural failure of the
+        // (tools, model) pairing — an action turn that didn't act.
+        if (this.modelScorecard && job === 'tools' && response._routing?.model) {
+          this.modelScorecard.recordSample('tools', response._routing.model, null, false);
+        }
         continue;
       }
 
@@ -482,16 +495,16 @@ class AgentLoop {
       iteration++;
       this.logger.info(`[AgentLoop] Workflow iteration ${iteration}/${iterLimit}`);
 
+      // LLM: cloud         → writing job (Opus → Sonnet → Haiku)
+      // LLM: cloud-writing → coding job  (Sonnet → Haiku, skips Opus)
+      // LLM: cloud-fast    → tools job   (Haiku only)
+      // LLM: local         → tools job   (local only)
+      const job = !allowCloud ? 'tools'
+        : cloudTier === 'fast' ? 'tools'
+        : cloudTier === 'writing' ? 'coding'
+        : 'writing';
       let response;
       try {
-        // LLM: cloud         → writing job (Opus → Sonnet → Haiku)
-        // LLM: cloud-writing → coding job  (Sonnet → Haiku, skips Opus)
-        // LLM: cloud-fast    → tools job   (Haiku only)
-        // LLM: local         → tools job   (local only)
-        const job = !allowCloud ? 'tools'
-          : cloudTier === 'fast' ? 'tools'
-          : cloudTier === 'writing' ? 'coding'
-          : 'writing';
         response = await this.llmProvider.chat({
           system: systemPrompt,
           messages,
@@ -528,6 +541,8 @@ class AgentLoop {
           response.toolCalls = [parsed];
         }
       }
+
+      this._recordToolsEnvelope(job, response);
 
       if (response.toolCalls && response.toolCalls.length > 0) {
         const toolCallEntries = response.toolCalls.map(tc => ({
@@ -846,6 +861,31 @@ class AgentLoop {
       this.logger.warn(`[AgentLoop] Could not load SOUL.md from ${localPath}: ${e.message}`);
       return 'You are Moltagent, a sovereign AI assistant running inside Nextcloud. Help the user manage tasks, calendar, and files.';
     }
+  }
+
+  /**
+   * Record the envelope-level tools outcome with the maturation loop: one
+   * sample per LLM call on the `tools` job. A turn that emits tool calls
+   * whose names all exist is a success; a hallucinated tool name is a
+   * failure. A tool-less turn is NEUTRAL here (a knowledge answer over
+   * advertised tools is legitimate) — the tool-less ACTION turn is recorded
+   * by the action-hallucination guard, and timeouts by RouterChatBridge, so
+   * every call yields at most one sample. Checks are structural (registry
+   * membership), never content reads.
+   * @param {string} job
+   * @param {Object} response
+   * @private
+   */
+  _recordToolsEnvelope(job, response) {
+    if (!this.modelScorecard || job !== 'tools') return;
+    const model = response?._routing?.model;
+    if (!model) return;
+    const calls = response.toolCalls;
+    if (!Array.isArray(calls) || calls.length === 0) return;
+    const registry = this.toolRegistry;
+    if (!registry || typeof registry.has !== 'function') return;
+    const hallucinated = calls.some(tc => !tc || !registry.has(tc.name));
+    this.modelScorecard.recordSample('tools', model, null, !hallucinated);
   }
 
   /**
