@@ -420,6 +420,9 @@ try {
 // Cost metering
 const CostTracker = require('./src/lib/llm/cost-tracker');
 
+// Maturation loop (Layer 2): per-(job, model, language) production scores
+const ModelScorecard = require('./src/lib/llm/model-scorecard');
+
 // Local Intelligence: ModelScout + MicroPipeline + DeferralQueue
 let ModelScout, MicroPipeline, MemoryContextEnricher, DeferralQueue, GoldenSetProbe;
 try {
@@ -511,6 +514,7 @@ let agentLoop = null; // Session 14: AgentLoop instance
 let routerChatBridge = null; // Session B2: RouterChatBridge for dynamic provider registration
 let modelResolver = null; // Single source of truth for per-job model + trust (issue #123)
 let costTracker = null; // Cost metering: per-call audit + enriched cost reporting
+let modelScorecard = null; // Maturation loop: per-(job, model, language) scores (Layer 2)
 let dailyBriefing = null; // First-message-of-day briefing
 let cockpitManager = null; // Session 27: Cockpit (Deck as control plane)
 let botEnroller = null; // Auto-enable Talk bot in rooms
@@ -1586,6 +1590,26 @@ async function initialize() {
         console.log(`[INIT] OllamaToolsProvider (fast) ready (${fastModel})`);
       }
 
+      // ModelScorecard (maturation loop, Layer 2): every (job, model,
+      // language) pairing carries a production score fed by mechanical
+      // outcomes; the seat feeds ModelResolver via the same ground-truth
+      // override seam the golden-set probe uses, labeled 'maturation-loop'.
+      // modelResolver is a lazy read — it is constructed later in this
+      // bootstrap, and seats only change on recorded samples, well after.
+      modelScorecard = new ModelScorecard({
+        dataDir: path.join(__dirname, 'data'),
+        getLanguage: () => cockpitManager?.cachedConfig?.persona?.language || 'EN',
+        onSeatChange: (job, model) => modelResolver?.setGroundTruthOverride?.(job, model, 'maturation-loop'),
+        // Seats feed the resolver's LOCAL model slot, so only models Ollama
+        // actually serves may win one. Cloud fallback samples still record
+        // (real data); they just cannot be handed to Ollama as a model name.
+        // Lazy read: the scout hangs off the resolver after discovery, and
+        // seats only move on recorded samples, which is well after.
+        isSeatable: (job, model) => !!modelResolver?.modelScout?.hasModel?.(model),
+        logger: console,
+      });
+      console.log('[INIT] ModelScorecard ready (maturation loop)');
+
       // IntentRouter: LLM-powered intent classification with conversation context
       // Use fast provider when available — avoids Ollama model swap latency
       const IntentRouter = require('./src/lib/agent/intent-router');
@@ -1593,6 +1617,7 @@ async function initialize() {
       intentRouter = intentProvider ? new IntentRouter({
         provider: intentProvider,
         llmRouter: llmRouter,
+        modelScorecard,
         getLanguage: () => cockpitManager?.cachedConfig?.persona?.language || 'EN',
         // Trust is the single control for the classification path (#132). Lazy
         // thunk: modelResolver is constructed later in this bootstrap, so read it
@@ -1765,6 +1790,7 @@ async function initialize() {
             chatProviders,
             costTracker,
             modelResolver,
+            modelScorecard,
             logger: console,
             defaultJob: 'tools'
           });
@@ -1976,6 +2002,7 @@ async function initialize() {
         guardrailEnforcer,
         activityLogger,
         llmProvider,
+        modelScorecard,
         statusIndicator: ncStatusIndicator,
         config: { soulPath: path.join(__dirname, 'config', 'SOUL.md'), timezone: appConfig.timezone }
       });
@@ -2054,24 +2081,51 @@ async function initialize() {
               cacheDir: path.join(__dirname, 'data'),
               logger: console,
             });
-            probe.run(modelScout.getClassificationCandidates())
+            const clsCandidates = modelScout.getClassificationCandidates();
+            probe.run(clsCandidates)
               .then(sel => {
                 if (sel && sel.model) {
                   modelResolver.setGroundTruthOverride('classification', sel.model);
                   console.log(`[INIT] Golden-set probe: classification -> ${sel.model} (EN ${sel.scores?.EN} DE ${sel.scores?.DE} PT ${sel.scores?.PT}, ${sel.passed ? 'passed' : sel.reason})`);
+                }
+                // Boot order (Session 3): probe sets its override first, the
+                // maturation loop seeds any unseeded pairing from the probe's
+                // fixture measurement, then asserts its LEARNED seat last —
+                // the loop is the later authority once production evidence
+                // exists; with none, the seed reproduces the probe's result
+                // and the two assertions agree.
+                if (modelScorecard) {
+                  modelScorecard.seedFromProbe(
+                    'classification',
+                    probe.getMeasuredScores(clsCandidates),
+                    probe.getExampleCounts(),
+                    sel?.model || null
+                  );
+                  modelScorecard.assertSeats();
+                }
+                if (sel?.model || modelScorecard) {
                   // The probe lands after the "[INIT] Model resolver:" summary
                   // (always — the probe is async even on a warm cache), so that
-                  // line never shows the golden-set-probe source (#233). Re-log
-                  // the resolver's ground truth now that the override is in:
-                  // this post-probe line is the one the operator should read.
+                  // line never shows the measured source (#233). Re-log the
+                  // resolver's ground truth after BOTH the probe's override
+                  // and the scorecard's seat assertion, so the line the
+                  // operator reads reflects the final authority
+                  // (golden-set-probe or maturation-loop).
                   const { summary } = modelResolver.describe(['tools', 'thinking', 'quick', 'classification']);
                   console.log(`[INIT] Model resolver (post-probe): ${summary}`);
                 }
               })
-              .catch(err => console.warn(`[INIT] Golden-set probe failed: ${err.message}`));
+              .catch(err => {
+                console.warn(`[INIT] Golden-set probe failed: ${err.message}`);
+                if (modelScorecard) modelScorecard.assertSeats();
+              });
           } catch (err) {
             console.warn(`[INIT] Golden-set probe setup failed: ${err.message}`);
+            if (modelScorecard) modelScorecard.assertSeats();
           }
+        } else if (modelScorecard) {
+          // No probe this boot — persisted learned seats still apply.
+          modelScorecard.assertSeats();
         }
       }).catch(err => {
         console.warn(`[INIT] ModelScout discovery failed: ${err.message}`);
@@ -2134,6 +2188,7 @@ async function initialize() {
         talkSendQueue: talkQueue,
         deferralQueue,
         costTracker,
+        modelScorecard,
         activityLogger,
         timezone: appConfig.timezone,
         domainToolTimeout: appConfig.ollama.domainToolTimeout,
@@ -2242,6 +2297,7 @@ async function initialize() {
     voiceManager: voiceManager,
     microPipeline: microPipeline,
     intentRouter: intentRouter,
+    modelScorecard: modelScorecard,
     warmMemory: warmMemory,
     botNames: botNames,
     sendTalkReply: sendTalkReply,

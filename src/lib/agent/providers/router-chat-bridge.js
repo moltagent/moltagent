@@ -26,8 +26,12 @@ class RouterChatBridge {
    *   truth for the per-job model and trust level. When present, the bridge runs
    *   the resolved model on local providers, logs the resolved model to
    *   CostTracker, and enforces `trust: local-only` at this execution chokepoint.
+   * @param {Object} [options.modelScorecard] - ModelScorecard (maturation loop).
+   *   The bridge records the LLM-call-level failure signal (timeout/error is
+   *   model-attributable and only this chokepoint knows which model ran);
+   *   envelope-level outcomes are recorded by AgentLoop from _routing.model.
    */
-  constructor({ router, chatProviders, logger, defaultJob, costTracker, modelResolver } = {}) {
+  constructor({ router, chatProviders, logger, defaultJob, costTracker, modelResolver, modelScorecard } = {}) {
     if (!router) throw new Error('RouterChatBridge requires a router instance');
     if (!chatProviders || chatProviders.size === 0) {
       throw new Error('RouterChatBridge requires at least one chatProvider');
@@ -39,6 +43,7 @@ class RouterChatBridge {
     this.defaultJob = defaultJob || 'tools';
     this.costTracker = costTracker || null;
     this.modelResolver = modelResolver || null;
+    this.modelScorecard = modelScorecard || null;
 
     // Public property — assigned post-construction (same pattern as ProviderChain)
     this.fallbackNotifier = null;
@@ -281,13 +286,17 @@ class RouterChatBridge {
           this.router.stats.failovers++;
         }
 
-        // Attach _routing metadata (FallbackNotifier compatible)
+        // Attach _routing metadata (FallbackNotifier compatible). `model` is
+        // the concrete model that actually ran — computed once here, where the
+        // identity is known, and carried on the response so downstream outcome
+        // observers (AgentLoop's maturation-loop samples) never re-derive it.
         result._routing = {
           isFallback,
           primaryIsLocal,
           fallbackIsLocal: isLocal,
           player: isFallback ? 'fallback' : 'primary',
           provider: providerId,
+          model: localModel || providerObj.model || null,
           job,
           failoverPath: failoverPath.length > 0 ? [...failoverPath] : undefined
         };
@@ -313,6 +322,18 @@ class RouterChatBridge {
           success: false,
           error: err
         });
+
+        // Maturation loop: a timeout/error is a mechanical failure of the
+        // (job, model) pairing, and this catch is the only place the model
+        // that failed is known. Envelope-level outcomes (valid tool call,
+        // hallucinated tool) are recorded by the loop's caller instead —
+        // one sample per LLM call either way.
+        if (this.modelScorecard && job === 'tools') {
+          const failedModel = localModel || providerObj.model || null;
+          if (failedModel) {
+            this.modelScorecard.recordSample('tools', failedModel, null, false);
+          }
+        }
 
         // Conversation-level circuit breaker: if this was a timeout,
         // skip this provider for the rest of the conversation.

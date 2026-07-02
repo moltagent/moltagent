@@ -110,20 +110,34 @@ class ModelResolver {
     // probe itself revises or clears it.
     this._groundTruthOverrides = {};
 
+    // Which measurement set each override ('golden-set-probe' at install,
+    // 'maturation-loop' once ModelScorecard has production evidence). Pure
+    // observability — precedence is identical either way.
+    this._groundTruthSources = {};
+
     this.refresh();
   }
 
   /**
    * Set (or clear) the ground-truth override for a job, sourced from a
-   * measured probe (e.g. GoldenSetProbe) rather than size or config.
+   * measurement (GoldenSetProbe at install, ModelScorecard's maturation
+   * loop thereafter) rather than size or config.
    * Invalidates the job's cache entry so the next resolve() picks it up.
    * @param {string} job
    * @param {string|null} model - Pass null/falsy to clear the override.
+   * @param {string} [source='golden-set-probe'] - Which measurement set it;
+   *   surfaces in resolve().source so the journal shows WHY a model serves
+   *   a job (probe pick vs learned seat).
    */
-  setGroundTruthOverride(job, model) {
+  setGroundTruthOverride(job, model, source = 'golden-set-probe') {
     if (!job) return;
-    if (model) this._groundTruthOverrides[job] = model;
-    else delete this._groundTruthOverrides[job];
+    if (model) {
+      this._groundTruthOverrides[job] = model;
+      this._groundTruthSources[job] = source;
+    } else {
+      delete this._groundTruthOverrides[job];
+      delete this._groundTruthSources[job];
+    }
     this._cache.delete(job);
   }
 
@@ -251,7 +265,7 @@ class ModelResolver {
     let model = null;
     let source = 'fallback';
     if (cockpit) { model = cockpit; source = 'cockpit-card'; }
-    else if (probePick) { model = probePick; source = 'golden-set-probe'; }
+    else if (probePick) { model = probePick; source = this._groundTruthSources[job] || 'golden-set-probe'; }
     else if (scout) { model = scout; source = 'model-scout'; }
     else if (this.envModel) { model = this.envModel; source = 'env-override'; }
     else if (this.deployerModel) { model = this.deployerModel; source = 'deployer-config'; }

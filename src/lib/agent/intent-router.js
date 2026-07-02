@@ -343,9 +343,14 @@ class IntentRouter {
    *   last resort when no resolver is wired. No model name is hardcoded here.
    * @param {string} [opts.config.smartModel] - As above, for the primary model.
    */
-  constructor({ provider, config = {}, getLanguage, getTrust, getFastModel, getSmartModel, llmRouter } = {}) {
+  constructor({ provider, config = {}, getLanguage, getTrust, getFastModel, getSmartModel, llmRouter, modelScorecard } = {}) {
     this.provider = provider;
     this.llmRouter = llmRouter || null;
+    // ModelScorecard (maturation loop): classification's structural failures
+    // (no JSON, invalid gate, timeout) are recorded here, where the producing
+    // model is known. Downstream escalation-correction samples are recorded
+    // by MessageProcessor from the verdict's model/language fields.
+    this.modelScorecard = modelScorecard || null;
     this.timeout = config.classifyTimeout || 10000;
     this.getLanguage = getLanguage || (() => 'EN');
     this.getTrust = getTrust || (() => null);
@@ -411,6 +416,13 @@ class IntentRouter {
       }
       return await this._classifyViaRouter(message, recentContext);
     } catch (err) {
+      // A throw here is a timeout or provider error on the primary attempt —
+      // a mechanical failure of the pairing when the model is known (the
+      // cloud-router path throws without a model identity; nothing is
+      // invented for it).
+      if (this.modelScorecard && primaryLocalModel) {
+        this.modelScorecard.recordSample('classification', primaryLocalModel, this.getLanguage(), false);
+      }
       // Primary failed. Fall back to the fast model, but only when it is a
       // genuinely different model from the one the primary already ran — a
       // same-model retry on a shorter timeout cannot do better and only delays
@@ -447,7 +459,14 @@ class IntentRouter {
 
     const raw = result?.result || result?.content || '';
     console.log(`[IntentRouter] LLM raw classification: ${raw.substring(0, 200)}`);
-    return this._parseClassification(raw, message);
+    const verdict = this._parseClassification(raw, message);
+    // Verdict custody: the producing model and the prompt language exist only
+    // here — carry them on the verdict so downstream sample recording
+    // (maturation loop) attributes without re-deriving.
+    verdict.model = result?.model || null;
+    verdict.language = language;
+    this._recordStructuralOutcome(verdict);
+    return verdict;
   }
 
   /**
@@ -465,7 +484,7 @@ class IntentRouter {
    * @returns {Promise<{intent: string, domain: string|null, needsHistory: boolean, confidence: number}>}
    * @private
    */
-  async _classifyWithModel(model, message, recentContext = [], { slow = false, language, options } = {}) {
+  async _classifyWithModel(model, message, recentContext = [], { slow = false, language, options, probe = false } = {}) {
     const userContent = this._buildUserContent(message, recentContext);
     // The primary (smart) classifier gets 4x the timeout; the fast fallback runs
     // on the base timeout. The caller signals which via `slow`, so timeout
@@ -486,7 +505,16 @@ class IntentRouter {
       }
     });
 
-    return this._parseClassification(result.content || '', message);
+    const verdict = this._parseClassification(result.content || '', message);
+    // Verdict custody: producing model + prompt language travel on the
+    // verdict (computed once here, read by downstream sample recording).
+    verdict.model = model || null;
+    verdict.language = lang;
+    // Probe runs (golden-set fixture replay) are excluded from the
+    // maturation loop: their result already enters the score as the seed —
+    // recording them as production samples would count the fixture twice.
+    if (!probe) this._recordStructuralOutcome(verdict);
+    return verdict;
   }
 
   /**
@@ -509,9 +537,25 @@ class IntentRouter {
     const r = await this._classifyWithModel(model, message, [], {
       slow: true,
       language,
-      options: { temperature: 0, seed: 42 }
+      options: { temperature: 0, seed: 42 },
+      probe: true
     });
     return { gate: r.gate, domain: r.domain ?? null };
+  }
+
+  /**
+   * Record a classification verdict's structural outcome with the maturation
+   * loop. Only the FAILURE is recorded here: an unparseable output, an
+   * invalid gate, or a broken JSON body is a mechanical defect of the
+   * producing model, unambiguous and free. The corresponding positive sample
+   * is recorded downstream (MessageProcessor) when the verdict's chosen
+   * pipeline completes — a verdict is not "correct" merely for parsing.
+   * @param {Object} verdict
+   * @private
+   */
+  _recordStructuralOutcome(verdict) {
+    if (!this.modelScorecard || !verdict || !verdict.parseFailed || !verdict.model) return;
+    this.modelScorecard.recordSample('classification', verdict.model, verdict.language || null, false);
   }
 
   /**
@@ -613,7 +657,10 @@ class IntentRouter {
     const match = cleaned.match(/\{[^}]+\}/);
     if (!match) {
       console.warn(`[IntentRouter] No JSON in classification response, falling back`);
-      return { ...COMPLEX_FALLBACK };
+      // parseFailed marks a structural output defect of the producing model
+      // (maturation-loop negative sample; downstream success recording skips
+      // the verdict — a fallback verdict proves nothing about the model).
+      return { ...COMPLEX_FALLBACK, parseFailed: true };
     }
 
     try {
@@ -636,14 +683,14 @@ class IntentRouter {
         } else if (PASSTHROUGH_INTENTS.has(intent)) {
           gate = intent;
         } else {
-          return { ...COMPLEX_FALLBACK, compound: parsed.compound === true };
+          return { ...COMPLEX_FALLBACK, compound: parsed.compound === true, parseFailed: true };
         }
       }
 
       // Validate gate
       if (!gate || (!VALID_GATES.has(gate) && !PASSTHROUGH_INTENTS.has(gate))) {
         console.warn(`[IntentRouter] Invalid gate "${gate}", falling back`);
-        return { ...COMPLEX_FALLBACK, compound: parsed.compound === true };
+        return { ...COMPLEX_FALLBACK, compound: parsed.compound === true, parseFailed: true };
       }
 
       console.log(`[IntentRouter] Parsed: gate=${gate}, domain=${domain}, confidence=${confidence}`);
@@ -680,7 +727,7 @@ class IntentRouter {
 
       return result;
     } catch {
-      return { ...COMPLEX_FALLBACK };
+      return { ...COMPLEX_FALLBACK, parseFailed: true };
     }
   }
 
