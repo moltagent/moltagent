@@ -178,6 +178,7 @@ class NicheAssignment {
     this._assignmentMap = {}; // job → model, remapped jobs only
     this._residentPlan = []; // model names the plan holds resident
     this._replanTimer = null;
+    this._hasPlanned = false; // first plan always logs (boot observability)
   }
 
   // ---------------------------------------------------------------------------
@@ -414,13 +415,14 @@ class NicheAssignment {
         this.logger.warn(`[NicheAssignment] setAssignment failed: ${err.message}`);
       }
     }
-    if (changed) {
+    if (changed || !this._hasPlanned) {
       const remaps = Object.entries(map).map(([j, m]) => `${j}→${m}`).join(', ');
       this.logger.info(
         `[NicheAssignment] Plan: resident [${this._residentPlan.join(', ')}]` +
         (remaps ? ` — remapped: ${remaps}` : ' — winners stand (no remap)')
       );
     }
+    this._hasPlanned = true;
     return { map: { ...map }, residentPlan: [...this._residentPlan] };
   }
 
