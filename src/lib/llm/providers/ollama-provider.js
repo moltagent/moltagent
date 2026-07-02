@@ -9,6 +9,7 @@
  */
 
 const BaseProvider = require('./base-provider');
+const { emitOllamaTimings } = require('../ollama-timings');
 
 class OllamaProvider extends BaseProvider {
   /**
@@ -29,6 +30,10 @@ class OllamaProvider extends BaseProvider {
     // config spread (router.js → providers/index.js). Default: undefined → the
     // keep_alive field is omitted so the Ollama server's own setting governs.
     this.keepAlive = config.keep_alive;
+    // Residency-signal sink (Layer 3): receives Ollama's server-side timings
+    // per response. Flows in via the createProvider config spread, like
+    // keep_alive above. Undefined → no capture, zero overhead.
+    this.onTimings = typeof config.onTimings === 'function' ? config.onTimings : null;
     this._fetch = globalThis.fetch;
   }
 
@@ -104,6 +109,7 @@ class OllamaProvider extends BaseProvider {
         }
 
         const data = await response.json();
+        emitOllamaTimings(this.onTimings, data, this.model, options.calibration);
         const tokens = (data.prompt_eval_count || 0) + (data.eval_count || 0);
 
         this.recordSuccess(tokens);

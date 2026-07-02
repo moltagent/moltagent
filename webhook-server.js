@@ -427,6 +427,9 @@ const ModelScorecard = require('./src/lib/llm/model-scorecard');
 const JudgeQueue = require('./src/lib/llm/judge-queue');
 const LocalJudge = require('./src/lib/llm/local-judge');
 
+// Niche assignment (Layer 3, Session 5): winners composed under carrying capacity
+const { NicheAssignment } = require('./src/lib/llm/niche-assignment');
+
 // Local Intelligence: ModelScout + MicroPipeline + DeferralQueue
 let ModelScout, MicroPipeline, MemoryContextEnricher, DeferralQueue, GoldenSetProbe;
 try {
@@ -521,6 +524,12 @@ let costTracker = null; // Cost metering: per-call audit + enriched cost reporti
 let modelScorecard = null; // Maturation loop: per-(job, model, language) scores (Layer 2)
 let judgeQueue = null; // Session 4: bounded judge-then-delete retention of judged-job samples
 let localJudge = null; // Session 4: heartbeat-idle grader for writing/thinking
+let nicheAssignment = null; // Session 5 (Layer 3): carrying-capacity plan over the winners
+
+// Residency-signal sink for every local Ollama adapter (both families).
+// Late-bound: no-ops until NicheAssignment is constructed after discovery,
+// so providers built earlier in this bootstrap still capture from then on.
+const ollamaTimingsSink = (t) => { if (nicheAssignment) nicheAssignment.recordTiming(t); };
 let dailyBriefing = null; // First-message-of-day briefing
 let cockpitManager = null; // Session 27: Cockpit (Deck as control plane)
 let botEnroller = null; // Auto-enable Talk bot in rooms
@@ -801,6 +810,14 @@ async function initialize() {
     // Apply runtime Ollama endpoint override from CONFIG.
     if (llmConfig.providers?.['ollama-local'] && CONFIG.ollama?.url) {
       llmConfig.providers['ollama-local'].endpoint = CONFIG.ollama.url;
+    }
+    // Residency-signal capture (Layer 3): every local Ollama provider in the
+    // router emits server-side timings (load_duration) to the late-bound
+    // sink. Rides the same config spread as keep_alive (#124).
+    for (const p of Object.values(llmConfig.providers || {})) {
+      if (p && typeof p === 'object' && (p.adapter || 'ollama') === 'ollama') {
+        p.onTimings = ollamaTimingsSink;
+      }
     }
     // NOTE: the env var (OLLAMA_MODEL) no longer mutates the router provider's
     // model here. That mutation was a primary source of the model chimerism in
@@ -1563,7 +1580,8 @@ async function initialize() {
           model: ollamaConfig.model || CONFIG.ollama.model,
           timeout: CONFIG.ollama.timeout,
           toolTimeout: CONFIG.ollama.toolTimeout,
-          keep_alive: ollamaConfig.keep_alive  // #124: per-provider knob; undefined → server governs
+          keep_alive: ollamaConfig.keep_alive,  // #124: per-provider knob; undefined → server governs
+          onTimings: ollamaTimingsSink  // Layer 3: residency ledger
         });
         console.log(`[INIT] OllamaToolsProvider ready (${ollamaEndpoint}, ${ollamaConfig.model || CONFIG.ollama.model})`);
       }
@@ -1576,7 +1594,8 @@ async function initialize() {
           model: CONFIG.ollama.modelCredential,
           timeout: CONFIG.ollama.timeout,
           toolTimeout: CONFIG.ollama.toolTimeout,
-          keep_alive: ollamaConfig.keep_alive  // #124
+          keep_alive: ollamaConfig.keep_alive,  // #124
+          onTimings: ollamaTimingsSink  // Layer 3
         });
         console.log(`[INIT] OllamaToolsProvider (credential) ready (${CONFIG.ollama.modelCredential})`);
       }
@@ -1591,7 +1610,8 @@ async function initialize() {
           model: fastModel,
           timeout: 30000,
           toolTimeout: 30000,
-          keep_alive: ollamaConfig.keep_alive  // #124
+          keep_alive: ollamaConfig.keep_alive,  // #124
+          onTimings: ollamaTimingsSink  // Layer 3
         });
         console.log(`[INIT] OllamaToolsProvider (fast) ready (${fastModel})`);
       }
@@ -1605,7 +1625,13 @@ async function initialize() {
       modelScorecard = new ModelScorecard({
         dataDir: path.join(__dirname, 'data'),
         getLanguage: () => cockpitManager?.cachedConfig?.persona?.language || 'EN',
-        onSeatChange: (job, model) => modelResolver?.setGroundTruthOverride?.(job, model, 'maturation-loop'),
+        // Tee: the override lands first, THEN the assignment replans from
+        // the post-change winners. Debounced to the next tick so
+        // assertSeats' boot-time burst collapses to one plan.
+        onSeatChange: (job, model) => {
+          modelResolver?.setGroundTruthOverride?.(job, model, 'maturation-loop');
+          nicheAssignment?.replanSoon?.();
+        },
         // Seats feed the resolver's LOCAL model slot, so only models Ollama
         // actually serves may win one. Cloud fallback samples still record
         // (real data); they just cannot be handed to Ollama as a model name.
@@ -2089,6 +2115,20 @@ async function initialize() {
           for (const d of divergences) {
             console.warn(`[WARN] ${d}`);
           }
+
+          // NicheAssignment (Layer 3, Session 5): composes the per-job
+          // winners into a memory-feasible plan. Constructed here because it
+          // plans from resolver winners AND scout roster chains, both of
+          // which exist only after discovery. The first plan is debounced to
+          // the next tick; the probe/scorecard tee replans as seats land.
+          nicheAssignment = new NicheAssignment({
+            resolver: modelResolver,
+            modelScout,
+            ollamaEndpoint: modelScout.ollamaEndpoint,
+            logger: console,
+          });
+          nicheAssignment.replanSoon();
+          console.log('[INIT] NicheAssignment ready (Layer 3: carrying-capacity plan)');
         }
 
         // Golden-set probe: measure classification accuracy per language and select
@@ -2137,6 +2177,9 @@ async function initialize() {
                   const { summary } = modelResolver.describe(['tools', 'thinking', 'quick', 'classification']);
                   console.log(`[INIT] Model resolver (post-probe): ${summary}`);
                 }
+                // The probe's own override lands outside the scorecard tee,
+                // so replan explicitly from the post-probe winners.
+                nicheAssignment?.replanSoon?.();
               })
               .catch(err => {
                 console.warn(`[INIT] Golden-set probe failed: ${err.message}`);
@@ -2447,7 +2490,10 @@ async function initialize() {
             localChat: (params) => {
               const ollama = routerChatBridge?.chatProviders?.get('ollama-local');
               if (!ollama) throw new Error('ollama-local chat provider not registered');
-              return ollama.chat(params);
+              // Judge traffic is calibration: its loads feed the residency
+              // ledger but never count as thrash (idle-cycle loads are
+              // scheduled, not felt latency on a user request).
+              return ollama.chat({ ...params, calibration: true });
             },
             localCandidates: (job) => modelResolver?.modelScout?.rosterFor?.(job) || [],
             cloudCandidates: (job) => {
@@ -2510,6 +2556,11 @@ async function initialize() {
         resilientWriter,
         costTracker,
         localJudge,
+        // Layer 3 (Session 5): thunk — NicheAssignment is constructed after
+        // ModelScout discovery, possibly after this manager. The sink keeps
+        // timing capture alive across heartbeat roster rebuilds.
+        getNicheAssignment: () => nicheAssignment,
+        onOllamaTimings: ollamaTimingsSink,
         dailyBriefing,
         reviewUser: appConfig.cockpit?.adminUser || appConfig.knowledge?.adminUser || '',
         talkSendQueue: talkQueue,

@@ -107,15 +107,60 @@ class ModelResolver {
     // proxying correctness by model size. Deliberately NOT cleared by
     // refresh() — refresh() re-snapshots ModelScout/Cockpit, which have no
     // opinion on measured accuracy; the probe's finding survives until the
-    // probe itself revises or clears it.
-    this._groundTruthOverrides = {};
+    // probe itself revises or clears it. Null-prototype (same discipline as
+    // the scorecard's _entry): a job name like 'constructor' must read as
+    // absent, not as Object.prototype's.
+    this._groundTruthOverrides = Object.create(null);
 
     // Which measurement set each override ('golden-set-probe' at install,
     // 'maturation-loop' once ModelScorecard has production evidence). Pure
     // observability — precedence is identical either way.
-    this._groundTruthSources = {};
+    this._groundTruthSources = Object.create(null);
+
+    // Layer 3 (niche assignment): a memory-feasibility remap computed by
+    // NicheAssignment FROM the resolved winners, applied on top of them.
+    // Not a precedence tier — it consumes the precedence chain's output and
+    // trades per-job fit for co-residence. Like the ground-truth overrides,
+    // deliberately NOT cleared by refresh(): the remap reflects measured
+    // load behaviour on this box, which a Cockpit-card re-read has no
+    // opinion on; NicheAssignment itself replans and re-sets it.
+    this._assignment = null;
 
     this.refresh();
+  }
+
+  /**
+   * Set (or clear) the niche-assignment remap: job → model, computed by
+   * NicheAssignment under the carrying-capacity ceiling. Applied after the
+   * full precedence resolution, never over a cockpit pin (deliberate human
+   * intent outranks a residency optimization), and only to the model field —
+   * trust and provider are untouched.
+   * @param {Object|null} map - { job: modelName } for remapped jobs only.
+   *   Pass null/empty to clear.
+   * @param {string} [source='niche-assignment'] - Surfaces in resolve().source.
+   */
+  setAssignment(map, source = 'niche-assignment') {
+    const hasEntries = map && typeof map === 'object' && Object.keys(map).length > 0;
+    // Clearing an already-empty slot is a no-op — don't flush a warm cache.
+    if (!hasEntries && !this._assignment) return;
+    // Null-prototype copy: job names come from code, but a key like
+    // 'constructor' must read as absent, not as Object.prototype's.
+    this._assignment = hasEntries
+      ? { map: Object.assign(Object.create(null), map), source }
+      : null;
+    this._cache.clear();
+  }
+
+  /**
+   * The precedence chain's pick for a job WITHOUT the niche-assignment remap
+   * applied — the "winner" NicheAssignment plans from. Reading winners
+   * through resolve() would feed the assignment its own output back.
+   * Uncached (cheap in-memory math; called only when re-planning).
+   * @param {string} job
+   * @returns {{ model: string|null, trust: string, source: string }}
+   */
+  resolveWinner(job) {
+    return this._resolveUncached(job || 'tools', { applyAssignment: false });
   }
 
   /**
@@ -235,7 +280,7 @@ class ModelResolver {
   // ---------------------------------------------------------------------------
 
   /** @private */
-  _resolveUncached(job) {
+  _resolveUncached(job, { applyAssignment = true } = {}) {
     const scout = this._scoutRoster ? (this._scoutRoster[job] || null) : null;
     const cockpit = this._cockpitModel || null; // explicit local model from the card, if any
     // Measured per-language classification accuracy (GoldenSetProbe), when the
@@ -293,6 +338,20 @@ class ModelResolver {
       // error loudly if the model is truly absent.
     }
 
+    // Layer 3 remap, applied last: the assignment may move this job onto a
+    // co-resident model, trading per-job fit for no cold load. A cockpit win
+    // is exempt — the human pinned that model on purpose. The displaced
+    // winner stays visible in derivation.assignmentWinner so the journal
+    // shows both what won and what runs.
+    if (applyAssignment && this._assignment && source !== 'cockpit-card') {
+      const assigned = this._assignment.map[job];
+      if (typeof assigned === 'string' && assigned && assigned !== model) {
+        derivation.assignmentWinner = model;
+        model = assigned;
+        source = this._assignment.source;
+      }
+    }
+
     derivation.resolved = model;
     const provider = FAST_JOBS.has(job) ? 'ollama-fast' : 'ollama-local';
     return { model, provider, trust, source, derivation, fellBack };
@@ -309,7 +368,8 @@ class ModelResolver {
     }
     if (!roster) return null;
     // Collapse each job's chain to its top pick (a model name).
-    const out = {};
+    // Null-prototype: looked up by job name in _resolveUncached.
+    const out = Object.create(null);
     for (const [job, models] of Object.entries(roster)) {
       if (Array.isArray(models) && models.length > 0) out[job] = models[0];
     }

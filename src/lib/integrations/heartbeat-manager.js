@@ -142,6 +142,20 @@ class HeartbeatManager {
     // its single call site, so judging is never on the request path.
     this.localJudge = config.localJudge || null;
 
+    // NicheAssignment (optional, Layer 3): /api/ps snapshot + replan each
+    // pulse. A thunk, not an instance — it is constructed asynchronously
+    // (after ModelScout discovery), possibly after this manager.
+    this.getNicheAssignment = typeof config.getNicheAssignment === 'function'
+      ? config.getNicheAssignment
+      : null;
+
+    // Residency-signal sink, spread into every local provider this manager
+    // (re)builds on a Cockpit roster change — without it, the adapter
+    // timing capture would silently die on the first roster rebuild.
+    this.onOllamaTimings = typeof config.onOllamaTimings === 'function'
+      ? config.onOllamaTimings
+      : null;
+
     // Cockpit (optional, Deck as control plane)
     this.cockpitManager = config.cockpitManager || null;
 
@@ -531,6 +545,18 @@ class HeartbeatManager {
         } catch {
           // Non-fatal — quiet hours fallback still works
         }
+      }
+
+      // NicheAssignment reconcile (Layer 3): refresh the /api/ps residency
+      // snapshot and replan. Runs on EVERY pulse — idle windows included,
+      // since that is when the judge's loads move residency. Fire-and-forget:
+      // the pulse never waits on Ollama I/O (the fetch is bounded to 5s and
+      // the replan is in-memory; the next pulse consumes a fresher snapshot).
+      const nicheAssignment = this.getNicheAssignment ? this.getNicheAssignment() : null;
+      if (nicheAssignment && typeof nicheAssignment.reconcile === 'function') {
+        nicheAssignment.reconcile().catch((err) => {
+          console.warn('[Heartbeat] Niche-assignment reconcile error:', err.message);
+        });
       }
 
       // Check quiet hours and working hours.
@@ -1906,6 +1932,7 @@ class HeartbeatManager {
           type: isLocal ? 'local' : 'api',
           getCredential,
           costModel: isLocal ? { type: 'free' } : undefined,
+          onTimings: isLocal ? (this.onOllamaTimings || undefined) : undefined,
         });
 
         // Register chat provider with RouterChatBridge
@@ -1915,6 +1942,7 @@ class HeartbeatManager {
             chatProvider = new OllamaToolsProvider({
               endpoint: effectiveEndpoint,
               model: playerDef.model,
+              onTimings: this.onOllamaTimings || undefined,
             });
           } else if (protocol === 'anthropic') {
             chatProvider = new ClaudeToolsProvider({
