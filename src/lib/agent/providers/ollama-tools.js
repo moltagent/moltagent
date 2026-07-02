@@ -7,6 +7,8 @@
  * @version 1.0.0
  */
 
+const { emitOllamaTimings } = require('../../llm/ollama-timings');
+
 class OllamaToolsProvider {
   /**
    * @param {Object} config
@@ -26,6 +28,9 @@ class OllamaToolsProvider {
     // setting governs (the client must not override the box's resource policy —
     // a hardcoded '10m' evicted indefinitely-pinned models on the DGX host).
     this.keepAlive = config.keep_alive;
+    // Residency-signal sink (Layer 3): receives Ollama's server-side timings
+    // per response, same knob shape as keep_alive. Undefined → no capture.
+    this.onTimings = typeof config.onTimings === 'function' ? config.onTimings : null;
     this.logger = logger || console;
     this._fetch = globalThis.fetch;
   }
@@ -57,9 +62,13 @@ class OllamaToolsProvider {
    * @param {Array} params.messages - Conversation messages
    * @param {Array} params.tools - Tool definitions
    * @param {number} [params.timeout] - Override timeout (ms). If not set, uses toolTimeout for tool requests, default timeout otherwise.
+   * @param {boolean} [params.calibration] - Scheduled measurement traffic
+   *   (golden-set probe, judge idle probes). Rides only the timings emit —
+   *   never sent to Ollama — so the residency ledger can exclude it from
+   *   thrash detection.
    * @returns {Promise<{content: string|null, toolCalls: Array|null}>}
    */
-  async chat({ system, messages, tools, timeout, format, model, options }) {
+  async chat({ system, messages, tools, timeout, format, model, options, calibration }) {
     const ollamaMessages = [];
 
     if (system) {
@@ -147,6 +156,7 @@ class OllamaToolsProvider {
         }
 
         const data = await response.json();
+        emitOllamaTimings(this.onTimings, data, body.model, calibration);
         return this._parseResponse(data);
       })();
 

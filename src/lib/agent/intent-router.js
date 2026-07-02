@@ -498,6 +498,10 @@ class IntentRouter {
       messages: [{ role: 'user', content: userContent }],
       timeout,
       format: INTENT_SCHEMA,
+      // Probe runs are calibration traffic: the residency ledger records
+      // their loads (real evidence of what co-fits) but excludes them from
+      // thrash detection — the boot burst loads every candidate by design.
+      calibration: probe,
       options: {
         num_ctx: 2048,
         temperature: 0.1,
