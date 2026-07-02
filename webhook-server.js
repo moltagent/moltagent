@@ -423,6 +423,10 @@ const CostTracker = require('./src/lib/llm/cost-tracker');
 // Maturation loop (Layer 2): per-(job, model, language) production scores
 const ModelScorecard = require('./src/lib/llm/model-scorecard');
 
+// Local judge (Session 4): judged-job sample retention + heartbeat-idle grading
+const JudgeQueue = require('./src/lib/llm/judge-queue');
+const LocalJudge = require('./src/lib/llm/local-judge');
+
 // Local Intelligence: ModelScout + MicroPipeline + DeferralQueue
 let ModelScout, MicroPipeline, MemoryContextEnricher, DeferralQueue, GoldenSetProbe;
 try {
@@ -515,6 +519,8 @@ let routerChatBridge = null; // Session B2: RouterChatBridge for dynamic provide
 let modelResolver = null; // Single source of truth for per-job model + trust (issue #123)
 let costTracker = null; // Cost metering: per-call audit + enriched cost reporting
 let modelScorecard = null; // Maturation loop: per-(job, model, language) scores (Layer 2)
+let judgeQueue = null; // Session 4: bounded judge-then-delete retention of judged-job samples
+let localJudge = null; // Session 4: heartbeat-idle grader for writing/thinking
 let dailyBriefing = null; // First-message-of-day briefing
 let cockpitManager = null; // Session 27: Cockpit (Deck as control plane)
 let botEnroller = null; // Auto-enable Talk bot in rooms
@@ -1610,6 +1616,15 @@ async function initialize() {
       });
       console.log('[INIT] ModelScorecard ready (maturation loop)');
 
+      // Judged-job sample retention (Session 4). The queue is the ONLY
+      // place raw response content persists, on local disk under data/,
+      // bounded and judge-then-delete — content never enters Nextcloud.
+      judgeQueue = new JudgeQueue({
+        dataDir: path.join(__dirname, 'data'),
+        logger: console,
+      });
+      console.log('[INIT] JudgeQueue ready (judged-job sample retention)');
+
       // IntentRouter: LLM-powered intent classification with conversation context
       // Use fast provider when available — avoids Ollama model swap latency
       const IntentRouter = require('./src/lib/agent/intent-router');
@@ -1662,6 +1677,10 @@ async function initialize() {
       // Wire CostTracker into LLMRouter so all route() calls are metered
       if (llmRouter) {
         llmRouter.costTracker = costTracker;
+        // Session 4: route() is the second LLM egress (Talk thinking path);
+        // it captures judged-job samples into the same queue the bridge uses.
+        llmRouter.judgeQueue = judgeQueue;
+        llmRouter.getLanguage = () => cockpitManager?.cachedConfig?.persona?.language || 'EN';
       }
       console.log('[INIT] CostTracker ready');
 
@@ -1791,6 +1810,10 @@ async function initialize() {
             costTracker,
             modelResolver,
             modelScorecard,
+            judgeQueue,
+            // Language is bound to a judged sample at production time —
+            // same cockpit-global source the scorecard reads.
+            getLanguage: () => cockpitManager?.cachedConfig?.persona?.language || 'EN',
             logger: console,
             defaultJob: 'tools'
           });
@@ -2402,6 +2425,54 @@ async function initialize() {
         console.log(`[INIT] InfraMonitor ready (${infraMonitor.probes.length} probes, interval=${infraMonitor.checkInterval})`);
       }
 
+      // LocalJudge (Session 4): heartbeat-idle grader for writing/thinking.
+      // Every dependency is a lazy thunk over live components, so the judge
+      // is boot-order safe and reads the CURRENT scout/roster/trust at each
+      // idle cycle. The judge model comes from ModelScout's sensed pool
+      // (Declared+Described), never resolve() and never the scorecard —
+      // the gradee must not pick its grader.
+      if (modelScorecard && judgeQueue && routerChatBridge) {
+        try {
+          let judgeFixture = null;
+          try {
+            judgeFixture = LocalJudge.loadFixture(path.join(__dirname, 'test/fixtures/judge/judged-jobs-probes.json'));
+          } catch (fixErr) {
+            console.warn(`[INIT] Judge probe fixture unavailable (${fixErr.message}) — organic grading only`);
+          }
+          localJudge = new LocalJudge({
+            judgeQueue,
+            scorecard: modelScorecard,
+            selectJudgeModel: () => modelResolver?.modelScout?.selectJudgeModel?.() || null,
+            getModelInfo: (name) => modelResolver?.modelScout?.getModelInfo?.(name) || null,
+            localChat: (params) => {
+              const ollama = routerChatBridge?.chatProviders?.get('ollama-local');
+              if (!ollama) throw new Error('ollama-local chat provider not registered');
+              return ollama.chat(params);
+            },
+            localCandidates: (job) => modelResolver?.modelScout?.rosterFor?.(job) || [],
+            cloudCandidates: (job) => {
+              const chain = llmRouter?.buildProviderChain?.(job, { allowCloud: true })?.chain || [];
+              return chain
+                .filter(e => e?.provider?.type !== 'local' && routerChatBridge?.chatProviders?.has(e.id))
+                .map(e => ({
+                  id: e.id,
+                  model: e.provider.model || e.id,
+                  chat: (params) => routerChatBridge.chatProviders.get(e.id).chat(params),
+                }));
+            },
+            budgetEnforcer: llmRouter?.budget || null,
+            costTracker,
+            resolveTrust: (job) => (modelResolver ? modelResolver.resolveTrust(job) : 'local-only'),
+            fixture: judgeFixture,
+            logger: console,
+          });
+          console.log('[INIT] LocalJudge ready (heartbeat-idle grading for judged jobs)');
+        } catch (err) {
+          console.warn(`[INIT] LocalJudge setup failed: ${err.message}`);
+          localJudge = null;
+        }
+      }
+
       // Create HeartbeatManager
       heartbeatManager = new HeartbeatManager({
         nextcloud: {
@@ -2438,6 +2509,7 @@ async function initialize() {
         ncFilesClient,
         resilientWriter,
         costTracker,
+        localJudge,
         dailyBriefing,
         reviewUser: appConfig.cockpit?.adminUser || appConfig.knowledge?.adminUser || '',
         talkSendQueue: talkQueue,

@@ -63,6 +63,14 @@ const CONTEXT_FLOOR = Object.freeze({
   research: 8192,
 });
 
+/**
+ * Minimum sensed context window for the local judge (Session 4). A judge
+ * prompt carries the original task, the full judged response, and a rubric,
+ * so it needs the same window the long-context jobs do.
+ * @type {number}
+ */
+const JUDGE_CONTEXT_FLOOR = 8192;
+
 class ModelScout {
   /**
    * @param {Object} config
@@ -233,6 +241,57 @@ class ModelScout {
   }
 
   /**
+   * Pin the local judge model (Session 4): the largest dedicated text
+   * generator whose sensed context window clears the judge floor.
+   *
+   * Deliberately a pure Layer 0/1 read (Declared capability + Described
+   * size) with no Demonstrated input: the judge grades the maturation
+   * loop's judged jobs, so selecting it through ModelResolver or the
+   * scorecard would make the gradee pick its own grader — the
+   * self-referential loop this pin exists to prevent. Deterministic for a
+   * given installed pool (size, then file size, then name), re-pinned only
+   * when discovery re-runs.
+   *
+   * @returns {{name: string, paramSize: number|null, digest: string|null}|null}
+   */
+  selectJudgeModel() {
+    if (!this._discovered || this._discovered.length === 0) return null;
+    const eligible = this._discovered
+      .filter(m => this._isTextGen(m))
+      .filter(m => m.contextLength === null || m.contextLength >= JUDGE_CONTEXT_FLOOR);
+    if (eligible.length === 0) return null;
+    eligible.sort((a, b) => this._compareSize(b, a) || a.name.localeCompare(b.name));
+    const judge = eligible[0];
+    return { name: judge.name, paramSize: judge.paramSize, digest: judge.digest || null };
+  }
+
+  /**
+   * The sensed descriptor for one installed model (exact-name match), for
+   * consumers that need size or digest — the judge's gap weight and its
+   * digest-change re-check.
+   * @param {string} name
+   * @returns {{name: string, paramSize: number|null, digest: string|null,
+   *   capabilities: string[], contextLength: number|null}|null}
+   */
+  getModelInfo(name) {
+    if (!this._discovered || typeof name !== 'string' || !name) return null;
+    const lower = name.toLowerCase();
+    return this._discovered.find(m => m.name.toLowerCase() === lower) || null;
+  }
+
+  /**
+   * The generated roster chain for one job (best-first model names), from
+   * the last generateLocalRoster() run. Empty when discovery hasn't run or
+   * found nothing — callers treat that as "no local candidates".
+   * @param {string} job
+   * @returns {string[]}
+   */
+  rosterFor(job) {
+    const chain = this._roster?.[job];
+    return Array.isArray(chain) ? [...chain] : [];
+  }
+
+  /**
    * Check if a model matching the given name or family is available.
    * @param {string} nameOrFamily - Model name (e.g. 'qwen3:8b') or family (e.g. 'qwen3')
    * @returns {boolean}
@@ -373,4 +432,4 @@ class ModelScout {
   }
 }
 
-module.exports = { ModelScout, PRIOR_STRENGTH, CONTEXT_FLOOR };
+module.exports = { ModelScout, PRIOR_STRENGTH, CONTEXT_FLOOR, JUDGE_CONTEXT_FLOOR };

@@ -146,7 +146,7 @@ class BudgetEnforcer {
     const proactiveTriggers = [
       'heartbeat_deck', 'heartbeat_calendar', 'heartbeat_activity',
       'heartbeat_digest', 'heartbeat_knowledge', 'heartbeat_email',
-      'heartbeat_meeting_prep',
+      'heartbeat_meeting_prep', 'heartbeat_judge',
       'deck_card_pickup'
     ];
     return proactiveTriggers.includes(context.trigger) ? 'proactive' : 'reactive';

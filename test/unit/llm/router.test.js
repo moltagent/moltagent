@@ -1411,6 +1411,39 @@ if (LegacyLLMRouter) {
   });
 }
 
+// ============================================================
+// Judged-job sample capture at route() (Session 4)
+// ============================================================
+
+asyncTest('TC-ROUTE-JUDGE-001: a judged-job route() response is handed to the JudgeQueue', async () => {
+  const enqueued = [];
+  const mockProvider = createMockProvider({ type: 'local' });
+  const router = new LLMRouter({ roles: { value: ['mock-provider'] } });
+  router.providers.set('mock-provider', mockProvider);
+  router.judgeQueue = { enqueue: (s) => { enqueued.push(s); return { queued: true }; } };
+  router.getLanguage = () => 'PT';
+
+  await router.route({ job: 'thinking', task: 'thinking', content: 'pondera passo a passo' });
+
+  assert.strictEqual(enqueued.length, 1);
+  assert.strictEqual(enqueued[0].job, 'thinking');
+  assert.strictEqual(enqueued[0].model, 'mock-model');
+  assert.strictEqual(enqueued[0].language, 'PT', 'language snapshotted at production time');
+  assert.strictEqual(enqueued[0].isLocal, true);
+  assert.strictEqual(enqueued[0].prompt, 'pondera passo a passo');
+  assert.strictEqual(enqueued[0].response, 'Mock LLM response');
+});
+
+asyncTest('TC-ROUTE-JUDGE-002: capture failures never break route()', async () => {
+  const mockProvider = createMockProvider();
+  const router = new LLMRouter({ roles: { value: ['mock-provider'] } });
+  router.providers.set('mock-provider', mockProvider);
+  router.judgeQueue = { enqueue: () => { throw new Error('disk full'); } };
+
+  const result = await router.route({ job: 'writing', task: 'writing', content: 'write' });
+  assert.strictEqual(result.result, 'Mock LLM response');
+});
+
 // Summary
 setTimeout(() => {
   summary();

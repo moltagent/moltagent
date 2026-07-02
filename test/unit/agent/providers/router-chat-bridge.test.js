@@ -988,6 +988,66 @@ const silentLogger = { info: () => {}, warn: () => {} };
     assert.strictEqual(recorded[0].model, 'phi4-mini', 'falls back to the provider static model');
   });
 
+  // --- Judged-job sample capture (Session 4) ---
+  console.log('\n--- Judged-Job Capture ---\n');
+
+  await asyncTest('TC-BRIDGE-JUDGE-001: a judged-job response is handed to the JudgeQueue with model, language, and prompt', async () => {
+    const enqueued = [];
+    const router = createMockRouter({
+      buildProviderChain: () => ({ chain: [{ id: 'ollama-local', provider: { type: 'local', model: 'qwen3:8b' } }], skipped: [] })
+    });
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([['ollama-local', createMockChatProvider({ content: 'a fine essay' })]]),
+      judgeQueue: { enqueue: (s) => { enqueued.push(s); return { queued: true }; } },
+      getLanguage: () => 'DE',
+      logger: silentLogger
+    });
+    await bridge.chat({
+      system: 's',
+      messages: [
+        { role: 'user', content: 'old turn' },
+        { role: 'assistant', content: 'earlier reply' },
+        { role: 'user', content: 'schreibe einen Aufsatz' }
+      ],
+      job: 'writing'
+    });
+    assert.strictEqual(enqueued.length, 1);
+    assert.strictEqual(enqueued[0].job, 'writing');
+    assert.strictEqual(enqueued[0].model, 'qwen3:8b');
+    assert.strictEqual(enqueued[0].language, 'DE', 'language snapshotted at production time');
+    assert.strictEqual(enqueued[0].prompt, 'schreibe einen Aufsatz', 'most recent user turn is the task');
+    assert.strictEqual(enqueued[0].response, 'a fine essay');
+    assert.strictEqual(enqueued[0].isLocal, true);
+  });
+
+  await asyncTest('TC-BRIDGE-JUDGE-002: capture failures never break the request path', async () => {
+    const router = createMockRouter({
+      buildProviderChain: () => ({ chain: [{ id: 'ollama-local', provider: { type: 'local', model: 'qwen3:8b' } }], skipped: [] })
+    });
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([['ollama-local', createMockChatProvider({ content: 'ok' })]]),
+      judgeQueue: { enqueue: () => { throw new Error('disk full'); } },
+      logger: silentLogger
+    });
+    const result = await bridge.chat({ system: 's', messages: [], job: 'writing' });
+    assert.strictEqual(result.content, 'ok', 'response delivered despite capture failure');
+  });
+
+  await asyncTest('TC-BRIDGE-JUDGE-003: no judgeQueue wired → chat() unchanged', async () => {
+    const router = createMockRouter({
+      buildProviderChain: () => ({ chain: [{ id: 'ollama-local', provider: { type: 'local', model: 'qwen3:8b' } }], skipped: [] })
+    });
+    const bridge = new RouterChatBridge({
+      router,
+      chatProviders: new Map([['ollama-local', createMockChatProvider({ content: 'ok' })]]),
+      logger: silentLogger
+    });
+    const result = await bridge.chat({ system: 's', messages: [], job: 'writing' });
+    assert.strictEqual(result.content, 'ok');
+  });
+
   // --- Run ---
   summary();
   exitWithCode();

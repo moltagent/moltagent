@@ -137,6 +137,11 @@ class HeartbeatManager {
       this.budgetEnforcer.costTracker = this.costTracker;
     }
 
+    // LocalJudge (optional, Session 4): grades judged-job samples during
+    // the outside-active-hours window ONLY — the idle branch of pulse() is
+    // its single call site, so judging is never on the request path.
+    this.localJudge = config.localJudge || null;
+
     // Cockpit (optional, Deck as control plane)
     this.cockpitManager = config.cockpitManager || null;
 
@@ -536,6 +541,22 @@ class HeartbeatManager {
         : this._isQuietHours();           // fallback to config quiet hours
       if (outsideActiveHours) {
         console.log('[Heartbeat] Outside active hours - minimal processing');
+        // LocalJudge (Session 4): the idle window is the judge's ONLY call
+        // site. Grading and calibration probes run here, in downtime, so
+        // the user wakes to a better-tuned roster and no user-facing call
+        // ever waits on a judge verdict.
+        if (this.localJudge) {
+          try {
+            results.judge = await this.localJudge.runIdleCycle();
+            const j = results.judge;
+            if (j && (j.graded || j.localProbes || j.cloudProbes || j.dropped)) {
+              console.log(`[Heartbeat] Judge idle cycle: ${j.graded} graded, ${j.localProbes} local probe(s), ${j.cloudProbes} cloud probe(s), ${j.dropped} dropped`);
+            }
+          } catch (err) {
+            console.warn('[Heartbeat] Judge idle cycle error:', err.message);
+            results.errors.push({ component: 'localJudge', error: err.message });
+          }
+        }
         this.state.lastRun = new Date();
         // Restore status to ready even during quiet hours (prevents status going stale)
         await this.statusIndicator?.setStatus('ready', { force: true });

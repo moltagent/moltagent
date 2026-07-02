@@ -30,8 +30,18 @@ class RouterChatBridge {
    *   The bridge records the LLM-call-level failure signal (timeout/error is
    *   model-attributable and only this chokepoint knows which model ran);
    *   envelope-level outcomes are recorded by AgentLoop from _routing.model.
+   * @param {Object} [options.judgeQueue] - JudgeQueue (Session 4). Judged jobs
+   *   (writing/thinking) have no mechanical signal, so their responses are
+   *   retained here for the heartbeat-idle judge. This is the one place the
+   *   concrete model, the job, and the response content are simultaneously in
+   *   scope — the same custody point that computes _routing.model. Capture is
+   *   an append into a bounded judge-then-delete store; no judging happens on
+   *   the request path.
+   * @param {Function} [options.getLanguage] - () => cockpit language code.
+   *   Snapshotted per sample at production time — language is bound to the
+   *   response here or nowhere.
    */
-  constructor({ router, chatProviders, logger, defaultJob, costTracker, modelResolver, modelScorecard } = {}) {
+  constructor({ router, chatProviders, logger, defaultJob, costTracker, modelResolver, modelScorecard, judgeQueue, getLanguage } = {}) {
     if (!router) throw new Error('RouterChatBridge requires a router instance');
     if (!chatProviders || chatProviders.size === 0) {
       throw new Error('RouterChatBridge requires at least one chatProvider');
@@ -44,6 +54,8 @@ class RouterChatBridge {
     this.costTracker = costTracker || null;
     this.modelResolver = modelResolver || null;
     this.modelScorecard = modelScorecard || null;
+    this.judgeQueue = judgeQueue || null;
+    this.getLanguage = typeof getLanguage === 'function' ? getLanguage : null;
 
     // Public property — assigned post-construction (same pattern as ProviderChain)
     this.fallbackNotifier = null;
@@ -133,6 +145,22 @@ class RouterChatBridge {
   unregisterChatProvider(id) {
     this.chatProviders.delete(id);
     this.logger.info(`[RouterChatBridge] Unregistered chat provider: ${id}`);
+  }
+
+  /**
+   * The task a judged sample answered: the most recent user-role message.
+   * Structural extraction (role field), not content inspection.
+   * @private
+   * @param {Object} params - chat() params
+   * @returns {string|null}
+   */
+  _lastUserPrompt(params) {
+    const msgs = Array.isArray(params.messages) ? params.messages : [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m && m.role === 'user' && typeof m.content === 'string' && m.content) return m.content;
+    }
+    return null;
   }
 
   /**
@@ -300,6 +328,24 @@ class RouterChatBridge {
           job,
           failoverPath: failoverPath.length > 0 ? [...failoverPath] : undefined
         };
+
+        // Session 4: retain judged-job samples for the heartbeat-idle judge.
+        // The queue itself gates on judged jobs (writing/thinking) and drops
+        // anything unattributable, so this is a plain hand-off; it must never
+        // break the request path.
+        if (this.judgeQueue && result.content) {
+          try {
+            this.judgeQueue.enqueue({
+              job,
+              model: localModel || providerObj.model || null,
+              provider: providerId,
+              isLocal,
+              language: this.getLanguage ? this.getLanguage() : null,
+              prompt: this._lastUserPrompt(params),
+              response: result.content,
+            });
+          } catch (_e) { /* capture is best-effort */ }
+        }
 
         // Notify FallbackNotifier
         if (this.fallbackNotifier) {
