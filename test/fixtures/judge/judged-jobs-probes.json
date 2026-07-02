@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "description": "Synthetic probe prompts for the local judge (Session 4). Prompts only — the judge supplies the score, so there are no labels. Per job, per language (EN/DE/PT), consistent with the golden-set fixture's multilingual discipline.",
+  "jobs": {
+    "writing": {
+      "EN": [
+        "Write a short, friendly announcement (3-5 sentences) telling a small team that the weekly planning meeting moves from Monday morning to Tuesday afternoon, and why that helps focus time.",
+        "Draft a concise paragraph for a project wiki describing what a 'living document' is and why teams keep one, in plain language for newcomers."
+      ],
+      "DE": [
+        "Schreibe eine kurze, freundliche Ankündigung (3-5 Sätze) an ein kleines Team: das wöchentliche Planungsmeeting wandert von Montagmorgen auf Dienstagnachmittag, und erkläre, warum das die Fokuszeit verbessert.",
+        "Verfasse einen prägnanten Absatz für ein Projekt-Wiki, der erklärt, was ein 'lebendes Dokument' ist und warum Teams eines pflegen — in einfacher Sprache für Neulinge."
+      ],
+      "PT": [
+        "Escreva um aviso curto e simpático (3-5 frases) para uma equipa pequena: a reunião semanal de planeamento passa de segunda-feira de manhã para terça-feira à tarde, e explique porque isso ajuda o tempo de foco.",
+        "Redija um parágrafo conciso para a wiki de um projeto explicando o que é um 'documento vivo' e porque as equipas mantêm um, em linguagem simples para quem chega de novo."
+      ]
+    },
+    "thinking": {
+      "EN": [
+        "A team has two candidate meeting slots: Tuesday 09:00 (everyone available, but it splits the morning focus block) and Thursday 16:00 (one of five people can never attend). Reason through the trade-off step by step and recommend one slot.",
+        "A small server runs nightly backups at 02:00 and a heavy report job at 02:15, and the report has started failing intermittently. Reason about the most likely cause and what you would change first, explaining each step."
+      ],
+      "DE": [
+        "Ein Team hat zwei mögliche Meeting-Termine: Dienstag 09:00 (alle können, aber er zerschneidet den Fokus-Vormittag) und Donnerstag 16:00 (eine von fünf Personen kann nie teilnehmen). Wäge Schritt für Schritt ab und empfiehl einen Termin.",
+        "Ein kleiner Server macht um 02:00 nächtliche Backups und um 02:15 läuft ein schwerer Report-Job, der neuerdings sporadisch fehlschlägt. Überlege Schritt für Schritt, was die wahrscheinlichste Ursache ist und was du zuerst ändern würdest."
+      ],
+      "PT": [
+        "Uma equipa tem dois horários possíveis para a reunião: terça às 09:00 (todos disponíveis, mas corta o bloco de foco da manhã) e quinta às 16:00 (uma de cinco pessoas nunca pode participar). Pondera passo a passo e recomenda um horário.",
+        "Um servidor pequeno faz backups às 02:00 e corre um relatório pesado às 02:15, que começou a falhar de forma intermitente. Raciocina passo a passo sobre a causa mais provável e o que mudarias primeiro."
+      ]
+    }
+  }
+}

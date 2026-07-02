@@ -160,10 +160,16 @@ class ModelScorecard {
    * @param {boolean} success
    * @param {Object} [opts]
    * @param {number} [opts.weight=1] - Sample weight. Escalation-correction
-   *   callers pass the configured escalationWeight.
+   *   callers pass the configured escalationWeight; the judge passes its
+   *   gap weight.
+   * @param {boolean} [opts.synthetic=false] - A probe-generated sample
+   *   (Session 4 synthetic judge probes): it carries evidential mass (a/b)
+   *   but does not count as production evidence, so it adds no UCB
+   *   optimism — the same discipline as the golden-set seed, whose fixture
+   *   numbers must never supply exploration bonus against real traffic.
    * @returns {{recorded: boolean, seatChanged: boolean}}
    */
-  recordSample(job, model, language, success, { weight = 1 } = {}) {
+  recordSample(job, model, language, success, { weight = 1, synthetic = false } = {}) {
     if (typeof job !== 'string' || !job || typeof model !== 'string' || !model) {
       return { recorded: false, seatChanged: false };
     }
@@ -173,7 +179,7 @@ class ModelScorecard {
 
     const entry = this._entry(job, model, lang);
     if (success) entry.a += w; else entry.b += w;
-    entry.prod = (entry.prod || 0) + w;
+    if (!synthetic) entry.prod = (entry.prod || 0) + w;
     entry.at = new Date().toISOString();
 
     // Per-language plasticity ceiling: halve all three counters so the

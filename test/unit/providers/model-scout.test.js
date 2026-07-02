@@ -307,6 +307,78 @@ scenario('hasModel() matches by name and family', async () => {
   });
 });
 
+// -- selectJudgeModel(): the Session 4 judge pin (Declared+Described only) --
+scenario('selectJudgeModel() pins the largest dedicated text generator clearing the context floor', async () => {
+  await withMock(mockFetch(TAGS_MODELS, SHOW_BY_MODEL), async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout.discover();
+    const judge = scout.selectJudgeModel();
+    assert.strictEqual(judge.name, 'qwen3:8b', 'largest dedicated text generator wins');
+    assert.strictEqual(judge.paramSize, 8.2);
+  });
+});
+
+scenario('selectJudgeModel() ignores vision and embedding specialists even when they are larger', async () => {
+  const tags = [
+    { name: 'llava:34b', model: 'llava:34b', size: 20000000000, details: { family: 'llama', parameter_size: '34B' } },
+    { name: 'gemma2:2b', model: 'gemma2:2b', size: 1600000000, details: { family: 'gemma2', parameter_size: '2.6B' } },
+  ];
+  const show = {
+    'llava:34b': { capabilities: ['completion', 'vision'], model_info: { 'llama.context_length': 32768 } },
+    'gemma2:2b': { capabilities: ['completion'], model_info: { 'gemma2.context_length': 8192 } },
+  };
+  await withMock(mockFetch(tags, show), async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout.discover();
+    assert.strictEqual(scout.selectJudgeModel().name, 'gemma2:2b', 'a vision specialist is not a judge');
+  });
+});
+
+scenario('selectJudgeModel() passes over a large model whose window is below the judge floor', async () => {
+  const tags = [
+    { name: 'big-short:20b', model: 'big-short:20b', size: 12000000000, details: { family: 'big', parameter_size: '20B' } },
+    { name: 'qwen3:8b', model: 'qwen3:8b', size: 5200000000, details: { family: 'qwen3', parameter_size: '8.2B' } },
+  ];
+  const show = {
+    'big-short:20b': { capabilities: ['completion'], model_info: { 'big.context_length': 4096 } },
+    'qwen3:8b': { capabilities: ['completion', 'tools'], model_info: { 'qwen3.context_length': 40960 } },
+  };
+  await withMock(mockFetch(tags, show), async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout.discover();
+    assert.strictEqual(scout.selectJudgeModel().name, 'qwen3:8b', 'a judge prompt needs the context floor');
+  });
+});
+
+scenario('selectJudgeModel() returns null before discovery or on an ineligible pool', async () => {
+  const scout = new ModelScout({ logger: silentLogger });
+  assert.strictEqual(scout.selectJudgeModel(), null);
+  const embedOnly = [
+    { name: 'nomic-embed-text:latest', model: 'nomic-embed-text:latest', size: 270000000, details: { family: 'nomic-bert', parameter_size: '137M' } },
+  ];
+  const show = { 'nomic-embed-text:latest': { capabilities: ['embedding'], model_info: {} } };
+  await withMock(mockFetch(embedOnly, show), async () => {
+    const scout2 = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout2.discover();
+    assert.strictEqual(scout2.selectJudgeModel(), null, 'no dedicated text generator, no judge');
+  });
+});
+
+// -- getModelInfo() / rosterFor(): sensed lookups for the judge --
+scenario('getModelInfo() returns the sensed descriptor by exact name; rosterFor() the job chain', async () => {
+  await withMock(mockFetch(TAGS_MODELS, SHOW_BY_MODEL), async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout.discover();
+    const info = scout.getModelInfo('qwen3:8b');
+    assert.strictEqual(info.paramSize, 8.2);
+    assert.strictEqual(scout.getModelInfo('not-installed'), null);
+    assert.deepStrictEqual(scout.rosterFor('writing'), [], 'no roster before generateLocalRoster()');
+    scout.generateLocalRoster();
+    const writing = scout.rosterFor('writing');
+    assert.ok(writing.length > 0 && writing[0] === 'qwen3:8b', 'largest-first chain for writing');
+  });
+});
+
 // Run the fetch-mocking scenarios sequentially, then report.
 (async () => {
   for (const { name, fn } of suite) {

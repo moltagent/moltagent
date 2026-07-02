@@ -415,6 +415,28 @@ asyncTest('a classify() timeout on the local primary records a negative for that
   assert.deepStrictEqual(samples[0], ['classification', 'smart-model', 'EN', false]);
 });
 
+// ============================================================
+// Synthetic samples (Session 4: judge probes)
+// ============================================================
+
+test('synthetic samples carry evidential mass but no production evidence', () => {
+  const sc = makeScorecard();
+  sc.recordSample('writing', 'm1', 'EN', true, { synthetic: true });
+  const e = sc.getPairings('writing').m1.EN;
+  assert.strictEqual(e.a, 1, 'synthetic success adds mass');
+  assert.strictEqual(e.prod, 0, 'but no UCB optimism (same discipline as the probe seed)');
+  sc.recordSample('writing', 'm1', 'EN', true);
+  assert.strictEqual(sc.getPairings('writing').m1.EN.prod, 1, 'an organic sample does count');
+});
+
+test('a weighted judge verdict enters in its weight, not a full sample', () => {
+  const sc = makeScorecard();
+  sc.recordSample('writing', 'cloud-m', 'DE', true, { weight: 0.3, synthetic: true });
+  const e = sc.getPairings('writing')['cloud-m'].DE;
+  assert.ok(Math.abs(e.a - 0.3) < 1e-9);
+  assert.strictEqual(e.b, 0);
+});
+
 setTimeout(() => {
   summary();
   exitWithCode();
