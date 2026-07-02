@@ -2059,6 +2059,13 @@ async function initialize() {
                 if (sel && sel.model) {
                   modelResolver.setGroundTruthOverride('classification', sel.model);
                   console.log(`[INIT] Golden-set probe: classification -> ${sel.model} (EN ${sel.scores?.EN} DE ${sel.scores?.DE} PT ${sel.scores?.PT}, ${sel.passed ? 'passed' : sel.reason})`);
+                  // The probe lands after the "[INIT] Model resolver:" summary
+                  // (always — the probe is async even on a warm cache), so that
+                  // line never shows the golden-set-probe source (#233). Re-log
+                  // the resolver's ground truth now that the override is in:
+                  // this post-probe line is the one the operator should read.
+                  const { summary } = modelResolver.describe(['tools', 'thinking', 'quick', 'classification']);
+                  console.log(`[INIT] Model resolver (post-probe): ${summary}`);
                 }
               })
               .catch(err => console.warn(`[INIT] Golden-set probe failed: ${err.message}`));

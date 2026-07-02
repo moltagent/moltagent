@@ -460,10 +460,12 @@ class IntentRouter {
    * @param {boolean} [opts.slow=false]
    * @param {string} [opts.language] - Force a specific language's examples
    *   (e.g. for the golden-set probe). Defaults to the cockpit language.
+   * @param {Object} [opts.options] - Ollama decoding options merged over the
+   *   defaults (the golden-set probe pins temperature/seed for determinism).
    * @returns {Promise<{intent: string, domain: string|null, needsHistory: boolean, confidence: number}>}
    * @private
    */
-  async _classifyWithModel(model, message, recentContext = [], { slow = false, language } = {}) {
+  async _classifyWithModel(model, message, recentContext = [], { slow = false, language, options } = {}) {
     const userContent = this._buildUserContent(message, recentContext);
     // The primary (smart) classifier gets 4x the timeout; the fast fallback runs
     // on the base timeout. The caller signals which via `slow`, so timeout
@@ -479,7 +481,8 @@ class IntentRouter {
       format: INTENT_SCHEMA,
       options: {
         num_ctx: 2048,
-        temperature: 0.1
+        temperature: 0.1,
+        ...(options || {})
       }
     });
 
@@ -490,7 +493,11 @@ class IntentRouter {
    * Classify one message with a specific model + language, for the
    * golden-set probe (measured per-language accuracy, not size, picks the
    * classification model). Runs the SAME classification path production
-   * uses so the probe scores exactly what production consumes.
+   * uses so the probe scores exactly what production consumes — except
+   * decoding: the probe pins temperature 0 and a fixed seed so the same
+   * model on the same fixture scores identically run-to-run. Production
+   * samples at 0.1; a measurement that flaps on sampling noise (#232)
+   * cannot anchor a selection with hysteresis.
    * @param {string} model - Ollama model name
    * @param {string} message - Message to classify
    * @param {string} language - Language code the fixture example is written
@@ -499,7 +506,11 @@ class IntentRouter {
    * @returns {Promise<{gate: string, domain: string|null}>}
    */
   async probeClassify(model, message, language) {
-    const r = await this._classifyWithModel(model, message, [], { slow: true, language });
+    const r = await this._classifyWithModel(model, message, [], {
+      slow: true,
+      language,
+      options: { temperature: 0, seed: 42 }
+    });
     return { gate: r.gate, domain: r.domain ?? null };
   }
 
