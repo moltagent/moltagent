@@ -48,6 +48,17 @@ const crypto = require('crypto');
 const DEFAULT_THRESHOLD = 0.75;
 const CACHE_FILENAME = 'golden-set-probe.json';
 
+// Bump when the MEANING of a cached score changes even though model digest and
+// fixture are identical — e.g. the decoding options probeClassify pins (m2:
+// temperature 0 + fixed seed, #232). Old-revision entries then miss the cache
+// and the candidate is re-measured under the new semantics instead of a stale
+// score masquerading as comparable.
+const MEASUREMENT_REV = 2;
+
+// Reserved cache-file key holding the seated selection (hysteresis state, #232).
+// Never collides with measurement keys, which always contain the fixture salt.
+const SELECTION_KEY = '__selection__';
+
 class GoldenSetProbe {
   /**
    * @param {Object} opts
@@ -73,6 +84,13 @@ class GoldenSetProbe {
     // no classifyFn calls, so it is safe to call repeatedly/synchronously
     // after run() without re-probing.
     this._scores = {};
+
+    // The seated model from a previous cycle (hysteresis, #232). Loaded from
+    // the cache file by run(); tests may set it directly. select() consults it:
+    // a passing incumbent keeps the seat unless a SMALLER challenger clears the
+    // bar by at least one fixture example's worth of accuracy, or the incumbent
+    // itself drops below the bar.
+    this._incumbent = null;
   }
 
   /**
@@ -110,6 +128,13 @@ class GoldenSetProbe {
 
     const diskCache = this._loadCache();
     let cacheChanged = false;
+
+    // Restore the seated model from a previous cycle so hysteresis survives
+    // restarts. Only the identity is restored — its scores still have to come
+    // from a current-revision measurement below to count.
+    if (typeof diskCache[SELECTION_KEY]?.model === 'string') {
+      this._incumbent = diskCache[SELECTION_KEY].model;
+    }
 
     for (const candidate of list) {
       const key = this._cacheKey(candidate);
@@ -161,9 +186,21 @@ class GoldenSetProbe {
       }
     }
 
+    const result = this.select(list);
+
+    // Persist the seat only for a passing winner: a least-bad pick is not a
+    // seated incumbent (it holds nothing against future passers). Clearing on
+    // a no-passer cycle means hysteresis never protects a below-bar model.
+    const seated = result.passed ? result.model : null;
+    if (seated !== (diskCache[SELECTION_KEY]?.model ?? null)) {
+      if (seated) diskCache[SELECTION_KEY] = { model: seated, at: new Date().toISOString() };
+      else delete diskCache[SELECTION_KEY];
+      cacheChanged = true;
+    }
+    this._incumbent = seated;
+
     if (cacheChanged) this._saveCache(diskCache);
 
-    const result = this.select(list);
     if (!result.passed && result.model) {
       const threshold = this._threshold();
       const weak = Object.entries(result.scores || {})
@@ -185,6 +222,14 @@ class GoldenSetProbe {
    * (smallest, since candidates are smallest-first) wins. If none pass,
    * the candidate with the highest minimum-language score is chosen and
    * marked `passed: false`.
+   *
+   * Hysteresis (#232): a hard threshold on a noisy measurement has no stable
+   * fixed point at the boundary, so a seated incumbent (`this._incumbent`)
+   * that still passes keeps the seat unless a smaller challenger clears the
+   * bar by at least one fixture example's worth of accuracy (with a
+   * 12-example fixture, +1/12 ≈ 0.084). The incumbent loses the seat only by
+   * dropping below the bar itself. Larger challengers never displace a
+   * passing incumbent — smallest-passer preference already excludes them.
    * @param {Array<{name: string, digest?: string}>} candidates
    * @returns {{model: string|null, scores: Object|null, passed: boolean, reason: string}}
    */
@@ -214,6 +259,29 @@ class GoldenSetProbe {
       return { model: null, scores: null, passed: false, reason: 'no measurements' };
     }
 
+    const incumbent = this._incumbent
+      ? evaluated.find(e => e.candidate.name === this._incumbent && Object.keys(e.scores).length > 0)
+      : null;
+
+    if (incumbent && incumbent.passesAll) {
+      // Seat defense: only a smaller, measured challenger clearing
+      // bar + margin takes the seat.
+      const displaceBar = threshold + this._margin();
+      const incumbentIdx = evaluated.indexOf(incumbent);
+      const challenger = evaluated.find((e, idx) =>
+        idx < incumbentIdx && e.passesAll && e.minScore >= displaceBar
+      );
+      if (challenger) {
+        return {
+          model: challenger.candidate.name,
+          scores: challenger.scores,
+          passed: true,
+          reason: `challenger cleared bar+margin (${challenger.minScore.toFixed(2)} >= ${displaceBar.toFixed(2)}) over incumbent ${incumbent.candidate.name}`
+        };
+      }
+      return { model: incumbent.candidate.name, scores: incumbent.scores, passed: true, reason: 'incumbent holds seat' };
+    }
+
     const passer = evaluated.find(e => e.passesAll);
     if (passer) {
       return { model: passer.candidate.name, scores: passer.scores, passed: true, reason: 'smallest passer' };
@@ -239,6 +307,22 @@ class GoldenSetProbe {
 
   /**
    * @private
+   * One fixture example's worth of accuracy — the coarsest per-example step
+   * across languages (smallest language set dominates), i.e. the smallest
+   * score difference the fixture can actually resolve. Anything under it is
+   * indistinguishable from measurement granularity, so a challenger must
+   * clear the bar by at least this much to displace an incumbent.
+   */
+  _margin() {
+    const counts = Object.values((this.fixture && this.fixture.languages) || {})
+      .map(items => (Array.isArray(items) ? items.length : 0))
+      .filter(n => n > 0);
+    if (counts.length === 0) return 0;
+    return 1 / Math.min(...counts);
+  }
+
+  /**
+   * @private
    * Fixture salt for the cache key: the declared version PLUS a short content
    * hash of the labeled examples and threshold. Deriving from content (not the
    * hand-bumped integer alone) means editing a message or a DE/PT label
@@ -252,7 +336,7 @@ class GoldenSetProbe {
       threshold: this._threshold(),
     });
     const hash = crypto.createHash('sha1').update(content).digest('hex').slice(0, 8);
-    this._salt = `v${version}_${hash}`;
+    this._salt = `v${version}_m${MEASUREMENT_REV}_${hash}`;
     return this._salt;
   }
 

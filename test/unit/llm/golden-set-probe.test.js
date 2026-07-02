@@ -381,6 +381,158 @@ test('TC-PROBE-012: setGroundTruthOverride guards against a falsy job', () => {
   assert.doesNotThrow(() => resolver.setGroundTruthOverride('', 'x'));
 });
 
+// ============================================================
+// Hysteresis (#232): a passing incumbent holds the seat unless a smaller
+// challenger clears bar + one-fixture-example margin, or the incumbent
+// itself drops below the bar. Test fixture: 4 examples/language, bar 0.75,
+// margin 1/4 = 0.25 → displace bar = 1.00.
+// ============================================================
+
+console.log('\n--- Hysteresis (#232) ---\n');
+
+// classifyFn answering the first `correctPerLang[model]` examples of every
+// language correctly and the rest wrong — controlled per-model accuracy.
+function accuracyClassifyFn(fixture, correctPerModel) {
+  const truth = truthMap(fixture);
+  const position = {};
+  for (const items of Object.values(fixture.languages)) {
+    items.forEach((item, i) => { position[item.message] = i; });
+  }
+  return async (model, message) => {
+    const k = correctPerModel[model] ?? 0;
+    if (position[message] < k) return truth[message];
+    return { gate: 'greeting', domain: null };
+  };
+}
+
+asyncTest('TC-HYST-001: challenger at exactly the bar does not displace a passing incumbent', async () => {
+  const fixture = makeFixture();
+  const cacheDir = uniqueTmpDir();
+  try {
+    const probe = new GoldenSetProbe({
+      classifyFn: accuracyClassifyFn(fixture, { small: 3, big: 4 }), // small: 0.75, big: 1.0
+      fixture,
+      cacheDir,
+      logger: silentLogger
+    });
+    probe._incumbent = 'big';
+    const result = await probe.run([
+      { name: 'small', paramSize: 2, digest: 's1' },
+      { name: 'big', paramSize: 8, digest: 'b1' }
+    ]);
+    assert.strictEqual(result.model, 'big');
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.reason, 'incumbent holds seat');
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+asyncTest('TC-HYST-002: challenger clearing bar+margin takes the seat', async () => {
+  const fixture = makeFixture();
+  const cacheDir = uniqueTmpDir();
+  try {
+    const probe = new GoldenSetProbe({
+      classifyFn: accuracyClassifyFn(fixture, { small: 4, big: 4 }), // small: 1.0 >= 0.75+0.25
+      fixture,
+      cacheDir,
+      logger: silentLogger
+    });
+    probe._incumbent = 'big';
+    const result = await probe.run([
+      { name: 'small', paramSize: 2, digest: 's1' },
+      { name: 'big', paramSize: 8, digest: 'b1' }
+    ]);
+    assert.strictEqual(result.model, 'small');
+    assert.strictEqual(result.passed, true);
+    assert.ok(result.reason.startsWith('challenger cleared bar+margin'), `unexpected reason: ${result.reason}`);
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+asyncTest('TC-HYST-003: incumbent below the bar loses the seat to the smallest passer', async () => {
+  const fixture = makeFixture();
+  const cacheDir = uniqueTmpDir();
+  try {
+    const probe = new GoldenSetProbe({
+      classifyFn: accuracyClassifyFn(fixture, { small: 3, big: 2 }), // big: 0.5 < bar; small: 0.75 passes
+      fixture,
+      cacheDir,
+      logger: silentLogger
+    });
+    probe._incumbent = 'big';
+    const result = await probe.run([
+      { name: 'small', paramSize: 2, digest: 's1' },
+      { name: 'big', paramSize: 8, digest: 'b1' }
+    ]);
+    assert.strictEqual(result.model, 'small');
+    assert.strictEqual(result.passed, true);
+    assert.strictEqual(result.reason, 'smallest passer');
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+asyncTest('TC-HYST-004: the seat persists in the cache file and survives a restart', async () => {
+  const fixture = makeFixture();
+  const cacheDir = uniqueTmpDir();
+  try {
+    const candidates = [
+      { name: 'small', paramSize: 2, digest: 's1' },
+      { name: 'big', paramSize: 8, digest: 'b1' }
+    ];
+    const probe1 = new GoldenSetProbe({
+      classifyFn: accuracyClassifyFn(fixture, { small: 3, big: 4 }),
+      fixture,
+      cacheDir,
+      logger: silentLogger
+    });
+    const r1 = await probe1.run(candidates);
+    assert.strictEqual(r1.model, 'small', 'no incumbent yet: smallest passer wins');
+
+    const persisted = JSON.parse(fs.readFileSync(path.join(cacheDir, 'golden-set-probe.json'), 'utf8'));
+    assert.strictEqual(persisted.__selection__?.model, 'small', 'seat must be persisted');
+
+    // Restart: fresh probe, same cacheDir. Scores come from cache; the seat
+    // must be restored from disk and hold (big never displaces downward,
+    // and nothing smaller than small exists).
+    const probe2 = new GoldenSetProbe({
+      classifyFn: accuracyClassifyFn(fixture, { small: 3, big: 4 }),
+      fixture,
+      cacheDir,
+      logger: silentLogger
+    });
+    const r2 = await probe2.run(candidates);
+    assert.strictEqual(r2.model, 'small');
+    assert.strictEqual(r2.reason, 'incumbent holds seat');
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+asyncTest('TC-HYST-005: a least-bad (non-passing) pick is not seated as incumbent', async () => {
+  const fixture = makeFixture();
+  const cacheDir = uniqueTmpDir();
+  try {
+    const probe = new GoldenSetProbe({
+      classifyFn: accuracyClassifyFn(fixture, { small: 1, big: 2 }), // nobody passes
+      fixture,
+      cacheDir,
+      logger: silentLogger
+    });
+    const result = await probe.run([
+      { name: 'small', paramSize: 2, digest: 's1' },
+      { name: 'big', paramSize: 8, digest: 'b1' }
+    ]);
+    assert.strictEqual(result.passed, false);
+    const persisted = JSON.parse(fs.readFileSync(path.join(cacheDir, 'golden-set-probe.json'), 'utf8'));
+    assert.strictEqual(persisted.__selection__, undefined, 'least-bad must not hold a seat');
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
 // Summary
 setTimeout(() => {
   summary();

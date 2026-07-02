@@ -562,4 +562,23 @@ test('#133: action verdict domain survives unchanged', () => {
   assert.strictEqual(result.intent, 'calendar', 'action intent shim must stay domain name');
 });
 
+// -- Determinism (#232): the golden-set probe path pins decoding --
+asyncTest('probeClassify() pins temperature 0 and a fixed seed; classify() keeps production sampling', async () => {
+  const captured = [];
+  const router = new IntentRouter({
+    provider: { chat: async (req) => { captured.push(req.options); return { content: '{"intent":"greeting"}' }; } },
+    config: { classifyTimeout: 5000 },
+    getTrust: () => 'local-only',
+    getSmartModel: () => 'smart-model'
+  });
+
+  await router.probeClassify('probe-model', 'hello', 'EN');
+  assert.strictEqual(captured[0].temperature, 0, 'probe must decode at temperature 0');
+  assert.ok(Number.isFinite(captured[0].seed), 'probe must pin a fixed seed');
+
+  await router.classify('hello');
+  assert.strictEqual(captured[1].temperature, 0.1, 'production classification keeps its own sampling');
+  assert.strictEqual(captured[1].seed, undefined, 'production classification must not inherit the probe seed');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 100);
