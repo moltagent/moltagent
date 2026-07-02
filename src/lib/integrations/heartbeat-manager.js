@@ -549,15 +549,14 @@ class HeartbeatManager {
 
       // NicheAssignment reconcile (Layer 3): refresh the /api/ps residency
       // snapshot and replan. Runs on EVERY pulse — idle windows included,
-      // since that is when the judge's loads move residency — and is cheap
-      // (one GET + in-memory math). Failure is non-fatal by construction.
+      // since that is when the judge's loads move residency. Fire-and-forget:
+      // the pulse never waits on Ollama I/O (the fetch is bounded to 5s and
+      // the replan is in-memory; the next pulse consumes a fresher snapshot).
       const nicheAssignment = this.getNicheAssignment ? this.getNicheAssignment() : null;
       if (nicheAssignment && typeof nicheAssignment.reconcile === 'function') {
-        try {
-          await nicheAssignment.reconcile();
-        } catch (err) {
+        nicheAssignment.reconcile().catch((err) => {
           console.warn('[Heartbeat] Niche-assignment reconcile error:', err.message);
-        }
+        });
       }
 
       // Check quiet hours and working hours.

@@ -141,6 +141,8 @@ class ModelResolver {
    */
   setAssignment(map, source = 'niche-assignment') {
     const hasEntries = map && typeof map === 'object' && Object.keys(map).length > 0;
+    // Clearing an already-empty slot is a no-op — don't flush a warm cache.
+    if (!hasEntries && !this._assignment) return;
     // Null-prototype copy: job names come from code, but a key like
     // 'constructor' must read as absent, not as Object.prototype's.
     this._assignment = hasEntries

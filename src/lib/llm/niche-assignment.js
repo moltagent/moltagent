@@ -401,14 +401,18 @@ class NicheAssignment {
       }
     }
 
-    // 6. Publish. Identity plans clear the resolver slot entirely.
+    // 6. Publish — only when the map actually changed. setAssignment clears
+    // the resolver's per-job cache, and replan runs on every heartbeat
+    // pulse; an identity→identity pulse must not flush a warm cache.
     const changed = JSON.stringify({ ...map }) !== JSON.stringify({ ...this._assignmentMap });
     this._assignmentMap = map;
     this._residentPlan = [...resident].sort();
-    try {
-      this.resolver.setAssignment(Object.keys(map).length > 0 ? { ...map } : null);
-    } catch (err) {
-      this.logger.warn(`[NicheAssignment] setAssignment failed: ${err.message}`);
+    if (changed) {
+      try {
+        this.resolver.setAssignment(Object.keys(map).length > 0 ? { ...map } : null);
+      } catch (err) {
+        this.logger.warn(`[NicheAssignment] setAssignment failed: ${err.message}`);
+      }
     }
     if (changed) {
       const remaps = Object.entries(map).map(([j, m]) => `${j}→${m}`).join(', ');

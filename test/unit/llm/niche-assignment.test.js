@@ -222,7 +222,10 @@ test('with no non-co-fit evidence the plan is the identity: winners stand, resol
   const { map, residentPlan } = na.replan();
   assert.deepStrictEqual(map, {});
   assert.deepStrictEqual(residentPlan, ['big', 'huge', 'small']);
-  assert.strictEqual(resolver.lastAssignment(), null, 'identity plan clears the resolver slot');
+  assert.strictEqual(resolver.assignments.length, 0,
+    'identity→identity publishes nothing (no per-pulse resolver cache flush)');
+  na.replan();
+  assert.strictEqual(resolver.assignments.length, 0, 'repeated identity replans stay silent');
 });
 
 test('under a proven conflict the lowest-value model is dropped and its jobs remap onto a resident model', () => {
@@ -305,7 +308,8 @@ test('never-go-dark: with no capability-eligible resident target the winner stan
   organicLoad(na, 'big');
   organicLoad(na, 'toolbox');
   organicLoad(na, 'big');
-  assert.strictEqual(resolver.lastAssignment(), null, 'no remap — the winner stands');
+  assert.deepStrictEqual(na.getStatus().assignment, {}, 'no remap — the winner stands');
+  assert.strictEqual(resolver.assignments.length, 0, 'an unchanged (identity) plan publishes nothing');
   assert.ok(na.getStatus().residentPlan.includes('big'), 'the winner re-enters the plan');
 });
 
@@ -411,13 +415,16 @@ asyncTest('degradation: no endpoint configured at all — reconcile is foundatio
 // ============================================================
 
 asyncTest('replanSoon collapses a burst (assertSeats boot burst) into one plan on the next tick', async () => {
-  const { na, resolver } = makeAssignment({ winners: { tools: { model: 'big' } } });
+  const { na } = makeAssignment({ winners: { tools: { model: 'big' } } });
+  let replans = 0;
+  const realReplan = na.replan.bind(na);
+  na.replan = () => { replans++; return realReplan(); };
   na.replanSoon();
   na.replanSoon();
   na.replanSoon();
-  assert.strictEqual(resolver.assignments.length, 0, 'nothing published synchronously');
+  assert.strictEqual(replans, 0, 'nothing runs synchronously');
   await new Promise((r) => setTimeout(r, 10));
-  assert.strictEqual(resolver.assignments.length, 1, 'one plan for the whole burst');
+  assert.strictEqual(replans, 1, 'one plan for the whole burst');
   na.stop();
 });
 
