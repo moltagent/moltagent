@@ -15,6 +15,54 @@
 
 const { normalizeCapabilities, isDedicatedTextGenerator } = require('./capability-classes');
 
+/**
+ * Per-job prior STRENGTH — a machine-readable declaration of how much the
+ * size prior is trusted for each job, so tests and Session 3 can read which
+ * priors are placeholders.
+ *   'latency'      — smallest-capable wins; size predicts speed, not quality
+ *                    (quick: pure-latency, no answer key).
+ *   'ground-truth' — NOT a size prior at all. classification defers to the
+ *                    golden-set probe's per-language fixture accuracy via
+ *                    ModelResolver precedence (cockpit > golden-set-probe >
+ *                    model-scout > …). The size ordering ModelScout emits for
+ *                    classification is a fallback only when the probe has no
+ *                    measurement; the probe's ground-truth pick overrides it.
+ *   'strong'       — bigger reasons/writes better on average (thinking/writing/
+ *                    research/credentials).
+ *   'weak'         — PLACEHOLDER. A fine-tuned mid-size model routinely beats a
+ *                    larger generalist; size is a poor proxy. Session 3 replaces
+ *                    this with measured performance (tools/coding).
+ * @type {Readonly<Record<string,'latency'|'ground-truth'|'strong'|'weak'>>}
+ */
+const PRIOR_STRENGTH = Object.freeze({
+  quick: 'latency',
+  classification: 'ground-truth',
+  thinking: 'strong',
+  writing: 'strong',
+  research: 'strong',
+  credentials: 'strong',
+  tools: 'weak',
+  coding: 'weak',
+});
+
+/**
+ * Minimum sensed context_length (tokens) a model must clear to serve a
+ * long-context job. These jobs assemble long prompts — SOUL.md + memory
+ * enrichment + living context + a multi-paragraph answer — so a model whose
+ * window is below the floor would truncate silently. 8192 is deliberately
+ * conservative: it is the smallest window among the reference box's text
+ * models (gemma2:2b = 8192) and roughly the floor at which a full SOUL +
+ * enrichment prompt still leaves room for an answer. Jobs NOT listed have no
+ * floor: quick/classification are short, tools/coding are structured-output
+ * (short context), credentials wants the most capable local model regardless.
+ * @type {Readonly<Record<string, number>>}
+ */
+const CONTEXT_FLOOR = Object.freeze({
+  thinking: 8192,
+  writing: 8192,
+  research: 8192,
+});
+
 class ModelScout {
   /**
    * @param {Object} config
@@ -109,13 +157,16 @@ class ModelScout {
     }
 
     // thinking / writing / research: size is a STRONG prior — bigger models
-    // reason and write better on average — so the largest capable model leads.
-    // credentials stays local (enforced in ModelResolver) and wants the most
-    // capable model on the box.
+    // reason and write better on average — so the largest capable model leads,
+    // subject to the context-length floor (a large model with a short window
+    // would truncate these long prompts). Never-go-dark: if the floor empties
+    // the list, fall back to the ungated largest-first list. credentials stays
+    // local (enforced in ModelResolver) and wants the most capable model on the
+    // box regardless of window (short, sensitive prompts) so it is UNGATED.
     if (largestFirst.length > 0) {
-      roster.thinking = names(largestFirst);
-      roster.writing = names(largestFirst);
-      roster.research = names(largestFirst);
+      roster.thinking = names(this._contextGated(largestFirst, CONTEXT_FLOOR.thinking));
+      roster.writing = names(this._contextGated(largestFirst, CONTEXT_FLOOR.writing));
+      roster.research = names(this._contextGated(largestFirst, CONTEXT_FLOOR.research));
       roster.credentials = names(largestFirst);
     }
 
@@ -136,6 +187,10 @@ class ModelScout {
       this._roster = null;
       return null;
     }
+
+    // Flag the placeholder priors so their weakness is observable in production
+    // and Session 3 knows exactly which pairings it must correct with measurement.
+    this.logger.log('[ModelScout] Prior strength — tools/coding: WEAK (largest tool-capable placeholder, Session 3 replaces with measured performance); classification: GROUND-TRUTH (defers to golden-set probe).');
 
     this._roster = roster;
     return roster;
@@ -263,6 +318,22 @@ class ModelScout {
   }
 
   /**
+   * Apply a context-length floor to an already-sorted model list. A model whose
+   * sensed contextLength is below the floor is excluded — UNLESS excluding would
+   * empty the list, in which case the ungated list is returned (never-go-dark).
+   * A null contextLength PASSES the gate: unknown is not evidence of smallness
+   * (sense-don't-predict). No floor (falsy) is an identity pass-through.
+   * @param {Array} sorted - models pre-sorted by the caller's prior
+   * @param {number} [floor]
+   * @returns {Array}
+   */
+  _contextGated(sorted, floor) {
+    if (!floor) return sorted;
+    const gated = sorted.filter(m => m.contextLength === null || m.contextLength >= floor);
+    return gated.length > 0 ? gated : sorted;
+  }
+
+  /**
    * Extract model family from Ollama model metadata.
    * @param {Object} model - Raw Ollama model object
    * @returns {string}
@@ -302,4 +373,4 @@ class ModelScout {
   }
 }
 
-module.exports = { ModelScout };
+module.exports = { ModelScout, PRIOR_STRENGTH, CONTEXT_FLOOR };

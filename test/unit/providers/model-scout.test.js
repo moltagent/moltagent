@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
-const { ModelScout } = require('../../../src/lib/providers/model-scout');
+const { ModelScout, PRIOR_STRENGTH, CONTEXT_FLOOR } = require('../../../src/lib/providers/model-scout');
 
 // A realistic mixed pool: two tool-capable chat models of different sizes, a
 // small text-only chat model, an embedding model, and a vision model.
@@ -203,6 +203,95 @@ scenario('generateLocalRoster() returns null when only non-text models exist', a
     await scout.discover();
     assert.strictEqual(scout.generateLocalRoster(), null);
   });
+});
+
+// -- context-length gate: excludes a large low-context model from long-context
+// jobs, but only for the jobs that carry a CONTEXT_FLOOR. Bespoke pool (not the
+// shared TAGS_MODELS/SHOW_BY_MODEL) to avoid cross-test coupling. --
+scenario('context gate excludes a large low-context model from long-context jobs', async () => {
+  const tags = [
+    { name: 'big-shortctx:14b', model: 'big-shortctx:14b', size: 9000000000, modified_at: '2025-02-01T10:00:00Z', details: { family: 'bigmodel', parameter_size: '14B', format: 'gguf' } },
+    { name: 'qwen3:8b', model: 'qwen3:8b', size: 5200000000, modified_at: '2025-01-20T10:00:00Z', details: { family: 'qwen3', parameter_size: '8.2B', format: 'gguf' } },
+  ];
+  const show = {
+    'big-shortctx:14b': { capabilities: ['completion'], model_info: { 'bigmodel.context_length': 4096 } },
+    'qwen3:8b': { capabilities: ['completion', 'tools'], model_info: { 'qwen3.context_length': 40960 } },
+  };
+  await withMock(mockFetch(tags, show), async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout.discover();
+    const roster = scout.generateLocalRoster();
+
+    // The larger model (14B) has a 4096 window — below the 8192 floor — so it
+    // is gated out of thinking despite being the largest.
+    assert.strictEqual(roster.thinking[0], 'qwen3:8b', 'low-context 14B model must be gated out of thinking');
+    assert.ok(!roster.thinking.includes('big-shortctx:14b'), 'low-context model excluded from thinking');
+
+    // quick is ungated (no CONTEXT_FLOOR entry) — the low-context model still
+    // serves it, proving the gate is job-scoped, not a global exclusion.
+    assert.ok(roster.quick.includes('big-shortctx:14b'), 'quick is ungated — low-context model still eligible');
+  });
+});
+
+scenario('context gate never goes dark — all-low-context falls back ungated', async () => {
+  const tags = [
+    { name: 'qwen3:8b', model: 'qwen3:8b', size: 5200000000, modified_at: '2025-01-20T10:00:00Z', details: { family: 'qwen3', parameter_size: '8.2B', format: 'gguf' } },
+    { name: 'gemma2:2b', model: 'gemma2:2b', size: 1600000000, modified_at: '2025-01-10T10:00:00Z', details: { family: 'gemma2', parameter_size: '2.6B', format: 'gguf' } },
+  ];
+  const show = {
+    'qwen3:8b': { capabilities: ['completion', 'tools'], model_info: { 'qwen3.context_length': 4096 } },
+    'gemma2:2b': { capabilities: ['completion'], model_info: { 'gemma2.context_length': 4096 } },
+  };
+  await withMock(mockFetch(tags, show), async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout.discover();
+    const roster = scout.generateLocalRoster();
+
+    // Every model is below the floor — the gate would empty the list, so the
+    // never-go-dark fallback returns the ungated largest-first order.
+    assert.ok(roster.thinking.length > 0, 'thinking must never go dark');
+    assert.strictEqual(roster.thinking[0], 'qwen3:8b', 'ungated largest-first order preserved on fallback');
+  });
+});
+
+scenario('null contextLength passes the gate (unknown is not evidence of smallness)', async () => {
+  const tags = [
+    { name: 'huge:20b', model: 'huge:20b', size: 13000000000, modified_at: '2025-02-05T10:00:00Z', details: { family: 'hugemodel', parameter_size: '20B', format: 'gguf' } },
+    { name: 'qwen3:8b', model: 'qwen3:8b', size: 5200000000, modified_at: '2025-01-20T10:00:00Z', details: { family: 'qwen3', parameter_size: '8.2B', format: 'gguf' } },
+  ];
+  const show = {
+    // No model_info / context_length at all — _extractContextLength returns null.
+    'huge:20b': { capabilities: ['completion'] },
+    'qwen3:8b': { capabilities: ['completion', 'tools'], model_info: { 'qwen3.context_length': 40960 } },
+  };
+  await withMock(mockFetch(tags, show), async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout.discover();
+    const roster = scout.generateLocalRoster();
+
+    assert.ok(roster.thinking.includes('huge:20b'), 'null contextLength passes the gate — unknown is not evidence of smallness');
+    assert.strictEqual(roster.thinking[0], 'huge:20b', 'largest-first order unaffected by an unknown-context model');
+  });
+});
+
+// -- PRIOR_STRENGTH / CONTEXT_FLOOR shape --
+test('PRIOR_STRENGTH shape — tools/coding weak, classification ground-truth', () => {
+  assert.strictEqual(PRIOR_STRENGTH.tools, 'weak');
+  assert.strictEqual(PRIOR_STRENGTH.coding, 'weak');
+  assert.strictEqual(PRIOR_STRENGTH.classification, 'ground-truth');
+  assert.strictEqual(PRIOR_STRENGTH.quick, 'latency');
+  assert.strictEqual(PRIOR_STRENGTH.thinking, 'strong');
+  assert.ok(Object.isFrozen(PRIOR_STRENGTH), 'PRIOR_STRENGTH must be frozen');
+});
+
+test('CONTEXT_FLOOR only long-context jobs', () => {
+  assert.strictEqual(CONTEXT_FLOOR.thinking, 8192);
+  assert.strictEqual(CONTEXT_FLOOR.writing, 8192);
+  assert.strictEqual(CONTEXT_FLOOR.research, 8192);
+  assert.strictEqual(CONTEXT_FLOOR.quick, undefined);
+  assert.strictEqual(CONTEXT_FLOOR.tools, undefined);
+  assert.strictEqual(CONTEXT_FLOOR.credentials, undefined);
+  assert.ok(Object.isFrozen(CONTEXT_FLOOR), 'CONTEXT_FLOOR must be frozen');
 });
 
 // -- hasModel() matches by name and family --

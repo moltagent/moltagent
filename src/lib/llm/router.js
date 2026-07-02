@@ -17,7 +17,7 @@
 
 const { createProvider } = require('./providers');
 const { cloudCapabilities } = require('../providers/cloud-model-descriptor');
-const { isToolCapable, classesOf } = require('../providers/capability-classes');
+const { isToolCapable, isTextGeneration, classesOf } = require('../providers/capability-classes');
 const RateLimitTracker = require('./rate-limit-tracker');
 const BudgetEnforcer = require('./budget-enforcer');
 const BackoffStrategy = require('./backoff-strategy');
@@ -40,6 +40,21 @@ const JOBS = Object.freeze({
 });
 const VALID_JOBS = new Set(Object.values(JOBS));
 const PRESET_NAMES = Object.freeze(['all-local', 'smart-mix', 'cloud-first']);
+
+/**
+ * Per-job cloud DEPTH policy over the cost-ranked eligible list.
+ *   'cheapest'  — single cheapest capable cloud, then local (RouteLLM: most
+ *                 work needs no depth).
+ *   'mid-first' — mid-tier then cheapest (coding: WEAK prior placeholder, same
+ *                 shape as today; Session 3 corrects with measurement).
+ *   'depth'     — costliest → mid → cheapest (thinking/writing need depth).
+ * Jobs absent default to 'cheapest'. credentials is never here (local-only).
+ */
+const CLOUD_DEPTH = Object.freeze({
+  quick: 'cheapest', classification: 'cheapest', synthesis: 'cheapest',
+  decomposition: 'cheapest', research: 'cheapest', tools: 'cheapest',
+  coding: 'mid-first', thinking: 'depth', writing: 'depth',
+});
 
 class LLMRouter {
   /**
@@ -617,21 +632,10 @@ class LLMRouter {
         roster[job] = job === JOBS.QUICK ? [...fastFirstLocal] : [...localIds];
       }
     } else if (presetName === 'smart-mix' || presetName === 'cloud-first') {
-      // Job→model tier mapping (same for both modes):
-      //   synthesis/decomposition/classification → cheapest (Haiku)
-      //   tools                                 → cheapest (Haiku) → local
-      //   research/coding                       → mid-tier (Sonnet) → cheapest
-      //   thinking/writing                      → top-tier (Opus) → mid → cheapest
-      //
-      // smart-mix: local fallbacks after cloud
-      // cloud-first: cloud only, no local fallbacks
-      const { heavy, workhorse, rest } = this._classifyCloudProviders(cloudIds);
-      // Cost tiers: heavy=most expensive, workhorse=second, rest=remaining (desc)
-      // With 1 provider: heavy === workhorse, rest empty → all tiers collapse
-      // With 2 providers: heavy=expensive, workhorse=cheap → midTier=heavy, cheapest=workhorse
-      // With 3+: heavy=top, workhorse=mid, rest has cheapest at end
-      const cheapest = [...rest].reverse()[0] || workhorse || heavy;
-      const midTier = rest.length > 0 ? workhorse : heavy || workhorse;
+      // cloud-first zeroes local fallbacks; smart-mix keeps them (last-local rule
+      // still applies in _buildRosterChain). Per-job cloud chain comes from the ONE
+      // generating function: capability-eligible-per-job × cost rank × depth policy.
+      const cloudFirst = presetName === 'cloud-first';
 
       // Sort local providers: ollama-fast first for QUICK chain speed
       const fastFirst = [...localIds].sort((a, b) => {
@@ -640,34 +644,15 @@ class LLMRouter {
         return 0;
       });
 
-      const local = presetName === 'cloud-first' ? [] : localIds;
-      const localFast = presetName === 'cloud-first' ? [] : fastFirst;
+      const local = cloudFirst ? [] : localIds;
+      const localFast = cloudFirst ? [] : fastFirst;
 
-      // Quick tasks: cheapest cloud first (Haiku — 2s, reliable), local fallback
-      roster[JOBS.QUICK] = [...new Set([cheapest, ...localFast].filter(Boolean))];
-      // Classification: Haiku first (reliable compound detection), local fallback
-      roster[JOBS.CLASSIFICATION] = [...new Set([cheapest, ...local].filter(Boolean))];
-
-      // Comprehension: cheapest cloud (Haiku — $0.002, 2s, any language), local fallback
-      roster[JOBS.SYNTHESIS] = [...new Set([cheapest, ...local].filter(Boolean))];
-      roster[JOBS.DECOMPOSITION] = [...new Set([cheapest, ...local].filter(Boolean))];
-
-      // Tools: cheapest cloud first (Haiku — reliable structured output, 2-3s),
-      // local fallback for sovereign mode. Local models (qwen3:8b) take 60-70s
-      // and produce unreliable structured JSON. Capability gate (Declared, cloud):
-      // the tools job draws only from tool-capable cloud models, so a non-tool
-      // cloud model (an embedding endpoint) never lands in the tools roster.
-      const toolCloud = this._classifyCloudProviders(this._toolCapableCloudIds(cloudIds));
-      const toolCheapest = [...toolCloud.rest].reverse()[0] || toolCloud.workhorse || toolCloud.heavy;
-      roster[JOBS.TOOLS] = [...new Set([toolCheapest, ...local].filter(Boolean))];
-
-      // Research: cheapest cloud (Haiku — sufficient quality, ~10x cheaper than Sonnet)
-      roster[JOBS.RESEARCH] = [...new Set([cheapest, ...local].filter(Boolean))];
-      roster[JOBS.CODING] = [...new Set([midTier, cheapest, ...local].filter(Boolean))];
-
-      // Deep/complex: top-tier cloud (Opus), mid fallback, local last
-      roster[JOBS.THINKING] = [...new Set([heavy, midTier, cheapest, ...local].filter(Boolean))];
-      roster[JOBS.WRITING] = [...new Set([heavy, midTier, cheapest, ...local].filter(Boolean))];
+      const cloudChains = this._buildCloudJobChains(cloudIds);
+      for (const job of VALID_JOBS) {
+        if (job === JOBS.CREDENTIALS) continue;
+        const localPart = job === JOBS.QUICK ? localFast : local;
+        roster[job] = [...new Set([...(cloudChains[job] || []), ...localPart].filter(Boolean))];
+      }
     }
 
     // credentials: prefer credential-specific local provider, then all other local
@@ -716,27 +701,94 @@ class LLMRouter {
   }
 
   /**
-   * Filter cloud provider IDs to those a datasheet declares tool-capable. A
-   * model the descriptor does not know is kept (never drop a working provider on
-   * a gap in the datasheet) but logged once so a maintainer adds it. A model the
-   * descriptor declares non-tool (e.g. an embedding endpoint) is excluded.
+   * Filter cloud provider IDs to those a datasheet declares eligible for a
+   * capability predicate (isTextGeneration for text jobs, isToolCapable for
+   * tools/coding). A model the descriptor does not know is KEPT (never drop a
+   * working provider on a datasheet gap — fail-open) and logged ONCE. A model
+   * the descriptor declares out-of-class (an embedding endpoint vs a text job)
+   * is excluded.
    * @private
    * @param {string[]} cloudIds
+   * @param {(caps:string[])=>boolean} predicate
    * @returns {string[]}
    */
-  _toolCapableCloudIds(cloudIds) {
+  _eligibleCloudIds(cloudIds, predicate) {
     return cloudIds.filter((id) => {
       const caps = this._cloudCapabilitiesOf(id);
       if (!caps || caps.source === 'unknown' || caps.capabilities === null) {
         if (!this._loggedUnknownCloudCaps.has(id)) {
           this._loggedUnknownCloudCaps.add(id);
           const model = this.providers.get(id)?.model || '(unknown model)';
-          console.log(`[LLMRouter] Cloud model not in capability descriptor: ${id} (${model}); assuming tool-capable and keeping it in the tools roster. Add it to cloud-model-descriptor.js.`);
+          console.log(`[LLMRouter] Cloud model not in capability descriptor: ${id} (${model}); keeping it in chains (fail-open). Add it to cloud-model-descriptor.js.`);
         }
         return true;
       }
-      return isToolCapable(caps.capabilities);
+      return predicate(caps.capabilities);
     });
+  }
+
+  /**
+   * Cost tiers over a cost-ranked eligible cloud list. Reuses
+   * _classifyCloudProviders (output-cost DESC → heavy/workhorse/rest) — the
+   * single custody basis is provider.costModel.outputPer1M (NOT
+   * CostTracker.PRICING; see issues-to-file). Budget is NOT consulted here: it is
+   * a LIVE input applied per-candidate at chain execution
+   * (BudgetEnforcer.canSpend, router.js execution path) and must not be
+   * duplicated into the static prior.
+   * @private
+   * @param {string[]} eligibleIds
+   * @returns {{ heavy: string|null, workhorse: string|null, rest: string[], cheapest: string|null }}
+   */
+  _costTiers(eligibleIds) {
+    const c = this._classifyCloudProviders(eligibleIds);
+    const cheapest = [...c.rest].reverse()[0] || c.workhorse || c.heavy;
+    return { ...c, cheapest };
+  }
+
+  /**
+   * Select the cloud tier chain for a job from its cost tiers and depth policy.
+   * excludeHeavy=true reproduces _buildCloudFastRoster's flat, no-Opus semantics.
+   * @private
+   */
+  _cloudDepthChain(job, tiers, { excludeHeavy = false } = {}) {
+    const { heavy, workhorse, rest, cheapest } = tiers;
+    if (excludeHeavy) {
+      // cloud-fast: flat [cheapest, mid], NO heavy tier. mid is null when it
+      // would collapse onto heavy (1-cloud case) — matches current lines 780/793.
+      const mid = rest.length > 0 ? workhorse : (workhorse !== heavy ? workhorse : null);
+      return [cheapest, mid].filter(Boolean);
+    }
+    // midTier: with 3+ clouds = 2nd most expensive (workhorse); with 2 clouds =
+    // the most expensive (heavy); with 1 = the sole cloud. Faithful to line 634.
+    const midTier = rest.length > 0 ? workhorse : (heavy || workhorse);
+    const depth = CLOUD_DEPTH[job] || 'cheapest';
+    if (depth === 'depth') return [heavy, midTier, cheapest].filter(Boolean);
+    if (depth === 'mid-first') return [midTier, cheapest].filter(Boolean);
+    return [cheapest].filter(Boolean);
+  }
+
+  /**
+   * THE generating function. Build every job's cloud chain from (1) per-job
+   * capability eligibility (text-generation for all text jobs — extends Session
+   * 1's tools-only gate so a known embedding endpoint appears in NO text chain,
+   * e.g. quick; tool-capable for tools AND coding) and (2) cost rank + per-job
+   * depth. Computes the two eligible sets ONCE (so unknowns log at most once) and
+   * loops the jobs, replacing the hand-rolled per-job tier assignments.
+   * @private
+   * @param {string[]} cloudIds
+   * @param {{excludeHeavy?: boolean}} [opts]
+   * @returns {Object} job → cloud-only provider-ID chain (local appended by caller)
+   */
+  _buildCloudJobChains(cloudIds, opts = {}) {
+    const textTiers = this._costTiers(this._eligibleCloudIds(cloudIds, isTextGeneration));
+    const toolTiers = this._costTiers(this._eligibleCloudIds(cloudIds, isToolCapable));
+    const out = {};
+    for (const job of VALID_JOBS) {
+      if (job === JOBS.CREDENTIALS) continue; // local-only, handled by caller
+      const tiers = (job === JOBS.TOOLS || job === JOBS.CODING) ? toolTiers : textTiers;
+      out[job] = this._cloudDepthChain(job, tiers, opts);
+    }
+    return out;
   }
 
   /**
@@ -770,29 +822,20 @@ class LLMRouter {
     const localIds = [];
     const cloudIds = [];
     for (const [id, p] of this.providers) {
-      if (p.type === 'local') localIds.push(id);
-      else cloudIds.push(id);
+      if (p.type === 'local') localIds.push(id); else cloudIds.push(id);
     }
-
-    const { heavy, workhorse, rest } = this._classifyCloudProviders(cloudIds);
-    // Exclude heavy (Opus) — use only workhorse (Sonnet) and cheapest (Haiku)
-    const cheapest = [...rest].reverse()[0] || workhorse || heavy;
-    const midTier = rest.length > 0 ? workhorse : (workhorse !== heavy ? workhorse : null);
-    // Build flat chain: cheapest first, mid-tier fallback, local last
-    const chain = [...new Set([cheapest, midTier, ...localIds].filter(Boolean))];
-
+    // Same generating function, excludeHeavy: flat [cheapest, mid] per job, no
+    // Opus. Text jobs are now text-gen-gated too (embedding endpoints excluded);
+    // tools/coding tool-gated. Preserves "no heavy tier".
+    const cloudChains = this._buildCloudJobChains(cloudIds, { excludeHeavy: true });
     const roster = {};
     for (const job of VALID_JOBS) {
-      roster[job] = [...chain];
+      if (job === JOBS.CREDENTIALS) continue;
+      roster[job] = [...new Set([...(cloudChains[job] || []), ...localIds].filter(Boolean))];
     }
-
-    // Capability gate (Declared, cloud): the tools job draws only from
-    // tool-capable cloud models. Same policy as smart-mix/cloud-first.
-    const toolCloud = this._classifyCloudProviders(this._toolCapableCloudIds(cloudIds));
-    const toolCheapest = [...toolCloud.rest].reverse()[0] || toolCloud.workhorse || toolCloud.heavy;
-    const toolMid = toolCloud.rest.length > 0 ? toolCloud.workhorse : (toolCloud.workhorse !== toolCloud.heavy ? toolCloud.workhorse : null);
-    roster[JOBS.TOOLS] = [...new Set([toolCheapest, toolMid, ...localIds].filter(Boolean))];
-
+    const credLocalIds = localIds.filter(id => id.includes('-credential'));
+    const otherLocalIds = localIds.filter(id => !id.includes('-credential'));
+    roster[JOBS.CREDENTIALS] = [...credLocalIds, ...otherLocalIds];
     return roster;
   }
 
