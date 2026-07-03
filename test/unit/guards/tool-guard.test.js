@@ -927,6 +927,20 @@ test('TC-TG-162: file_read is allowed', () => {
   assert.strictEqual(result.allowed, true);
 });
 
+// NOTE(#217): write-class tools (file_write, wiki_write, file_move) are deliberately
+// NOT in REQUIRES_APPROVAL — they are Cockpit-GATE-governed via
+// GuardrailEnforcer.SENSITIVE_TOOLS (the wiki_write precedent). ToolGuard passing
+// them through is load-bearing: the enforcer is their single gate. If one of these
+// assertions fails, the two-home gating policy changed — reconcile both homes.
+test('TC-TG-163: write-class tools pass ToolGuard (Cockpit-governed, not hardcoded)', () => {
+  const guard = new ToolGuard();
+  for (const tool of ['file_write', 'wiki_write', 'file_move']) {
+    const result = guard.evaluate(tool);
+    assert.strictEqual(result.level, 'ALLOWED', `${tool} should be ALLOWED at ToolGuard`);
+    assert.strictEqual(result.allowed, true, `${tool} should pass through to GuardrailEnforcer`);
+  }
+});
+
 // -----------------------------------------------------------------------------
 // Summary
 // -----------------------------------------------------------------------------

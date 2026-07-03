@@ -27,6 +27,8 @@ const FORBIDDEN = [
   'access_other_session', 'export_credentials',
 ];
 
+// NOTE(#217): gating policy has two homes (this list + GuardrailEnforcer.SENSITIVE_TOOLS);
+// single-home consolidation tracked for F1 retirement.
 const REQUIRES_APPROVAL = [
   // External communication
   'send_email', 'send_message_external', 'webhook_call',
