@@ -812,42 +812,34 @@ asyncTest('tend() rotates stewards on successive calls', async () => {
   assert.ok(true, 'tend() completed without throwing');
 });
 
-// Test 18: tend() calls observationLog.resolve() after successful intervention
-asyncTest('tend() calls observationLog.resolve after intervention resolves types', async () => {
+// Test 18: a tend whose assessment proposes no actions resolves ZERO
+// observations — visiting is not resolving (G2, #161 class).
+asyncTest('tend() with an empty assessment resolves zero observations and leaves the log untouched', async () => {
   const observationLog = makeObservationLog();
-  observationLog.notice({ type: OBSERVATION_TYPES.CONTRADICTION, cluster: 'People' });
-  observationLog.notice({ type: OBSERVATION_TYPES.GAP, cluster: 'People' });
+  observationLog.notice({ type: OBSERVATION_TYPES.CONTRADICTION, cluster: 'People', page: 'Carlos' });
+  observationLog.notice({ type: OBSERVATION_TYPES.GAP, cluster: 'People', page: 'Carlos' });
 
   const collectivesClient = makeMockCollectivesClient({
-    listPagesResult: [{ id: 1, title: 'Carlos', section: 'people', parentId: 1 }],
+    listPagesResult: [{ id: 1, title: 'Carlos', filePath: 'People', fileName: 'Carlos.md', parentId: 5 }],
     pagesByTitle: {
       'Carlos': { frontmatter: {}, body: 'Carlos works here.', path: 'People/Carlos.md' },
     },
   });
 
-  // Knowledge steward assessment — we force stewardIndex to 0 (knowledge)
   const router = makeMockRouter({
     contradictions: [], stale: [], gaps: [], suspects: [], healthy: ['Carlos'],
   });
 
-  const resolveCalls = [];
-  const origResolve = observationLog.resolve.bind(observationLog);
-  observationLog.resolve = (cluster, types) => {
-    resolveCalls.push({ cluster, types });
-    return origResolve(cluster, types);
-  };
-
   const steward = new WikiSteward(makeFullDeps({ observationLog, collectivesClient, llmRouter: router }));
-  // Force stewardIndex to knowledge (it starts at 0 = knowledge already)
+  steward._findNeediest = async () => ({ name: 'People', pageCount: 1, score: 1, observationCount: 2 });
+
   const result = await steward.tend();
 
-  if (result.cluster !== null) {
-    // If a cluster was tended, resolve should have been called
-    assert.ok(resolveCalls.length > 0 || result.observationsResolved >= 0,
-      'resolve() should have been called after successful intervention');
-  }
-  // If the result was skipped (no pages matched 'people' section), that's also acceptable
-  assert.ok(true, 'tend() completed without throwing');
+  assert.strictEqual(result.observationsResolved, 0, 'no action → zero resolved');
+  assert.strictEqual(observationLog.getByType(OBSERVATION_TYPES.CONTRADICTION).length, 1,
+    'contradiction observation still pending');
+  assert.strictEqual(observationLog.getByType(OBSERVATION_TYPES.GAP).length, 1,
+    'gap observation still pending');
 });
 
 // ---------------------------------------------------------------------------
@@ -1359,6 +1351,73 @@ asyncTest('zero-page streak resets on a non-empty read', async () => {
   await steward.tend(); // zero again → streak restarts at 1, no error
   assert.strictEqual(steward._zeroPageStreak.get('People'), 1, 'streak restarts after reset');
   assert.strictEqual(logger._calls.error.length, 0, 'no FLATLINE across a reset boundary');
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 2: HONEST OBSERVATION RESOLUTION (G2 — visiting is not resolving)
+// ---------------------------------------------------------------------------
+
+asyncTest('tend() with a garbage assessment (parse failure) resolves zero observations', async () => {
+  const observationLog = makeObservationLog();
+  observationLog.notice({ type: OBSERVATION_TYPES.MISSING_LINK, cluster: 'People', page: 'Carlos' });
+  observationLog.notice({ type: OBSERVATION_TYPES.LOW_CONFIDENCE, cluster: 'People', page: 'Carlos' });
+
+  const collectivesClient = makeMockCollectivesClient({
+    listPagesResult: [{ id: 1, title: 'Carlos', filePath: 'People', fileName: 'Carlos.md', parentId: 5 }],
+    pagesByTitle: {
+      'Carlos': { frontmatter: {}, body: 'Carlos works here.', path: 'People/Carlos.md' },
+    },
+  });
+
+  // Router returns prose, not JSON — the live qwen3:8b failure shape.
+  const router = {
+    async route() { return { result: 'I am ready to assess the cluster.', provider: 'mock', model: 'mock', cost: 0 }; },
+  };
+
+  const steward = new WikiSteward(makeFullDeps({ observationLog, collectivesClient, llmRouter: router }));
+  steward._findNeediest = async () => ({ name: 'People', pageCount: 1, score: 1, observationCount: 2 });
+
+  const result = await steward.tend();
+
+  assert.strictEqual(result.observationsResolved, 0, 'parse failure → zero resolved');
+  assert.strictEqual(observationLog.getByType(OBSERVATION_TYPES.MISSING_LINK).length, 1);
+  assert.strictEqual(observationLog.getByType(OBSERVATION_TYPES.LOW_CONFIDENCE).length, 1);
+});
+
+asyncTest('tend() resolves page-granular: link added to Page A resolves A, leaves B pending', async () => {
+  const observationLog = makeObservationLog();
+  observationLog.notice({ type: OBSERVATION_TYPES.MISSING_LINK, cluster: 'People', page: 'Page A' });
+  observationLog.notice({ type: OBSERVATION_TYPES.MISSING_LINK, cluster: 'People', page: 'Page A' });
+  observationLog.notice({ type: OBSERVATION_TYPES.MISSING_LINK, cluster: 'People', page: 'Page B' });
+
+  const collectivesClient = makeMockCollectivesClient({
+    listPagesResult: [
+      { id: 1, title: 'Page A', filePath: 'People', fileName: 'Page A.md', parentId: 5 },
+      { id: 2, title: 'Page B', filePath: 'People', fileName: 'Page B.md', parentId: 5 },
+    ],
+    pagesByTitle: {
+      'Page A': { frontmatter: {}, body: 'A body.', path: 'People/Page A.md' },
+      'Page B': { frontmatter: {}, body: 'B body.', path: 'People/Page B.md' },
+    },
+  });
+
+  // Connection assessment: one link for Page A only.
+  const router = makeMockRouter({
+    missingLinks: [{ page: 'Page A', shouldLinkTo: 'Page B', relationship: 'related' }],
+    orphans: [], nearDuplicates: [], crossCluster: [],
+  });
+
+  const steward = new WikiSteward(makeFullDeps({ observationLog, collectivesClient, llmRouter: router }));
+  steward._findNeediest = async () => ({ name: 'People', pageCount: 2, score: 1, observationCount: 3 });
+  steward._nextSteward = () => 'connection';
+
+  const result = await steward.tend();
+
+  assert.strictEqual(result.linksAdded, 1, 'one link added');
+  assert.strictEqual(result.observationsResolved, 2, 'both Page A missing_link observations resolve, none else');
+  const remaining = observationLog.getByType(OBSERVATION_TYPES.MISSING_LINK);
+  assert.strictEqual(remaining.length, 1, 'Page B observation remains');
+  assert.strictEqual(remaining[0].page, 'Page B');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);

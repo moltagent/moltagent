@@ -49,7 +49,7 @@
  *         → _intervene(stewardType, assessment, neighborhood)  (per-lens executors)
  *         → _updateSectionSummaries(sections)  (Level 1 refresh if pages changed)
  *         → _updateLandingPage() (Level 0 refresh, throttled by _shouldRefreshIndex)
- *         → observationLog.resolve(cluster, resolvedTypes)
+ *         → observationLog.resolve(cluster, type, pages)  (per executor action)
  *         → _lastVisit.set(cluster, now)
  * - Dependency Map:
  *     heartbeat-manager.js → wiki-steward.js → {
@@ -112,7 +112,8 @@
  * @property {number} pagesModified
  * @property {number} linksAdded
  * @property {number} observationsResolved
- * @property {string[]} resolvedTypes
+ * @property {Array<{type: string, page: string}>} resolutions - What the
+ *   executors actually acted on; the only thing tend() resolves.
  */
 
 /**
@@ -213,7 +214,7 @@ class WikiSteward {
    *   5. Intervene — execute targeted actions from the assessment.
    *   6. Refresh Level 1 section summaries when pages changed.
    *   7. Periodically refresh Level 0 landing page.
-   *   8. Mark observations as resolved for (cluster, resolvedTypes).
+   *   8. Resolve observations per (cluster, type, pages) the executors acted on.
    *   9. Record visit timestamp in _lastVisit.
    *
    * @returns {Promise<TendResult>}
@@ -300,7 +301,7 @@ class WikiSteward {
       interventionResult = await this._intervene(stewardType, assessment, neighborhood);
     } catch (err) {
       this.logger.warn(`[WikiSteward:${stewardType}] _intervene failed: ${err.message}`);
-      interventionResult = { pagesModified: 0, linksAdded: 0, observationsResolved: 0, resolvedTypes: [] };
+      interventionResult = { pagesModified: 0, linksAdded: 0, observationsResolved: 0, resolutions: [] };
     }
 
     // Step 6: refresh Level 1 summaries if pages were modified
@@ -321,10 +322,19 @@ class WikiSteward {
       }
     }
 
-    // Step 8: resolve handled observations
+    // Step 8: resolve exactly what the executors acted on, per (type, pages)
+    // group. observationsResolved is the sum of resolve()'s actual transition
+    // counts — a tend that performed no action resolves zero (G2, #161 class).
+    let observationsResolved = 0;
     try {
-      if (interventionResult.resolvedTypes && interventionResult.resolvedTypes.length > 0) {
-        this.observations.resolve(cluster.name, interventionResult.resolvedTypes);
+      const pagesByType = new Map();
+      for (const r of interventionResult.resolutions || []) {
+        if (!r || !r.type || !r.page) continue;
+        if (!pagesByType.has(r.type)) pagesByType.set(r.type, new Set());
+        pagesByType.get(r.type).add(r.page);
+      }
+      for (const [type, pages] of pagesByType) {
+        observationsResolved += this.observations.resolve(cluster.name, type, [...pages]);
       }
     } catch (err) {
       this.logger.warn(`[WikiSteward] observations.resolve failed: ${err.message}`);
@@ -338,7 +348,7 @@ class WikiSteward {
       cluster: cluster.name,
       pagesModified: interventionResult.pagesModified,
       linksAdded: interventionResult.linksAdded,
-      observationsResolved: interventionResult.observationsResolved,
+      observationsResolved,
       pagesInNeighborhood,
       skipped: false,
     };
@@ -970,7 +980,9 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       pagesModified: 0,
       linksAdded: 0,
       observationsResolved: 0,
-      resolvedTypes: [],
+      // (type, page) pairs the executors actually acted on. tend() resolves
+      // exactly these — visiting is not resolving (G2, #161 class).
+      resolutions: [],
     };
 
     if (!assessment || typeof assessment !== 'object') {
@@ -997,7 +1009,13 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           }
           try {
             const flagged = await this._flagContradiction(c.pageA, c.pageB, c.claim);
-            if (flagged) results.pagesModified += 2;
+            if (flagged) {
+              results.pagesModified += 2;
+              for (const p of [c.pageA, c.pageB]) {
+                results.resolutions.push({ type: 'contradiction', page: p });
+                results.resolutions.push({ type: 'low_confidence', page: p });
+              }
+            }
           } catch (err) {
             this.logger.warn(`[WikiSteward:knowledge] _flagContradiction failed: ${err.message}`);
           }
@@ -1009,7 +1027,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           }
           try {
             const lowered = await this._lowerConfidence(s.page, s.reason);
-            if (lowered) results.pagesModified++;
+            if (lowered) {
+              results.pagesModified++;
+              results.resolutions.push({ type: 'stale_content', page: s.page });
+            }
           } catch (err) {
             this.logger.warn(`[WikiSteward:knowledge] _lowerConfidence("${s.page}") failed: ${err.message}`);
           }
@@ -1019,12 +1040,14 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
         // referencing page is structural. No guard needed here.
         for (const g of assessment.gaps || []) {
           try {
-            await this._logKnowledgeGap(g.entity, g.referencedIn);
+            const logged = await this._logKnowledgeGap(g.entity, g.referencedIn);
+            if (logged && g.referencedIn) {
+              results.resolutions.push({ type: 'gap', page: g.referencedIn });
+            }
           } catch (err) {
             this.logger.warn(`[WikiSteward:knowledge] _logKnowledgeGap("${g.entity}") failed: ${err.message}`);
           }
         }
-        results.resolvedTypes = ['contradiction', 'stale_content', 'gap', 'low_confidence'];
         break;
       }
 
@@ -1039,6 +1062,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             if (added) {
               results.linksAdded++;
               results.pagesModified++;
+              results.resolutions.push({ type: 'missing_link', page: m.page });
             }
           } catch (err) {
             this.logger.warn(`[WikiSteward:connection] _addWikilink("${m.page}"→"${m.shouldLinkTo}") failed: ${err.message}`);
@@ -1055,6 +1079,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
               if (added) {
                 results.linksAdded++;
                 results.pagesModified++;
+                results.resolutions.push({ type: 'orphan_page', page: o.page });
               }
             } catch (err) {
               this.logger.warn(`[WikiSteward:connection] _addWikilink orphan("${o.page}"→"${target}") failed: ${err.message}`);
@@ -1067,12 +1092,15 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             continue;
           }
           try {
-            await this._flagDuplicate(d.pageA, d.pageB, d.similarity || 0);
+            const flagged = await this._flagDuplicate(d.pageA, d.pageB, d.similarity || 0);
+            if (flagged) {
+              results.resolutions.push({ type: 'near_duplicate', page: d.pageA });
+              results.resolutions.push({ type: 'near_duplicate', page: d.pageB });
+            }
           } catch (err) {
             this.logger.warn(`[WikiSteward:connection] _flagDuplicate failed: ${err.message}`);
           }
         }
-        results.resolvedTypes = ['missing_link', 'orphan_page', 'near_duplicate', 'section_stale'];
         break;
       }
 
@@ -1084,7 +1112,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           }
           try {
             const strengthened = await this._strengthenPage(s.page);
-            if (strengthened) results.pagesModified++;
+            if (strengthened) {
+              results.pagesModified++;
+              results.resolutions.push({ type: 'high_access', page: s.page });
+            }
           } catch (err) {
             this.logger.warn(`[WikiSteward:memory] _strengthenPage("${s.page}") failed: ${err.message}`);
           }
@@ -1095,7 +1126,8 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             continue;
           }
           try {
-            await this._markForComposting(c.page, c.reason);
+            const marked = await this._markForComposting(c.page, c.reason);
+            if (marked) results.resolutions.push({ type: 'compost_ready', page: c.page });
           } catch (err) {
             this.logger.warn(`[WikiSteward:memory] _markForComposting("${c.page}") failed: ${err.message}`);
           }
@@ -1108,12 +1140,12 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           // Find the full pageRef from neighborhood so _embedPage has path/section
           const pageRef = neighborhood.pages.find(p => p.title === e.page) || { id: null, title: e.page };
           try {
-            await this._embedPage(pageRef);
+            const embedded = await this._embedPage(pageRef);
+            if (embedded) results.resolutions.push({ type: 'unembedded', page: pageRef.title });
           } catch (err) {
             this.logger.warn(`[WikiSteward:memory] _embedPage("${e.page}") failed: ${err.message}`);
           }
         }
-        results.resolvedTypes = ['unembedded', 'never_accessed', 'compost_ready', 'high_access'];
         break;
       }
 
@@ -1121,7 +1153,6 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
         this.logger.warn(`[WikiSteward] Unknown stewardType in _intervene: "${stewardType}"`);
     }
 
-    results.observationsResolved = results.resolvedTypes.length;
     return results;
   }
 
@@ -1217,7 +1248,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
    * @returns {Promise<void>}
    */
   async _logKnowledgeGap(entity, referencedIn) {
-    if (!entity) return;
+    if (!entity) return false;
 
     const pendingQuestionsPath = 'Meta/Pending Questions.md';
     const line = `- ${entity} — referenced in [[${referencedIn || 'unknown'}]], no page yet`;
@@ -1230,7 +1261,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     }
 
     // Idempotency: skip if this exact entity line is already recorded
-    if (existing.includes(`- ${entity} —`)) return;
+    if (existing.includes(`- ${entity} —`)) return false;
 
     const updated = existing
       ? `${existing.trimEnd()}\n${line}\n`
@@ -1240,8 +1271,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       const resolved = await this._resolveWikilinks(updated);
       await this.collectivesClient.writePageContent(pendingQuestionsPath, resolved);
       this.logger.info(`[WikiSteward:knowledge] Logged knowledge gap: "${entity}" (referenced in ${referencedIn})`);
+      return true;
     } catch (err) {
       this.logger.warn(`[WikiSteward:knowledge] _logKnowledgeGap write failed: ${err.message}`);
+      return false;
     }
   }
 
