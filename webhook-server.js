@@ -692,6 +692,28 @@ async function initialize() {
     process.exit(1);
   }
 
+  // 1.0.1. Boot preflight (#87): walk the declared dependency manifest.
+  // Required-and-definitively-absent halts with one remediation line; optional-
+  // and-missing logs once and the feature degrades. Unreachable-required only
+  // warns — a transient hiccup is not a misconfiguration. MOLTAGENT_PREFLIGHT=warn
+  // demotes the halt (deployment escape hatch).
+  try {
+    const { BootPreflight } = require('./src/lib/boot/preflight');
+    const preflight = new BootPreflight({ config: CONFIG, ncRequestManager, logger: console });
+    const { halt } = await preflight.run();
+    if (halt) {
+      if ((process.env.MOLTAGENT_PREFLIGHT || '').toLowerCase() === 'warn') {
+        console.warn('[PREFLIGHT][WARN] required dependency missing but MOLTAGENT_PREFLIGHT=warn — continuing');
+      } else {
+        console.error('[PREFLIGHT][FATAL] required dependency missing — exiting (set MOLTAGENT_PREFLIGHT=warn to demote)');
+        process.exit(1);
+      }
+    }
+  } catch (err) {
+    // The preflight is observability; it must never take a boot down by itself.
+    console.warn(`[PREFLIGHT][WARN] preflight failed to run: ${err.message}`);
+  }
+
   // 1.1. Initialize Talk Send Queue (serializes outbound Talk messages)
   talkQueue = new TalkSendQueue(ncRequestManager);
   console.log('[INIT] Talk Send Queue ready');
@@ -1343,7 +1365,7 @@ async function initialize() {
     const EmbeddingClient = require('./src/lib/memory/embedding-client');
     embeddingClient = new EmbeddingClient({
       ollamaUrl: CONFIG.ollama.url,
-      model: 'nomic-embed-text',
+      model: CONFIG.ollama.embeddingModel,
       logger: console
     });
     console.log('[INIT] EmbeddingClient ready');

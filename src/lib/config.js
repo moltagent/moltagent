@@ -268,6 +268,9 @@ const config = {
     // falls back to localhost:11434 — so the placeholder never reaches a client.
     url: envStr('OLLAMA_URL', 'http://YOUR_OLLAMA_IP:11434'),
     model: envStr('OLLAMA_MODEL', 'phi4-mini'),
+    // Embedding model for semantic memory (#96). One home: the EmbeddingClient
+    // construction site and the boot preflight manifest both read this key.
+    embeddingModel: envStr('EMBEDDING_MODEL', 'nomic-embed-text'),
     modelCredential: envStr('OLLAMA_MODEL_CREDENTIAL', null) || envStr('OLLAMA_MODEL', 'phi4-mini'),
     modelFast: envStr('OLLAMA_MODEL_FAST', null) || envStr('OLLAMA_CLASSIFY_MODEL', 'qwen2.5:3b'),
     timeout: envInt('OLLAMA_TIMEOUT', 300000),
