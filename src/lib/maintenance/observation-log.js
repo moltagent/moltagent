@@ -64,6 +64,9 @@ const OBSERVATION_TYPES = Object.freeze({
   NEVER_ACCESSED:  'never_accessed',   // Page created but never retrieved
   COMPOST_READY:   'compost_ready',    // Past decay + never accessed + low confidence
   HIGH_ACCESS:     'high_access',      // Frequently accessed, may need strengthening
+
+  // Steward self-observation — the steward instruments its own senses
+  EMPTY_NEIGHBORHOOD: 'empty_neighborhood', // Neighborhood read 0 pages while the cluster census reports > 0 (#51 class)
 });
 
 // Collect all valid type values for O(1) validation

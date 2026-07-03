@@ -122,6 +122,7 @@
  * @property {number} pagesModified
  * @property {number} linksAdded
  * @property {number} observationsResolved
+ * @property {number} pagesInNeighborhood - Pages actually read for the tended cluster.
  */
 
 class WikiSteward {
@@ -177,6 +178,13 @@ class WikiSteward {
     /** @type {Map<string, number>} */
     this._lastVisit = new Map();
 
+    // Consecutive zero-page neighborhood reads per cluster while the census
+    // reports pages. The failure class that hid #51 for a month: a silent
+    // section-derivation drift reads as "cluster healthy, nothing to tend".
+    // In-memory, same documented amnesia class as _lastVisit.
+    /** @type {Map<string, number>} */
+    this._zeroPageStreak = new Map();
+
     // Level 0 landing page throttling.
     /** @type {number} */
     this._lastIndexRefresh = 0;
@@ -207,7 +215,7 @@ class WikiSteward {
    * @returns {Promise<TendResult>}
    */
   async tend() {
-    const idle = { steward: null, cluster: null, pagesModified: 0, linksAdded: 0, observationsResolved: 0 };
+    const idle = { steward: null, cluster: null, pagesModified: 0, linksAdded: 0, observationsResolved: 0, pagesInNeighborhood: 0 };
 
     // Step 1: pick the neediest cluster
     let cluster;
@@ -238,6 +246,39 @@ class WikiSteward {
     } catch (err) {
       this.logger.warn(`[WikiSteward:${stewardType}] _readNeighborhood failed for "${cluster.name}": ${err.message}`);
       return { ...idle, steward: stewardType, cluster: cluster.name, skipped: 'neighborhood_error' };
+    }
+
+    // Step 3b: count what was actually read against what the census promised.
+    // A zero-page neighborhood for a cluster the census counted pages for is
+    // the #51 failure shape — instrument it instead of tending silence.
+    const pagesInNeighborhood = neighborhood.pages.length;
+    this.logger.info(
+      `[WikiSteward:${stewardType}] Neighborhood "${cluster.name}": ` +
+      `${pagesInNeighborhood} pages (cluster reports ${cluster.pageCount ?? 'unknown'})`
+    );
+    if (pagesInNeighborhood === 0 && (cluster.pageCount || 0) > 0) {
+      const streak = (this._zeroPageStreak.get(cluster.name) || 0) + 1;
+      this._zeroPageStreak.set(cluster.name, streak);
+      if (streak >= 3) {
+        this.logger.error(
+          `[WikiSteward:${stewardType}] FLATLINE: cluster "${cluster.name}" read 0 pages ` +
+          `for ${streak} consecutive cycles while the census reports ${cluster.pageCount}. ` +
+          `First suspects: _getPageSection derivation and the Collectives filePath shape.`
+        );
+      } else {
+        this.logger.warn(
+          `[WikiSteward:${stewardType}] SUSPICIOUS EMPTY SET: cluster "${cluster.name}" ` +
+          `read 0 pages while the census reports ${cluster.pageCount}. ` +
+          `First suspects: _getPageSection derivation and the Collectives filePath shape.`
+        );
+      }
+      this.observations.notice({
+        type: 'empty_neighborhood',
+        cluster: cluster.name,
+        detail: `Read 0 pages; census reports ${cluster.pageCount}`,
+      });
+    } else if (pagesInNeighborhood > 0) {
+      this._zeroPageStreak.delete(cluster.name);
     }
 
     // Step 4: assess through the steward's lens (one LLM call)
@@ -294,6 +335,7 @@ class WikiSteward {
       pagesModified: interventionResult.pagesModified,
       linksAdded: interventionResult.linksAdded,
       observationsResolved: interventionResult.observationsResolved,
+      pagesInNeighborhood,
       skipped: false,
     };
 

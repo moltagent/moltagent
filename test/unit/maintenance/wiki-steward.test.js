@@ -1220,4 +1220,120 @@ asyncTest('_intervene: content pages are still processed normally when no struct
   );
 });
 
+// ---------------------------------------------------------------------------
+// PHASE 1: TENDING INSTRUMENTATION (pagesInNeighborhood, empty-set alarm, FLATLINE)
+// ---------------------------------------------------------------------------
+
+/** Logger spy that records calls per level while staying silent. */
+function makeSpyLogger() {
+  const calls = { debug: [], info: [], warn: [], error: [] };
+  return {
+    _calls: calls,
+    debug: (...a) => calls.debug.push(a.join(' ')),
+    info:  (...a) => calls.info.push(a.join(' ')),
+    warn:  (...a) => calls.warn.push(a.join(' ')),
+    error: (...a) => calls.error.push(a.join(' ')),
+  };
+}
+
+/** Steward pinned to a census that promises pages the neighborhood may not have. */
+function makeInstrumentedSteward({ listPagesResult, pagesByTitle, pageCount, logger, observationLog }) {
+  const collectivesClient = makeMockCollectivesClient({ listPagesResult, pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({
+    collectivesClient,
+    observationLog: observationLog || makeObservationLog(),
+    logger: logger || silentLogger,
+  }));
+  // Census and neighborhood diverge in production via section-derivation drift
+  // (#51). Pin the census side so the divergence is reproducible.
+  steward._findNeediest = async () => ({ name: 'People', pageCount, score: 1, observationCount: 0 });
+  return steward;
+}
+
+asyncTest('tend() result carries pagesInNeighborhood with the read count', async () => {
+  const steward = makeInstrumentedSteward({
+    listPagesResult: [
+      { id: 1, title: 'Carlos', filePath: 'People', fileName: 'Carlos.md', parentId: 5 },
+      { id: 2, title: 'Tobias', filePath: 'People', fileName: 'Tobias.md', parentId: 5 },
+    ],
+    pagesByTitle: {
+      'Carlos': { frontmatter: {}, body: 'Carlos is a person.', path: 'People/Carlos.md' },
+      'Tobias': { frontmatter: {}, body: 'Tobias is a person.', path: 'People/Tobias.md' },
+    },
+    pageCount: 2,
+  });
+
+  const result = await steward.tend();
+  assert.strictEqual(result.pagesInNeighborhood, 2, 'result should count pages actually read');
+});
+
+asyncTest('tend() warns and records empty_neighborhood observation on suspicious empty set', async () => {
+  const logger = makeSpyLogger();
+  const observationLog = makeObservationLog();
+  const steward = makeInstrumentedSteward({
+    listPagesResult: [], // neighborhood reads zero
+    pagesByTitle: {},
+    pageCount: 4,        // census promises four
+    logger,
+    observationLog,
+  });
+
+  const result = await steward.tend();
+
+  assert.strictEqual(result.pagesInNeighborhood, 0);
+  assert.ok(
+    logger._calls.warn.some(m => m.includes('SUSPICIOUS EMPTY SET') && m.includes('_getPageSection')),
+    'warn should name the empty set and the first suspect'
+  );
+  const pending = observationLog.getByType('empty_neighborhood');
+  assert.strictEqual(pending.length, 1, 'one empty_neighborhood observation recorded');
+  assert.strictEqual(pending[0].cluster, 'People', 'observation carries cluster so getNeediest sees it');
+});
+
+asyncTest('tend() escalates to FLATLINE error at three consecutive zero-page cycles', async () => {
+  const logger = makeSpyLogger();
+  const steward = makeInstrumentedSteward({
+    listPagesResult: [],
+    pagesByTitle: {},
+    pageCount: 3,
+    logger,
+  });
+
+  await steward.tend();
+  await steward.tend();
+  assert.strictEqual(logger._calls.error.length, 0, 'no error before streak reaches 3');
+  await steward.tend();
+
+  assert.strictEqual(steward._zeroPageStreak.get('People'), 3, 'streak counts consecutive zeros');
+  assert.ok(
+    logger._calls.error.some(m => m.includes('FLATLINE') && m.includes('People')),
+    'third consecutive zero escalates to error with FLATLINE'
+  );
+});
+
+asyncTest('zero-page streak resets on a non-empty read', async () => {
+  const logger = makeSpyLogger();
+  const pages = [{ id: 1, title: 'Carlos', filePath: 'People', fileName: 'Carlos.md', parentId: 5 }];
+  const listPagesBox = { value: [] };
+  const collectivesClient = makeMockCollectivesClient({
+    pagesByTitle: { 'Carlos': { frontmatter: {}, body: 'Carlos.', path: 'People/Carlos.md' } },
+  });
+  collectivesClient.listPages = async () => listPagesBox.value;
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, logger }));
+  steward._findNeediest = async () => ({ name: 'People', pageCount: 1, score: 1, observationCount: 0 });
+
+  await steward.tend(); // zero read → streak 1
+  await steward.tend(); // zero read → streak 2
+  assert.strictEqual(steward._zeroPageStreak.get('People'), 2);
+
+  listPagesBox.value = pages; // pages come back
+  await steward.tend();
+  assert.strictEqual(steward._zeroPageStreak.has('People'), false, 'successful read deletes the streak entry');
+
+  listPagesBox.value = [];
+  await steward.tend(); // zero again → streak restarts at 1, no error
+  assert.strictEqual(steward._zeroPageStreak.get('People'), 1, 'streak restarts after reset');
+  assert.strictEqual(logger._calls.error.length, 0, 'no FLATLINE across a reset boundary');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);
