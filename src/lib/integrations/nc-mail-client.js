@@ -43,7 +43,7 @@
  *       (find message by normalized Message-ID header, return databaseId)
  *
  *   resolveThreadUrl(folder, messageId)
- *     → resolveMailbox + resolveMessageDatabaseId
+ *     → resolveMailbox + syncMailbox (warm-only, see #180) + resolveMessageDatabaseId
  *     → {ncUrl}/apps/mail/box/{mailboxId}/thread/{databaseId}
  *
  * Dependency Map:
@@ -171,6 +171,23 @@ class NCMailClient {
   }
 
   /**
+   * Flag-neutral warmth probe: has NC Mail's own database ever synced this
+   * mailbox? Reads one message row from the DB (no IMAP traffic, no \Seen
+   * side effects). A cold mailbox — one NC Mail has never synced — returns
+   * an empty list. Any error or malformed response counts as cold, because
+   * cold is the safe assumption (#180).
+   *
+   * @param {number} mailboxId - The mailbox databaseId to probe
+   * @returns {Promise<boolean>} true when NC Mail's DB holds at least one message
+   */
+  async hasSyncedMessages(mailboxId) {
+    const messages = await this._getJson(
+      `/index.php/apps/mail/api/messages?mailboxId=${encodeURIComponent(mailboxId)}&limit=1`
+    );
+    return Array.isArray(messages) && messages.length > 0;
+  }
+
+  /**
    * Best-effort: ask NC Mail to sync a mailbox from IMAP into its database.
    *
    * The bridge ingests on a heartbeat (minutes) while NC Mail's own background
@@ -178,20 +195,27 @@ class NCMailClient {
    * is usually NOT yet in NC Mail's DB when we look it up — the lookup misses
    * and the link can't be built. A sync here closes that race.
    *
-   * Safe on \Seen: this syncs a mailbox the bridge already reads every pulse
-   * (warm), which fetches envelopes only and does NOT mark messages read.
-   * (A cold first-ever sync of a never-synced mailbox can mark pre-existing
-   * unread mail read; operators warm the trigger mailbox once by enabling its
-   * background sync — after that every sync here is incremental and safe.)
+   * NOTE(#180): an `init: true` full sync of a COLD mailbox (never synced by
+   * NC Mail) marks pre-existing unread mail \Seen — including the just-ingested
+   * trigger message itself — violating the bridge's never-mutate guarantee.
+   * The bridge reading the folder over IMAP does NOT warm NC Mail's DB, so
+   * warmth cannot be assumed; it is checked here, at the chokepoint, so no
+   * caller can trip the cold case: cold → the sync is skipped entirely (the
+   * Message-ID footer fallback holds and NC Mail's background sync warms the
+   * mailbox eventually). Warm → the sync is incremental and flag-neutral
+   * (verified live on the warm path). A plain non-init sync is not a safe
+   * substitute: it 428s without a sync token even on a warm mailbox.
    *
    * Best-effort: returns false on any error and never throws; resolution
    * continues regardless (the message may already be synced).
    *
    * @param {number} mailboxId - The mailbox databaseId to sync
-   * @returns {Promise<boolean>} true on a 2xx sync, false otherwise
+   * @returns {Promise<boolean>} true on a 2xx sync, false when skipped (cold) or on error
    */
   async syncMailbox(mailboxId) {
     try {
+      const warm = await this.hasSyncedMessages(mailboxId);
+      if (!warm) return false;
       const response = await this.nc.request(
         `/index.php/apps/mail/api/mailboxes/${encodeURIComponent(mailboxId)}/sync`,
         {
@@ -224,8 +248,10 @@ class NCMailClient {
       if (!mailbox) return null;
 
       // Close the sync race: pull the mailbox into NC Mail's DB before lookup,
-      // so a just-ingested email is present. Best-effort — a failed sync does
-      // not block resolution (the message may already be synced).
+      // so a just-ingested email is present. Best-effort — a failed or skipped
+      // sync does not block resolution (the message may already be synced).
+      // syncMailbox itself skips cold mailboxes (#180): on a cold mailbox the
+      // lookup below misses and the caller keeps the Message-ID footer.
       await this.syncMailbox(mailbox.mailboxId);
 
       const databaseId = await this.resolveMessageDatabaseId(mailbox.mailboxId, messageId);

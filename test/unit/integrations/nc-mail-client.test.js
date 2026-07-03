@@ -230,10 +230,12 @@ function makeRoutes() {
     const syncCall = calls.find(c => c.path.includes('/index.php/apps/mail/api/mailboxes/99/sync'));
     assert.ok(syncCall, 'a sync POST should be issued for the resolved mailbox (id 99)');
     assert.strictEqual(syncCall.method, 'POST', 'sync must be a POST');
-    // The sync must precede the messages lookup.
+    // Order (#180): warmth probe (limit=1 DB read) → sync → lookup (limit=50).
+    const probeIdx = calls.findIndex(c => c.path.includes('/api/messages') && c.path.includes('limit=1'));
     const syncIdx = calls.findIndex(c => c.path.includes('/sync'));
-    const msgIdx = calls.findIndex(c => c.path.startsWith('/index.php/apps/mail/api/messages'));
-    assert.ok(syncIdx >= 0 && msgIdx >= 0 && syncIdx < msgIdx, 'sync must precede the messages lookup');
+    const lookupIdx = calls.findIndex(c => c.path.includes('/api/messages') && c.path.includes('limit=50'));
+    assert.ok(probeIdx >= 0 && syncIdx >= 0 && probeIdx < syncIdx, 'warmth probe must precede the sync');
+    assert.ok(lookupIdx >= 0 && syncIdx < lookupIdx, 'sync must precede the messages lookup');
   });
 
   // TC-MAIL-13: a failed sync does NOT block resolution (best-effort).
@@ -252,6 +254,81 @@ function makeRoutes() {
 
     const url = await client.resolveThreadUrl('INBOX.INQUIRIES', '<msg1@host>');
     assert.strictEqual(url, 'https://nc.example.com/apps/mail/box/99/thread/555', 'resolution proceeds despite sync failure');
+  });
+
+  // ------------------------------------------------------------------------
+  // #180: the cold-mailbox guarantee — no init:true sync on a mailbox NC Mail
+  // has never synced (a cold full sync marks pre-existing unread mail \Seen).
+  // ------------------------------------------------------------------------
+
+  /** Mock where NC Mail's DB is COLD for the mailbox: messages endpoint returns []. */
+  function createColdNC(calls) {
+    return {
+      ncUrl: 'https://nc.example.com',
+      request: async (path, opts) => {
+        calls.push({ path, method: (opts && opts.method) || 'GET' });
+        if (path.startsWith('/index.php/apps/mail/api/accounts')) return { status: 200, body: JSON.stringify(ACCOUNTS) };
+        if (path.includes('/sync')) return { status: 200, body: JSON.stringify({ newMessages: [] }) };
+        if (path.startsWith('/index.php/apps/mail/api/mailboxes')) return { status: 200, body: JSON.stringify(MAILBOXES_RESP) };
+        if (path.startsWith('/index.php/apps/mail/api/messages')) return { status: 200, body: JSON.stringify([]) };
+        return { status: 404, body: null };
+      }
+    };
+  }
+
+  // TC-MAIL-14: syncMailbox on a cold mailbox skips the sync POST entirely.
+  await asyncTest('TC-MAIL-14: syncMailbox never issues init sync on a cold mailbox (#180)', async () => {
+    const calls = [];
+    const client = new NCMailClient(createColdNC(calls));
+
+    const synced = await client.syncMailbox(99);
+
+    assert.strictEqual(synced, false, 'cold mailbox → sync reported as skipped');
+    const syncCall = calls.find(c => c.path.includes('/sync'));
+    assert.strictEqual(syncCall, undefined, 'no sync POST may reach a cold mailbox');
+  });
+
+  // TC-MAIL-15: resolveThreadUrl on a cold mailbox returns null (footer fallback)
+  // and issues no sync POST — flags on the human mailbox stay untouched.
+  await asyncTest('TC-MAIL-15: resolveThreadUrl on a cold mailbox skips sync, keeps fallback (#180)', async () => {
+    const calls = [];
+    const client = new NCMailClient(createColdNC(calls));
+
+    const url = await client.resolveThreadUrl('INBOX.INQUIRIES', '<msg1@host>');
+
+    assert.strictEqual(url, null, 'cold mailbox → no link, caller keeps Message-ID footer');
+    const syncCall = calls.find(c => c.path.includes('/sync'));
+    assert.strictEqual(syncCall, undefined, 'no sync POST may reach a cold mailbox');
+  });
+
+  // TC-MAIL-16: a failed warmth probe counts as cold (safe default) — no sync POST.
+  await asyncTest('TC-MAIL-16: failed warmth probe is treated as cold — no sync (#180)', async () => {
+    const calls = [];
+    const nc = {
+      ncUrl: 'https://nc.example.com',
+      request: async (path, opts) => {
+        calls.push({ path, method: (opts && opts.method) || 'GET' });
+        if (path.startsWith('/index.php/apps/mail/api/messages')) return { status: 503, body: null };
+        if (path.includes('/sync')) return { status: 200, body: JSON.stringify({ newMessages: [] }) };
+        return { status: 404, body: null };
+      }
+    };
+    const client = new NCMailClient(nc);
+
+    const synced = await client.syncMailbox(99);
+
+    assert.strictEqual(synced, false, 'probe error → treated as cold');
+    const syncCall = calls.find(c => c.path.includes('/sync'));
+    assert.strictEqual(syncCall, undefined, 'no sync POST when warmth is unknown');
+  });
+
+  // TC-MAIL-17: hasSyncedMessages — warm when the DB holds at least one message.
+  await asyncTest('TC-MAIL-17: hasSyncedMessages true on warm, false on cold DB', async () => {
+    const warmClient = new NCMailClient(createMockNC(makeRoutes()));
+    assert.strictEqual(await warmClient.hasSyncedMessages(99), true, 'messages present → warm');
+
+    const coldClient = new NCMailClient(createColdNC([]));
+    assert.strictEqual(await coldClient.hasSyncedMessages(99), false, 'empty DB → cold');
   });
 
   setTimeout(() => { summary(); exitWithCode(); }, 500);
