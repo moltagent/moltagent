@@ -2442,16 +2442,20 @@ class ToolRegistry {
           const rsvpTracker = this.clients.rsvpTracker;
           if (!rsvpTracker) return 'RSVP tracking is not available.';
 
-          const status = rsvpTracker.getStatus();
-          if (!status || status.length === 0) return 'No meetings are currently being tracked for RSVPs.';
+          // getStatus() is keyed by UID; resolve the title against the
+          // pending summary first, then fetch that event's attendee detail.
+          const pending = rsvpTracker.getPendingSummary();
+          if (!pending || pending.length === 0) return 'No meetings are currently being tracked for RSVPs.';
 
-          // Find matching tracked event
           const lower = args.meeting_title.toLowerCase();
-          const match = status.find(e =>
+          const found = pending.find(e =>
             e.summary && e.summary.toLowerCase().includes(lower)
           );
 
-          if (!match) return `No tracked meeting found matching "${args.meeting_title}".`;
+          if (!found) return `No tracked meeting found matching "${args.meeting_title}".`;
+
+          const match = rsvpTracker.getStatus(found.uid);
+          if (!match.found) return `No tracked meeting found matching "${args.meeting_title}".`;
 
           const lines = match.attendees.map(a => {
             const icon = a.lastStatus === 'ACCEPTED' ? '✅' :
