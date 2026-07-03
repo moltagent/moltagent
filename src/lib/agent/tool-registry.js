@@ -80,10 +80,17 @@ class ToolRegistry {
    * @param {import('../integrations/memory-searcher')} [options.memorySearcher]
    * @param {Object} [options.searchAdapters] - Map of commercial search adapters { brave, perplexity, exa }
    * @param {import('../integrations/news-client').NewsClient} [options.newsClient]
+   * @param {import('../integrations/meeting-composer')} [options.meetingComposer]
+   * @param {import('../integrations/rsvp-tracker')} [options.rsvpTracker]
    * @param {Object} [options.logger]
    */
-  constructor({ deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter, newsClient, entityExtractor, logger }) {
-    this.clients = { deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter, newsClient, entityExtractor };
+  // NOTE(#227): every client the construction site passes MUST appear here AND in
+  // this.clients — a name missing from either is silently undefined at runtime and
+  // its tool family never registers (that was #226: meetingComposer/rsvpTracker
+  // dropped → meeting tools dead in production). The TOOL_FAMILIES manifest below
+  // turns that silence into a loud [BOOT][WARN] line.
+  constructor({ deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter, newsClient, entityExtractor, meetingComposer, rsvpTracker, logger }) {
+    this.clients = { deckClient, calDAVClient, systemTagsClient, ncRequestManager, ncFilesClient, ncSearchClient, textExtractor, collectivesClient, learningLog, searxngClient, webReader, contactsClient, memorySearcher, searchAdapters, emailHandler, resilientWriter, newsClient, entityExtractor, meetingComposer, rsvpTracker };
     this.logger = logger || console;
 
     /** @type {Map<string, {name: string, description: string, parameters: Object, handler: Function, domains?: string[], universal?: boolean}>} */
@@ -376,20 +383,57 @@ class ToolRegistry {
   // Private: Default Tool Registration
   // ===========================================================================
 
+  /**
+   * The boot composition contract (#227): which clients each tool family needs.
+   *
+   * `required` mirrors the registrar's own early-return gate — when one is
+   * missing the family is skipped LOUDLY ([BOOT][WARN]) instead of silently.
+   * `optional` names clients the family registers without but degrades
+   * visibly when absent (logged once at boot).
+   *
+   * This list and the registrar gates must stay aligned; the gates remain as
+   * the assertion's fallback so a direct registrar call is still safe.
+   * @private
+   */
+  static get TOOL_FAMILIES() {
+    return [
+      { family: 'deck', method: '_registerDeckTools', required: ['deckClient'] },
+      { family: 'calendar', method: '_registerCalendarTools', required: ['calDAVClient'] },
+      { family: 'meeting', method: '_registerMeetingTools', required: ['meetingComposer'], optional: ['rsvpTracker'] },
+      { family: 'file', method: '_registerFileTools', required: ['ncFilesClient'] },
+      { family: 'search', method: '_registerSearchTools', required: ['ncSearchClient'] },
+      { family: 'tag', method: '_registerTagTools', required: ['systemTagsClient'] },
+      { family: 'memory', method: '_registerMemoryTools', required: ['ncRequestManager'] },
+      { family: 'wiki', method: '_registerWikiTools', required: ['collectivesClient'], optional: ['resilientWriter'] },
+      { family: 'web', method: '_registerWebTools', required: [], optional: ['searxngClient', 'webReader', 'searchAdapters'] },
+      { family: 'contacts', method: '_registerContactsTools', required: ['contactsClient'] },
+      { family: 'memorySearch', method: '_registerMemorySearchTools', required: ['memorySearcher'] },
+      { family: 'workflowDeck', method: '_registerWorkflowDeckTools', required: ['ncRequestManager'], optional: ['deckClient'] },
+    ];
+  }
+
   /** @private */
   _registerDefaultTools() {
-    this._registerDeckTools();
-    this._registerCalendarTools();
-    this._registerMeetingTools();
-    this._registerFileTools();
-    this._registerSearchTools();
-    this._registerTagTools();
-    this._registerMemoryTools();
-    this._registerWikiTools();
-    this._registerWebTools();
-    this._registerContactsTools();
-    this._registerMemorySearchTools();
-    this._registerWorkflowDeckTools();
+    for (const { family, method, required = [], optional = [] } of ToolRegistry.TOOL_FAMILIES) {
+      const missing = required.filter((name) => !this.clients[name]);
+      if (missing.length) {
+        this.logger.warn(
+          `[BOOT][WARN] ToolRegistry: ${family} tools SKIPPED — required client${missing.length > 1 ? 's' : ''} ` +
+          `'${missing.join("', '")}' missing at construction`
+        );
+        continue;
+      }
+      const before = this.tools.size;
+      this[method]();
+      const absentOptional = optional.filter((name) => !this.clients[name]);
+      const degradeNote = absentOptional.length
+        ? `; optional '${absentOptional.join("', '")}' absent — degraded`
+        : '';
+      this.logger.info(
+        `[BOOT] ToolRegistry: ${family} tools registered (${this.tools.size - before} tools` +
+        `${required.length ? `; ${required.join(', ')} present` : ''})${degradeNote}`
+      );
+    }
   }
 
   /**

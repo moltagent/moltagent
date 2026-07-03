@@ -692,6 +692,28 @@ async function initialize() {
     process.exit(1);
   }
 
+  // 1.0.1. Boot preflight (#87): walk the declared dependency manifest.
+  // Required-and-definitively-absent halts with one remediation line; optional-
+  // and-missing logs once and the feature degrades. Unreachable-required only
+  // warns — a transient hiccup is not a misconfiguration. MOLTAGENT_PREFLIGHT=warn
+  // demotes the halt (deployment escape hatch).
+  try {
+    const { BootPreflight } = require('./src/lib/boot/preflight');
+    const preflight = new BootPreflight({ config: CONFIG, ncRequestManager, logger: console });
+    const { halt } = await preflight.run();
+    if (halt) {
+      if ((process.env.MOLTAGENT_PREFLIGHT || '').toLowerCase() === 'warn') {
+        console.warn('[PREFLIGHT][WARN] required dependency missing but MOLTAGENT_PREFLIGHT=warn — continuing');
+      } else {
+        console.error('[PREFLIGHT][FATAL] required dependency missing — exiting (set MOLTAGENT_PREFLIGHT=warn to demote)');
+        process.exit(1);
+      }
+    }
+  } catch (err) {
+    // The preflight is observability; it must never take a boot down by itself.
+    console.warn(`[PREFLIGHT][WARN] preflight failed to run: ${err.message}`);
+  }
+
   // 1.1. Initialize Talk Send Queue (serializes outbound Talk messages)
   talkQueue = new TalkSendQueue(ncRequestManager);
   console.log('[INIT] Talk Send Queue ready');
@@ -1343,7 +1365,7 @@ async function initialize() {
     const EmbeddingClient = require('./src/lib/memory/embedding-client');
     embeddingClient = new EmbeddingClient({
       ollamaUrl: CONFIG.ollama.url,
-      model: 'nomic-embed-text',
+      model: CONFIG.ollama.embeddingModel,
       logger: console
     });
     console.log('[INIT] EmbeddingClient ready');
@@ -2146,7 +2168,7 @@ async function initialize() {
             });
             const clsCandidates = modelScout.getClassificationCandidates();
             probe.run(clsCandidates)
-              .then(sel => {
+              .then(async sel => {
                 if (sel && sel.model) {
                   modelResolver.setGroundTruthOverride('classification', sel.model);
                   console.log(`[INIT] Golden-set probe: classification -> ${sel.model} (EN ${sel.scores?.EN} DE ${sel.scores?.DE} PT ${sel.scores?.PT}, ${sel.passed ? 'passed' : sel.reason})`);
@@ -2166,14 +2188,60 @@ async function initialize() {
                   );
                   modelScorecard.assertSeats();
                 }
+                // Tool-capability probe (#118): each LOCAL model currently
+                // resolved for a tool-capable job answers one trivial
+                // function-call instruction through the production provider
+                // class. Prose → flagged in the boot log + describe(); the
+                // probe never reseats (that is the maturation loop's
+                // authority; the runtime chain already falls back on
+                // tool-call failure). Runs sequentially AFTER the golden-set
+                // probe so the single post-probe resolver re-log below
+                // reflects both measurements — NOTE(#233): the re-log remains
+                // the one channel that closes the summary-vs-async-probe race.
+                try {
+                  if (OllamaToolsProvider) {
+                    const { ToolCapabilityProbe, VERDICT } = require('./src/lib/llm/tool-capability-probe');
+                    const probeProvider = new OllamaToolsProvider({
+                      endpoint: CONFIG.ollama.url,
+                      model: CONFIG.ollama.model,
+                      toolTimeout: CONFIG.ollama.toolTimeout,
+                    });
+                    const toolProbe = new ToolCapabilityProbe({
+                      chatFn: (model, req) => probeProvider.chat({ ...req, model }),
+                      cacheDir: path.join(__dirname, 'data'),
+                      logger: console,
+                    });
+                    const seen = new Set();
+                    const toolCandidates = [];
+                    for (const job of ['tools', 'quick']) {
+                      const r = modelResolver.resolve(job);
+                      if (r.model && String(r.provider || '').startsWith('ollama') && !seen.has(r.model)) {
+                        seen.add(r.model);
+                        const disc = (modelScout._discovered || []).find(m => m && m.name === r.model);
+                        toolCandidates.push({ name: r.model, digest: disc && disc.digest });
+                      }
+                    }
+                    const verdicts = await toolProbe.run(toolCandidates);
+                    for (const v of verdicts) {
+                      if (v.status === VERDICT.PROSE) {
+                        modelResolver.markToolIncapable(v.name);
+                        console.warn(`[BOOT][WARN] Tool-capability probe: ${v.name} answered a tool-requiring instruction with prose — flagged (#118); runtime chain falls back on tool-call failure`);
+                      } else if (v.status === VERDICT.TOOL_CALL) {
+                        console.log(`[INIT] Tool-capability probe: ${v.name} → tool call OK${/\(cached\)/.test(v.detail || '') ? ' (cached)' : ''}`);
+                      }
+                    }
+                  }
+                } catch (err) {
+                  console.warn(`[INIT] Tool-capability probe failed: ${err.message}`);
+                }
                 if (sel?.model || modelScorecard) {
                   // The probe lands after the "[INIT] Model resolver:" summary
                   // (always — the probe is async even on a warm cache), so that
                   // line never shows the measured source (#233). Re-log the
-                  // resolver's ground truth after BOTH the probe's override
+                  // resolver's ground truth after BOTH probes' findings
                   // and the scorecard's seat assertion, so the line the
                   // operator reads reflects the final authority
-                  // (golden-set-probe or maturation-loop).
+                  // (golden-set-probe or maturation-loop) plus any #118 flag.
                   const { summary } = modelResolver.describe(['tools', 'thinking', 'quick', 'classification']);
                   console.log(`[INIT] Model resolver (post-probe): ${summary}`);
                 }
