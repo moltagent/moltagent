@@ -1477,4 +1477,133 @@ asyncTest('_assess skips recording when the route result carries no model identi
   assert.strictEqual(modelScorecard._calls.length, 0, 'no model → no sample (recordSample requires a model string)');
 });
 
+// ---------------------------------------------------------------------------
+// PHASE 3: DURABLE FLAG KEYS (G1 — key on what cannot change)
+// ---------------------------------------------------------------------------
+
+const fs = require('fs');
+const path = require('path');
+const D2_FIXTURE = fs.readFileSync(
+  path.join(__dirname, '../../fixtures/wikisteward/d2-fixture.md'), 'utf8');
+
+function makeFlagClient(bodyByTitle) {
+  const writes = [];
+  return {
+    _writes: writes,
+    readPageWithFrontmatter: async (title) => (
+      bodyByTitle[title] !== undefined
+        ? { frontmatter: {}, body: bodyByTitle[title], path: `${title}.md` }
+        : null
+    ),
+    writePageWithFrontmatter: async (title, fm, body) => {
+      writes.push({ title, fm, body });
+      bodyByTitle[title] = body;
+      return `${title}.md`;
+    },
+  };
+}
+
+asyncTest('_flagContradiction dedups on pair key across resolved and unresolved link forms', async () => {
+  const unresolvedForm = '> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [[Role Page]] on "old claim"';
+  const resolvedForm = '> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [Role Page](https://nc-host.example/x) on "old claim"';
+
+  for (const existing of [unresolvedForm, resolvedForm]) {
+    const client = makeFlagClient({
+      'Person Page': `Some body.\n\n${existing}\n`,
+      'Role Page': 'Role body.',
+    });
+    const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+    const modified = await steward._flagContradiction('Person Page', 'Role Page', 'a newly worded claim');
+    // Person Page already flagged for this pair in either form → only Role Page written.
+    assert.strictEqual(client._writes.filter(w => w.title === 'Person Page').length, 0,
+      `no append when the ${existing === unresolvedForm ? 'unresolved' : 'resolved'} form is present`);
+    assert.strictEqual(client._writes.filter(w => w.title === 'Role Page').length, 1);
+    assert.ok(modified, 'partner side still flagged');
+  }
+});
+
+asyncTest('_flagContradiction: reworded claim for an already-flagged pair does not append', async () => {
+  const client = makeFlagClient({
+    'Person Page': 'Body.\n\n> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [Role Page](https://nc-host.example/x) on "wording one"\n',
+    'Role Page': 'Body.\n\n> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [Person Page](https://nc-host.example/y) on "wording one"\n',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+  const modified = await steward._flagContradiction('Person Page', 'Role Page', 'wording two, completely different');
+  assert.strictEqual(client._writes.length, 0, 'no write for either page');
+  assert.strictEqual(modified, false);
+});
+
+asyncTest('_flagContradiction: a second partner does append', async () => {
+  const client = makeFlagClient({
+    'Person Page': 'Body.\n\n> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [Role Page](https://nc-host.example/x) on "claim"\n',
+    'Other Page': 'Other body.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+  const modified = await steward._flagContradiction('Person Page', 'Other Page', 'a different conflict');
+  assert.ok(modified);
+  assert.strictEqual(client._writes.filter(w => w.title === 'Person Page').length, 1,
+    'new partner pair appends on Person Page');
+  assert.ok(client._writes.find(w => w.title === 'Person Page').body.includes('[[Other Page]]'));
+});
+
+asyncTest('_flagDuplicate is per-pair: flagged against one partner, still flags a second', async () => {
+  const client = makeFlagClient({
+    'Page X': 'Body.\n\n> ⚠️ Near-duplicate flagged by Connection Steward: possibly the same entity as [Page Y](https://nc-host.example/y) (similarity: 0.90). Manual review recommended.\n',
+    'Page Z': 'Z body.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+
+  // Same pair again → no write on X
+  await steward._flagDuplicate('Page X', 'Page Y', 0.91);
+  assert.strictEqual(client._writes.filter(w => w.title === 'Page X').length, 0, 'same pair stays idempotent');
+
+  // New partner → append
+  const modified = await steward._flagDuplicate('Page X', 'Page Z', 0.8);
+  assert.ok(modified);
+  assert.strictEqual(client._writes.filter(w => w.title === 'Page X').length, 1, 'second partner appends');
+});
+
+asyncTest('D2 fixture: already-walled pair does not grow; flag region is byte-stable', async () => {
+  const client = makeFlagClient({
+    'Person Page': D2_FIXTURE,
+    'Role Page': 'Role body.\n\n> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [Person Page](https://nc-host.example/p) on "any"\n',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+  const modified = await steward._flagContradiction('Person Page', 'Role Page', 'yet another wording of the same conflict');
+  assert.strictEqual(client._writes.length, 0, 'wall does not grow — pair key holds on the captured body');
+  assert.strictEqual(modified, false);
+
+  // Duplicate flag: the walled page is already flagged for this pair; only the
+  // partner side (which carries no duplicate flag yet) may be written.
+  await steward._flagDuplicate('Person Page', 'Role Page', 0.99);
+  assert.strictEqual(client._writes.filter(w => w.title === 'Person Page').length, 0,
+    'duplicate flag also keyed per pair on the captured body');
+});
+
+asyncTest('_lowerConfidence deletes verification_note and skips the write on identical state', async () => {
+  const today = new Date().toISOString().split('T')[0];
+  const client = makeFlagClient({});
+  client.readPageWithFrontmatter = async () => ({
+    frontmatter: { confidence: 'low', last_verification_attempt: today, verification_note: 'LLM-worded leftover' },
+    body: 'Body.',
+    path: 'People/Page.md',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+
+  // First pass: removing the leftover note is a real change → one write, note gone.
+  const first = await steward._lowerConfidence('Page', 'stale');
+  assert.strictEqual(first, true);
+
+  // Second pass: state identical (low, same day, no note) → no write.
+  client.readPageWithFrontmatter = async () => ({
+    frontmatter: { confidence: 'low', last_verification_attempt: today },
+    body: 'Body.',
+    path: 'People/Page.md',
+  });
+  const second = await steward._lowerConfidence('Page', 'stale');
+  assert.strictEqual(second, false, 'identical state produces identical bytes — no write');
+  assert.strictEqual(client._writes.length, 1, 'only the note-removal write happened');
+  assert.ok(!('verification_note' in client._writes[0].fm), 'written frontmatter carries no verification_note');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

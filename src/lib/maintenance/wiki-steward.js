@@ -1195,19 +1195,23 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
   async _flagContradiction(pageA, pageB, claim) {
     if (!pageA || !pageB || !claim) return false;
 
-    const flagA = `> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [[${pageB}]] on "${claim}"`;
-    const flagB = `> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [[${pageA}]] on "${claim}"`;
+    const marker = 'Contradiction flagged by Knowledge Steward';
+    const flagA = `> ⚠️ ${marker}: conflicts with [[${pageB}]] on "${claim}"`;
+    const flagB = `> ⚠️ ${marker}: conflicts with [[${pageA}]] on "${claim}"`;
 
     let modified = false;
 
     // Write to pageA — route through writePageWithFrontmatter so [[pageB]] is resolved.
+    // Dedup keys on (marker, partner title), never on the claim text: the claim
+    // is LLM-worded and the link form mutates on write (PR #50 Fix A class).
     try {
       const resultA = await this.collectivesClient.readPageWithFrontmatter(pageA);
       if (resultA) {
         const body = resultA.body || '';
-        if (!body.includes(flagA)) {
+        if (!this._hasFlagForPair(body, marker, pageB)) {
           const newBody = body + `\n\n${flagA}\n`;
           await this.collectivesClient.writePageWithFrontmatter(pageA, resultA.frontmatter, newBody);
+          this.logger.info(`[WikiSteward:knowledge] Flagged contradiction on "${pageA}" vs "${pageB}"`);
           modified = true;
         }
       }
@@ -1220,9 +1224,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       const resultB = await this.collectivesClient.readPageWithFrontmatter(pageB);
       if (resultB) {
         const body = resultB.body || '';
-        if (!body.includes(flagB)) {
+        if (!this._hasFlagForPair(body, marker, pageA)) {
           const newBody = body + `\n\n${flagB}\n`;
           await this.collectivesClient.writePageWithFrontmatter(pageB, resultB.frontmatter, newBody);
+          this.logger.info(`[WikiSteward:knowledge] Flagged contradiction on "${pageB}" vs "${pageA}"`);
           modified = true;
         }
       }
@@ -1259,7 +1264,15 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       ? confidenceSteps[idx + 1]
       : 'low';
     fm.last_verification_attempt = new Date().toISOString().split('T')[0];
-    fm.verification_note = reason || 'Confidence lowered by Knowledge Steward';
+    // verification_note is gone (gate amendment 1): it was LLM-worded prose,
+    // so identical page state produced different bytes on every visit — one
+    // live page accumulated 871 NC versions from this alone. Nothing reads
+    // the field; the reason stays in the log line below.
+    delete fm.verification_note;
+
+    // Equality guard: identical state produces identical bytes — no write,
+    // no pagesModified, no spurious Level 1 refresh.
+    if (JSON.stringify(fm) === JSON.stringify(result.frontmatter)) return false;
 
     await this.collectivesClient.writePageWithFrontmatter(page, fm, result.body || '');
     this.logger.info(`[WikiSteward:knowledge] Lowered confidence for "${page}" to ${fm.confidence}: ${reason}`);
@@ -1378,21 +1391,25 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       detail: `Possible duplicate of [[${pageA}]] (similarity: ${simLabel})`,
     });
 
-    const warningBlock = `> ⚠️ Near-duplicate flagged by Connection Steward: possibly the same entity as [[${pageB}]] (similarity: ${simLabel}). Manual review recommended.`;
-    const warningBlockB = `> ⚠️ Near-duplicate flagged by Connection Steward: possibly the same entity as [[${pageA}]] (similarity: ${simLabel}). Manual review recommended.`;
+    const marker = 'Near-duplicate flagged by Connection Steward';
+    const warningBlock = `> ⚠️ ${marker}: possibly the same entity as [[${pageB}]] (similarity: ${simLabel}). Manual review recommended.`;
+    const warningBlockB = `> ⚠️ ${marker}: possibly the same entity as [[${pageA}]] (similarity: ${simLabel}). Manual review recommended.`;
 
     let modified = false;
 
-    for (const [pageName, warning] of [[pageA, warningBlock], [pageB, warningBlockB]]) {
+    for (const [pageName, warning, partner] of [[pageA, warningBlock, pageB], [pageB, warningBlockB, pageA]]) {
       try {
         const result = await this.collectivesClient.readPageWithFrontmatter(pageName);
         if (!result) continue;
         const body = result.body || '';
-        if (body.includes('Near-duplicate flagged by Connection Steward')) continue; // already flagged
+        // Pair key, not one-flag-ever: a page can be flagged against two
+        // different partners while staying idempotent per pair.
+        if (this._hasFlagForPair(body, marker, partner)) continue;
         const newBody = body + `\n\n${warning}\n`;
         // Route through writePageWithFrontmatter so the [[other page]] reference
         // is resolved to a live Nextcloud link instead of dead text.
         await this.collectivesClient.writePageWithFrontmatter(pageName, result.frontmatter, newBody);
+        this.logger.info(`[WikiSteward:connection] Flagged near-duplicate on "${pageName}" vs "${partner}"`);
         modified = true;
       } catch (err) {
         this.logger.warn(`[WikiSteward:connection] _flagDuplicate write to "${pageName}" failed: ${err.message}`);
@@ -1400,6 +1417,29 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     }
 
     return modified;
+  }
+
+  /**
+   * Structural idempotency key for pair-keyed steward flags: a flag line for
+   * a (marker, partner) pair exists iff some line carries both the invariant
+   * marker phrase and the partner title as plain substrings. Both survive
+   * wikilink resolution ([[T]] → [T](url)), NC Text round-trips (attribute
+   * injection, escaping), and LLM claim rewording — the three rewriters that
+   * defeated full-string checks and grew the flag walls (PR #50 Fix A class).
+   * Matching a fixed system-emitted marker and a known title is structural
+   * markup matching, inside the language policy — same as the existing
+   * `[target](` check in _addWikilink.
+   *
+   * @param {string} body
+   * @param {string} markerPhrase - System-emitted constant, e.g. 'Contradiction flagged by Knowledge Steward'
+   * @param {string} partnerTitle - Partner page title (plain substring match)
+   * @returns {boolean}
+   */
+  _hasFlagForPair(body, markerPhrase, partnerTitle) {
+    if (!body || !markerPhrase || !partnerTitle) return false;
+    return body.split('\n').some(
+      line => line.includes(markerPhrase) && line.includes(partnerTitle)
+    );
   }
 
   /**
