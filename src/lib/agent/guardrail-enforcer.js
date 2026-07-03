@@ -16,6 +16,8 @@ const { classifyConfirmationReply } = require('../shared/confirmation-classifier
  */
 
 // Tools that warrant guardrail evaluation — everything else passes through instantly
+// NOTE(#217): gating policy has two homes (this set + ToolGuard.REQUIRES_APPROVAL);
+// single-home consolidation tracked for F1 retirement.
 const SENSITIVE_TOOLS = new Set([
   'mail_send',
   'file_delete',
