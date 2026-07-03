@@ -214,4 +214,32 @@ test('size() reports total current count including resolved observations', () =>
   assert.strictEqual(log.size(), 2, 'resolved observations should still count toward size() until pruned');
 });
 
+// ---------------------------------------------------------------------------
+// Test 12: resolve() optional pages filter (Phase 2 — page-granular resolution)
+// ---------------------------------------------------------------------------
+test('resolve() with pages filter transitions only matching pages; omitting keeps wholesale behavior', () => {
+  const log = new ObservationLog({ logger: silentLogger });
+  log.notice({ type: OBSERVATION_TYPES.MISSING_LINK, cluster: 'Alpha', page: 'Page A' });
+  log.notice({ type: OBSERVATION_TYPES.MISSING_LINK, cluster: 'Alpha', page: 'Page A' });
+  log.notice({ type: OBSERVATION_TYPES.MISSING_LINK, cluster: 'Alpha', page: 'Page B' });
+  log.notice({ type: OBSERVATION_TYPES.GAP,          cluster: 'Alpha', page: 'Page B' });
+
+  const count = log.resolve('Alpha', OBSERVATION_TYPES.MISSING_LINK, ['Page A']);
+  assert.strictEqual(count, 2, 'only Page A missing_link observations transition');
+  assert.strictEqual(log.getByType(OBSERVATION_TYPES.MISSING_LINK).length, 1, 'Page B remains pending');
+  assert.strictEqual(log.getByType(OBSERVATION_TYPES.GAP).length, 1, 'other types untouched');
+
+  // Backward compatible: omitting pages resolves the rest of the type wholesale.
+  const rest = log.resolve('Alpha', OBSERVATION_TYPES.MISSING_LINK);
+  assert.strictEqual(rest, 1, 'wholesale call resolves the remaining Page B observation');
+});
+
+test('resolve() pages filter accepts a single page string', () => {
+  const log = new ObservationLog({ logger: silentLogger });
+  log.notice({ type: OBSERVATION_TYPES.UNEMBEDDED, cluster: 'Alpha', page: 'Solo' });
+  log.notice({ type: OBSERVATION_TYPES.UNEMBEDDED, cluster: 'Alpha', page: 'Other' });
+  assert.strictEqual(log.resolve('Alpha', OBSERVATION_TYPES.UNEMBEDDED, 'Solo'), 1);
+  assert.strictEqual(log.getByType(OBSERVATION_TYPES.UNEMBEDDED).length, 1);
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

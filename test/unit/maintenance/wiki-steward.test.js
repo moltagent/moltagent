@@ -127,13 +127,25 @@ test('WikiSteward constructor: throws when required dep is missing', () => {
   assert.throws(() => new WikiSteward(deps), /requires observationLog/);
 });
 
-// Test 2: _nextSteward() cycles knowledge → connection → memory → knowledge
-test('_nextSteward() cycles through three lenses and wraps', () => {
+// Test 2: _nextSteward(cluster) cycles knowledge → connection → memory → knowledge
+test('_nextSteward() cycles through three lenses and wraps, per cluster', () => {
   const steward = new WikiSteward(makeFullDeps());
-  assert.strictEqual(steward._nextSteward(), 'knowledge');
-  assert.strictEqual(steward._nextSteward(), 'connection');
-  assert.strictEqual(steward._nextSteward(), 'memory');
-  assert.strictEqual(steward._nextSteward(), 'knowledge', 'should wrap back to knowledge');
+  assert.strictEqual(steward._nextSteward('People'), 'knowledge');
+  assert.strictEqual(steward._nextSteward('People'), 'connection');
+  assert.strictEqual(steward._nextSteward('People'), 'memory');
+  assert.strictEqual(steward._nextSteward('People'), 'knowledge', 'should wrap back to knowledge');
+});
+
+// Phase 1b invariant: interleaved clusters advance independently. A global
+// index lens-locks every cluster when clusterCount % lenses === 0.
+test('_nextSteward() keeps independent lens sequences across interleaved clusters', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  assert.strictEqual(steward._nextSteward('People'), 'knowledge');
+  assert.strictEqual(steward._nextSteward('Projects'), 'knowledge', 'second cluster starts its own ring');
+  assert.strictEqual(steward._nextSteward('People'), 'connection');
+  assert.strictEqual(steward._nextSteward('Projects'), 'connection');
+  assert.strictEqual(steward._nextSteward('People'), 'memory');
+  assert.strictEqual(steward._nextSteward('Projects'), 'memory');
 });
 
 // Test 3: tend() returns skipped:'idle' when no clusters and no observations
@@ -800,42 +812,34 @@ asyncTest('tend() rotates stewards on successive calls', async () => {
   assert.ok(true, 'tend() completed without throwing');
 });
 
-// Test 18: tend() calls observationLog.resolve() after successful intervention
-asyncTest('tend() calls observationLog.resolve after intervention resolves types', async () => {
+// Test 18: a tend whose assessment proposes no actions resolves ZERO
+// observations — visiting is not resolving (G2, #161 class).
+asyncTest('tend() with an empty assessment resolves zero observations and leaves the log untouched', async () => {
   const observationLog = makeObservationLog();
-  observationLog.notice({ type: OBSERVATION_TYPES.CONTRADICTION, cluster: 'People' });
-  observationLog.notice({ type: OBSERVATION_TYPES.GAP, cluster: 'People' });
+  observationLog.notice({ type: OBSERVATION_TYPES.CONTRADICTION, cluster: 'People', page: 'Carlos' });
+  observationLog.notice({ type: OBSERVATION_TYPES.GAP, cluster: 'People', page: 'Carlos' });
 
   const collectivesClient = makeMockCollectivesClient({
-    listPagesResult: [{ id: 1, title: 'Carlos', section: 'people', parentId: 1 }],
+    listPagesResult: [{ id: 1, title: 'Carlos', filePath: 'People', fileName: 'Carlos.md', parentId: 5 }],
     pagesByTitle: {
       'Carlos': { frontmatter: {}, body: 'Carlos works here.', path: 'People/Carlos.md' },
     },
   });
 
-  // Knowledge steward assessment — we force stewardIndex to 0 (knowledge)
   const router = makeMockRouter({
     contradictions: [], stale: [], gaps: [], suspects: [], healthy: ['Carlos'],
   });
 
-  const resolveCalls = [];
-  const origResolve = observationLog.resolve.bind(observationLog);
-  observationLog.resolve = (cluster, types) => {
-    resolveCalls.push({ cluster, types });
-    return origResolve(cluster, types);
-  };
-
   const steward = new WikiSteward(makeFullDeps({ observationLog, collectivesClient, llmRouter: router }));
-  // Force stewardIndex to knowledge (it starts at 0 = knowledge already)
+  steward._findNeediest = async () => ({ name: 'People', pageCount: 1, score: 1, observationCount: 2 });
+
   const result = await steward.tend();
 
-  if (result.cluster !== null) {
-    // If a cluster was tended, resolve should have been called
-    assert.ok(resolveCalls.length > 0 || result.observationsResolved >= 0,
-      'resolve() should have been called after successful intervention');
-  }
-  // If the result was skipped (no pages matched 'people' section), that's also acceptable
-  assert.ok(true, 'tend() completed without throwing');
+  assert.strictEqual(result.observationsResolved, 0, 'no action → zero resolved');
+  assert.strictEqual(observationLog.getByType(OBSERVATION_TYPES.CONTRADICTION).length, 1,
+    'contradiction observation still pending');
+  assert.strictEqual(observationLog.getByType(OBSERVATION_TYPES.GAP).length, 1,
+    'gap observation still pending');
 });
 
 // ---------------------------------------------------------------------------
@@ -1218,6 +1222,388 @@ asyncTest('_intervene: content pages are still processed normally when no struct
     collectivesClient._writtenPages['Carlos'],
     'content page (Carlos) should still be written'
   );
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 1: TENDING INSTRUMENTATION (pagesInNeighborhood, empty-set alarm, FLATLINE)
+// ---------------------------------------------------------------------------
+
+/** Logger spy that records calls per level while staying silent. */
+function makeSpyLogger() {
+  const calls = { debug: [], info: [], warn: [], error: [] };
+  return {
+    _calls: calls,
+    debug: (...a) => calls.debug.push(a.join(' ')),
+    info:  (...a) => calls.info.push(a.join(' ')),
+    warn:  (...a) => calls.warn.push(a.join(' ')),
+    error: (...a) => calls.error.push(a.join(' ')),
+  };
+}
+
+/** Steward pinned to a census that promises pages the neighborhood may not have. */
+function makeInstrumentedSteward({ listPagesResult, pagesByTitle, pageCount, logger, observationLog }) {
+  const collectivesClient = makeMockCollectivesClient({ listPagesResult, pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({
+    collectivesClient,
+    observationLog: observationLog || makeObservationLog(),
+    logger: logger || silentLogger,
+  }));
+  // Census and neighborhood diverge in production via section-derivation drift
+  // (#51). Pin the census side so the divergence is reproducible.
+  steward._findNeediest = async () => ({ name: 'People', pageCount, score: 1, observationCount: 0 });
+  return steward;
+}
+
+asyncTest('tend() uses three different lenses across three consecutive visits to one cluster', async () => {
+  const steward = makeInstrumentedSteward({
+    listPagesResult: [{ id: 1, title: 'Carlos', filePath: 'People', fileName: 'Carlos.md', parentId: 5 }],
+    pagesByTitle: { 'Carlos': { frontmatter: {}, body: 'Carlos is a person.', path: 'People/Carlos.md' } },
+    pageCount: 1,
+  });
+
+  const lenses = [];
+  for (let i = 0; i < 3; i++) lenses.push((await steward.tend()).steward);
+  assert.deepStrictEqual([...new Set(lenses)].sort(), ['connection', 'knowledge', 'memory'],
+    'three consecutive visits to one cluster must use all three lenses');
+});
+
+asyncTest('tend() result carries pagesInNeighborhood with the read count', async () => {
+  const steward = makeInstrumentedSteward({
+    listPagesResult: [
+      { id: 1, title: 'Carlos', filePath: 'People', fileName: 'Carlos.md', parentId: 5 },
+      { id: 2, title: 'Tobias', filePath: 'People', fileName: 'Tobias.md', parentId: 5 },
+    ],
+    pagesByTitle: {
+      'Carlos': { frontmatter: {}, body: 'Carlos is a person.', path: 'People/Carlos.md' },
+      'Tobias': { frontmatter: {}, body: 'Tobias is a person.', path: 'People/Tobias.md' },
+    },
+    pageCount: 2,
+  });
+
+  const result = await steward.tend();
+  assert.strictEqual(result.pagesInNeighborhood, 2, 'result should count pages actually read');
+});
+
+asyncTest('tend() warns and records empty_neighborhood observation on suspicious empty set', async () => {
+  const logger = makeSpyLogger();
+  const observationLog = makeObservationLog();
+  const steward = makeInstrumentedSteward({
+    listPagesResult: [], // neighborhood reads zero
+    pagesByTitle: {},
+    pageCount: 4,        // census promises four
+    logger,
+    observationLog,
+  });
+
+  const result = await steward.tend();
+
+  assert.strictEqual(result.pagesInNeighborhood, 0);
+  assert.ok(
+    logger._calls.warn.some(m => m.includes('SUSPICIOUS EMPTY SET') && m.includes('_getPageSection')),
+    'warn should name the empty set and the first suspect'
+  );
+  const pending = observationLog.getByType('empty_neighborhood');
+  assert.strictEqual(pending.length, 1, 'one empty_neighborhood observation recorded');
+  assert.strictEqual(pending[0].cluster, 'People', 'observation carries cluster so getNeediest sees it');
+});
+
+asyncTest('tend() escalates to FLATLINE error at three consecutive zero-page cycles', async () => {
+  const logger = makeSpyLogger();
+  const steward = makeInstrumentedSteward({
+    listPagesResult: [],
+    pagesByTitle: {},
+    pageCount: 3,
+    logger,
+  });
+
+  await steward.tend();
+  await steward.tend();
+  assert.strictEqual(logger._calls.error.length, 0, 'no error before streak reaches 3');
+  await steward.tend();
+
+  assert.strictEqual(steward._zeroPageStreak.get('People'), 3, 'streak counts consecutive zeros');
+  assert.ok(
+    logger._calls.error.some(m => m.includes('FLATLINE') && m.includes('People')),
+    'third consecutive zero escalates to error with FLATLINE'
+  );
+});
+
+asyncTest('zero-page streak resets on a non-empty read', async () => {
+  const logger = makeSpyLogger();
+  const pages = [{ id: 1, title: 'Carlos', filePath: 'People', fileName: 'Carlos.md', parentId: 5 }];
+  const listPagesBox = { value: [] };
+  const collectivesClient = makeMockCollectivesClient({
+    pagesByTitle: { 'Carlos': { frontmatter: {}, body: 'Carlos.', path: 'People/Carlos.md' } },
+  });
+  collectivesClient.listPages = async () => listPagesBox.value;
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, logger }));
+  steward._findNeediest = async () => ({ name: 'People', pageCount: 1, score: 1, observationCount: 0 });
+
+  await steward.tend(); // zero read → streak 1
+  await steward.tend(); // zero read → streak 2
+  assert.strictEqual(steward._zeroPageStreak.get('People'), 2);
+
+  listPagesBox.value = pages; // pages come back
+  await steward.tend();
+  assert.strictEqual(steward._zeroPageStreak.has('People'), false, 'successful read deletes the streak entry');
+
+  listPagesBox.value = [];
+  await steward.tend(); // zero again → streak restarts at 1, no error
+  assert.strictEqual(steward._zeroPageStreak.get('People'), 1, 'streak restarts after reset');
+  assert.strictEqual(logger._calls.error.length, 0, 'no FLATLINE across a reset boundary');
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 2: HONEST OBSERVATION RESOLUTION (G2 — visiting is not resolving)
+// ---------------------------------------------------------------------------
+
+asyncTest('tend() with a garbage assessment (parse failure) resolves zero observations', async () => {
+  const observationLog = makeObservationLog();
+  observationLog.notice({ type: OBSERVATION_TYPES.MISSING_LINK, cluster: 'People', page: 'Carlos' });
+  observationLog.notice({ type: OBSERVATION_TYPES.LOW_CONFIDENCE, cluster: 'People', page: 'Carlos' });
+
+  const collectivesClient = makeMockCollectivesClient({
+    listPagesResult: [{ id: 1, title: 'Carlos', filePath: 'People', fileName: 'Carlos.md', parentId: 5 }],
+    pagesByTitle: {
+      'Carlos': { frontmatter: {}, body: 'Carlos works here.', path: 'People/Carlos.md' },
+    },
+  });
+
+  // Router returns prose, not JSON — the live qwen3:8b failure shape.
+  const router = {
+    async route() { return { result: 'I am ready to assess the cluster.', provider: 'mock', model: 'mock', cost: 0 }; },
+  };
+
+  const steward = new WikiSteward(makeFullDeps({ observationLog, collectivesClient, llmRouter: router }));
+  steward._findNeediest = async () => ({ name: 'People', pageCount: 1, score: 1, observationCount: 2 });
+
+  const result = await steward.tend();
+
+  assert.strictEqual(result.observationsResolved, 0, 'parse failure → zero resolved');
+  assert.strictEqual(observationLog.getByType(OBSERVATION_TYPES.MISSING_LINK).length, 1);
+  assert.strictEqual(observationLog.getByType(OBSERVATION_TYPES.LOW_CONFIDENCE).length, 1);
+});
+
+asyncTest('tend() resolves page-granular: link added to Page A resolves A, leaves B pending', async () => {
+  const observationLog = makeObservationLog();
+  observationLog.notice({ type: OBSERVATION_TYPES.MISSING_LINK, cluster: 'People', page: 'Page A' });
+  observationLog.notice({ type: OBSERVATION_TYPES.MISSING_LINK, cluster: 'People', page: 'Page A' });
+  observationLog.notice({ type: OBSERVATION_TYPES.MISSING_LINK, cluster: 'People', page: 'Page B' });
+
+  const collectivesClient = makeMockCollectivesClient({
+    listPagesResult: [
+      { id: 1, title: 'Page A', filePath: 'People', fileName: 'Page A.md', parentId: 5 },
+      { id: 2, title: 'Page B', filePath: 'People', fileName: 'Page B.md', parentId: 5 },
+    ],
+    pagesByTitle: {
+      'Page A': { frontmatter: {}, body: 'A body.', path: 'People/Page A.md' },
+      'Page B': { frontmatter: {}, body: 'B body.', path: 'People/Page B.md' },
+    },
+  });
+
+  // Connection assessment: one link for Page A only.
+  const router = makeMockRouter({
+    missingLinks: [{ page: 'Page A', shouldLinkTo: 'Page B', relationship: 'related' }],
+    orphans: [], nearDuplicates: [], crossCluster: [],
+  });
+
+  const steward = new WikiSteward(makeFullDeps({ observationLog, collectivesClient, llmRouter: router }));
+  steward._findNeediest = async () => ({ name: 'People', pageCount: 2, score: 1, observationCount: 3 });
+  steward._nextSteward = () => 'connection';
+
+  const result = await steward.tend();
+
+  assert.strictEqual(result.linksAdded, 1, 'one link added');
+  assert.strictEqual(result.observationsResolved, 2, 'both Page A missing_link observations resolve, none else');
+  const remaining = observationLog.getByType(OBSERVATION_TYPES.MISSING_LINK);
+  assert.strictEqual(remaining.length, 1, 'Page B observation remains');
+  assert.strictEqual(remaining[0].page, 'Page B');
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 2b: ASSESSMENT OUTCOMES JOIN THE MATURATION LOOP
+// ---------------------------------------------------------------------------
+
+function makeMockScorecard() {
+  const calls = [];
+  return {
+    _calls: calls,
+    recordSample(job, model, language, success, opts) {
+      calls.push({ job, model, language, success, opts });
+    },
+  };
+}
+
+asyncTest('_assess records one successful synthesis sample with the served model', async () => {
+  const modelScorecard = makeMockScorecard();
+  const router = makeMockRouter({ contradictions: [], stale: [], gaps: [] });
+  router.route = async () => ({ result: '{"contradictions": []}', provider: 'ollama-local', model: 'qwen3:8b', cost: 0 });
+  const steward = new WikiSteward(makeFullDeps({ llmRouter: router, modelScorecard }));
+
+  await steward._assess('knowledge', { cluster: 'People', pages: [], graphEdges: [], sections: new Set() });
+
+  assert.strictEqual(modelScorecard._calls.length, 1, 'exactly one sample per assessment');
+  const call = modelScorecard._calls[0];
+  assert.strictEqual(call.job, 'synthesis');
+  assert.strictEqual(call.model, 'qwen3:8b', 'served player from the route() return');
+  assert.strictEqual(call.language, null, 'language omitted — scorecard defaults to cockpit language');
+  assert.strictEqual(call.success, true);
+});
+
+asyncTest('_assess records exactly one failure sample on a parse failure', async () => {
+  const modelScorecard = makeMockScorecard();
+  const router = { async route() { return { result: 'I am ready to assess.', provider: 'ollama-local', model: 'qwen3:8b', cost: 0 }; } };
+  const steward = new WikiSteward(makeFullDeps({ llmRouter: router, modelScorecard }));
+
+  const assessment = await steward._assess('knowledge', { cluster: 'People', pages: [], graphEdges: [], sections: new Set() });
+
+  assert.deepStrictEqual(assessment, { actions: [] }, 'fallback envelope preserved');
+  assert.strictEqual(modelScorecard._calls.length, 1, 'failure records exactly once, outside the catch fallback');
+  assert.strictEqual(modelScorecard._calls[0].success, false);
+});
+
+asyncTest('_assess without a scorecard records nothing and does not throw', async () => {
+  const router = { async route() { return { result: 'not json', provider: 'mock', model: 'mock', cost: 0 }; } };
+  const steward = new WikiSteward(makeFullDeps({ llmRouter: router }));
+  const assessment = await steward._assess('knowledge', { cluster: 'People', pages: [], graphEdges: [], sections: new Set() });
+  assert.deepStrictEqual(assessment, { actions: [] });
+});
+
+asyncTest('_assess skips recording when the route result carries no model identity', async () => {
+  const modelScorecard = makeMockScorecard();
+  const router = { async route() { return { result: '{"contradictions": []}', provider: 'mock', cost: 0 }; } };
+  const steward = new WikiSteward(makeFullDeps({ llmRouter: router, modelScorecard }));
+  await steward._assess('knowledge', { cluster: 'People', pages: [], graphEdges: [], sections: new Set() });
+  assert.strictEqual(modelScorecard._calls.length, 0, 'no model → no sample (recordSample requires a model string)');
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 3: DURABLE FLAG KEYS (G1 — key on what cannot change)
+// ---------------------------------------------------------------------------
+
+const fs = require('fs');
+const path = require('path');
+const D2_FIXTURE = fs.readFileSync(
+  path.join(__dirname, '../../fixtures/wikisteward/d2-fixture.md'), 'utf8');
+
+function makeFlagClient(bodyByTitle) {
+  const writes = [];
+  return {
+    _writes: writes,
+    readPageWithFrontmatter: async (title) => (
+      bodyByTitle[title] !== undefined
+        ? { frontmatter: {}, body: bodyByTitle[title], path: `${title}.md` }
+        : null
+    ),
+    writePageWithFrontmatter: async (title, fm, body) => {
+      writes.push({ title, fm, body });
+      bodyByTitle[title] = body;
+      return `${title}.md`;
+    },
+  };
+}
+
+asyncTest('_flagContradiction dedups on pair key across resolved and unresolved link forms', async () => {
+  const unresolvedForm = '> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [[Role Page]] on "old claim"';
+  const resolvedForm = '> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [Role Page](https://nc-host.example/x) on "old claim"';
+
+  for (const existing of [unresolvedForm, resolvedForm]) {
+    const client = makeFlagClient({
+      'Person Page': `Some body.\n\n${existing}\n`,
+      'Role Page': 'Role body.',
+    });
+    const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+    const modified = await steward._flagContradiction('Person Page', 'Role Page', 'a newly worded claim');
+    // Person Page already flagged for this pair in either form → only Role Page written.
+    assert.strictEqual(client._writes.filter(w => w.title === 'Person Page').length, 0,
+      `no append when the ${existing === unresolvedForm ? 'unresolved' : 'resolved'} form is present`);
+    assert.strictEqual(client._writes.filter(w => w.title === 'Role Page').length, 1);
+    assert.ok(modified, 'partner side still flagged');
+  }
+});
+
+asyncTest('_flagContradiction: reworded claim for an already-flagged pair does not append', async () => {
+  const client = makeFlagClient({
+    'Person Page': 'Body.\n\n> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [Role Page](https://nc-host.example/x) on "wording one"\n',
+    'Role Page': 'Body.\n\n> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [Person Page](https://nc-host.example/y) on "wording one"\n',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+  const modified = await steward._flagContradiction('Person Page', 'Role Page', 'wording two, completely different');
+  assert.strictEqual(client._writes.length, 0, 'no write for either page');
+  assert.strictEqual(modified, false);
+});
+
+asyncTest('_flagContradiction: a second partner does append', async () => {
+  const client = makeFlagClient({
+    'Person Page': 'Body.\n\n> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [Role Page](https://nc-host.example/x) on "claim"\n',
+    'Other Page': 'Other body.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+  const modified = await steward._flagContradiction('Person Page', 'Other Page', 'a different conflict');
+  assert.ok(modified);
+  assert.strictEqual(client._writes.filter(w => w.title === 'Person Page').length, 1,
+    'new partner pair appends on Person Page');
+  assert.ok(client._writes.find(w => w.title === 'Person Page').body.includes('[[Other Page]]'));
+});
+
+asyncTest('_flagDuplicate is per-pair: flagged against one partner, still flags a second', async () => {
+  const client = makeFlagClient({
+    'Page X': 'Body.\n\n> ⚠️ Near-duplicate flagged by Connection Steward: possibly the same entity as [Page Y](https://nc-host.example/y) (similarity: 0.90). Manual review recommended.\n',
+    'Page Z': 'Z body.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+
+  // Same pair again → no write on X
+  await steward._flagDuplicate('Page X', 'Page Y', 0.91);
+  assert.strictEqual(client._writes.filter(w => w.title === 'Page X').length, 0, 'same pair stays idempotent');
+
+  // New partner → append
+  const modified = await steward._flagDuplicate('Page X', 'Page Z', 0.8);
+  assert.ok(modified);
+  assert.strictEqual(client._writes.filter(w => w.title === 'Page X').length, 1, 'second partner appends');
+});
+
+asyncTest('D2 fixture: already-walled pair does not grow; flag region is byte-stable', async () => {
+  const client = makeFlagClient({
+    'Person Page': D2_FIXTURE,
+    'Role Page': 'Role body.\n\n> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [Person Page](https://nc-host.example/p) on "any"\n',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+  const modified = await steward._flagContradiction('Person Page', 'Role Page', 'yet another wording of the same conflict');
+  assert.strictEqual(client._writes.length, 0, 'wall does not grow — pair key holds on the captured body');
+  assert.strictEqual(modified, false);
+
+  // Duplicate flag: the walled page is already flagged for this pair; only the
+  // partner side (which carries no duplicate flag yet) may be written.
+  await steward._flagDuplicate('Person Page', 'Role Page', 0.99);
+  assert.strictEqual(client._writes.filter(w => w.title === 'Person Page').length, 0,
+    'duplicate flag also keyed per pair on the captured body');
+});
+
+asyncTest('_lowerConfidence deletes verification_note and skips the write on identical state', async () => {
+  const today = new Date().toISOString().split('T')[0];
+  const client = makeFlagClient({});
+  client.readPageWithFrontmatter = async () => ({
+    frontmatter: { confidence: 'low', last_verification_attempt: today, verification_note: 'LLM-worded leftover' },
+    body: 'Body.',
+    path: 'People/Page.md',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+
+  // First pass: removing the leftover note is a real change → one write, note gone.
+  const first = await steward._lowerConfidence('Page', 'stale');
+  assert.strictEqual(first, true);
+
+  // Second pass: state identical (low, same day, no note) → no write.
+  client.readPageWithFrontmatter = async () => ({
+    frontmatter: { confidence: 'low', last_verification_attempt: today },
+    body: 'Body.',
+    path: 'People/Page.md',
+  });
+  const second = await steward._lowerConfidence('Page', 'stale');
+  assert.strictEqual(second, false, 'identical state produces identical bytes — no write');
+  assert.strictEqual(client._writes.length, 1, 'only the note-removal write happened');
+  assert.ok(!('verification_note' in client._writes[0].fm), 'written frontmatter carries no verification_note');
 });
 
 setTimeout(() => { summary(); exitWithCode(); }, 500);

@@ -64,6 +64,9 @@ const OBSERVATION_TYPES = Object.freeze({
   NEVER_ACCESSED:  'never_accessed',   // Page created but never retrieved
   COMPOST_READY:   'compost_ready',    // Past decay + never accessed + low confidence
   HIGH_ACCESS:     'high_access',      // Frequently accessed, may need strengthening
+
+  // Steward self-observation — the steward instruments its own senses
+  EMPTY_NEIGHBORHOOD: 'empty_neighborhood', // Neighborhood read 0 pages while the cluster census reports > 0 (#51 class)
 });
 
 // Collect all valid type values for O(1) validation
@@ -185,13 +188,18 @@ class ObservationLog {
    *
    * @param {string} cluster - Cluster name whose observations to resolve.
    * @param {string|string[]} types - Type tag(s) to resolve within that cluster.
+   * @param {string|string[]} [pages] - Optional page title(s); when provided,
+   *   only observations for those pages transition. Omitting it preserves the
+   *   original (cluster, types) wholesale behavior for existing callers.
    * @returns {number} Count of observations transitioned to resolved.
    */
-  resolve(cluster, types) {
+  resolve(cluster, types, pages) {
     const typeList = Array.isArray(types) ? types : [types];
+    const pageSet = pages != null ? new Set(Array.isArray(pages) ? pages : [pages]) : null;
     let count = 0;
     for (const o of this._observations) {
-      if (o.cluster === cluster && typeList.includes(o.type) && !o.resolved) {
+      if (o.cluster === cluster && typeList.includes(o.type) && !o.resolved
+          && (pageSet === null || pageSet.has(o.page))) {
         o.resolved = true;
         count++;
       }

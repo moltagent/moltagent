@@ -553,6 +553,109 @@ asyncTest('ensureSection keeps the suffixed page when no real section can be fou
 });
 
 // ============================================================
+// Phase 4: the medium repair at the read chokepoint (G1)
+// ============================================================
+
+const fs = require('fs');
+const path = require('path');
+const D2_FIXTURE = fs.readFileSync(
+  path.join(__dirname, '../../fixtures/wikisteward/d2-fixture.md'), 'utf8');
+
+test('_sanitizeContent: D2 fixture round-trips to clean markdown, zero Tiptap remnants', () => {
+  const client = new CollectivesClient(createCollectivesMockNC());
+  const out = client._sanitizeContent(D2_FIXTURE);
+
+  for (const remnant of ['<paragraph', '<listitem', '<bulletlist', '<orderedlist', '<link href', '<hardbreak']) {
+    assert.ok(!out.includes(remnant), `no ${remnant} remnant after sanitize`);
+  }
+  assert.ok(!out.includes('\\[\\['), 'no escaped wikilinks remain');
+  // Structure converted, not destroyed:
+  assert.ok(out.includes('- Focus: sovereign farm intelligence'), 'listitem became a bullet');
+  assert.ok(out.includes('[Central Europe](https://example.org/region)'), '<link href> became a markdown link');
+  assert.ok(out.includes('[[DM]]'), 'escaped wikilink repaired to live markup');
+  assert.ok(out.includes('Contradiction flagged by Knowledge Steward'), 'flag blocks pass through untouched');
+});
+
+test('_sanitizeContent: attribute-carrying Tiptap tags convert (not strip)', () => {
+  const client = new CollectivesClient(createCollectivesMockNC());
+  const out = client._sanitizeContent(
+    '<heading level="2" dir="ltr">Title</heading>\n' +
+    '<paragraph dir="ltr">Text line.</paragraph>\n' +
+    '<bulletlist bullet="-" isList="true"><listitem dir="ltr">item one</listitem></bulletlist>\n' +
+    '<hardbreak />'
+  );
+  assert.ok(out.includes('## Title'), 'heading with attributes converts');
+  assert.ok(out.includes('Text line.'), 'paragraph content preserved');
+  assert.ok(out.includes('- item one'), 'listitem with attributes becomes a bullet');
+});
+
+test('_sanitizeContent: <link href> converts to markdown link, title attribute dropped', () => {
+  const client = new CollectivesClient(createCollectivesMockNC());
+  const out = client._sanitizeContent('See <link href="https://example.org/doc" title="null">the doc</link>.');
+  assert.strictEqual(out, 'See [the doc](https://example.org/doc).');
+});
+
+test('_sanitizeContent: repairs full escaped wikilinks only; lone escaped brackets untouched', () => {
+  const client = new CollectivesClient(createCollectivesMockNC());
+  const out = client._sanitizeContent(
+    'Links to \\[\\[Conference November 26, 2025\\]\\] here.\nStatus \\[incomplete\\] in prose.'
+  );
+  assert.ok(out.includes('[[Conference November 26, 2025]]'), 'full escaped wikilink repaired');
+  assert.ok(out.includes('Status \\[incomplete\\] in prose.'), 'lone escaped brackets left alone');
+});
+
+// Cross-module: a body that arrives escaped on disk dedups correctly in
+// _addWikilink once the read chokepoint has repaired it. No belt lands in
+// _addWikilink itself — the sanitizer is the component that got stronger.
+asyncTest('_addWikilink dedups against an escaped-on-disk link after a sanitized read', async () => {
+  const escapedBody = `---
+type: person
+---
+# John Smith
+
+## Related
+
+- \\[\\[Target Page\\]\\] (related)
+`;
+  const mockNC = createMockNCRequestManager({
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives': {
+      status: 200, body: { ocs: { data: SAMPLE_COLLECTIVES } }, headers: {}
+    },
+    'GET:/ocs/v2.php/search/providers/collectives-page-content/search?term=John%20Smith&limit=10': {
+      status: 200,
+      body: { ocs: { data: { entries: [
+        { title: 'John Smith', subline: '', resourceUrl: '/wiki/People/John Smith' }
+      ] } } },
+      headers: {}
+    },
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/pages': {
+      status: 200, body: { ocs: { data: SAMPLE_PAGES } }, headers: {}
+    },
+    'GET:/remote.php/dav/files/testuser/.Collectives/Moltagent Knowledge/People/John Smith/Readme.md': {
+      status: 200, body: escapedBody, headers: {}
+    }
+  });
+  const client = new CollectivesClient(mockNC);
+
+  const { WikiSteward } = require('../../../src/lib/maintenance/wiki-steward');
+  const { ObservationLog } = require('../../../src/lib/maintenance/observation-log');
+  const silent = { debug() {}, info() {}, warn() {}, error() {} };
+  const steward = new WikiSteward({
+    collectivesClient: client,
+    knowledgeGraph: { getEntity: () => null, relatedTo: () => [] },
+    vectorStore: { getMetadata: () => null },
+    embeddingClient: { embed: async () => [0] },
+    llmRouter: { route: async () => ({ result: '{}' }) },
+    observationLog: new ObservationLog({ logger: silent }),
+    logger: silent,
+  });
+
+  const added = await steward._addWikilink('John Smith', 'Target Page', 'related');
+  assert.strictEqual(added, false,
+    'escaped link is live markup after the sanitized read — no duplicate append');
+});
+
+// ============================================================
 // Summary
 // ============================================================
 

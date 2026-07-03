@@ -478,6 +478,18 @@ class CollectivesClient {
   /**
    * Sanitize content by stripping Tiptap/Prosemirror internal tags and
    * stray HTML, converting them to clean markdown equivalents.
+   *
+   * This is the read chokepoint that makes the page body a canonical medium:
+   * every consumer of readPageContent sees the same markdown regardless of
+   * how many NC Text round-trips the file survived. The editor injects
+   * attributes (<paragraph dir="ltr">, <listitem dir="ltr">,
+   * <bulletlist bullet="-" isList="true">), emits <link href> marks, and
+   * escapes wikilink brackets — all repaired here, nowhere else.
+   *
+   * LANGUAGE POLICY: every regex in this method matches structural editor
+   * serialization (fixed tags, attributes, bracket escapes), never natural
+   * language. Content between tags passes through untouched.
+   *
    * @private
    * @param {string} content - Raw content that may contain HTML/Tiptap tags
    * @returns {string} Clean markdown content
@@ -487,23 +499,37 @@ class CollectivesClient {
 
     let s = content;
 
-    // Tiptap heading wrappers → markdown headings
-    s = s.replace(/<heading\s+level="(\d)">([\s\S]*?)<\/heading>/gi,
+    // Tiptap heading wrappers → markdown headings (attribute-tolerant: the
+    // NC Text round-trip decorates every tag; a pattern anchored on the bare
+    // tag silently stops matching and the catch-all below destroys structure)
+    s = s.replace(/<heading\b[^>]*level="(\d)"[^>]*>([\s\S]*?)<\/heading>/gi,
       (_, lvl, text) => '#'.repeat(parseInt(lvl)) + ' ' + text.trim());
 
+    // Tiptap link mark → markdown link. Must run before the list/paragraph
+    // unwrapping and the catch-all strip, which would drop the tag and lose
+    // the URL.
+    s = s.replace(/<link\b[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/link>/gi, '[$2]($1)');
+
+    // Tiptap list items (with or without inner paragraph wrapper) → bullets
+    s = s.replace(/<listitem\b[^>]*><paragraph\b[^>]*>([\s\S]*?)<\/paragraph><\/listitem>/gi, '- $1\n');
+    s = s.replace(/<listitem\b[^>]*>([\s\S]*?)<\/listitem>/gi, '- $1\n');
+
     // Tiptap paragraph wrappers → plain text + newline
-    s = s.replace(/<paragraph>([\s\S]*?)<\/paragraph>/gi, '$1\n');
+    s = s.replace(/<paragraph\b[^>]*>([\s\S]*?)<\/paragraph>/gi, '$1\n');
 
     // Tiptap list wrappers
-    s = s.replace(/<bulletlist>/gi, '');
-    s = s.replace(/<\/bulletlist>/gi, '');
-    s = s.replace(/<orderedlist>/gi, '');
-    s = s.replace(/<\/orderedlist>/gi, '');
-    s = s.replace(/<listitem><paragraph>([\s\S]*?)<\/paragraph><\/listitem>/gi, '- $1\n');
-    s = s.replace(/<listitem>([\s\S]*?)<\/listitem>/gi, '- $1\n');
+    s = s.replace(/<\/?bulletlist\b[^>]*>/gi, '');
+    s = s.replace(/<\/?orderedlist\b[^>]*>/gi, '');
 
     // Tiptap hardbreak
-    s = s.replace(/<hardbreak\s*\/?>/gi, '\n');
+    s = s.replace(/<hardbreak\b[^>]*\/?>/gi, '\n');
+
+    // Escaped wikilinks → live markup. NC Text escapes literal brackets on
+    // round-trip (backslash before each bracket on disk), after which the
+    // wikilink resolver and every idempotency check go blind to the link.
+    // Only the full exact \[\[target\]\] shape is repaired; lone escaped
+    // brackets in prose are untouched.
+    s = s.replace(/\\\[\\\[([^\]\\]+?)\\\]\\\]/g, '[[$1]]');
 
     // Standard HTML tags that might leak through
     s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi,

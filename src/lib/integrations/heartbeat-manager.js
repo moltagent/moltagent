@@ -142,6 +142,10 @@ class HeartbeatManager {
     // its single call site, so judging is never on the request path.
     this.localJudge = config.localJudge || null;
 
+    // ModelScorecard (optional, maturation loop): handed to WikiSteward so
+    // _assess outcomes record organic (synthesis, model, language) samples.
+    this.modelScorecard = config.modelScorecard || null;
+
     // NicheAssignment (optional, Layer 3): /api/ps snapshot + replan each
     // pulse. A thunk, not an instance — it is constructed asynchronously
     // (after ModelScout discovery), possibly after this manager.
@@ -311,10 +315,11 @@ class HeartbeatManager {
         embeddingClient: this.embeddingClient,
         llmRouter: this.llmRouter,
         observationLog: this._observationLog,
+        modelScorecard: this.modelScorecard,
         logger: console,
         // collectiveId omitted — WikiSteward will resolve it via collectivesClient
       });
-      console.log('[Heartbeat] WikiSteward initialized');
+      console.log(`[Heartbeat] WikiSteward initialized (scorecard: ${this.modelScorecard ? 'wired' : 'absent'})`);
     } catch (err) {
       console.warn('[Heartbeat] WikiSteward initialization failed:', err.message);
       return null;

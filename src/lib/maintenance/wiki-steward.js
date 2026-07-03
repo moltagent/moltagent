@@ -43,13 +43,13 @@
  *     heartbeat pulse
  *       → wikiSteward.tend()
  *         → _findNeediest() (observationLog + _lastVisit)
- *         → _nextSteward()  (rotation)
+ *         → _nextSteward(cluster.name)  (per-cluster rotation)
  *         → _readNeighborhood(cluster)  (CollectivesClient + KnowledgeGraph + VectorStore)
  *         → _assess(stewardType, neighborhood)  (llmRouter.route, ONE call)
  *         → _intervene(stewardType, assessment, neighborhood)  (per-lens executors)
  *         → _updateSectionSummaries(sections)  (Level 1 refresh if pages changed)
  *         → _updateLandingPage() (Level 0 refresh, throttled by _shouldRefreshIndex)
- *         → observationLog.resolve(cluster, resolvedTypes)
+ *         → observationLog.resolve(cluster, type, pages)  (per executor action)
  *         → _lastVisit.set(cluster, now)
  * - Dependency Map:
  *     heartbeat-manager.js → wiki-steward.js → {
@@ -112,7 +112,8 @@
  * @property {number} pagesModified
  * @property {number} linksAdded
  * @property {number} observationsResolved
- * @property {string[]} resolvedTypes
+ * @property {Array<{type: string, page: string}>} resolutions - What the
+ *   executors actually acted on; the only thing tend() resolves.
  */
 
 /**
@@ -122,6 +123,7 @@
  * @property {number} pagesModified
  * @property {number} linksAdded
  * @property {number} observationsResolved
+ * @property {number} pagesInNeighborhood - Pages actually read for the tended cluster.
  */
 
 class WikiSteward {
@@ -133,6 +135,10 @@ class WikiSteward {
    * @param {Object} options.embeddingClient
    * @param {Object} options.llmRouter - router.route({ job, content, requirements }) → { result }
    * @param {Object} options.observationLog - Shared ObservationLog instance
+   * @param {Object} [options.modelScorecard] - ModelScorecard (maturation loop).
+   *   Optional and null-safe: when present, every _assess outcome records one
+   *   organic (synthesis, model, language) envelope-validity sample. The
+   *   steward only testifies; the loop owns selection.
    * @param {Object} [options.logger]
    * @param {string} [options.collectiveId]
    * @param {Object} [options.config={}] - Tuning knobs (indexRefreshIntervalMs, bodyPreviewChars, etc.)
@@ -144,6 +150,7 @@ class WikiSteward {
     embeddingClient,
     llmRouter,
     observationLog,
+    modelScorecard,
     logger,
     collectiveId,
     config = {},
@@ -161,14 +168,19 @@ class WikiSteward {
     this.embeddingClient = embeddingClient;
     this.router = llmRouter;
     this.observations = observationLog;
+    this.modelScorecard = modelScorecard || null;
     this.logger = logger || console;
     this.collectiveId = collectiveId || null;
 
     this.config = config || {};
 
-    // Steward rotation — three lenses on the same neighborhood.
-    /** @type {number} */
-    this._stewardIndex = 0;
+    // Steward rotation — three lenses on the same neighborhood, rotated
+    // per cluster. A global index lens-locks every cluster whenever the
+    // cluster count is divisible by three (15 clusters × 3 lenses meant
+    // People only ever saw the knowledge lens). In-memory, same documented
+    // amnesia class as _lastVisit.
+    /** @type {Map<string, number>} */
+    this._lensIndexByCluster = new Map();
     /** @type {string[]} */
     this._stewards = ['knowledge', 'connection', 'memory'];
 
@@ -176,6 +188,13 @@ class WikiSteward {
     // observation-driven priority against neglect.
     /** @type {Map<string, number>} */
     this._lastVisit = new Map();
+
+    // Consecutive zero-page neighborhood reads per cluster while the census
+    // reports pages. The failure class that hid #51 for a month: a silent
+    // section-derivation drift reads as "cluster healthy, nothing to tend".
+    // In-memory, same documented amnesia class as _lastVisit.
+    /** @type {Map<string, number>} */
+    this._zeroPageStreak = new Map();
 
     // Level 0 landing page throttling.
     /** @type {number} */
@@ -201,13 +220,13 @@ class WikiSteward {
    *   5. Intervene — execute targeted actions from the assessment.
    *   6. Refresh Level 1 section summaries when pages changed.
    *   7. Periodically refresh Level 0 landing page.
-   *   8. Mark observations as resolved for (cluster, resolvedTypes).
+   *   8. Resolve observations per (cluster, type, pages) the executors acted on.
    *   9. Record visit timestamp in _lastVisit.
    *
    * @returns {Promise<TendResult>}
    */
   async tend() {
-    const idle = { steward: null, cluster: null, pagesModified: 0, linksAdded: 0, observationsResolved: 0 };
+    const idle = { steward: null, cluster: null, pagesModified: 0, linksAdded: 0, observationsResolved: 0, pagesInNeighborhood: 0 };
 
     // Step 1: pick the neediest cluster
     let cluster;
@@ -224,7 +243,7 @@ class WikiSteward {
     }
 
     // Step 2: pick the active steward lens
-    const stewardType = this._nextSteward();
+    const stewardType = this._nextSteward(cluster.name);
 
     this.logger.info(
       `[WikiSteward:${stewardType}] Tending cluster "${cluster.name}" ` +
@@ -238,6 +257,39 @@ class WikiSteward {
     } catch (err) {
       this.logger.warn(`[WikiSteward:${stewardType}] _readNeighborhood failed for "${cluster.name}": ${err.message}`);
       return { ...idle, steward: stewardType, cluster: cluster.name, skipped: 'neighborhood_error' };
+    }
+
+    // Step 3b: count what was actually read against what the census promised.
+    // A zero-page neighborhood for a cluster the census counted pages for is
+    // the #51 failure shape — instrument it instead of tending silence.
+    const pagesInNeighborhood = neighborhood.pages.length;
+    this.logger.info(
+      `[WikiSteward:${stewardType}] Neighborhood "${cluster.name}": ` +
+      `${pagesInNeighborhood} pages (cluster reports ${cluster.pageCount ?? 'unknown'})`
+    );
+    if (pagesInNeighborhood === 0 && (cluster.pageCount || 0) > 0) {
+      const streak = (this._zeroPageStreak.get(cluster.name) || 0) + 1;
+      this._zeroPageStreak.set(cluster.name, streak);
+      if (streak >= 3) {
+        this.logger.error(
+          `[WikiSteward:${stewardType}] FLATLINE: cluster "${cluster.name}" read 0 pages ` +
+          `for ${streak} consecutive cycles while the census reports ${cluster.pageCount}. ` +
+          `First suspects: _getPageSection derivation and the Collectives filePath shape.`
+        );
+      } else {
+        this.logger.warn(
+          `[WikiSteward:${stewardType}] SUSPICIOUS EMPTY SET: cluster "${cluster.name}" ` +
+          `read 0 pages while the census reports ${cluster.pageCount}. ` +
+          `First suspects: _getPageSection derivation and the Collectives filePath shape.`
+        );
+      }
+      this.observations.notice({
+        type: 'empty_neighborhood',
+        cluster: cluster.name,
+        detail: `Read 0 pages; census reports ${cluster.pageCount}`,
+      });
+    } else if (pagesInNeighborhood > 0) {
+      this._zeroPageStreak.delete(cluster.name);
     }
 
     // Step 4: assess through the steward's lens (one LLM call)
@@ -255,7 +307,7 @@ class WikiSteward {
       interventionResult = await this._intervene(stewardType, assessment, neighborhood);
     } catch (err) {
       this.logger.warn(`[WikiSteward:${stewardType}] _intervene failed: ${err.message}`);
-      interventionResult = { pagesModified: 0, linksAdded: 0, observationsResolved: 0, resolvedTypes: [] };
+      interventionResult = { pagesModified: 0, linksAdded: 0, observationsResolved: 0, resolutions: [] };
     }
 
     // Step 6: refresh Level 1 summaries if pages were modified
@@ -276,10 +328,19 @@ class WikiSteward {
       }
     }
 
-    // Step 8: resolve handled observations
+    // Step 8: resolve exactly what the executors acted on, per (type, pages)
+    // group. observationsResolved is the sum of resolve()'s actual transition
+    // counts — a tend that performed no action resolves zero (G2, #161 class).
+    let observationsResolved = 0;
     try {
-      if (interventionResult.resolvedTypes && interventionResult.resolvedTypes.length > 0) {
-        this.observations.resolve(cluster.name, interventionResult.resolvedTypes);
+      const pagesByType = new Map();
+      for (const r of interventionResult.resolutions || []) {
+        if (!r || !r.type || !r.page) continue;
+        if (!pagesByType.has(r.type)) pagesByType.set(r.type, new Set());
+        pagesByType.get(r.type).add(r.page);
+      }
+      for (const [type, pages] of pagesByType) {
+        observationsResolved += this.observations.resolve(cluster.name, type, [...pages]);
       }
     } catch (err) {
       this.logger.warn(`[WikiSteward] observations.resolve failed: ${err.message}`);
@@ -293,7 +354,8 @@ class WikiSteward {
       cluster: cluster.name,
       pagesModified: interventionResult.pagesModified,
       linksAdded: interventionResult.linksAdded,
-      observationsResolved: interventionResult.observationsResolved,
+      observationsResolved,
+      pagesInNeighborhood,
       skipped: false,
     };
 
@@ -349,15 +411,17 @@ class WikiSteward {
   // ---------------------------------------------------------------------------
 
   /**
-   * Rotate through stewards. Each pulse, the next lens walks.
-   * Trivial ring rotation — safe to implement here.
+   * Rotate through stewards per cluster: each cluster advances its own lens
+   * on each of its own visits. Invariant: three consecutive visits to one
+   * cluster use three different lenses, regardless of cluster count.
    *
+   * @param {string} clusterName
    * @returns {string} One of 'knowledge' | 'connection' | 'memory'
    */
-  _nextSteward() {
-    const steward = this._stewards[this._stewardIndex];
-    this._stewardIndex = (this._stewardIndex + 1) % this._stewards.length;
-    return steward;
+  _nextSteward(clusterName) {
+    const idx = this._lensIndexByCluster.get(clusterName) || 0;
+    this._lensIndexByCluster.set(clusterName, (idx + 1) % this._stewards.length);
+    return this._stewards[idx];
   }
 
   // ---------------------------------------------------------------------------
@@ -672,14 +736,35 @@ class WikiSteward {
 
     const raw = routerResult?.result || routerResult?.content || '';
 
+    let parsed = null;
+    let parseError = null;
     try {
-      return _extractJsonObject(raw);
+      parsed = _extractJsonObject(raw);
     } catch (err) {
+      parseError = err;
+    }
+
+    // Maturation-loop testimony (Layer 2): one organic sample per assessment.
+    // Envelope validity is the mechanical signal — the same class IntentRouter
+    // records for classification parse failures. Sits outside the fallback
+    // return so success and failure each record exactly once.
+    const envelopeValid = parsed !== null && typeof parsed === 'object';
+    if (this.modelScorecard && routerResult?.model) {
+      try {
+        // Language omitted on purpose: the scorecard defaults to the cockpit language.
+        this.modelScorecard.recordSample('synthesis', routerResult.model, null, envelopeValid);
+      } catch (err) {
+        this.logger.warn(`[WikiSteward:${stewardType}] recordSample failed: ${err.message}`);
+      }
+    }
+
+    if (parseError) {
       this.logger.warn(
-        `[WikiSteward:${stewardType}] Assessment JSON parse failed (${err.message}) — raw (first 400): ${String(raw).slice(0, 400)}`
+        `[WikiSteward:${stewardType}] Assessment JSON parse failed (${parseError.message}) — raw (first 400): ${String(raw).slice(0, 400)}`
       );
       return { actions: [] };
     }
+    return parsed;
   }
 
   /**
@@ -922,7 +1007,9 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       pagesModified: 0,
       linksAdded: 0,
       observationsResolved: 0,
-      resolvedTypes: [],
+      // (type, page) pairs the executors actually acted on. tend() resolves
+      // exactly these — visiting is not resolving (G2, #161 class).
+      resolutions: [],
     };
 
     if (!assessment || typeof assessment !== 'object') {
@@ -949,7 +1036,13 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           }
           try {
             const flagged = await this._flagContradiction(c.pageA, c.pageB, c.claim);
-            if (flagged) results.pagesModified += 2;
+            if (flagged) {
+              results.pagesModified += 2;
+              for (const p of [c.pageA, c.pageB]) {
+                results.resolutions.push({ type: 'contradiction', page: p });
+                results.resolutions.push({ type: 'low_confidence', page: p });
+              }
+            }
           } catch (err) {
             this.logger.warn(`[WikiSteward:knowledge] _flagContradiction failed: ${err.message}`);
           }
@@ -961,7 +1054,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           }
           try {
             const lowered = await this._lowerConfidence(s.page, s.reason);
-            if (lowered) results.pagesModified++;
+            if (lowered) {
+              results.pagesModified++;
+              results.resolutions.push({ type: 'stale_content', page: s.page });
+            }
           } catch (err) {
             this.logger.warn(`[WikiSteward:knowledge] _lowerConfidence("${s.page}") failed: ${err.message}`);
           }
@@ -971,12 +1067,14 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
         // referencing page is structural. No guard needed here.
         for (const g of assessment.gaps || []) {
           try {
-            await this._logKnowledgeGap(g.entity, g.referencedIn);
+            const logged = await this._logKnowledgeGap(g.entity, g.referencedIn);
+            if (logged && g.referencedIn) {
+              results.resolutions.push({ type: 'gap', page: g.referencedIn });
+            }
           } catch (err) {
             this.logger.warn(`[WikiSteward:knowledge] _logKnowledgeGap("${g.entity}") failed: ${err.message}`);
           }
         }
-        results.resolvedTypes = ['contradiction', 'stale_content', 'gap', 'low_confidence'];
         break;
       }
 
@@ -991,6 +1089,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             if (added) {
               results.linksAdded++;
               results.pagesModified++;
+              results.resolutions.push({ type: 'missing_link', page: m.page });
             }
           } catch (err) {
             this.logger.warn(`[WikiSteward:connection] _addWikilink("${m.page}"→"${m.shouldLinkTo}") failed: ${err.message}`);
@@ -1007,6 +1106,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
               if (added) {
                 results.linksAdded++;
                 results.pagesModified++;
+                results.resolutions.push({ type: 'orphan_page', page: o.page });
               }
             } catch (err) {
               this.logger.warn(`[WikiSteward:connection] _addWikilink orphan("${o.page}"→"${target}") failed: ${err.message}`);
@@ -1019,12 +1119,15 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             continue;
           }
           try {
-            await this._flagDuplicate(d.pageA, d.pageB, d.similarity || 0);
+            const flagged = await this._flagDuplicate(d.pageA, d.pageB, d.similarity || 0);
+            if (flagged) {
+              results.resolutions.push({ type: 'near_duplicate', page: d.pageA });
+              results.resolutions.push({ type: 'near_duplicate', page: d.pageB });
+            }
           } catch (err) {
             this.logger.warn(`[WikiSteward:connection] _flagDuplicate failed: ${err.message}`);
           }
         }
-        results.resolvedTypes = ['missing_link', 'orphan_page', 'near_duplicate', 'section_stale'];
         break;
       }
 
@@ -1036,7 +1139,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           }
           try {
             const strengthened = await this._strengthenPage(s.page);
-            if (strengthened) results.pagesModified++;
+            if (strengthened) {
+              results.pagesModified++;
+              results.resolutions.push({ type: 'high_access', page: s.page });
+            }
           } catch (err) {
             this.logger.warn(`[WikiSteward:memory] _strengthenPage("${s.page}") failed: ${err.message}`);
           }
@@ -1047,7 +1153,8 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             continue;
           }
           try {
-            await this._markForComposting(c.page, c.reason);
+            const marked = await this._markForComposting(c.page, c.reason);
+            if (marked) results.resolutions.push({ type: 'compost_ready', page: c.page });
           } catch (err) {
             this.logger.warn(`[WikiSteward:memory] _markForComposting("${c.page}") failed: ${err.message}`);
           }
@@ -1060,12 +1167,12 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           // Find the full pageRef from neighborhood so _embedPage has path/section
           const pageRef = neighborhood.pages.find(p => p.title === e.page) || { id: null, title: e.page };
           try {
-            await this._embedPage(pageRef);
+            const embedded = await this._embedPage(pageRef);
+            if (embedded) results.resolutions.push({ type: 'unembedded', page: pageRef.title });
           } catch (err) {
             this.logger.warn(`[WikiSteward:memory] _embedPage("${e.page}") failed: ${err.message}`);
           }
         }
-        results.resolvedTypes = ['unembedded', 'never_accessed', 'compost_ready', 'high_access'];
         break;
       }
 
@@ -1073,7 +1180,6 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
         this.logger.warn(`[WikiSteward] Unknown stewardType in _intervene: "${stewardType}"`);
     }
 
-    results.observationsResolved = results.resolvedTypes.length;
     return results;
   }
 
@@ -1089,19 +1195,23 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
   async _flagContradiction(pageA, pageB, claim) {
     if (!pageA || !pageB || !claim) return false;
 
-    const flagA = `> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [[${pageB}]] on "${claim}"`;
-    const flagB = `> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [[${pageA}]] on "${claim}"`;
+    const marker = 'Contradiction flagged by Knowledge Steward';
+    const flagA = `> ⚠️ ${marker}: conflicts with [[${pageB}]] on "${claim}"`;
+    const flagB = `> ⚠️ ${marker}: conflicts with [[${pageA}]] on "${claim}"`;
 
     let modified = false;
 
     // Write to pageA — route through writePageWithFrontmatter so [[pageB]] is resolved.
+    // Dedup keys on (marker, partner title), never on the claim text: the claim
+    // is LLM-worded and the link form mutates on write (PR #50 Fix A class).
     try {
       const resultA = await this.collectivesClient.readPageWithFrontmatter(pageA);
       if (resultA) {
         const body = resultA.body || '';
-        if (!body.includes(flagA)) {
+        if (!this._hasFlagForPair(body, marker, pageB)) {
           const newBody = body + `\n\n${flagA}\n`;
           await this.collectivesClient.writePageWithFrontmatter(pageA, resultA.frontmatter, newBody);
+          this.logger.info(`[WikiSteward:knowledge] Flagged contradiction on "${pageA}" vs "${pageB}"`);
           modified = true;
         }
       }
@@ -1114,9 +1224,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       const resultB = await this.collectivesClient.readPageWithFrontmatter(pageB);
       if (resultB) {
         const body = resultB.body || '';
-        if (!body.includes(flagB)) {
+        if (!this._hasFlagForPair(body, marker, pageA)) {
           const newBody = body + `\n\n${flagB}\n`;
           await this.collectivesClient.writePageWithFrontmatter(pageB, resultB.frontmatter, newBody);
+          this.logger.info(`[WikiSteward:knowledge] Flagged contradiction on "${pageB}" vs "${pageA}"`);
           modified = true;
         }
       }
@@ -1153,7 +1264,15 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       ? confidenceSteps[idx + 1]
       : 'low';
     fm.last_verification_attempt = new Date().toISOString().split('T')[0];
-    fm.verification_note = reason || 'Confidence lowered by Knowledge Steward';
+    // verification_note is gone (gate amendment 1): it was LLM-worded prose,
+    // so identical page state produced different bytes on every visit — one
+    // live page accumulated 871 NC versions from this alone. Nothing reads
+    // the field; the reason stays in the log line below.
+    delete fm.verification_note;
+
+    // Equality guard: identical state produces identical bytes — no write,
+    // no pagesModified, no spurious Level 1 refresh.
+    if (JSON.stringify(fm) === JSON.stringify(result.frontmatter)) return false;
 
     await this.collectivesClient.writePageWithFrontmatter(page, fm, result.body || '');
     this.logger.info(`[WikiSteward:knowledge] Lowered confidence for "${page}" to ${fm.confidence}: ${reason}`);
@@ -1169,7 +1288,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
    * @returns {Promise<void>}
    */
   async _logKnowledgeGap(entity, referencedIn) {
-    if (!entity) return;
+    if (!entity) return false;
 
     const pendingQuestionsPath = 'Meta/Pending Questions.md';
     const line = `- ${entity} — referenced in [[${referencedIn || 'unknown'}]], no page yet`;
@@ -1182,7 +1301,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     }
 
     // Idempotency: skip if this exact entity line is already recorded
-    if (existing.includes(`- ${entity} —`)) return;
+    if (existing.includes(`- ${entity} —`)) return false;
 
     const updated = existing
       ? `${existing.trimEnd()}\n${line}\n`
@@ -1192,8 +1311,10 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       const resolved = await this._resolveWikilinks(updated);
       await this.collectivesClient.writePageContent(pendingQuestionsPath, resolved);
       this.logger.info(`[WikiSteward:knowledge] Logged knowledge gap: "${entity}" (referenced in ${referencedIn})`);
+      return true;
     } catch (err) {
       this.logger.warn(`[WikiSteward:knowledge] _logKnowledgeGap write failed: ${err.message}`);
+      return false;
     }
   }
 
@@ -1270,21 +1391,25 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       detail: `Possible duplicate of [[${pageA}]] (similarity: ${simLabel})`,
     });
 
-    const warningBlock = `> ⚠️ Near-duplicate flagged by Connection Steward: possibly the same entity as [[${pageB}]] (similarity: ${simLabel}). Manual review recommended.`;
-    const warningBlockB = `> ⚠️ Near-duplicate flagged by Connection Steward: possibly the same entity as [[${pageA}]] (similarity: ${simLabel}). Manual review recommended.`;
+    const marker = 'Near-duplicate flagged by Connection Steward';
+    const warningBlock = `> ⚠️ ${marker}: possibly the same entity as [[${pageB}]] (similarity: ${simLabel}). Manual review recommended.`;
+    const warningBlockB = `> ⚠️ ${marker}: possibly the same entity as [[${pageA}]] (similarity: ${simLabel}). Manual review recommended.`;
 
     let modified = false;
 
-    for (const [pageName, warning] of [[pageA, warningBlock], [pageB, warningBlockB]]) {
+    for (const [pageName, warning, partner] of [[pageA, warningBlock, pageB], [pageB, warningBlockB, pageA]]) {
       try {
         const result = await this.collectivesClient.readPageWithFrontmatter(pageName);
         if (!result) continue;
         const body = result.body || '';
-        if (body.includes('Near-duplicate flagged by Connection Steward')) continue; // already flagged
+        // Pair key, not one-flag-ever: a page can be flagged against two
+        // different partners while staying idempotent per pair.
+        if (this._hasFlagForPair(body, marker, partner)) continue;
         const newBody = body + `\n\n${warning}\n`;
         // Route through writePageWithFrontmatter so the [[other page]] reference
         // is resolved to a live Nextcloud link instead of dead text.
         await this.collectivesClient.writePageWithFrontmatter(pageName, result.frontmatter, newBody);
+        this.logger.info(`[WikiSteward:connection] Flagged near-duplicate on "${pageName}" vs "${partner}"`);
         modified = true;
       } catch (err) {
         this.logger.warn(`[WikiSteward:connection] _flagDuplicate write to "${pageName}" failed: ${err.message}`);
@@ -1292,6 +1417,29 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     }
 
     return modified;
+  }
+
+  /**
+   * Structural idempotency key for pair-keyed steward flags: a flag line for
+   * a (marker, partner) pair exists iff some line carries both the invariant
+   * marker phrase and the partner title as plain substrings. Both survive
+   * wikilink resolution ([[T]] → [T](url)), NC Text round-trips (attribute
+   * injection, escaping), and LLM claim rewording — the three rewriters that
+   * defeated full-string checks and grew the flag walls (PR #50 Fix A class).
+   * Matching a fixed system-emitted marker and a known title is structural
+   * markup matching, inside the language policy — same as the existing
+   * `[target](` check in _addWikilink.
+   *
+   * @param {string} body
+   * @param {string} markerPhrase - System-emitted constant, e.g. 'Contradiction flagged by Knowledge Steward'
+   * @param {string} partnerTitle - Partner page title (plain substring match)
+   * @returns {boolean}
+   */
+  _hasFlagForPair(body, markerPhrase, partnerTitle) {
+    if (!body || !markerPhrase || !partnerTitle) return false;
+    return body.split('\n').some(
+      line => line.includes(markerPhrase) && line.includes(partnerTitle)
+    );
   }
 
   /**
