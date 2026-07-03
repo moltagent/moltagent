@@ -43,7 +43,7 @@
  *     heartbeat pulse
  *       → wikiSteward.tend()
  *         → _findNeediest() (observationLog + _lastVisit)
- *         → _nextSteward()  (rotation)
+ *         → _nextSteward(cluster.name)  (per-cluster rotation)
  *         → _readNeighborhood(cluster)  (CollectivesClient + KnowledgeGraph + VectorStore)
  *         → _assess(stewardType, neighborhood)  (llmRouter.route, ONE call)
  *         → _intervene(stewardType, assessment, neighborhood)  (per-lens executors)
@@ -167,9 +167,13 @@ class WikiSteward {
 
     this.config = config || {};
 
-    // Steward rotation — three lenses on the same neighborhood.
-    /** @type {number} */
-    this._stewardIndex = 0;
+    // Steward rotation — three lenses on the same neighborhood, rotated
+    // per cluster. A global index lens-locks every cluster whenever the
+    // cluster count is divisible by three (15 clusters × 3 lenses meant
+    // People only ever saw the knowledge lens). In-memory, same documented
+    // amnesia class as _lastVisit.
+    /** @type {Map<string, number>} */
+    this._lensIndexByCluster = new Map();
     /** @type {string[]} */
     this._stewards = ['knowledge', 'connection', 'memory'];
 
@@ -232,7 +236,7 @@ class WikiSteward {
     }
 
     // Step 2: pick the active steward lens
-    const stewardType = this._nextSteward();
+    const stewardType = this._nextSteward(cluster.name);
 
     this.logger.info(
       `[WikiSteward:${stewardType}] Tending cluster "${cluster.name}" ` +
@@ -391,15 +395,17 @@ class WikiSteward {
   // ---------------------------------------------------------------------------
 
   /**
-   * Rotate through stewards. Each pulse, the next lens walks.
-   * Trivial ring rotation — safe to implement here.
+   * Rotate through stewards per cluster: each cluster advances its own lens
+   * on each of its own visits. Invariant: three consecutive visits to one
+   * cluster use three different lenses, regardless of cluster count.
    *
+   * @param {string} clusterName
    * @returns {string} One of 'knowledge' | 'connection' | 'memory'
    */
-  _nextSteward() {
-    const steward = this._stewards[this._stewardIndex];
-    this._stewardIndex = (this._stewardIndex + 1) % this._stewards.length;
-    return steward;
+  _nextSteward(clusterName) {
+    const idx = this._lensIndexByCluster.get(clusterName) || 0;
+    this._lensIndexByCluster.set(clusterName, (idx + 1) % this._stewards.length);
+    return this._stewards[idx];
   }
 
   // ---------------------------------------------------------------------------

@@ -127,13 +127,25 @@ test('WikiSteward constructor: throws when required dep is missing', () => {
   assert.throws(() => new WikiSteward(deps), /requires observationLog/);
 });
 
-// Test 2: _nextSteward() cycles knowledge → connection → memory → knowledge
-test('_nextSteward() cycles through three lenses and wraps', () => {
+// Test 2: _nextSteward(cluster) cycles knowledge → connection → memory → knowledge
+test('_nextSteward() cycles through three lenses and wraps, per cluster', () => {
   const steward = new WikiSteward(makeFullDeps());
-  assert.strictEqual(steward._nextSteward(), 'knowledge');
-  assert.strictEqual(steward._nextSteward(), 'connection');
-  assert.strictEqual(steward._nextSteward(), 'memory');
-  assert.strictEqual(steward._nextSteward(), 'knowledge', 'should wrap back to knowledge');
+  assert.strictEqual(steward._nextSteward('People'), 'knowledge');
+  assert.strictEqual(steward._nextSteward('People'), 'connection');
+  assert.strictEqual(steward._nextSteward('People'), 'memory');
+  assert.strictEqual(steward._nextSteward('People'), 'knowledge', 'should wrap back to knowledge');
+});
+
+// Phase 1b invariant: interleaved clusters advance independently. A global
+// index lens-locks every cluster when clusterCount % lenses === 0.
+test('_nextSteward() keeps independent lens sequences across interleaved clusters', () => {
+  const steward = new WikiSteward(makeFullDeps());
+  assert.strictEqual(steward._nextSteward('People'), 'knowledge');
+  assert.strictEqual(steward._nextSteward('Projects'), 'knowledge', 'second cluster starts its own ring');
+  assert.strictEqual(steward._nextSteward('People'), 'connection');
+  assert.strictEqual(steward._nextSteward('Projects'), 'connection');
+  assert.strictEqual(steward._nextSteward('People'), 'memory');
+  assert.strictEqual(steward._nextSteward('Projects'), 'memory');
 });
 
 // Test 3: tend() returns skipped:'idle' when no clusters and no observations
@@ -1249,6 +1261,19 @@ function makeInstrumentedSteward({ listPagesResult, pagesByTitle, pageCount, log
   steward._findNeediest = async () => ({ name: 'People', pageCount, score: 1, observationCount: 0 });
   return steward;
 }
+
+asyncTest('tend() uses three different lenses across three consecutive visits to one cluster', async () => {
+  const steward = makeInstrumentedSteward({
+    listPagesResult: [{ id: 1, title: 'Carlos', filePath: 'People', fileName: 'Carlos.md', parentId: 5 }],
+    pagesByTitle: { 'Carlos': { frontmatter: {}, body: 'Carlos is a person.', path: 'People/Carlos.md' } },
+    pageCount: 1,
+  });
+
+  const lenses = [];
+  for (let i = 0; i < 3; i++) lenses.push((await steward.tend()).steward);
+  assert.deepStrictEqual([...new Set(lenses)].sort(), ['connection', 'knowledge', 'memory'],
+    'three consecutive visits to one cluster must use all three lenses');
+});
 
 asyncTest('tend() result carries pagesInNeighborhood with the read count', async () => {
   const steward = makeInstrumentedSteward({
