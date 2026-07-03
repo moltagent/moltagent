@@ -699,7 +699,9 @@ async function initialize() {
   // demotes the halt (deployment escape hatch).
   try {
     const { BootPreflight } = require('./src/lib/boot/preflight');
-    const preflight = new BootPreflight({ config: CONFIG, ncRequestManager, logger: console });
+    // appConfig, not the local CONFIG view: the manifest reads voice.speachesUrl,
+    // search.searxng.url, and ollama.embeddingModel, which only appConfig carries.
+    const preflight = new BootPreflight({ config: appConfig, ncRequestManager, logger: console });
     const { halt } = await preflight.run();
     if (halt) {
       if ((process.env.MOLTAGENT_PREFLIGHT || '').toLowerCase() === 'warn') {
