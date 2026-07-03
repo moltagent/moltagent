@@ -126,6 +126,14 @@ class ModelResolver {
     // opinion on; NicheAssignment itself replans and re-sets it.
     this._assignment = null;
 
+    // Models the boot tool-capability probe (#118) measured answering a
+    // tool-requiring instruction with prose. Observability only: describe()
+    // annotates them; resolve() precedence is untouched (reseating on
+    // evidence is the maturation loop's authority, and the runtime chain
+    // already falls back on tool-call failure). Survives refresh() for the
+    // same reason the ground-truth overrides do.
+    this._toolIncapable = new Set();
+
     this.refresh();
   }
 
@@ -243,6 +251,24 @@ class ModelResolver {
   }
 
   /**
+   * Flag a model the boot tool-capability probe (#118) measured returning
+   * prose to a tool-requiring instruction. describe() surfaces the flag;
+   * resolution precedence is deliberately untouched.
+   * @param {string} model
+   */
+  markToolIncapable(model) {
+    if (model) this._toolIncapable.add(model);
+  }
+
+  /**
+   * @param {string} model
+   * @returns {boolean} true when the probe flagged this model prose-only
+   */
+  isToolIncapable(model) {
+    return this._toolIncapable.has(model);
+  }
+
+  /**
    * Build a one-line-per-job interoception report for the startup log.
    * @param {string[]} jobs - Jobs to report (e.g. ['tools','thinking','quick']).
    * @returns {{ summary: string, divergences: string[] }}
@@ -252,7 +278,8 @@ class ModelResolver {
     const divergences = [];
     for (const job of jobs) {
       const r = this.resolve(job);
-      parts.push(`${job}→${r.model || '(none)'} (${r.source})`);
+      const toolFlag = r.model && this._toolIncapable.has(r.model) ? ' ⚠not-tool-capable(#118)' : '';
+      parts.push(`${job}→${r.model || '(none)'} (${r.source})${toolFlag}`);
       const d = r.derivation;
       // Divergence: two distinct, present sources disagree on the model.
       const present = [d.deployerConfig, d.envOverride, d.modelScout, d.cockpitCard].filter(Boolean);
