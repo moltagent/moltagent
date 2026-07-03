@@ -135,6 +135,10 @@ class WikiSteward {
    * @param {Object} options.embeddingClient
    * @param {Object} options.llmRouter - router.route({ job, content, requirements }) → { result }
    * @param {Object} options.observationLog - Shared ObservationLog instance
+   * @param {Object} [options.modelScorecard] - ModelScorecard (maturation loop).
+   *   Optional and null-safe: when present, every _assess outcome records one
+   *   organic (synthesis, model, language) envelope-validity sample. The
+   *   steward only testifies; the loop owns selection.
    * @param {Object} [options.logger]
    * @param {string} [options.collectiveId]
    * @param {Object} [options.config={}] - Tuning knobs (indexRefreshIntervalMs, bodyPreviewChars, etc.)
@@ -146,6 +150,7 @@ class WikiSteward {
     embeddingClient,
     llmRouter,
     observationLog,
+    modelScorecard,
     logger,
     collectiveId,
     config = {},
@@ -163,6 +168,7 @@ class WikiSteward {
     this.embeddingClient = embeddingClient;
     this.router = llmRouter;
     this.observations = observationLog;
+    this.modelScorecard = modelScorecard || null;
     this.logger = logger || console;
     this.collectiveId = collectiveId || null;
 
@@ -730,14 +736,35 @@ class WikiSteward {
 
     const raw = routerResult?.result || routerResult?.content || '';
 
+    let parsed = null;
+    let parseError = null;
     try {
-      return _extractJsonObject(raw);
+      parsed = _extractJsonObject(raw);
     } catch (err) {
+      parseError = err;
+    }
+
+    // Maturation-loop testimony (Layer 2): one organic sample per assessment.
+    // Envelope validity is the mechanical signal — the same class IntentRouter
+    // records for classification parse failures. Sits outside the fallback
+    // return so success and failure each record exactly once.
+    const envelopeValid = parsed !== null && typeof parsed === 'object';
+    if (this.modelScorecard && routerResult?.model) {
+      try {
+        // Language omitted on purpose: the scorecard defaults to the cockpit language.
+        this.modelScorecard.recordSample('synthesis', routerResult.model, null, envelopeValid);
+      } catch (err) {
+        this.logger.warn(`[WikiSteward:${stewardType}] recordSample failed: ${err.message}`);
+      }
+    }
+
+    if (parseError) {
       this.logger.warn(
-        `[WikiSteward:${stewardType}] Assessment JSON parse failed (${err.message}) — raw (first 400): ${String(raw).slice(0, 400)}`
+        `[WikiSteward:${stewardType}] Assessment JSON parse failed (${parseError.message}) — raw (first 400): ${String(raw).slice(0, 400)}`
       );
       return { actions: [] };
     }
+    return parsed;
   }
 
   /**

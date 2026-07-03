@@ -1420,4 +1420,61 @@ asyncTest('tend() resolves page-granular: link added to Page A resolves A, leave
   assert.strictEqual(remaining[0].page, 'Page B');
 });
 
+// ---------------------------------------------------------------------------
+// PHASE 2b: ASSESSMENT OUTCOMES JOIN THE MATURATION LOOP
+// ---------------------------------------------------------------------------
+
+function makeMockScorecard() {
+  const calls = [];
+  return {
+    _calls: calls,
+    recordSample(job, model, language, success, opts) {
+      calls.push({ job, model, language, success, opts });
+    },
+  };
+}
+
+asyncTest('_assess records one successful synthesis sample with the served model', async () => {
+  const modelScorecard = makeMockScorecard();
+  const router = makeMockRouter({ contradictions: [], stale: [], gaps: [] });
+  router.route = async () => ({ result: '{"contradictions": []}', provider: 'ollama-local', model: 'qwen3:8b', cost: 0 });
+  const steward = new WikiSteward(makeFullDeps({ llmRouter: router, modelScorecard }));
+
+  await steward._assess('knowledge', { cluster: 'People', pages: [], graphEdges: [], sections: new Set() });
+
+  assert.strictEqual(modelScorecard._calls.length, 1, 'exactly one sample per assessment');
+  const call = modelScorecard._calls[0];
+  assert.strictEqual(call.job, 'synthesis');
+  assert.strictEqual(call.model, 'qwen3:8b', 'served player from the route() return');
+  assert.strictEqual(call.language, null, 'language omitted — scorecard defaults to cockpit language');
+  assert.strictEqual(call.success, true);
+});
+
+asyncTest('_assess records exactly one failure sample on a parse failure', async () => {
+  const modelScorecard = makeMockScorecard();
+  const router = { async route() { return { result: 'I am ready to assess.', provider: 'ollama-local', model: 'qwen3:8b', cost: 0 }; } };
+  const steward = new WikiSteward(makeFullDeps({ llmRouter: router, modelScorecard }));
+
+  const assessment = await steward._assess('knowledge', { cluster: 'People', pages: [], graphEdges: [], sections: new Set() });
+
+  assert.deepStrictEqual(assessment, { actions: [] }, 'fallback envelope preserved');
+  assert.strictEqual(modelScorecard._calls.length, 1, 'failure records exactly once, outside the catch fallback');
+  assert.strictEqual(modelScorecard._calls[0].success, false);
+});
+
+asyncTest('_assess without a scorecard records nothing and does not throw', async () => {
+  const router = { async route() { return { result: 'not json', provider: 'mock', model: 'mock', cost: 0 }; } };
+  const steward = new WikiSteward(makeFullDeps({ llmRouter: router }));
+  const assessment = await steward._assess('knowledge', { cluster: 'People', pages: [], graphEdges: [], sections: new Set() });
+  assert.deepStrictEqual(assessment, { actions: [] });
+});
+
+asyncTest('_assess skips recording when the route result carries no model identity', async () => {
+  const modelScorecard = makeMockScorecard();
+  const router = { async route() { return { result: '{"contradictions": []}', provider: 'mock', cost: 0 }; } };
+  const steward = new WikiSteward(makeFullDeps({ llmRouter: router, modelScorecard }));
+  await steward._assess('knowledge', { cluster: 'People', pages: [], graphEdges: [], sections: new Set() });
+  assert.strictEqual(modelScorecard._calls.length, 0, 'no model → no sample (recordSample requires a model string)');
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 500);

@@ -2556,6 +2556,7 @@ async function initialize() {
         resilientWriter,
         costTracker,
         localJudge,
+        modelScorecard,
         // Layer 3 (Session 5): thunk — NicheAssignment is constructed after
         // ModelScout discovery, possibly after this manager. The sink keeps
         // timing capture alive across heartbeat roster rebuilds.
