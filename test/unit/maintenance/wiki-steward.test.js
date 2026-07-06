@@ -1016,6 +1016,109 @@ asyncTest('cross-cluster link target still resolves globally (findPageByTitle)',
 });
 
 // ---------------------------------------------------------------------------
+// PHASE 9 (G5): THE HUMAN SURFACE — KNOWLEDGEBOARD BRIDGE
+// ---------------------------------------------------------------------------
+
+function makeMockKnowledgeBoard() {
+  return {
+    _disputeCards: [],
+    _staleCards: [],
+    async createDisputeCard(item) { this._disputeCards.push(item); return { id: this._disputeCards.length }; },
+    async createStaleCard(item) { this._staleCards.push(item); return { id: this._staleCards.length }; },
+  };
+}
+
+asyncTest('contradiction pair gets exactly one dispute card across two tend cycles', async () => {
+  const knowledgeBoard = makeMockKnowledgeBoard();
+  const client = makeFlagClient({
+    'Person Page': 'Person body.',
+    'Role Page': 'Role body.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client, knowledgeBoard }));
+
+  // First cycle: new flag → card. Pair title is sorted, so (A,B) === (B,A).
+  const first = await steward._flagContradiction(h('Person Page'), h('Role Page'), 'conflicting role', 'People');
+  assert.strictEqual(first, true);
+  assert.strictEqual(knowledgeBoard._disputeCards.length, 1, 'one card on first detection');
+  assert.strictEqual(knowledgeBoard._disputeCards[0].title, 'Contradiction: Person Page vs Role Page');
+
+  // Second cycle: both pages already carry the pair flag → no new card call.
+  const second = await steward._flagContradiction(h('Role Page'), h('Person Page'), 'reworded conflict', 'People');
+  assert.strictEqual(second, false);
+  assert.strictEqual(knowledgeBoard._disputeCards.length, 1, 'no second card for the same pair');
+});
+
+asyncTest('duplicate pair gets a dispute card; compost candidate gets a stale card', async () => {
+  const knowledgeBoard = makeMockKnowledgeBoard();
+  const client = makeFlagClient({
+    'Page X': 'X body.',
+    'Page Y': 'Y body.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client, knowledgeBoard }));
+
+  await steward._flagDuplicate(h('Page X'), h('Page Y'), 0.9, 'Documents');
+  assert.strictEqual(knowledgeBoard._disputeCards.length, 1);
+  assert.strictEqual(knowledgeBoard._disputeCards[0].title, 'Duplicate: Page X vs Page Y');
+
+  const pagesByTitle = {
+    'Old Doc': { frontmatter: { confidence: 'low' }, body: 'old', path: 'Documents/Old Doc.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward2 = new WikiSteward(makeFullDeps({ collectivesClient, knowledgeBoard }));
+  const marked = await steward2._markForComposting(h('Old Doc', 'Documents/Old Doc.md'), 'never accessed');
+  assert.strictEqual(marked, true);
+  assert.strictEqual(knowledgeBoard._staleCards.length, 1);
+  assert.strictEqual(knowledgeBoard._staleCards[0].title, 'Old Doc');
+  assert.ok(knowledgeBoard._staleCards[0].description.includes('never accessed'));
+});
+
+asyncTest('no knowledgeBoard: flags and compost marks behave unchanged, no error', async () => {
+  const client = makeFlagClient({
+    'Person Page': 'Person body.',
+    'Role Page': 'Role body.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+  const modified = await steward._flagContradiction(h('Person Page'), h('Role Page'), 'conflict', 'People');
+  assert.strictEqual(modified, true, 'flag written exactly as before');
+});
+
+asyncTest('a failing board never fails the executor', async () => {
+  const knowledgeBoard = {
+    async createDisputeCard() { throw new Error('deck is down'); },
+    async createStaleCard() { throw new Error('deck is down'); },
+  };
+  const client = makeFlagClient({
+    'Person Page': 'Person body.',
+    'Role Page': 'Role body.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client, knowledgeBoard }));
+  const modified = await steward._flagContradiction(h('Person Page'), h('Role Page'), 'conflict', 'People');
+  assert.strictEqual(modified, true, 'page flag survives a board failure');
+});
+
+asyncTest('steward notices carry cluster: contradiction, duplicate, and gap', async () => {
+  const observationLog = makeObservationLog();
+  const client = makeFlagClient({
+    'Person Page': 'Person body.',
+    'Role Page': 'Role body.',
+    'Page X': 'X.',
+    'Page Y': 'Y.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client, observationLog }));
+
+  await steward._flagContradiction(h('Person Page'), h('Role Page'), 'conflict', 'People');
+  await steward._flagDuplicate(h('Page X'), h('Page Y'), 0.9, 'Documents');
+
+  const lowConf = observationLog.getByType(OBSERVATION_TYPES.LOW_CONFIDENCE);
+  assert.strictEqual(lowConf.length, 2);
+  assert.ok(lowConf.every(o => o.cluster === 'People'), 'low_confidence notices carry the cluster');
+  const dups = observationLog.getByType(OBSERVATION_TYPES.NEAR_DUPLICATE);
+  assert.strictEqual(dups.length, 2);
+  assert.ok(dups.every(o => o.cluster === 'Documents'), 'near_duplicate notices carry the cluster');
+  // The Phase 5 GAP already carries cluster — asserted in its own test above.
+});
+
+// ---------------------------------------------------------------------------
 // CROSS-WRITE INTERFERENCE — Fix B: Connection Steward excludes index pages
 // ---------------------------------------------------------------------------
 

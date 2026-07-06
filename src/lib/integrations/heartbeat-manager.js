@@ -317,10 +317,14 @@ class HeartbeatManager {
         llmRouter: this.llmRouter,
         observationLog: this._observationLog,
         modelScorecard: this.modelScorecard,
+        knowledgeBoard: this.knowledgeBoard,
         logger: console,
         // collectiveId omitted — WikiSteward will resolve it via collectivesClient
       });
-      console.log(`[Heartbeat] WikiSteward initialized (scorecard: ${this.modelScorecard ? 'wired' : 'absent'})`);
+      console.log(
+        `[Heartbeat] WikiSteward initialized (scorecard: ${this.modelScorecard ? 'wired' : 'absent'}, ` +
+        `knowledgeBoard: ${this.knowledgeBoard ? 'wired' : 'absent'})`
+      );
     } catch (err) {
       console.warn('[Heartbeat] WikiSteward initialization failed:', err.message);
       return null;

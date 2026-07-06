@@ -141,6 +141,12 @@ class WikiSteward {
    *   Optional and null-safe: when present, every _assess outcome records one
    *   organic (synthesis, model, language) envelope-validity sample. The
    *   steward only testifies; the loop owns selection.
+   * @param {Object} [options.knowledgeBoard] - KnowledgeBoard (Deck
+   *   verification surface). Optional and null-safe: when present, each
+   *   contradiction pair and duplicate pair gets exactly one card in the
+   *   disputed stack and each compost candidate one card in the stale stack —
+   *   the human surface for findings the page footer only marks in-context.
+   *   When absent, behavior is unchanged.
    * @param {Object} [options.logger]
    * @param {string} [options.collectiveId]
    * @param {Object} [options.config={}] - Tuning knobs (indexRefreshIntervalMs, bodyPreviewChars, etc.)
@@ -153,6 +159,7 @@ class WikiSteward {
     llmRouter,
     observationLog,
     modelScorecard,
+    knowledgeBoard,
     logger,
     collectiveId,
     config = {},
@@ -171,6 +178,7 @@ class WikiSteward {
     this.router = llmRouter;
     this.observations = observationLog;
     this.modelScorecard = modelScorecard || null;
+    this.knowledgeBoard = knowledgeBoard || null;
     this.logger = logger || console;
     this.collectiveId = collectiveId || null;
 
@@ -1033,7 +1041,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           const handleB = resolve(c.pageB, 'contradiction flag');
           if (!handleA || !handleB) continue;
           try {
-            const flagged = await this._flagContradiction(handleA, handleB, c.claim);
+            const flagged = await this._flagContradiction(handleA, handleB, c.claim, neighborhood?.cluster);
             if (flagged) {
               results.pagesModified += 2;
               for (const p of [handleA.title, handleB.title]) {
@@ -1126,7 +1134,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           const handleB = resolve(d.pageB, 'duplicate flag');
           if (!handleA || !handleB) continue;
           try {
-            const flagged = await this._flagDuplicate(handleA, handleB, d.similarity || 0);
+            const flagged = await this._flagDuplicate(handleA, handleB, d.similarity || 0, neighborhood?.cluster);
             if (flagged) {
               results.resolutions.push({ type: 'near_duplicate', page: handleA.title });
               results.resolutions.push({ type: 'near_duplicate', page: handleB.title });
@@ -1201,12 +1209,14 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
    * Handles, not titles: reads and writes go by path, so a leaf-title
    * collision elsewhere in the collective cannot receive this write.
    *
-   * @param {{title: string, path: string}} handleA
-   * @param {{title: string, path: string}} handleB
+   * @param {{title: string, path: string, id?: string}} handleA
+   * @param {{title: string, path: string, id?: string}} handleB
    * @param {string} claim
+   * @param {string} [cluster] - Cluster the assessment ran in; carried on the
+   *   notices so they join getNeediest and resolve under Phase 2 semantics.
    * @returns {Promise<boolean>} true if at least one note was persisted.
    */
-  async _flagContradiction(handleA, handleB, claim) {
+  async _flagContradiction(handleA, handleB, claim, cluster) {
     if (!handleA?.path || !handleB?.path || !claim) return false;
 
     const marker = 'Contradiction flagged by Knowledge Steward';
@@ -1233,10 +1243,64 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     }
 
     // Emit LOW_CONFIDENCE observations for both pages so they surface for verification
-    this.observations.notice({ type: 'low_confidence', page: handleA.title, detail: `Contradiction with ${handleB.title}: ${claim}` });
-    this.observations.notice({ type: 'low_confidence', page: handleB.title, detail: `Contradiction with ${handleA.title}: ${claim}` });
+    this.observations.notice({ type: 'low_confidence', cluster, page: handleA.title, detail: `Contradiction with ${handleB.title}: ${claim}` });
+    this.observations.notice({ type: 'low_confidence', cluster, page: handleB.title, detail: `Contradiction with ${handleA.title}: ${claim}` });
+
+    // Human surface: one card per pair on the KnowledgeBoard's disputed stack.
+    // Fires only on a NEW flag (modified) — an already-flagged pair is already
+    // carded; the board's title-key dedup is the belt behind this suspender.
+    if (modified) {
+      await this._createPairCard('Contradiction', handleA, handleB, claim);
+    }
 
     return modified;
+  }
+
+  /**
+   * One Deck card per (kind, pair) on the KnowledgeBoard — the human surface
+   * for steward findings (fact 10: page-footer flags were the only visible
+   * trace, and nobody reads footers). Null-safe: no board, no card, no error.
+   * The pair is sorted so (A,B) and (B,A) share one card title.
+   *
+   * @param {'Contradiction'|'Duplicate'} kind
+   * @param {{title: string, id?: string}} handleA
+   * @param {{title: string, id?: string}} handleB
+   * @param {string} claim
+   * @returns {Promise<void>}
+   */
+  async _createPairCard(kind, handleA, handleB, claim) {
+    if (!this.knowledgeBoard) return;
+    try {
+      const [first, second] = [handleA, handleB]
+        .sort((a, b) => a.title.localeCompare(b.title));
+      await this.knowledgeBoard.createDisputeCard({
+        title: `${kind}: ${first.title} vs ${second.title}`,
+        sourceA: this._pageLink(first),
+        claimA: claim,
+        sourceB: this._pageLink(second),
+        claimB: claim,
+      });
+    } catch (err) {
+      this.logger.warn(`[WikiSteward] KnowledgeBoard card for "${handleA.title}" vs "${handleB.title}" failed: ${err.message}`);
+    }
+  }
+
+  /**
+   * Markdown link for a page handle when the client can build one, plain
+   * title otherwise (mocks, or a handle without an id).
+   *
+   * @param {{title: string, id?: string|number}} handle
+   * @returns {string}
+   */
+  _pageLink(handle) {
+    if (handle.id && typeof this.collectivesClient.buildPageUrl === 'function') {
+      try {
+        return `[${handle.title}](${this.collectivesClient.buildPageUrl(handle.title, handle.id)})`;
+      } catch {
+        // fall through to plain title
+      }
+    }
+    return handle.title;
   }
 
   /**
@@ -1421,12 +1485,14 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
   /**
    * Connection lens: mark two pages as suspected duplicates.
    *
-   * @param {{title: string, path: string}} handleA
-   * @param {{title: string, path: string}} handleB
+   * @param {{title: string, path: string, id?: string}} handleA
+   * @param {{title: string, path: string, id?: string}} handleB
    * @param {number} similarity - 0..1
+   * @param {string} [cluster] - Cluster the assessment ran in; carried on the
+   *   notices so they join getNeediest and resolve under Phase 2 semantics.
    * @returns {Promise<boolean>}
    */
-  async _flagDuplicate(handleA, handleB, similarity) {
+  async _flagDuplicate(handleA, handleB, similarity, cluster) {
     if (!handleA?.path || !handleB?.path) return false;
 
     const simLabel = typeof similarity === 'number'
@@ -1436,11 +1502,13 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     // Log observation for both pages
     this.observations.notice({
       type: 'near_duplicate',
+      cluster,
       page: handleA.title,
       detail: `Possible duplicate of [[${handleB.title}]] (similarity: ${simLabel})`,
     });
     this.observations.notice({
       type: 'near_duplicate',
+      cluster,
       page: handleB.title,
       detail: `Possible duplicate of [[${handleA.title}]] (similarity: ${simLabel})`,
     });
@@ -1467,6 +1535,12 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       } catch (err) {
         this.logger.warn(`[WikiSteward:connection] _flagDuplicate write to "${handle.title}" failed: ${err.message}`);
       }
+    }
+
+    // Human surface: one card per pair, same shape as contradictions.
+    if (modified) {
+      await this._createPairCard('Duplicate', handleA, handleB,
+        `Possibly the same entity (similarity: ${simLabel})`);
     }
 
     return modified;
@@ -1567,6 +1641,18 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     // content between the heading and EOF. The body holds knowledge only.
     await this.collectivesClient.writePageWithFrontmatterAtPath(handle.path, fm, result.body || '');
     this.logger.info(`[WikiSteward:memory] Marked "${handle.title}" for composting: ${reason}`);
+
+    // Human surface: one card per compost candidate on the stale stack.
+    if (this.knowledgeBoard) {
+      try {
+        await this.knowledgeBoard.createStaleCard({
+          title: handle.title,
+          description: `${this._pageLink(handle)} was marked compost-ready by the Memory Steward.\n\n**Reason:** ${fm.compost_reason}`,
+        });
+      } catch (err) {
+        this.logger.warn(`[WikiSteward] KnowledgeBoard stale card for "${handle.title}" failed: ${err.message}`);
+      }
+    }
     return true;
   }
 
