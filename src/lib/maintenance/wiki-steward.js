@@ -70,6 +70,9 @@
  * @version 0.1.0
  */
 
+// Section identity has exactly one derivation, owned by the client (#51 generator).
+const { deriveSection } = require('../integrations/collectives-client');
+
 /**
  * @typedef {Object} PageRef
  * @property {string} id
@@ -458,31 +461,6 @@ class WikiSteward {
   }
 
   /**
-   * Return the section name for a page, or null if no section can be derived.
-   *
-   * Chain:
-   *   1. page.section (truthy) — returned directly; defensive for future API restores.
-   *   2. page.filePath (non-empty string) — first non-empty segment after split('/').
-   *   3. page.parentId === landingPageId (direct child of landing) — page.title.
-   *   4. null — landing page itself (parentId===0, empty filePath) and orphans.
-   *
-   * @param {{ section?: string, filePath?: string, parentId?: number, title?: string }} page
-   * @param {number|undefined} landingPageId
-   * @returns {string|null}
-   */
-  _getPageSection(page, landingPageId) {
-    if (page.section) return page.section;
-    if (page.filePath) {
-      const parts = page.filePath.split('/').filter(Boolean);
-      return parts[0] || null;
-    }
-    if (landingPageId && page.parentId === landingPageId && page.title) {
-      return page.title;
-    }
-    return null;
-  }
-
-  /**
    * Enumerate clusters known to the system. First attempt: read Level 0
    * landing page and parse its `## Knowledge Domains` `###` headings to get
    * cluster names. Fallback: enumerate unique `section` values from listPages().
@@ -515,7 +493,7 @@ class WikiSteward {
       const landingPageId = landingPage?.id;
       const sectionCounts = new Map();
       for (const page of pageList) {
-        const section = this._getPageSection(page, landingPageId);
+        const section = deriveSection(page, landingPageId);
         if (section) {
           sectionCounts.set(section, (sectionCounts.get(section) || 0) + 1);
         }
@@ -562,7 +540,7 @@ class WikiSteward {
       this.collectiveId = collectiveId;
     }
 
-    // List pages that belong to this cluster via _getPageSection (single chokepoint
+    // List pages that belong to this cluster via deriveSection (single chokepoint
     // shared with _listClusters; resilient to Collectives API filePath shape changes).
     let clusterPages = [];
     try {
@@ -572,7 +550,7 @@ class WikiSteward {
 
       const landingPage = pageList.find(p => p.parentId === 0);
       const landingPageId = landingPage?.id;
-      clusterPages = pageList.filter(p => this._getPageSection(p, landingPageId) === clusterName);
+      clusterPages = pageList.filter(p => deriveSection(p, landingPageId) === clusterName);
     } catch (err) {
       this.logger.warn(`[WikiSteward] Failed to list pages for cluster "${cluster.name}": ${err.message}`);
       return neighborhood;
@@ -611,11 +589,13 @@ class WikiSteward {
 
         const wikilinks = this._extractWikilinks(bodyPreview);
 
+        // Every page here passed the deriveSection === cluster.name filter
+        // above, so the cluster name IS the section — no re-derivation.
         neighborhood.pages.push({
           id: pageRef.id,
           title: pageRef.title,
           entityId,
-          section: pageRef.section || pageRef.filePath || cluster.name,
+          section: cluster.name,
           frontmatter,
           bodyPreview,
           hasEmbedding,
@@ -623,9 +603,7 @@ class WikiSteward {
           wikilinks,
         });
 
-        if (pageRef.section || pageRef.filePath) {
-          neighborhood.sections.add(pageRef.section || pageRef.filePath);
-        }
+        neighborhood.sections.add(cluster.name);
       } catch (err) {
         this.logger.warn(`[WikiSteward] Skipping page "${pageRef.title}" due to error: ${err.message}`);
       }
@@ -1655,12 +1633,14 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     for (const sectionName of sections) {
       if (!sectionName) continue;
       try {
-        // List pages belonging to this section
+        // List pages belonging to this section — exact equality on the
+        // derived section. The old lowercase-substring match made a page in
+        // "Research Archive" a member of the "Research" summary (#51 class).
         const allPages = await this.collectivesClient.listPages(collectiveId);
         const pageList = Array.isArray(allPages) ? allPages : [];
-        const sectionNameLower = sectionName.toLowerCase();
+        const landingPageId = pageList.find(p => p.parentId === 0)?.id;
         const sectionPages = pageList.filter(p =>
-          ((p.section || p.filePath || '').toLowerCase()).includes(sectionNameLower)
+          deriveSection(p, landingPageId) === sectionName
         );
 
         if (sectionPages.length === 0) continue;
@@ -1773,10 +1753,11 @@ Respond in the same language as the entity names and context imply.`;
       return { clusters: 0 };
     }
 
-    // Build entity listing: group by section
+    // Build entity listing: group by derived section
+    const landingPageId = allPages.find(p => p.parentId === 0)?.id;
     const bySectionMap = new Map();
     for (const page of allPages) {
-      const section = page.section || page.filePath || 'Uncategorized';
+      const section = deriveSection(page, landingPageId) || 'Uncategorized';
       if (!bySectionMap.has(section)) bySectionMap.set(section, []);
       bySectionMap.get(section).push(page.title);
     }

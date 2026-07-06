@@ -4,6 +4,7 @@ const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 const { WikiSteward } = require('../../../src/lib/maintenance/wiki-steward');
 const { ObservationLog, OBSERVATION_TYPES } = require('../../../src/lib/maintenance/observation-log');
+const { deriveSection } = require('../../../src/lib/integrations/collectives-client');
 
 const silentLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
@@ -288,38 +289,86 @@ asyncTest('_readNeighborhood() skips pages that throw at the outer level and con
 });
 
 // ---------------------------------------------------------------------------
-// CLUSTER SECTION DERIVATION (#51 — _getPageSection + _readNeighborhood with
-// current Collectives API filePath shape)
+// CLUSTER SECTION DERIVATION (#51 — deriveSection is the ONE derivation,
+// exported by the client and consumed by every section-identity site.
+// Same four branches the steward's deleted _getPageSection covered — parity.)
 // ---------------------------------------------------------------------------
 
-test('_getPageSection returns section from folder-only filePath (current API shape)', () => {
-  const steward = new WikiSteward(makeFullDeps());
-  const section = steward._getPageSection({ filePath: 'Documents', section: undefined, parentId: 1 }, 99);
+test('deriveSection returns section from folder-only filePath (current API shape)', () => {
+  const section = deriveSection({ filePath: 'Documents', section: undefined, parentId: 1 }, 99);
   assert.strictEqual(section, 'Documents');
 });
 
-test('_getPageSection honors explicit page.section when present (defensive)', () => {
-  const steward = new WikiSteward(makeFullDeps());
-  const section = steward._getPageSection({ section: 'People', filePath: '', parentId: 1 }, 99);
+test('deriveSection honors explicit page.section when present (defensive)', () => {
+  const section = deriveSection({ section: 'People', filePath: '', parentId: 1 }, 99);
   assert.strictEqual(section, 'People');
 });
 
-test('_getPageSection falls back to title when page is direct child of landing', () => {
-  const steward = new WikiSteward(makeFullDeps());
-  const section = steward._getPageSection(
+test('deriveSection falls back to title when page is direct child of landing', () => {
+  const section = deriveSection(
     { filePath: '', section: undefined, parentId: 99, title: 'Research' },
     99
   );
   assert.strictEqual(section, 'Research');
 });
 
-test('_getPageSection returns null for the landing page itself', () => {
-  const steward = new WikiSteward(makeFullDeps());
-  const section = steward._getPageSection(
+test('deriveSection returns null for the landing page itself', () => {
+  const section = deriveSection(
     { filePath: '', section: undefined, parentId: 0, title: 'Knowledge Domains' },
     99
   );
   assert.strictEqual(section, null);
+});
+
+test('deriveSection without landingPageId derives null for a non-child page with empty filePath', () => {
+  // The fact-7 drift case: the DEEP_READ producer used to fall back to the
+  // page title here, counting observations toward a phantom cluster the
+  // steward census never lists. null is the honest answer.
+  const section = deriveSection({ filePath: '', section: undefined, parentId: 42, title: 'Some Page' });
+  assert.strictEqual(section, null);
+});
+
+test('producer and steward agree on cluster identity for the same page objects', () => {
+  const landingId = 99;
+  const pages = [
+    { title: 'Alex', filePath: 'People', parentId: 5 },          // entity page
+    { title: 'Research', filePath: '', parentId: landingId },    // virtual section page
+    { title: 'Landing page', filePath: '', parentId: 0 },        // landing itself
+  ];
+  for (const p of pages) {
+    // One function, one truth — both sides call the same export; with the
+    // landing id in hand the answer can only refine null → title, never fork.
+    const stewardView = deriveSection(p, landingId);
+    const producerView = deriveSection(p);
+    assert.ok(
+      producerView === stewardView || producerView === null,
+      `producer may lack landing id (null) but must never contradict: ${p.title}`
+    );
+  }
+  assert.strictEqual(deriveSection(pages[0]), 'People');
+  assert.strictEqual(deriveSection(pages[0], landingId), 'People');
+});
+
+asyncTest('_updateSectionSummaries membership is exact: "Research Archive" page stays out of "Research"', async () => {
+  const listPagesResult = [
+    { id: 1, title: 'Landing page', filePath: '', parentId: 0, fileName: 'Readme.md' },
+    { id: 2, title: 'Research', filePath: 'Research', parentId: 1, fileName: 'Readme.md' },
+    { id: 3, title: 'Paper A', filePath: 'Research', parentId: 2, fileName: 'Paper A.md' },
+    { id: 4, title: 'Old Paper', filePath: 'Research Archive', parentId: 5, fileName: 'Old Paper.md' },
+  ];
+  const collectivesClient = makeMockCollectivesClient({ listPagesResult });
+  const router = makeMockRouter({});
+  router.route = async (opts) => {
+    router._calls.push(opts);
+    return { result: '# Research\n\n## Known Entities\n- ok', provider: 'mock', model: 'mock' };
+  };
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router }));
+
+  await steward._updateSectionSummaries(new Set(['Research']));
+
+  const prompt = router._calls[0]?.content || '';
+  assert.ok(prompt.includes('Paper A'), 'exact member listed');
+  assert.ok(!prompt.includes('Old Paper'), 'substring cousin "Research Archive" excluded');
 });
 
 asyncTest('_readNeighborhood() populates pages when filePath is folder-only (current API shape)', async () => {

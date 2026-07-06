@@ -18,6 +18,41 @@ function _slugify(text) {
 }
 
 /**
+ * Derive the section (cluster) a page belongs to. THE single derivation:
+ * every consumer of section identity routes through here. Six call sites
+ * used to re-derive this each their own way (substring matches, raw
+ * filePath prefixes, title fallbacks) — the #51 generator, alive across
+ * module boundaries, until each drift eventually strands or misfiles pages.
+ * The client owns the API shape, so the client owns the derivation.
+ *
+ * Chain:
+ *   1. page.section (truthy) — returned directly; defensive for future API restores.
+ *   2. page.filePath (non-empty string) — first non-empty segment after split('/').
+ *   3. page.parentId === landingPageId (direct child of landing) — page.title.
+ *      Virtual section pages (no backing folder yet) report filePath: '' from
+ *      the Collectives API; their title IS the section. Requires landingPageId.
+ *   4. null — the landing page itself (parentId === 0, empty filePath) and orphans.
+ *
+ * @param {{ section?: string, filePath?: string, parentId?: number, title?: string }} page
+ * @param {number|undefined} [landingPageId] - Id of the landing page (parentId === 0
+ *   entry in listPages). Callers without a page list in hand may omit it; branch 3
+ *   is then unavailable and such pages derive to null (honest: unknown section).
+ * @returns {string|null}
+ */
+function deriveSection(page, landingPageId) {
+  if (!page) return null;
+  if (page.section) return page.section;
+  if (page.filePath) {
+    const parts = page.filePath.split('/').filter(Boolean);
+    return parts[0] || null;
+  }
+  if (landingPageId && page.parentId === landingPageId && page.title) {
+    return page.title;
+  }
+  return null;
+}
+
+/**
  * Custom error class for Collectives API errors
  */
 class CollectivesApiError extends Error {
@@ -1021,3 +1056,4 @@ class CollectivesClient {
 
 module.exports = CollectivesClient;
 module.exports.CollectivesApiError = CollectivesApiError;
+module.exports.deriveSection = deriveSection;

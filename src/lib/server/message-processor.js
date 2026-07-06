@@ -46,6 +46,7 @@ const ollamaGate = require('../shared/ollama-gate');
 const CONFIG = require('../config');
 const { OBSERVATION_TYPES } = require('../maintenance/observation-log');
 const { parseFrontmatter } = require('../knowledge/frontmatter');
+const { deriveSection } = require('../integrations/collectives-client');
 
 /** Domain intents that can be handled locally with focused tool subsets. */
 const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search', 'knowledge', 'confirmation', 'confirmation_declined']);
@@ -2279,8 +2280,12 @@ Be thoughtful. Be honest. Be yourself.`;
         const obs = this.observationLog;
         if (obs && content) {
           const pageTitle = page.title || item.title || '';
-          // Derive cluster from the filePath section prefix (e.g. "People/Alex" → "People")
-          const cluster = fp.includes('/') ? fp.split('/')[0] : (fp || pageTitle);
+          // Single section derivation (owned by the client). No landing-page id
+          // in hand here (and no extra API call to fetch one), so a page the
+          // chain cannot place derives to null — getNeediest skips those
+          // honestly instead of counting them toward a phantom cluster that
+          // the steward's cluster census never lists.
+          const cluster = deriveSection(page) || null;
 
           try {
             const { frontmatter: fm } = parseFrontmatter(content);
