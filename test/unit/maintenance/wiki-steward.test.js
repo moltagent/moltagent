@@ -45,6 +45,20 @@ function makeMockCollectivesClient({
     _cache: { collectiveId },
     resolveCollective: async () => collectiveId,
     listPages: async () => listPagesResult,
+    // Mirrors the real client: case-insensitive leaf-title match over known pages.
+    findPageByTitle: async (title) => {
+      const leaf = title.split('/').pop().toLowerCase();
+      const known = Object.keys(pagesByTitle).find(t => t.toLowerCase() === leaf);
+      if (known) return { page: { title: known }, path: pagesByTitle[known].path || `${known}.md` };
+      const listed = listPagesResult.find(p => (p.title || '').toLowerCase() === leaf);
+      if (listed) {
+        return {
+          page: listed,
+          path: listed.filePath ? `${listed.filePath}/${listed.fileName}` : (listed.fileName || `${listed.title}.md`),
+        };
+      }
+      return null;
+    },
     readPageWithFrontmatter: async (title) => {
       if (pagesByTitle[title] !== undefined) return pagesByTitle[title];
       return null;
@@ -435,6 +449,7 @@ asyncTest('_assess connection builds prompt with graph edge information', async 
 asyncTest('connection intervention _addWikilink adds a link and increments linksAdded', async () => {
   const pagesByTitle = {
     'Carlos': { frontmatter: {}, body: 'Carlos works at a company.', path: 'People/Carlos.md' },
+    'ManeraMedia GmbH': { frontmatter: {}, body: 'A company.', path: 'Organizations/ManeraMedia GmbH.md' },
   };
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const router = makeMockRouter({
@@ -537,6 +552,7 @@ asyncTest('memory intervention marks pages for composting via frontmatter, does 
 asyncTest('_addWikilink is idempotent on second call with same target', async () => {
   const pagesByTitle = {
     'Carlos': { frontmatter: {}, body: 'Carlos works at a company.', path: 'People/Carlos.md' },
+    'ManeraMedia GmbH': { frontmatter: {}, body: 'A company.', path: 'Organizations/ManeraMedia GmbH.md' },
   };
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
@@ -634,6 +650,7 @@ asyncTest('_addWikilink skips when unresolved [[target]] already in body', async
       body: 'Carlos.\n\n## Related\n- [[ManeraMedia GmbH]] (works_at)\n',
       path: 'People/Carlos.md',
     },
+    'ManeraMedia GmbH': { frontmatter: {}, body: 'A company.', path: 'Organizations/ManeraMedia GmbH.md' },
   };
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
@@ -653,6 +670,7 @@ asyncTest('_addWikilink skips when resolved [target](url) already in body', asyn
       body: 'Carlos.\n\n## Related\n- [ManeraMedia GmbH](https://nc.example/f/12345) (works_at)\n',
       path: 'People/Carlos.md',
     },
+    'ManeraMedia GmbH': { frontmatter: {}, body: 'A company.', path: 'Organizations/ManeraMedia GmbH.md' },
   };
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
@@ -666,6 +684,7 @@ asyncTest('_addWikilink skips when resolved [target](url) already in body', asyn
 asyncTest('_addWikilink adds the link when neither form is present', async () => {
   const pagesByTitle = {
     'Carlos': { frontmatter: {}, body: 'Carlos works somewhere.', path: 'People/Carlos.md' },
+    'ManeraMedia GmbH': { frontmatter: {}, body: 'A company.', path: 'Organizations/ManeraMedia GmbH.md' },
   };
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
@@ -674,6 +693,69 @@ asyncTest('_addWikilink adds the link when neither form is present', async () =>
   assert.strictEqual(added, true, 'should add — neither form present');
   const written = collectivesClient._writtenPages['Carlos'];
   assert.ok(written && written.body.includes('[[ManeraMedia GmbH]]'), 'body should carry the new link');
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 5 (G4): STRUCTURAL LINK-TARGET VALIDATION
+// ---------------------------------------------------------------------------
+
+asyncTest('_addWikilink to a missing target writes no link and records a GAP', async () => {
+  const observationLog = makeObservationLog();
+  const pagesByTitle = {
+    'Carlos': { frontmatter: {}, body: 'Carlos works somewhere.', path: 'People/Carlos.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, observationLog }));
+
+  const neighborhood = { cluster: 'People', pages: [{ title: 'Carlos', path: 'People/Carlos.md' }] };
+  const added = await steward._addWikilink('Carlos', 'Nine Universal Roadblocks Framework', 'works_on', neighborhood);
+
+  assert.strictEqual(added, false, 'no page for the target — no link written');
+  assert.ok(!collectivesClient._writtenPages['Carlos'], 'source page must not be rewritten');
+  const gaps = observationLog.getByType(OBSERVATION_TYPES.GAP);
+  assert.strictEqual(gaps.length, 1, 'one GAP observation recorded');
+  assert.strictEqual(gaps[0].cluster, 'People', 'GAP carries the cluster');
+  assert.strictEqual(gaps[0].page, 'Carlos', 'GAP names the source page');
+  assert.strictEqual(gaps[0].detail, 'Nine Universal Roadblocks Framework');
+  // Pending Questions entry written through the existing gap logger
+  const pending = collectivesClient._writtenContent['Meta/Pending Questions.md'];
+  assert.ok(pending && pending.includes('Nine Universal Roadblocks Framework'), 'gap logged to Pending Questions');
+});
+
+asyncTest('_addWikilink resolves target case-insensitively to the canonical title', async () => {
+  const pagesByTitle = {
+    'Carlos': { frontmatter: {}, body: 'Carlos works somewhere.', path: 'People/Carlos.md' },
+    'ManeraMedia GmbH': { frontmatter: {}, body: 'A company.', path: 'Organizations/ManeraMedia GmbH.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const added = await steward._addWikilink('Carlos', 'maneramedia gmbh', 'works_at');
+  assert.strictEqual(added, true);
+  const written = collectivesClient._writtenPages['Carlos'];
+  assert.ok(written.body.includes('[[ManeraMedia GmbH]]'), 'link uses the canonical page title');
+});
+
+asyncTest('_addWikilink prefers the in-neighborhood title over a global lookup', async () => {
+  const pagesByTitle = {
+    'Carlos': { frontmatter: {}, body: 'Carlos works somewhere.', path: 'People/Carlos.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  let globalLookups = 0;
+  const origFind = collectivesClient.findPageByTitle;
+  collectivesClient.findPageByTitle = async (t) => { globalLookups++; return origFind(t); };
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const neighborhood = {
+    cluster: 'People',
+    pages: [
+      { title: 'Carlos', path: 'People/Carlos.md' },
+      { title: 'Eelco Dykstra', path: 'People/Eelco Dykstra.md' },
+    ],
+  };
+  const added = await steward._addWikilink('Carlos', 'Eelco Dykstra', 'colleague_of', neighborhood);
+  assert.strictEqual(added, true);
+  assert.strictEqual(globalLookups, 0, 'neighborhood answered — no global lookup');
 });
 
 // ---------------------------------------------------------------------------
@@ -1083,6 +1165,7 @@ asyncTest('_intervene(connection): skips structural page in missingLinks', async
   const pagesByTitle = {
     'Carlos':    { frontmatter: {}, body: 'Content page.', path: 'People/Carlos.md' },
     'Documents': { frontmatter: { type: 'index' }, body: '# Documents', path: 'Documents.md' },
+    'Eelco':     { frontmatter: {}, body: 'A person.', path: 'People/Eelco.md' },
   };
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));

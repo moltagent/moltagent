@@ -1085,7 +1085,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             continue;
           }
           try {
-            const added = await this._addWikilink(m.page, m.shouldLinkTo, m.relationship);
+            const added = await this._addWikilink(m.page, m.shouldLinkTo, m.relationship, neighborhood);
             if (added) {
               results.linksAdded++;
               results.pagesModified++;
@@ -1102,7 +1102,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           }
           for (const target of o.suggestedConnections || []) {
             try {
-              const added = await this._addWikilink(o.page, target, 'related');
+              const added = await this._addWikilink(o.page, target, 'related', neighborhood);
               if (added) {
                 results.linksAdded++;
                 results.pagesModified++;
@@ -1322,13 +1322,43 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
    * Connection lens: add `[[target]]` to `page` in a context-appropriate line.
    * Only writes if the wikilink is not already present.
    *
+   * The target must exist as a page (G4: the model proposes meaning, code
+   * validates structure). Resolution order: the neighborhood's own titles
+   * first, then a global lookup for cross-cluster targets. A target with no
+   * page produces no link write — it produces a GAP observation plus a
+   * Pending Questions entry, which is this system's name for exactly that
+   * condition. Without this, Related sections accumulate [[Entity]] entries
+   * that resolveWikilinks correctly preserves as dead markup forever.
+   *
    * @param {string} page
    * @param {string} target
    * @param {string} relationship
+   * @param {Neighborhood} [neighborhood] - Assessed neighborhood; provides
+   *   the local title index and the cluster for the GAP observation.
    * @returns {Promise<boolean>} true if the wikilink was added.
    */
-  async _addWikilink(page, target, relationship) {
+  async _addWikilink(page, target, relationship, neighborhood) {
     if (!page || !target) return false;
+
+    const canonicalTarget = await this._resolveLinkTarget(target, neighborhood);
+    if (!canonicalTarget) {
+      this.observations.notice({
+        type: 'gap',
+        cluster: neighborhood?.cluster,
+        page,
+        detail: target,
+      });
+      try {
+        await this._logKnowledgeGap(target, page);
+      } catch (err) {
+        this.logger.warn(`[WikiSteward:connection] gap log for "${target}" failed: ${err.message}`);
+      }
+      this.logger.info(
+        `[WikiSteward:connection] Link target "${target}" has no page — GAP recorded, no link written`
+      );
+      return false;
+    }
+    target = canonicalTarget;
 
     const result = await this.collectivesClient.readPageWithFrontmatter(page);
     if (!result) return false;
@@ -1362,6 +1392,32 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     await this.collectivesClient.writePageWithFrontmatter(page, result.frontmatter, newBody);
     this.logger.info(`[WikiSteward:connection] Added [[${target}]] to "${page}" (${relationship})`);
     return true;
+  }
+
+  /**
+   * Resolve a proposed link target to the canonical title of an existing page,
+   * or null when no page exists. Neighborhood titles answer first (the common
+   * case: the LLM links within the cluster it assessed); the global lookup
+   * covers cross-cluster targets, the one case the neighborhood cannot answer.
+   *
+   * @param {string} target - LLM-proposed target title.
+   * @param {Neighborhood} [neighborhood]
+   * @returns {Promise<string|null>} Canonical page title, or null.
+   */
+  async _resolveLinkTarget(target, neighborhood) {
+    const wanted = target.toLowerCase().trim();
+    const local = (neighborhood?.pages || []).find(
+      p => (p.title || '').toLowerCase().trim() === wanted
+    );
+    if (local) return local.title;
+
+    try {
+      const found = await this.collectivesClient.findPageByTitle(target);
+      if (found?.page?.title) return found.page.title;
+    } catch (err) {
+      this.logger.warn(`[WikiSteward:connection] findPageByTitle("${target}") failed: ${err.message}`);
+    }
+    return null;
   }
 
   /**

@@ -789,13 +789,25 @@ class CollectivesClient {
   }
 
   /**
-   * Write a page with frontmatter
+   * Write a page with frontmatter.
+   *
+   * Page creation is explicit. A lookup miss without `createIfMissing` throws
+   * instead of silently PUTting `${title}.md` at the collective root — that
+   * fallback is where every stray root page was born (issue #43's page is one).
+   * With `createIfMissing`, the page is created through the OCS page tree
+   * (ensureSection/createPage) so it is born inside the tree, never at root.
+   *
    * @param {string} title - Page title
    * @param {Object} frontmatter - Frontmatter metadata
    * @param {string} body - Page body content
+   * @param {Object} [options]
+   * @param {{parentId?: number, section?: string}} [options.createIfMissing] -
+   *   When the title lookup misses, create the page under this parent page id,
+   *   or under this section (resolved via ensureSection). Without it, a miss
+   *   throws CollectivesApiError(404).
    * @returns {Promise<string>} Path written to
    */
-  async writePageWithFrontmatter(title, frontmatter, body) {
+  async writePageWithFrontmatter(title, frontmatter, body, options = {}) {
     const { serializeFrontmatter } = require('../knowledge/frontmatter');
 
     // Resolve [[wikilinks]] to Nextcloud file links before writing
@@ -805,7 +817,30 @@ class CollectivesClient {
 
     // Try to find existing page path
     const found = await this.findPageByTitle(title);
-    const pagePath = found ? found.path : `${title}.md`;
+    let pagePath;
+    if (found) {
+      pagePath = found.path;
+    } else if (options.createIfMissing && typeof options.createIfMissing === 'object') {
+      const collectiveId = await this.resolveCollective();
+      const { parentId, section } = options.createIfMissing;
+      let actualParentId = parentId;
+      if (actualParentId == null && section) {
+        const sectionPage = await this.ensureSection(collectiveId, section);
+        actualParentId = sectionPage?.id;
+      }
+      if (actualParentId == null) {
+        throw new CollectivesApiError(
+          `createIfMissing for "${title}" needs a parentId or section`, 400
+        );
+      }
+      const leafTitle = title.split('/').pop();
+      const created = await this.createPage(collectiveId, actualParentId, leafTitle);
+      pagePath = this._buildPagePath(created);
+    } else {
+      throw new CollectivesApiError(
+        `Page not found: "${title}" — pass { createIfMissing } to create it inside the tree`, 404
+      );
+    }
 
     await this.writePageContent(pagePath, content);
     return pagePath;

@@ -471,20 +471,99 @@ asyncTest('writePageWithFrontmatter resolves wikilinks before writing', async ()
     'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/pages': {
       status: 200, body: { ocs: { data: PAGES_WITH_FILEIDS } }, headers: {}
     },
-    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/search?search=Test%20Page': {
-      status: 200, body: { ocs: { data: [] } }, headers: {}
-    },
-    'PUT:/remote.php/dav/files/testuser/.Collectives/Moltagent Knowledge/Test Page.md': (path, options) => {
+    'PUT:/remote.php/dav/files/testuser/.Collectives/Moltagent Knowledge/John Smith.md': (path, options) => {
       writtenContent = options.body;
       return { status: 201, body: '', headers: {} };
     }
   });
   const client = new CollectivesClient(mockNC);
-  await client.writePageWithFrontmatter('Test Page', { type: 'note' }, 'Links to [[People]] and [[John Smith]].');
+  await client.writePageWithFrontmatter('John Smith', { type: 'person' }, 'Links to [[People]] and [[Q3 Campaign]].');
   assert.ok(writtenContent, 'Should have written content');
   assert.ok(writtenContent.includes('[People](https://cloud.example.com/apps/collectives/Moltagent-Knowledge-10/People-100)'), 'Should resolve People wikilink');
-  assert.ok(writtenContent.includes('[John Smith](https://cloud.example.com/apps/collectives/Moltagent-Knowledge-10/John-Smith-200)'), 'Should resolve John Smith wikilink');
+  assert.ok(writtenContent.includes('[Q3 Campaign](https://cloud.example.com/apps/collectives/Moltagent-Knowledge-10/Q3-Campaign-201)'), 'Should resolve Q3 Campaign wikilink');
   assert.ok(!writtenContent.includes('[['), 'Should not contain raw wikilinks');
+});
+
+// -- writePageWithFrontmatter — explicit creation contract (Phase 5, G3) --
+
+asyncTest('writePageWithFrontmatter throws on a lookup miss without createIfMissing', async () => {
+  const mockNC = createMockNCRequestManager({
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives': {
+      status: 200, body: { ocs: { data: SAMPLE_COLLECTIVES } }, headers: {}
+    },
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/pages': {
+      status: 200, body: { ocs: { data: PAGES_WITH_FILEIDS } }, headers: {}
+    },
+  });
+  const client = new CollectivesClient(mockNC);
+  let threw = null;
+  try {
+    await client.writePageWithFrontmatter('Never Seen Before', {}, 'body');
+  } catch (err) {
+    threw = err;
+  }
+  assert.ok(threw, 'must throw instead of creating a root-level stray');
+  assert.strictEqual(threw.statusCode, 404);
+  assert.ok(threw.message.includes('createIfMissing'), 'error names the explicit option');
+});
+
+asyncTest('writePageWithFrontmatter with createIfMissing.section creates inside the tree', async () => {
+  let writtenPath = null;
+  const mockNC = createMockNCRequestManager({
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives': {
+      status: 200, body: { ocs: { data: SAMPLE_COLLECTIVES } }, headers: {}
+    },
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/pages': {
+      status: 200, body: { ocs: { data: PAGES_WITH_FILEIDS } }, headers: {}
+    },
+    'PUT:/remote.php/dav/files/testuser/.Collectives/Moltagent Knowledge/People/New Person.md': (path) => {
+      writtenPath = path;
+      return { status: 201, body: '', headers: {} };
+    }
+  });
+  const client = new CollectivesClient(mockNC);
+  // Stub the tree-level primitives: the contract under test is the routing,
+  // not ensureSection/createPage themselves (covered by their own tests).
+  const ensureCalls = [];
+  client.ensureSection = async (collectiveId, sectionName) => {
+    ensureCalls.push(sectionName);
+    return { id: 100, title: 'People' };
+  };
+  const createCalls = [];
+  client.createPage = async (collectiveId, parentId, title) => {
+    createCalls.push({ parentId, title });
+    return { id: 999, title, fileName: `${title}.md`, filePath: 'People' };
+  };
+
+  const path = await client.writePageWithFrontmatter(
+    'New Person', { type: 'person' }, 'A body.',
+    { createIfMissing: { section: 'People' } }
+  );
+
+  assert.deepStrictEqual(ensureCalls, ['People'], 'section resolved through ensureSection');
+  assert.deepStrictEqual(createCalls, [{ parentId: 100, title: 'New Person' }], 'page created under the section');
+  assert.strictEqual(path, 'People/New Person.md', 'path comes from the created page, not a root fallback');
+  assert.ok(writtenPath, 'content written inside the tree');
+});
+
+asyncTest('writePageWithFrontmatter with createIfMissing but no parent resolution throws 400', async () => {
+  const mockNC = createMockNCRequestManager({
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives': {
+      status: 200, body: { ocs: { data: SAMPLE_COLLECTIVES } }, headers: {}
+    },
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/pages': {
+      status: 200, body: { ocs: { data: PAGES_WITH_FILEIDS } }, headers: {}
+    },
+  });
+  const client = new CollectivesClient(mockNC);
+  let threw = null;
+  try {
+    await client.writePageWithFrontmatter('New Person', {}, 'body', { createIfMissing: {} });
+  } catch (err) {
+    threw = err;
+  }
+  assert.ok(threw, 'empty createIfMissing cannot resolve a parent');
+  assert.strictEqual(threw.statusCode, 400);
 });
 
 // -- ensureSection — collision dedup (Fix D) --

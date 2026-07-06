@@ -57,8 +57,8 @@ const STRUCTURED_SUMMARY =
 function createMinimalWikiClient(overrides = {}) {
   const client = {
     _calls: [],
-    writePageWithFrontmatter: async function (title, frontmatter, body) {
-      this._calls.push({ method: 'writePageWithFrontmatter', title, frontmatter, body });
+    writePageWithFrontmatter: async function (title, frontmatter, body, options) {
+      this._calls.push({ method: 'writePageWithFrontmatter', title, frontmatter, body, options });
       return `${title}.md`;
     },
     ...overrides
@@ -449,6 +449,10 @@ async function runTests() {
     const call = wiki._calls.find(c => c.method === 'writePageWithFrontmatter');
     assert.ok(call, 'writePageWithFrontmatter should have been called as fallback');
     assert.ok(call.title.startsWith('Sessions/'), `Title should start with Sessions/, got: ${call.title}`);
+    // Phase 5 contract: the fallback creates explicitly inside Sessions/, so a
+    // lookup miss can never mint a root-level stray page.
+    assert.deepStrictEqual(call.options, { createIfMissing: { section: 'Sessions' } },
+      'fallback must pass the explicit-creation option');
   });
 
   // ----------------------------------------------------------

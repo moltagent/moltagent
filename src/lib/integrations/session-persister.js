@@ -265,7 +265,10 @@ class SessionPersister {
                       typeof this.wiki.writePageContent === 'function';
 
     if (!hasOcsApi) {
-      await this.wiki.writePageWithFrontmatter(`Sessions/${leafTitle}`, frontmatter, body);
+      // Explicit creation: a lookup miss must create inside Sessions/, never
+      // fall back to a root-level `${title}.md` (the stray-root generator).
+      await this.wiki.writePageWithFrontmatter(`Sessions/${leafTitle}`, frontmatter, body,
+        { createIfMissing: { section: 'Sessions' } });
       return;
     }
 
