@@ -371,6 +371,112 @@ asyncTest('_updateSectionSummaries membership is exact: "Research Archive" page 
   assert.ok(!prompt.includes('Old Paper'), 'substring cousin "Research Archive" excluded');
 });
 
+// ---------------------------------------------------------------------------
+// PHASE 7: SINGLE-READ NEIGHBORHOOD, GROUNDED LEVEL 1, DEAD FIELDS OUT
+// ---------------------------------------------------------------------------
+
+asyncTest('_readNeighborhood performs exactly one content read per page and carries path', async () => {
+  const listPagesResult = [
+    { id: 1, title: 'Landing page', filePath: '', parentId: 0, fileName: 'Readme.md' },
+    { id: 2, title: 'Alpha', filePath: 'People', parentId: 5, fileName: 'Alpha.md' },
+    { id: 3, title: 'Beta', filePath: 'People', parentId: 5, fileName: 'Beta.md' },
+  ];
+  const pagesByTitle = {
+    'Alpha': { frontmatter: { type: 'person' }, body: 'Alpha body.', path: 'People/Alpha.md' },
+    'Beta': { frontmatter: {}, body: 'Beta body.', path: 'People/Beta.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle, listPagesResult });
+  let reads = 0;
+  const origRead = collectivesClient.readPageWithFrontmatter;
+  collectivesClient.readPageWithFrontmatter = async (title) => { reads++; return origRead(title); };
+
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+  const neighborhood = await steward._readNeighborhood({ name: 'People' });
+
+  assert.strictEqual(neighborhood.pages.length, 2);
+  assert.strictEqual(reads, 2, 'one content read per page, not two');
+  assert.strictEqual(neighborhood.pages[0].path, 'People/Alpha.md', 'enriched page carries its path');
+  assert.ok(!('graphEdges' in neighborhood), 'dead cluster-wide graphEdges scan is gone');
+  assert.ok(!('deckCards' in neighborhood), 'dead deckCards field is gone');
+});
+
+asyncTest('knowledge prompt carries a FACTS block from per-page graph connections, capped at 40', async () => {
+  const manyConnections = Array.from({ length: 50 }, (_, i) => ({ predicate: 'knows', object: `Entity ${i}` }));
+  const neighborhood = {
+    cluster: 'People',
+    pages: [{
+      id: '1', title: 'Alpha', section: 'People', path: 'People/Alpha.md',
+      frontmatter: {}, bodyPreview: 'preview', hasEmbedding: true,
+      graphConnections: manyConnections, wikilinks: [],
+    }],
+    sections: new Set(['People']),
+  };
+  const steward = new WikiSteward(makeFullDeps());
+  const prompt = steward._knowledgeAssessmentPrompt(neighborhood);
+
+  assert.ok(prompt.includes('KNOWN FACTS'), 'FACTS block present');
+  assert.ok(prompt.includes('Alpha knows Entity 0'), 'fact lines carry page, predicate, object');
+  const factCount = (prompt.match(/^Alpha knows Entity /gm) || []).length;
+  assert.strictEqual(factCount, 40, 'fact lines capped at 40');
+});
+
+asyncTest('knowledge prompt omits the FACTS block when no connections exist', async () => {
+  const neighborhood = {
+    cluster: 'People',
+    pages: [{
+      id: '1', title: 'Alpha', section: 'People', path: null,
+      frontmatter: {}, bodyPreview: '', hasEmbedding: false,
+      graphConnections: [], wikilinks: [],
+    }],
+    sections: new Set(['People']),
+  };
+  const steward = new WikiSteward(makeFullDeps());
+  const prompt = steward._knowledgeAssessmentPrompt(neighborhood);
+  assert.ok(!prompt.includes('KNOWN FACTS'), 'no FACTS header without facts');
+});
+
+asyncTest('Level 1 prompt is grounded: summaries from frontmatter/first lines, confidence only where carried', async () => {
+  const listPagesResult = [
+    { id: 1, title: 'Landing page', filePath: '', parentId: 0, fileName: 'Readme.md' },
+    { id: 2, title: 'People', filePath: 'People', parentId: 1, fileName: 'Readme.md' },
+    { id: 3, title: 'Alpha', filePath: 'People', parentId: 2, fileName: 'Alpha.md' },
+    { id: 4, title: 'Beta', filePath: 'People', parentId: 2, fileName: 'Beta.md' },
+  ];
+  const collectivesClient = makeMockCollectivesClient({ listPagesResult });
+  const router = makeMockRouter({});
+  router.route = async (opts) => {
+    router._calls.push(opts);
+    return { result: '# People\n\n## Known Entities\n- ok', provider: 'mock', model: 'mock' };
+  };
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router }));
+
+  // Enriched pages already in hand — no extra read should be needed for them.
+  const enriched = [
+    {
+      id: 3, title: 'Alpha', section: 'People', path: 'People/Alpha.md',
+      frontmatter: { summary: 'Editorial director at the media company.', confidence: 'high' },
+      bodyPreview: '# Alpha\nIgnored because frontmatter.summary wins.',
+      hasEmbedding: true, graphConnections: [], wikilinks: [],
+    },
+    {
+      id: 4, title: 'Beta', section: 'People', path: 'People/Beta.md',
+      frontmatter: {},
+      bodyPreview: '# Beta\nWorks on food-systems research.\nMore text.',
+      hasEmbedding: false, graphConnections: [], wikilinks: [],
+    },
+  ];
+
+  await steward._updateSectionSummaries(new Set(['People']), enriched);
+
+  const prompt = router._calls[0]?.content || '';
+  assert.ok(prompt.includes('Editorial director at the media company.'), 'frontmatter summary grounds Alpha');
+  assert.ok(prompt.includes('(confidence: high)'), 'confidence label present where frontmatter carries one');
+  assert.ok(prompt.includes('Works on food-systems research.'), 'first non-heading body line grounds Beta');
+  assert.ok(!/Beta\*\*[^\n]*confidence/.test(prompt), 'no confidence label for Beta (frontmatter has none)');
+  assert.ok(prompt.includes('not invention'), 'prompt states the format-only contract');
+  assert.ok(!prompt.match(/- \*\*People\*\*/), 'section parent page is not listed as its own entity');
+});
+
 asyncTest('_readNeighborhood() populates pages when filePath is folder-only (current API shape)', async () => {
   // Mimics what listPages actually returns post-API-change:
   //   section: undefined, filePath: "Documents" (no slash, no page name).

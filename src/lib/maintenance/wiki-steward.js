@@ -25,12 +25,12 @@
  *   connection, memory) share one ObservationLog. On each heartbeat pulse,
  *   the steward picks the neediest cluster (most unresolved observations +
  *   longest time since visit), reads its entire neighborhood (pages +
- *   frontmatter + graph edges + deck cards), assesses it through the active
+ *   frontmatter + per-page graph connections), assesses it through the active
  *   steward's lens via ONE LLM call, then executes targeted interventions.
  *   Rotation guarantees every lens walks every cluster over time.
  * - Key Dependencies:
  *     CollectivesClient    — list/read/write pages, ensureSection
- *     KnowledgeGraph       — _entities / _triples / relatedTo / getEntity
+ *     KnowledgeGraph       — getEntity / relatedTo (public surface only)
  *     VectorStore          — getMetadata(title) keyed by page title (NO hasEmbedding — use getMetadata !== null)
  *     EmbeddingClient      — embed text for un-embedded pages
  *     LLMRouter            — route({ job, content, requirements }) → { result }
@@ -86,6 +86,7 @@ const { deriveSection } = require('../integrations/collectives-client');
  * @property {string} id
  * @property {string} title
  * @property {string} [section]
+ * @property {string|null} path           - WebDAV path from the single read; the identity handle executors write through.
  * @property {Object} frontmatter
  * @property {string} bodyPreview
  * @property {boolean} hasEmbedding       - Derived from vectorStore.getMetadata(id) !== null.
@@ -97,9 +98,7 @@ const { deriveSection } = require('../integrations/collectives-client');
  * @typedef {Object} Neighborhood
  * @property {string} cluster
  * @property {EnrichedPage[]} pages
- * @property {Array} graphEdges
  * @property {Set<string>} sections
- * @property {Array} deckCards
  */
 
 /**
@@ -313,10 +312,11 @@ class WikiSteward {
       interventionResult = { pagesModified: 0, linksAdded: 0, observationsResolved: 0, resolutions: [] };
     }
 
-    // Step 6: refresh Level 1 summaries if pages were modified
+    // Step 6: refresh Level 1 summaries if pages were modified. The enriched
+    // pages already in hand ground the Level 1 lines without a second read.
     if (interventionResult.pagesModified > 0) {
       try {
-        await this._updateSectionSummaries(neighborhood.sections);
+        await this._updateSectionSummaries(neighborhood.sections, neighborhood.pages);
       } catch (err) {
         this.logger.warn(`[WikiSteward:${stewardType}] _updateSectionSummaries failed: ${err.message}`);
       }
@@ -511,8 +511,9 @@ class WikiSteward {
 
   /**
    * Read every page in the cluster, enrich it with frontmatter, body preview,
-   * embedding presence, graph edges, and wikilink targets. This is the single
-   * "walk the garden" that all three stewards reuse.
+   * page path, embedding presence, graph connections, and wikilink targets.
+   * This is the single "walk the garden" that all three stewards reuse.
+   * One content read per page (_readPage), one client call each.
    *
    * Embedding presence MUST be derived from `vectorStore.getMetadata(page.title) !== null`
    * (VectorStore does NOT expose hasEmbedding; key is page.title, not page.id).
@@ -528,9 +529,7 @@ class WikiSteward {
     const neighborhood = {
       cluster: cluster.name,
       pages: [],
-      graphEdges: [],
       sections: new Set(),
-      deckCards: [],
     };
 
     // Resolve collective ID if needed
@@ -562,8 +561,9 @@ class WikiSteward {
 
     for (const pageRef of clusterPages) {
       try {
-        const frontmatter = await this._readFrontmatter(pageRef);
-        const bodyPreview = await this._readBodyPreview(pageRef, bodyPreviewLimit);
+        const pageData = await this._readPage(pageRef);
+        const frontmatter = pageData?.frontmatter || {};
+        const bodyPreview = (pageData?.body || '').slice(0, bodyPreviewLimit);
         const hasEmbedding = this.vectorStore.getMetadata(pageRef.title) !== null;
 
         // Graph connections: resolve the page title to an entity id first, then 1-hop.
@@ -596,6 +596,7 @@ class WikiSteward {
           title: pageRef.title,
           entityId,
           section: cluster.name,
+          path: pageData?.path || null,
           frontmatter,
           bodyPreview,
           hasEmbedding,
@@ -609,47 +610,28 @@ class WikiSteward {
       }
     }
 
-    // Collect graph edges across all cluster pages for neighborhood-level context.
-    // Match on entity IDs (not titles) — that is how KnowledgeGraph stores triples.
-    const entityIds = new Set(
-      neighborhood.pages.map(p => p.entityId).filter(Boolean)
-    );
-    neighborhood.graphEdges = (this.knowledgeGraph._triples || []).filter(t =>
-      entityIds.has(t.subject) || entityIds.has(t.object)
-    );
-
     return neighborhood;
   }
 
   /**
+   * One content read per page: frontmatter, body, and path in a single
+   * client call. The preview every consumer needs is a slice of this body.
+   *
    * @param {PageRef} page
-   * @returns {Promise<Object>} Parsed YAML frontmatter (possibly empty).
+   * @returns {Promise<{frontmatter: Object, body: string, path: string|null}|null>}
    */
-  async _readFrontmatter(page) {
+  async _readPage(page) {
     try {
       const result = await this.collectivesClient.readPageWithFrontmatter(page.title);
-      return result?.frontmatter || {};
+      if (!result) return null;
+      return {
+        frontmatter: result.frontmatter || {},
+        body: result.body || '',
+        path: result.path || null,
+      };
     } catch (err) {
-      this.logger.debug(`[WikiSteward] _readFrontmatter("${page.title}") failed: ${err.message}`);
-      return {};
-    }
-  }
-
-  /**
-   * @param {PageRef} page
-   * @param {number} limit - Max chars to read.
-   * @returns {Promise<string>}
-   */
-  async _readBodyPreview(page, limit) {
-    try {
-      const result = await this.collectivesClient.readPageWithFrontmatter(page.title);
-      if (!result) return '';
-      // body is already stripped of frontmatter by readPageWithFrontmatter
-      const body = result.body || '';
-      return body.slice(0, limit);
-    } catch (err) {
-      this.logger.debug(`[WikiSteward] _readBodyPreview("${page.title}") failed: ${err.message}`);
-      return '';
+      this.logger.debug(`[WikiSteward] _readPage("${page.title}") failed: ${err.message}`);
+      return null;
     }
   }
 
@@ -765,6 +747,21 @@ class WikiSteward {
       `Preview: ${p.bodyPreview.substring(0, 200)}`
     ).join('\n\n');
 
+    // Claim-level facts from the per-page graph connections already in hand —
+    // contradiction detection needs facts the 200-char previews cannot carry.
+    // Capped at 40 lines to keep the prompt bounded on dense clusters.
+    const factLines = [];
+    for (const p of neighborhood.pages) {
+      for (const c of p.graphConnections || []) {
+        if (factLines.length >= 40) break;
+        factLines.push(`${p.title} ${c.predicate} ${c.object}`);
+      }
+      if (factLines.length >= 40) break;
+    }
+    const factsBlock = factLines.length > 0
+      ? `\nKNOWN FACTS from the knowledge graph (claim-level, use them to spot contradictions):\n${factLines.join('\n')}\n`
+      : '';
+
     return `You are the Knowledge Steward. Your purpose is truth maintenance.
 You are reviewing the "${neighborhood.cluster}" knowledge cluster.
 
@@ -787,7 +784,7 @@ Gap example (PT): A página "Carlos" menciona "Calendário Editorial Q2", mas n�
 These pages belong to this cluster:
 
 ${pageSummaries || '(No pages found in this cluster.)'}
-
+${factsBlock}
 Assess this cluster for:
 1. CONTRADICTIONS: Do any pages contain claims that conflict with each other?
 2. STALENESS: Which pages have outdated information (check last_verified, confidence)?
@@ -1609,10 +1606,20 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
    * Level 1 refresh. For each changed section, regenerate the section parent
    * page (entity listing) from the current page set via the LLM.
    *
+   * The prompt receives GROUNDED inputs: per page, a one-liner sourced from
+   * frontmatter.summary or the first non-heading body line, plus the
+   * confidence read from frontmatter. The model's task is formatting and
+   * ordering, not invention (#38 fabrication class — the old prompt fed it
+   * bare titles and asked for descriptions plus confidence labels, so it had
+   * to make both up).
+   *
    * @param {Set<string>} sections
+   * @param {EnrichedPage[]} [enrichedPages] - Pages already read this tend;
+   *   their frontmatter/preview ground the lines without a second read.
+   *   Pages not in this set are read once via _readPage.
    * @returns {Promise<{ refreshed: number }>}
    */
-  async _updateSectionSummaries(sections) {
+  async _updateSectionSummaries(sections, enrichedPages = []) {
     if (!sections || typeof sections[Symbol.iterator] !== 'function') {
       return { refreshed: 0 };
     }
@@ -1628,6 +1635,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       }
     }
 
+    const enrichedByTitle = new Map((enrichedPages || []).map(p => [p.title, p]));
     let refreshed = 0;
 
     for (const sectionName of sections) {
@@ -1645,35 +1653,75 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
 
         if (sectionPages.length === 0) continue;
 
-        // Build entity summaries for the prompt
-        const entityLines = sectionPages.map(p => `- **${p.title}**`).join('\n');
+        // Resolve the Level 1 parent page BEFORE the LLM call: no parent, no
+        // call. Find a page whose title matches the section name, or whose
+        // filePath looks like a section index. If not found, skip — do NOT
+        // create an orphan page.
+        const sectionParent = pageList.find(p => {
+          if (p.title === sectionName) return true;
+          if (p.filePath && (
+            p.filePath === `${sectionName}.md` ||
+            p.filePath === `${sectionName}/Readme.md` ||
+            p.filePath === `${sectionName}/README.md`
+          )) return true;
+          return false;
+        });
 
-        const prompt = `You are the Connection Steward writing a Level 1 section index page for a knowledge wiki.
+        if (!sectionParent) {
+          this.logger.warn(`[WikiSteward] _updateSectionSummaries: no Level 1 parent found for section "${sectionName}" — skipping`);
+          continue;
+        }
+
+        // Grounded entity lines: the parent page lists its members, not itself.
+        const entityPages = sectionPages.filter(p => p.id !== sectionParent.id);
+        const entityLines = [];
+        for (const p of entityPages) {
+          let fm, bodyText;
+          const enriched = enrichedByTitle.get(p.title);
+          if (enriched) {
+            fm = enriched.frontmatter;
+            bodyText = enriched.bodyPreview;
+          } else {
+            const read = await this._readPage(p);
+            fm = read?.frontmatter;
+            bodyText = read?.body;
+          }
+          entityLines.push(this._groundedEntityLine(p.title, fm, bodyText));
+        }
+
+        if (entityLines.length === 0) continue;
+
+        const prompt = `You are the Connection Steward formatting a Level 1 section index page for a knowledge wiki.
 
 The section is: "${sectionName}"
 
-The following entities belong to this section:
+These entities belong to this section. Each line carries the entity name and, where the wiki knows one, a verified one-line description (from page frontmatter or the page's first line) and a confidence label:
 
-${entityLines}
+${entityLines.join('\n')}
 
-Write a section landing page in this format:
+Write the section page in this format:
 
 # ${sectionName}
 
 ## Known Entities
 
-- **EntityName** — one-line description, role or context. [[Related Entity]] (confidence level)
-- (repeat for each entity)
+(the entity lines, one per entity, ordered sensibly)
 
-${sectionPages.length} entities tracked · Last updated: ${new Date().toISOString().split('T')[0]}
+${entityPages.length} entities tracked · Last updated: ${new Date().toISOString().split('T')[0]}
 
-MULTILINGUAL EXAMPLE:
-English: - **Carlos** — Editorial Director, ManeraMedia GmbH. Primary contact for hiphop.de. [[ManeraMedia GmbH]] (high confidence)
-German:  - **Tobias** — Betriebsleiter, ManeraMedia GmbH. Zuständig für Infrastruktur. [[ManeraMedia GmbH]] (hohe Konfidenz)
-Portuguese: - **Eelco** — Investigador, projeto DIEM. Foco em sistemas alimentares. [[DIEM]] (confiança média)
+RULES — your task is formatting and ordering, not invention:
+- Use ONLY the entity lines given above. Never invent a description, role, or relationship.
+- Keep each description as given (whitespace trimming is fine).
+- A confidence label appears ONLY where the given line already carries one. Never add one.
+- An entity with no description is listed by name alone.
+- Wrap each entity name in [[...]] so it links: - **[[EntityName]]** — description
 
-Only write the markdown — no preamble. Use the language of the section content.
-Respond in the same language as the entity names and context imply.`;
+MULTILINGUAL EXAMPLE (formatting only — descriptions arrive in the wiki's language):
+English: - **[[Carlos]]** — Editorial Director, ManeraMedia GmbH. (confidence: high)
+German:  - **[[Tobias]]** — Betriebsleiter, ManeraMedia GmbH. (confidence: medium)
+Portuguese: - **[[Eelco]]** — Investigador, projeto DIEM. (confidence: low)
+
+Only write the markdown — no preamble. Keep the language of the given descriptions.`;
 
         const routerResult = await this.router.route({
           job: 'synthesis',
@@ -1693,27 +1741,6 @@ Respond in the same language as the entity names and context imply.`;
           last_refresh: new Date().toISOString().split('T')[0],
         };
 
-        // Resolve the Level 1 parent page: find a page whose title matches the section
-        // name and whose parentId is 0 (root-level section parent), or whose filePath
-        // looks like a section index (e.g., "People/Readme.md" or "People.md").
-        // If not found, skip — do NOT create an orphan page.
-        const allPagesForWrite = await this.collectivesClient.listPages(collectiveId);
-        const pageListForWrite = Array.isArray(allPagesForWrite) ? allPagesForWrite : [];
-        const sectionParent = pageListForWrite.find(p => {
-          if (p.title === sectionName) return true;
-          if (p.filePath && (
-            p.filePath === `${sectionName}.md` ||
-            p.filePath === `${sectionName}/Readme.md` ||
-            p.filePath === `${sectionName}/README.md`
-          )) return true;
-          return false;
-        });
-
-        if (!sectionParent) {
-          this.logger.warn(`[WikiSteward] _updateSectionSummaries: no Level 1 parent found for section "${sectionName}" — skipping`);
-          continue;
-        }
-
         await this.collectivesClient.writePageWithFrontmatter(sectionParent.title, sectionFm, sectionBody);
         refreshed++;
         this.logger.info(`[WikiSteward] Refreshed Level 1 summary for section "${sectionName}"`);
@@ -1723,6 +1750,33 @@ Respond in the same language as the entity names and context imply.`;
     }
 
     return { refreshed };
+  }
+
+  /**
+   * One grounded entity line for the Level 1 prompt. The one-liner comes from
+   * frontmatter.summary when present, otherwise the first non-heading body
+   * line. The confidence label appears only when frontmatter carries one —
+   * absence stays absent, so the model has nothing to invent.
+   *
+   * @param {string} title
+   * @param {Object} [frontmatter]
+   * @param {string} [bodyText]
+   * @returns {string}
+   */
+  _groundedEntityLine(title, frontmatter, bodyText) {
+    const fm = frontmatter || {};
+    let oneliner = typeof fm.summary === 'string' && fm.summary.trim()
+      ? fm.summary.trim()
+      : '';
+    if (!oneliner) {
+      const firstLine = (bodyText || '')
+        .split('\n')
+        .map(l => l.trim())
+        .find(l => l && !l.startsWith('#'));
+      oneliner = firstLine ? firstLine.slice(0, 160) : '';
+    }
+    const conf = fm.confidence ? ` (confidence: ${fm.confidence})` : '';
+    return `- **${title}**${oneliner ? ` — ${oneliner}` : ''}${conf}`;
   }
 
   /**
