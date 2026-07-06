@@ -70,8 +70,29 @@
  * @version 0.1.0
  */
 
+const fs = require('fs');
+const path = require('path');
+
 // Section identity has exactly one derivation, owned by the client (#51 generator).
 const { deriveSection } = require('../integrations/collectives-client');
+
+// The Archive section is a Level-1 section, sibling to People/Projects/etc.
+// A composted page moves here (#245); its identity survives in NC versioning
+// and the Archive copy — there is no delete path.
+const ARCHIVE_SECTION = 'Archive';
+
+// The human veto window between marking a page compost_ready (which fires the
+// KnowledgeBoard card) and the mover physically archiving it (#245).
+const COMPOST_HOLD_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Pulses stay bounded: at most this many pages move to Archive per visit (#245).
+const MAX_MOVES_PER_VISIT = 3;
+
+// Persisted steward state (#246): visit timestamps and the per-cluster lens
+// ring. Both are behavior-relevant across restarts — losing _lastVisit makes
+// every cluster read maximally neglected; losing the ring breaks the
+// three-lens rotation invariant at the restart boundary.
+const STATE_FILENAME = 'wiki-steward-state.json';
 
 /**
  * @typedef {Object} PageRef
@@ -206,6 +227,18 @@ class WikiSteward {
     /** @type {Map<string, number>} */
     this._zeroPageStreak = new Map();
 
+    // Durable steward state (#246). _lastVisit and _lensIndexByCluster survive
+    // restarts via one debounced JSON under data/ (the model-scorecard pattern:
+    // atomic tmp+rename, loaded at construction, corrupt/missing starts fresh).
+    // _zeroPageStreak stays ephemeral by design — it is a diagnostic, and a
+    // fresh start after a restart is the correct behavior for a streak counter.
+    this.dataDir = this.config.dataDir === null
+      ? null
+      : (this.config.dataDir || path.resolve(process.cwd(), 'data'));
+    this._stateFile = this.dataDir ? path.join(this.dataDir, STATE_FILENAME) : null;
+    this._saveTimer = null;
+    this._loadState();
+
     // Level 0 landing page throttling.
     /** @type {number} */
     this._lastIndexRefresh = 0;
@@ -213,6 +246,87 @@ class WikiSteward {
     this._indexRefreshIntervalMs = Number.isFinite(this.config.indexRefreshIntervalMs)
       ? this.config.indexRefreshIntervalMs
       : 6 * 60 * 60 * 1000; // 6h default
+  }
+
+  // ---------------------------------------------------------------------------
+  // DURABLE STATE (#246) — modeled on model-scorecard.js load/save shape
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Load persisted _lastVisit and lens rings at construction. A missing or
+   * corrupt file starts fresh — the prior in-memory behavior, so a bad file is
+   * never worse than no persistence at all.
+   * @private
+   */
+  _loadState() {
+    if (!this._stateFile) return;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this._stateFile, 'utf8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+      if (parsed.lastVisit && typeof parsed.lastVisit === 'object') {
+        for (const [cluster, ts] of Object.entries(parsed.lastVisit)) {
+          if (Number.isFinite(ts)) this._lastVisit.set(cluster, ts);
+        }
+      }
+      if (parsed.lensIndex && typeof parsed.lensIndex === 'object') {
+        for (const [cluster, idx] of Object.entries(parsed.lensIndex)) {
+          if (Number.isInteger(idx) && idx >= 0) {
+            this._lensIndexByCluster.set(cluster, idx % this._stewards.length);
+          }
+        }
+      }
+      this.logger.info(
+        `[WikiSteward] State loaded: ${this._lastVisit.size} visit stamps, ` +
+        `${this._lensIndexByCluster.size} lens rings.`
+      );
+    } catch (_err) {
+      // Missing file or corrupt JSON — start fresh (the pre-persistence amnesia).
+    }
+  }
+
+  /**
+   * Coalesce state writes: a tend marks the state dirty and a short unref'd
+   * timer flushes it, so a burst of tends costs one disk write and a crash
+   * loses at most a second of visit/lens bookkeeping.
+   * @private
+   */
+  _scheduleSave() {
+    if (!this._stateFile || this._saveTimer) return;
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      this._persistState();
+    }, 1000);
+    if (typeof this._saveTimer.unref === 'function') this._saveTimer.unref();
+  }
+
+  /** @private */
+  _persistState() {
+    if (!this._stateFile) return;
+    try {
+      if (!fs.existsSync(this.dataDir)) fs.mkdirSync(this.dataDir, { recursive: true });
+      const state = {
+        version: 1,
+        lastVisit: Object.fromEntries(this._lastVisit),
+        lensIndex: Object.fromEntries(this._lensIndexByCluster),
+      };
+      const tmp = this._stateFile + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
+      fs.renameSync(tmp, this._stateFile);
+    } catch (err) {
+      this.logger.warn(`[WikiSteward] Failed to persist state: ${err.message}`);
+    }
+  }
+
+  /**
+   * Flush any pending debounced write now. Idempotent — safe to call on a
+   * double shutdown. Wire into the process shutdown drain.
+   */
+  flush() {
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    this._persistState();
   }
 
   // ---------------------------------------------------------------------------
@@ -357,8 +471,11 @@ class WikiSteward {
       this.logger.warn(`[WikiSteward] observations.resolve failed: ${err.message}`);
     }
 
-    // Step 9: record visit timestamp
+    // Step 9: record visit timestamp, then persist visit + lens state (#246).
+    // Both the lens ring (step 2) and _lastVisit changed this tend; one
+    // debounced write coalesces them.
     this._lastVisit.set(cluster.name, Date.now());
+    this._scheduleSave();
 
     const result = {
       steward: stewardType,
@@ -555,8 +672,22 @@ class WikiSteward {
       const pageList = Array.isArray(allPages) ? allPages : [];
       const clusterName = cluster.name;
 
-      const landingPage = pageList.find(p => p.parentId === 0);
-      const landingPageId = landingPage?.id;
+      // Root-count assertion (#256): the fractal index has exactly one root
+      // page (the Level 0 landing page). A stray at root corrupts section
+      // derivation and landing-page identity — the failure class Phase 5's
+      // root-create suppression closed. This promotes that one-time manual
+      // snapshot to a standing per-tend check, riding the listPages read we
+      // already made. Observes only; humans act on the named strays.
+      const rootPages = pageList.filter(p => p.parentId === 0);
+      if (rootPages.length !== 1) {
+        this.logger.warn(
+          `[WikiSteward] root page count assertion: expected 1 landing page ` +
+          `(parentId=0), found ${rootPages.length}: ` +
+          rootPages.map(p => `"${p.title}"`).join(', ')
+        );
+      }
+      const landingPageId = rootPages[0]?.id;
+
       clusterPages = pageList.filter(p => deriveSection(p, landingPageId) === clusterName);
     } catch (err) {
       this.logger.warn(`[WikiSteward] Failed to list pages for cluster "${cluster.name}": ${err.message}`);
@@ -990,6 +1121,12 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       pagesModified: 0,
       linksAdded: 0,
       observationsResolved: 0,
+      // Link-integrity counters (#255). gapsLogged: targets that resolved to no
+      // page (GAP recorded, no link written). deadLinksWritten: links written
+      // despite an unresolved target — 0 by construction today; > 0 is the
+      // regression signal if the gap branch is ever bypassed.
+      gapsLogged: 0,
+      deadLinksWritten: 0,
       // (type, page) pairs the executors actually acted on. tend() resolves
       // exactly these — visiting is not resolving (G2, #161 class).
       resolutions: [],
@@ -1095,7 +1232,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           const handle = resolve(m.page, 'missing link');
           if (!handle) continue;
           try {
-            const added = await this._addWikilink(handle, m.shouldLinkTo, m.relationship, neighborhood);
+            const added = await this._addWikilink(handle, m.shouldLinkTo, m.relationship, neighborhood, results);
             if (added) {
               results.linksAdded++;
               results.pagesModified++;
@@ -1114,7 +1251,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           if (!handle) continue;
           for (const target of o.suggestedConnections || []) {
             try {
-              const added = await this._addWikilink(handle, target, 'related', neighborhood);
+              const added = await this._addWikilink(handle, target, 'related', neighborhood, results);
               if (added) {
                 results.linksAdded++;
                 results.pagesModified++;
@@ -1142,6 +1279,17 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           } catch (err) {
             this.logger.warn(`[WikiSteward:connection] _flagDuplicate failed: ${err.message}`);
           }
+        }
+        // Link-integrity line (#255): one journal line per connection tend at
+        // the link chokepoint. The connection lens is the only path that writes
+        // wikilinks, so this is the tend-cycle summary for link integrity.
+        // dead_links_written > 0 means the gap branch was bypassed — a WARN.
+        {
+          const linkLine =
+            `[WikiSteward:connection] links: gaps_logged=${results.gapsLogged} ` +
+            `dead_links_written=${results.deadLinksWritten}`;
+          if (results.deadLinksWritten > 0) this.logger.warn(linkLine);
+          else this.logger.info(linkLine);
         }
         break;
       }
@@ -1191,6 +1339,45 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
           } catch (err) {
             this.logger.warn(`[WikiSteward:memory] _embedPage("${e.page}") failed: ${err.message}`);
           }
+        }
+
+        // Fourth memory intervention: the compost MOVER (#245). Unlike the
+        // three above, its candidates come from the neighborhood's own
+        // frontmatter, not the LLM assessment — a page's compost lifecycle is
+        // structural bookkeeping (a flag and a date), not a judgement, so no
+        // model call is involved. A page moves to Archive/ when ALL hold:
+        // compost_ready, marked 7+ days ago (the human veto window — the
+        // KnowledgeBoard card already fired at marking time), not already
+        // archived, not structural, not pinned (compost: never lives in
+        // structuralTitles). Capped per visit so pulses stay bounded.
+        let moved = 0;
+        const nowMs = Date.now();
+        for (const page of neighborhood?.pages || []) {
+          if (moved >= MAX_MOVES_PER_VISIT) break;
+          const fm = page.frontmatter || {};
+          if (fm.compost_ready !== true) continue;
+          if (fm.archived === true) continue;
+          if (structuralTitles.has(page.title)) continue;
+          const markedAt = Date.parse(fm.compost_marked_at);
+          if (!Number.isFinite(markedAt) || (nowMs - markedAt) < COMPOST_HOLD_MS) continue;
+          const handle = resolve(page.title, 'archive move');
+          if (!handle) continue;
+          try {
+            const archived = await this._moveToArchive(handle);
+            if (archived) {
+              moved++;
+              // The source section lost a page — drive the Level 1 refresh.
+              results.pagesModified++;
+            }
+          } catch (err) {
+            this.logger.warn(`[WikiSteward:memory] _moveToArchive("${page.title}") failed: ${err.message}`);
+          }
+        }
+        if (moved > 0) {
+          this.logger.info(
+            `[WikiSteward:memory] compost mover: ${moved} page(s) archived this visit ` +
+            `(cap ${MAX_MOVES_PER_VISIT}).`
+          );
         }
         break;
       }
@@ -1397,13 +1584,21 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
    * @param {string} relationship
    * @param {Neighborhood} [neighborhood] - Assessed neighborhood; provides
    *   the local title index and the cluster for the GAP observation.
+   * @param {{gapsLogged: number, deadLinksWritten: number}} [tally] - Optional
+   *   link-integrity counters (#255) incremented in place at the two structural
+   *   branches: the gap branch and the write site.
    * @returns {Promise<boolean>} true if the wikilink was added.
    */
-  async _addWikilink(handle, target, relationship, neighborhood) {
+  async _addWikilink(handle, target, relationship, neighborhood, tally) {
     if (!handle?.path || !target) return false;
 
     const canonicalTarget = await this._resolveLinkTarget(target, neighborhood);
-    if (!canonicalTarget) {
+    // Computed once, read independently at the gap branch and the write site.
+    // The dead-link counter reads this fact at the write — so if the gap
+    // early-return below is ever removed, an unresolved write is still counted.
+    const resolved = !!canonicalTarget;
+    if (!resolved) {
+      if (tally) tally.gapsLogged++;
       this.observations.notice({
         type: 'gap',
         cluster: neighborhood?.cluster,
@@ -1450,6 +1645,11 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       // Append a new Related section
       newBody = `${body.trimEnd()}\n\n## Related\n${relLine}`;
     }
+
+    // Regression sensor (#255): a resolved target reaches here today; an
+    // unresolved one only can if the gap branch above is bypassed. Count it at
+    // the write, independently of that branch.
+    if (tally && !resolved) tally.deadLinksWritten++;
 
     await this.collectivesClient.writePageWithFrontmatterAtPath(handle.path, result.frontmatter, newBody);
     this.logger.info(`[WikiSteward:connection] Added [[${target}]] to "${handle.title}" (${relationship})`);
@@ -1607,8 +1807,9 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
 
   /**
    * Memory lens: flag a page for composting.
-   * Sets compost_ready=true and related metadata. The actual page move
-   * is done by the Sleep Cycle — this only marks the frontmatter.
+   * Sets compost_ready=true and related metadata. The actual page move to
+   * Archive/ is done by _moveToArchive on a later visit, once the 7-day human
+   * veto window has passed (#245) — this only marks the frontmatter.
    *
    * Honors the `compost: never` frontmatter pin: structural/index pages
    * carry it because their access_count stays at 0 by design (probes target
@@ -1653,6 +1854,82 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
         this.logger.warn(`[WikiSteward] KnowledgeBoard stale card for "${handle.title}" failed: ${err.message}`);
       }
     }
+    return true;
+  }
+
+  /**
+   * Memory lens: physically move a composted page to the Archive/ section
+   * (#245). Called by the mover once compost_ready has aged past the 7-day
+   * veto window. Collectives has no re-parent primitive, so the move is
+   * create-in-Archive then trash-original: the page is never absent from the
+   * wiki at any instant, and NC versioning plus the Archive copy are the only
+   * undo. No delete path exists here.
+   *
+   * @param {{id: string|number, title: string, path: string}} handle - Handle
+   *   from the assessed neighborhood (identity custody, G3).
+   * @returns {Promise<boolean>} true if the page was archived.
+   */
+  async _moveToArchive(handle) {
+    if (!handle?.path || handle.id == null) return false;
+
+    // Read the FULL body — the neighborhood carries only a truncated preview,
+    // and archiving must not write a clipped page.
+    const full = await this.collectivesClient.readPageWithFrontmatterAtPath(handle.path);
+    if (!full) return false;
+
+    // Defense in depth: never archive a pinned page, even if it slipped the
+    // structural filter. Same pin _markForComposting honors.
+    if (full.frontmatter && full.frontmatter.compost === 'never') {
+      this.logger.info(`[WikiSteward:memory] Skipping archive of "${handle.title}" — pinned (compost: never)`);
+      return false;
+    }
+
+    const collectiveId = this.collectiveId || await this.collectivesClient.resolveCollective();
+    const archiveSection = await this.collectivesClient.ensureSection(collectiveId, ARCHIVE_SECTION);
+    if (!archiveSection?.id) {
+      this.logger.warn(`[WikiSteward:memory] Archive of "${handle.title}" aborted — no Archive section`);
+      return false;
+    }
+
+    const leafTitle = String(handle.title).split('/').pop();
+    const created = await this.collectivesClient.createPage(collectiveId, archiveSection.id, leafTitle);
+
+    const newPath = (created && (created.fileName || created.filePath))
+      ? this.collectivesClient._buildPagePath(created)
+      : null;
+    if (!newPath) {
+      // The created page carries no resolvable path. Trash the stub so it can't
+      // collide with a future retry, and leave the original untouched — content
+      // is never lost, the move simply doesn't happen this visit.
+      if (created && created.id != null) {
+        try { await this.collectivesClient.trashPage(collectiveId, created.id); } catch { /* best effort */ }
+      }
+      this.logger.warn(`[WikiSteward:memory] Archive of "${handle.title}" aborted — created page has no resolvable path`);
+      return false;
+    }
+
+    // Collectives appends a "(N)" suffix when the Archive section already holds
+    // this leaf title (a distinct same-named page, or a stub from an interrupted
+    // move). We do NOT assume the existing page is this page's copy — that
+    // assumption trashes an original whose content was never archived. We write
+    // this page's body into whatever page was just created, suffixed or not: the
+    // body is always preserved, and a duplicate title is the worst case.
+    // Duplicates are recoverable; lost content is not.
+    //
+    // Pin the archived copy compost: never so the stewards treat it as inert:
+    // it is skipped by the mover (archived) and by every lens (compost: never
+    // lands it in the structural set), keeping Archive/ out of the tend churn.
+    const fm = {
+      ...full.frontmatter,
+      archived: true,
+      archived_at: new Date().toISOString(),
+      compost: 'never',
+    };
+    await this.collectivesClient.writePageWithFrontmatterAtPath(newPath, fm, full.body || '');
+    // Original trashed last — the Archive copy exists before the origin is gone.
+    await this.collectivesClient.trashPage(collectiveId, handle.id);
+
+    this.logger.info(`[WikiSteward:memory] Archived "${handle.title}" → ${ARCHIVE_SECTION}/ (original trashed)`);
     return true;
   }
 
