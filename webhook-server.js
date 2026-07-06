@@ -1666,6 +1666,21 @@ async function initialize() {
       });
       console.log('[INIT] ModelScorecard ready (maturation loop)');
 
+      // #237: cloud chain ordering from judged evidence. Quality truth and
+      // hysteresis live in the scorecard; chain ordering lives in the
+      // router's ONE generating function — the bridge is one injected read
+      // each way. The scorecard loaded persisted demotions in its
+      // constructor, so the refresh makes any active preset roster correct
+      // from the first chain.
+      if (llmRouter) {
+        llmRouter.setCloudQualityCheck((job, model) => modelScorecard.isDemoted(job, model));
+        modelScorecard.onCloudDemotionChange = (job, model) => llmRouter.refreshCloudOrdering(job, model);
+        llmRouter.refreshCloudOrdering();
+        console.log('[INIT] Cloud quality veto wired (ModelScorecard demotions -> LLMRouter chain ordering)');
+      } else {
+        console.log('[INIT] Cloud quality veto NOT wired (LLMRouter absent — chains keep pure cost order)');
+      }
+
       // Judged-job sample retention (Session 4). The queue is the ONLY
       // place raw response content persists, on local disk under data/,
       // bounded and judge-then-delete — content never enters Nextcloud.
