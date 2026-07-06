@@ -4,6 +4,7 @@ const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 const { WikiSteward } = require('../../../src/lib/maintenance/wiki-steward');
 const { ObservationLog, OBSERVATION_TYPES } = require('../../../src/lib/maintenance/observation-log');
+const { deriveSection } = require('../../../src/lib/integrations/collectives-client');
 
 const silentLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
@@ -13,6 +14,14 @@ const silentLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
 function makeObservationLog() {
   return new ObservationLog({ logger: silentLogger });
+}
+
+/**
+ * Identity handle for direct executor calls (Phase 8): executors address
+ * pages by { title, path }, never by bare title.
+ */
+function h(title, path) {
+  return { title, path: path || `${title}.md` };
 }
 
 function makeMockRouter(responseObj) {
@@ -45,9 +54,41 @@ function makeMockCollectivesClient({
     _cache: { collectiveId },
     resolveCollective: async () => collectiveId,
     listPages: async () => listPagesResult,
+    // Mirrors the real client: case-insensitive leaf-title match over known pages.
+    findPageByTitle: async (title) => {
+      const leaf = title.split('/').pop().toLowerCase();
+      const known = Object.keys(pagesByTitle).find(t => t.toLowerCase() === leaf);
+      if (known) return { page: { title: known }, path: pagesByTitle[known].path || `${known}.md` };
+      const listed = listPagesResult.find(p => (p.title || '').toLowerCase() === leaf);
+      if (listed) {
+        return {
+          page: listed,
+          path: listed.filePath ? `${listed.filePath}/${listed.fileName}` : (listed.fileName || `${listed.title}.md`),
+        };
+      }
+      return null;
+    },
     readPageWithFrontmatter: async (title) => {
       if (pagesByTitle[title] !== undefined) return pagesByTitle[title];
       return null;
+    },
+    // Path-addressed variants (Phase 8): resolve by declared path first, then
+    // by basename so neighborhood-derived paths hit pagesByTitle entries.
+    readPageWithFrontmatterAtPath: async (path) => {
+      for (const [t, d] of Object.entries(pagesByTitle)) {
+        if ((d.path || `${t}.md`) === path) return d;
+      }
+      const base = (path || '').split('/').pop().replace(/\.md$/i, '');
+      return pagesByTitle[base] !== undefined ? pagesByTitle[base] : null;
+    },
+    writePageWithFrontmatterAtPath: async (path, fm, body) => {
+      let title = null;
+      for (const [t, d] of Object.entries(pagesByTitle)) {
+        if ((d.path || `${t}.md`) === path) { title = t; break; }
+      }
+      if (!title) title = (path || '').split('/').pop().replace(/\.md$/i, '');
+      writtenPages[title] = { frontmatter: fm, body };
+      return path;
     },
     readPageContent: async (path) => {
       if (writtenContent[path] !== undefined) return writtenContent[path];
@@ -274,38 +315,192 @@ asyncTest('_readNeighborhood() skips pages that throw at the outer level and con
 });
 
 // ---------------------------------------------------------------------------
-// CLUSTER SECTION DERIVATION (#51 — _getPageSection + _readNeighborhood with
-// current Collectives API filePath shape)
+// CLUSTER SECTION DERIVATION (#51 — deriveSection is the ONE derivation,
+// exported by the client and consumed by every section-identity site.
+// Same four branches the steward's deleted _getPageSection covered — parity.)
 // ---------------------------------------------------------------------------
 
-test('_getPageSection returns section from folder-only filePath (current API shape)', () => {
-  const steward = new WikiSteward(makeFullDeps());
-  const section = steward._getPageSection({ filePath: 'Documents', section: undefined, parentId: 1 }, 99);
+test('deriveSection returns section from folder-only filePath (current API shape)', () => {
+  const section = deriveSection({ filePath: 'Documents', section: undefined, parentId: 1 }, 99);
   assert.strictEqual(section, 'Documents');
 });
 
-test('_getPageSection honors explicit page.section when present (defensive)', () => {
-  const steward = new WikiSteward(makeFullDeps());
-  const section = steward._getPageSection({ section: 'People', filePath: '', parentId: 1 }, 99);
+test('deriveSection honors explicit page.section when present (defensive)', () => {
+  const section = deriveSection({ section: 'People', filePath: '', parentId: 1 }, 99);
   assert.strictEqual(section, 'People');
 });
 
-test('_getPageSection falls back to title when page is direct child of landing', () => {
-  const steward = new WikiSteward(makeFullDeps());
-  const section = steward._getPageSection(
+test('deriveSection falls back to title when page is direct child of landing', () => {
+  const section = deriveSection(
     { filePath: '', section: undefined, parentId: 99, title: 'Research' },
     99
   );
   assert.strictEqual(section, 'Research');
 });
 
-test('_getPageSection returns null for the landing page itself', () => {
-  const steward = new WikiSteward(makeFullDeps());
-  const section = steward._getPageSection(
+test('deriveSection returns null for the landing page itself', () => {
+  const section = deriveSection(
     { filePath: '', section: undefined, parentId: 0, title: 'Knowledge Domains' },
     99
   );
   assert.strictEqual(section, null);
+});
+
+test('deriveSection without landingPageId derives null for a non-child page with empty filePath', () => {
+  // The fact-7 drift case: the DEEP_READ producer used to fall back to the
+  // page title here, counting observations toward a phantom cluster the
+  // steward census never lists. null is the honest answer.
+  const section = deriveSection({ filePath: '', section: undefined, parentId: 42, title: 'Some Page' });
+  assert.strictEqual(section, null);
+});
+
+test('producer and steward agree on cluster identity for the same page objects', () => {
+  const landingId = 99;
+  const pages = [
+    { title: 'Alex', filePath: 'People', parentId: 5 },          // entity page
+    { title: 'Research', filePath: '', parentId: landingId },    // virtual section page
+    { title: 'Landing page', filePath: '', parentId: 0 },        // landing itself
+  ];
+  for (const p of pages) {
+    // One function, one truth — both sides call the same export; with the
+    // landing id in hand the answer can only refine null → title, never fork.
+    const stewardView = deriveSection(p, landingId);
+    const producerView = deriveSection(p);
+    assert.ok(
+      producerView === stewardView || producerView === null,
+      `producer may lack landing id (null) but must never contradict: ${p.title}`
+    );
+  }
+  assert.strictEqual(deriveSection(pages[0]), 'People');
+  assert.strictEqual(deriveSection(pages[0], landingId), 'People');
+});
+
+asyncTest('_updateSectionSummaries membership is exact: "Research Archive" page stays out of "Research"', async () => {
+  const listPagesResult = [
+    { id: 1, title: 'Landing page', filePath: '', parentId: 0, fileName: 'Readme.md' },
+    { id: 2, title: 'Research', filePath: 'Research', parentId: 1, fileName: 'Readme.md' },
+    { id: 3, title: 'Paper A', filePath: 'Research', parentId: 2, fileName: 'Paper A.md' },
+    { id: 4, title: 'Old Paper', filePath: 'Research Archive', parentId: 5, fileName: 'Old Paper.md' },
+  ];
+  const collectivesClient = makeMockCollectivesClient({ listPagesResult });
+  const router = makeMockRouter({});
+  router.route = async (opts) => {
+    router._calls.push(opts);
+    return { result: '# Research\n\n## Known Entities\n- ok', provider: 'mock', model: 'mock' };
+  };
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router }));
+
+  await steward._updateSectionSummaries(new Set(['Research']));
+
+  const prompt = router._calls[0]?.content || '';
+  assert.ok(prompt.includes('Paper A'), 'exact member listed');
+  assert.ok(!prompt.includes('Old Paper'), 'substring cousin "Research Archive" excluded');
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 7: SINGLE-READ NEIGHBORHOOD, GROUNDED LEVEL 1, DEAD FIELDS OUT
+// ---------------------------------------------------------------------------
+
+asyncTest('_readNeighborhood performs exactly one content read per page and carries path', async () => {
+  const listPagesResult = [
+    { id: 1, title: 'Landing page', filePath: '', parentId: 0, fileName: 'Readme.md' },
+    { id: 2, title: 'Alpha', filePath: 'People', parentId: 5, fileName: 'Alpha.md' },
+    { id: 3, title: 'Beta', filePath: 'People', parentId: 5, fileName: 'Beta.md' },
+  ];
+  const pagesByTitle = {
+    'Alpha': { frontmatter: { type: 'person' }, body: 'Alpha body.', path: 'People/Alpha.md' },
+    'Beta': { frontmatter: {}, body: 'Beta body.', path: 'People/Beta.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle, listPagesResult });
+  let reads = 0;
+  const origRead = collectivesClient.readPageWithFrontmatter;
+  collectivesClient.readPageWithFrontmatter = async (title) => { reads++; return origRead(title); };
+
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+  const neighborhood = await steward._readNeighborhood({ name: 'People' });
+
+  assert.strictEqual(neighborhood.pages.length, 2);
+  assert.strictEqual(reads, 2, 'one content read per page, not two');
+  assert.strictEqual(neighborhood.pages[0].path, 'People/Alpha.md', 'enriched page carries its path');
+  assert.ok(!('graphEdges' in neighborhood), 'dead cluster-wide graphEdges scan is gone');
+  assert.ok(!('deckCards' in neighborhood), 'dead deckCards field is gone');
+});
+
+asyncTest('knowledge prompt carries a FACTS block from per-page graph connections, capped at 40', async () => {
+  const manyConnections = Array.from({ length: 50 }, (_, i) => ({ predicate: 'knows', object: `Entity ${i}` }));
+  const neighborhood = {
+    cluster: 'People',
+    pages: [{
+      id: '1', title: 'Alpha', section: 'People', path: 'People/Alpha.md',
+      frontmatter: {}, bodyPreview: 'preview', hasEmbedding: true,
+      graphConnections: manyConnections, wikilinks: [],
+    }],
+    sections: new Set(['People']),
+  };
+  const steward = new WikiSteward(makeFullDeps());
+  const prompt = steward._knowledgeAssessmentPrompt(neighborhood);
+
+  assert.ok(prompt.includes('KNOWN FACTS'), 'FACTS block present');
+  assert.ok(prompt.includes('Alpha knows Entity 0'), 'fact lines carry page, predicate, object');
+  const factCount = (prompt.match(/^Alpha knows Entity /gm) || []).length;
+  assert.strictEqual(factCount, 40, 'fact lines capped at 40');
+});
+
+asyncTest('knowledge prompt omits the FACTS block when no connections exist', async () => {
+  const neighborhood = {
+    cluster: 'People',
+    pages: [{
+      id: '1', title: 'Alpha', section: 'People', path: null,
+      frontmatter: {}, bodyPreview: '', hasEmbedding: false,
+      graphConnections: [], wikilinks: [],
+    }],
+    sections: new Set(['People']),
+  };
+  const steward = new WikiSteward(makeFullDeps());
+  const prompt = steward._knowledgeAssessmentPrompt(neighborhood);
+  assert.ok(!prompt.includes('KNOWN FACTS'), 'no FACTS header without facts');
+});
+
+asyncTest('Level 1 prompt is grounded: summaries from frontmatter/first lines, confidence only where carried', async () => {
+  const listPagesResult = [
+    { id: 1, title: 'Landing page', filePath: '', parentId: 0, fileName: 'Readme.md' },
+    { id: 2, title: 'People', filePath: 'People', parentId: 1, fileName: 'Readme.md' },
+    { id: 3, title: 'Alpha', filePath: 'People', parentId: 2, fileName: 'Alpha.md' },
+    { id: 4, title: 'Beta', filePath: 'People', parentId: 2, fileName: 'Beta.md' },
+  ];
+  const collectivesClient = makeMockCollectivesClient({ listPagesResult });
+  const router = makeMockRouter({});
+  router.route = async (opts) => {
+    router._calls.push(opts);
+    return { result: '# People\n\n## Known Entities\n- ok', provider: 'mock', model: 'mock' };
+  };
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router }));
+
+  // Enriched pages already in hand — no extra read should be needed for them.
+  const enriched = [
+    {
+      id: 3, title: 'Alpha', section: 'People', path: 'People/Alpha.md',
+      frontmatter: { summary: 'Editorial director at the media company.', confidence: 'high' },
+      bodyPreview: '# Alpha\nIgnored because frontmatter.summary wins.',
+      hasEmbedding: true, graphConnections: [], wikilinks: [],
+    },
+    {
+      id: 4, title: 'Beta', section: 'People', path: 'People/Beta.md',
+      frontmatter: {},
+      bodyPreview: '# Beta\nWorks on food-systems research.\nMore text.',
+      hasEmbedding: false, graphConnections: [], wikilinks: [],
+    },
+  ];
+
+  await steward._updateSectionSummaries(new Set(['People']), enriched);
+
+  const prompt = router._calls[0]?.content || '';
+  assert.ok(prompt.includes('Editorial director at the media company.'), 'frontmatter summary grounds Alpha');
+  assert.ok(prompt.includes('(confidence: high)'), 'confidence label present where frontmatter carries one');
+  assert.ok(prompt.includes('Works on food-systems research.'), 'first non-heading body line grounds Beta');
+  assert.ok(!/Beta\*\*[^\n]*confidence/.test(prompt), 'no confidence label for Beta (frontmatter has none)');
+  assert.ok(prompt.includes('not invention'), 'prompt states the format-only contract');
+  assert.ok(!prompt.match(/- \*\*People\*\*/), 'section parent page is not listed as its own entity');
 });
 
 asyncTest('_readNeighborhood() populates pages when filePath is folder-only (current API shape)', async () => {
@@ -435,6 +630,7 @@ asyncTest('_assess connection builds prompt with graph edge information', async 
 asyncTest('connection intervention _addWikilink adds a link and increments linksAdded', async () => {
   const pagesByTitle = {
     'Carlos': { frontmatter: {}, body: 'Carlos works at a company.', path: 'People/Carlos.md' },
+    'ManeraMedia GmbH': { frontmatter: {}, body: 'A company.', path: 'Organizations/ManeraMedia GmbH.md' },
   };
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const router = makeMockRouter({
@@ -446,7 +642,7 @@ asyncTest('connection intervention _addWikilink adds a link and increments links
 
   const neighborhood = {
     cluster: 'People',
-    pages: [{ id: '1', title: 'Carlos', section: 'People', frontmatter: {}, bodyPreview: '', hasEmbedding: false, graphConnections: [], wikilinks: [] }],
+    pages: [{ id: '1', title: 'Carlos', section: 'People', path: 'People/Carlos.md', frontmatter: {}, bodyPreview: '', hasEmbedding: false, graphConnections: [], wikilinks: [] }],
     graphEdges: [],
     sections: new Set(['People']),
     deckCards: [],
@@ -510,7 +706,7 @@ asyncTest('memory intervention marks pages for composting via frontmatter, does 
 
   const neighborhood = {
     cluster: 'Research',
-    pages: [{ id: '5', title: 'Old Document', section: 'Research', frontmatter: { confidence: 'low' }, bodyPreview: '', hasEmbedding: false, graphConnections: [], wikilinks: [] }],
+    pages: [{ id: '5', title: 'Old Document', section: 'Research', path: 'Research/OldDocument.md', frontmatter: { confidence: 'low' }, bodyPreview: '', hasEmbedding: false, graphConnections: [], wikilinks: [] }],
     graphEdges: [],
     sections: new Set(['Research']),
     deckCards: [],
@@ -537,11 +733,12 @@ asyncTest('memory intervention marks pages for composting via frontmatter, does 
 asyncTest('_addWikilink is idempotent on second call with same target', async () => {
   const pagesByTitle = {
     'Carlos': { frontmatter: {}, body: 'Carlos works at a company.', path: 'People/Carlos.md' },
+    'ManeraMedia GmbH': { frontmatter: {}, body: 'A company.', path: 'Organizations/ManeraMedia GmbH.md' },
   };
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
 
-  const firstAdded = await steward._addWikilink('Carlos', 'ManeraMedia GmbH', 'works_at');
+  const firstAdded = await steward._addWikilink(h('Carlos', 'People/Carlos.md'), 'ManeraMedia GmbH', 'works_at');
   assert.strictEqual(firstAdded, true, 'first call should add the link');
 
   // Now the written page has the wikilink — simulate a fresh read of the now-written page
@@ -549,7 +746,7 @@ asyncTest('_addWikilink is idempotent on second call with same target', async ()
   const writtenBody = collectivesClient._writtenPages['Carlos'].body;
   pagesByTitle['Carlos'] = { frontmatter: {}, body: writtenBody, path: 'People/Carlos.md' };
 
-  const secondAdded = await steward._addWikilink('Carlos', 'ManeraMedia GmbH', 'works_at');
+  const secondAdded = await steward._addWikilink(h('Carlos', 'People/Carlos.md'), 'ManeraMedia GmbH', 'works_at');
   assert.strictEqual(secondAdded, false, 'second call should NOT add a duplicate link');
 
   // Count occurrences of [[ManeraMedia GmbH]] in written body
@@ -569,7 +766,7 @@ asyncTest('_strengthenPage bumps confidence and extends decay, writes frontmatte
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
 
-  const result = await steward._strengthenPage('Eelco');
+  const result = await steward._strengthenPage(h('Eelco', 'People/Eelco.md'));
   assert.strictEqual(result, true);
 
   const written = collectivesClient._writtenPages['Eelco'];
@@ -593,7 +790,7 @@ asyncTest('_markForComposting sets compost_ready true without moving the page', 
   collectivesClient.trashPage = async () => { moveOrDeleteCalled = true; };
 
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
-  const result = await steward._markForComposting('Ancient Page', 'Never accessed');
+  const result = await steward._markForComposting(h('Ancient Page', 'Meta/Ancient.md'), 'Never accessed');
 
   assert.strictEqual(result, true);
   assert.strictEqual(moveOrDeleteCalled, false, 'trashPage should NOT be called by _markForComposting');
@@ -616,7 +813,7 @@ asyncTest('_markForComposting honors compost: never pin — does not mark pinned
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
 
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
-  const result = await steward._markForComposting('People', 'LLM proposed composting');
+  const result = await steward._markForComposting(h('People', 'People.md'), 'LLM proposed composting');
 
   assert.strictEqual(result, false, 'pinned page should return false');
   assert.ok(!collectivesClient._writtenPages['People'], 'pinned page must NOT be written');
@@ -634,11 +831,12 @@ asyncTest('_addWikilink skips when unresolved [[target]] already in body', async
       body: 'Carlos.\n\n## Related\n- [[ManeraMedia GmbH]] (works_at)\n',
       path: 'People/Carlos.md',
     },
+    'ManeraMedia GmbH': { frontmatter: {}, body: 'A company.', path: 'Organizations/ManeraMedia GmbH.md' },
   };
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
 
-  const added = await steward._addWikilink('Carlos', 'ManeraMedia GmbH', 'works_at');
+  const added = await steward._addWikilink(h('Carlos', 'People/Carlos.md'), 'ManeraMedia GmbH', 'works_at');
   assert.strictEqual(added, false, 'should skip — unresolved form already present');
   assert.ok(!collectivesClient._writtenPages['Carlos'], 'page must not be rewritten');
 });
@@ -653,11 +851,12 @@ asyncTest('_addWikilink skips when resolved [target](url) already in body', asyn
       body: 'Carlos.\n\n## Related\n- [ManeraMedia GmbH](https://nc.example/f/12345) (works_at)\n',
       path: 'People/Carlos.md',
     },
+    'ManeraMedia GmbH': { frontmatter: {}, body: 'A company.', path: 'Organizations/ManeraMedia GmbH.md' },
   };
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
 
-  const added = await steward._addWikilink('Carlos', 'ManeraMedia GmbH', 'works_at');
+  const added = await steward._addWikilink(h('Carlos', 'People/Carlos.md'), 'ManeraMedia GmbH', 'works_at');
   assert.strictEqual(added, false, 'should skip — resolved markdown link already present');
   assert.ok(!collectivesClient._writtenPages['Carlos'], 'page must not be rewritten');
 });
@@ -666,14 +865,257 @@ asyncTest('_addWikilink skips when resolved [target](url) already in body', asyn
 asyncTest('_addWikilink adds the link when neither form is present', async () => {
   const pagesByTitle = {
     'Carlos': { frontmatter: {}, body: 'Carlos works somewhere.', path: 'People/Carlos.md' },
+    'ManeraMedia GmbH': { frontmatter: {}, body: 'A company.', path: 'Organizations/ManeraMedia GmbH.md' },
   };
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
 
-  const added = await steward._addWikilink('Carlos', 'ManeraMedia GmbH', 'works_at');
+  const added = await steward._addWikilink(h('Carlos', 'People/Carlos.md'), 'ManeraMedia GmbH', 'works_at');
   assert.strictEqual(added, true, 'should add — neither form present');
   const written = collectivesClient._writtenPages['Carlos'];
   assert.ok(written && written.body.includes('[[ManeraMedia GmbH]]'), 'body should carry the new link');
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 5 (G4): STRUCTURAL LINK-TARGET VALIDATION
+// ---------------------------------------------------------------------------
+
+asyncTest('_addWikilink to a missing target writes no link and records a GAP', async () => {
+  const observationLog = makeObservationLog();
+  const pagesByTitle = {
+    'Carlos': { frontmatter: {}, body: 'Carlos works somewhere.', path: 'People/Carlos.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, observationLog }));
+
+  const neighborhood = { cluster: 'People', pages: [{ title: 'Carlos', path: 'People/Carlos.md' }] };
+  const added = await steward._addWikilink(h('Carlos', 'People/Carlos.md'), 'Nine Universal Roadblocks Framework', 'works_on', neighborhood);
+
+  assert.strictEqual(added, false, 'no page for the target — no link written');
+  assert.ok(!collectivesClient._writtenPages['Carlos'], 'source page must not be rewritten');
+  const gaps = observationLog.getByType(OBSERVATION_TYPES.GAP);
+  assert.strictEqual(gaps.length, 1, 'one GAP observation recorded');
+  assert.strictEqual(gaps[0].cluster, 'People', 'GAP carries the cluster');
+  assert.strictEqual(gaps[0].page, 'Carlos', 'GAP names the source page');
+  assert.strictEqual(gaps[0].detail, 'Nine Universal Roadblocks Framework');
+  // Pending Questions entry written through the existing gap logger
+  const pending = collectivesClient._writtenContent['Meta/Pending Questions.md'];
+  assert.ok(pending && pending.includes('Nine Universal Roadblocks Framework'), 'gap logged to Pending Questions');
+});
+
+asyncTest('_addWikilink resolves target case-insensitively to the canonical title', async () => {
+  const pagesByTitle = {
+    'Carlos': { frontmatter: {}, body: 'Carlos works somewhere.', path: 'People/Carlos.md' },
+    'ManeraMedia GmbH': { frontmatter: {}, body: 'A company.', path: 'Organizations/ManeraMedia GmbH.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const added = await steward._addWikilink(h('Carlos', 'People/Carlos.md'), 'maneramedia gmbh', 'works_at');
+  assert.strictEqual(added, true);
+  const written = collectivesClient._writtenPages['Carlos'];
+  assert.ok(written.body.includes('[[ManeraMedia GmbH]]'), 'link uses the canonical page title');
+});
+
+asyncTest('_addWikilink prefers the in-neighborhood title over a global lookup', async () => {
+  const pagesByTitle = {
+    'Carlos': { frontmatter: {}, body: 'Carlos works somewhere.', path: 'People/Carlos.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  let globalLookups = 0;
+  const origFind = collectivesClient.findPageByTitle;
+  collectivesClient.findPageByTitle = async (t) => { globalLookups++; return origFind(t); };
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  const neighborhood = {
+    cluster: 'People',
+    pages: [
+      { title: 'Carlos', path: 'People/Carlos.md' },
+      { title: 'Eelco Dykstra', path: 'People/Eelco Dykstra.md' },
+    ],
+  };
+  const added = await steward._addWikilink(h('Carlos', 'People/Carlos.md'), 'Eelco Dykstra', 'colleague_of', neighborhood);
+  assert.strictEqual(added, true);
+  assert.strictEqual(globalLookups, 0, 'neighborhood answered — no global lookup');
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 8 (G3): INTERVENTIONS CARRY IDENTITY HANDLES
+// ---------------------------------------------------------------------------
+
+asyncTest('leaf-title collision: intervention writes the in-neighborhood page, not the far one', async () => {
+  // Two pages share the leaf title "Readme" — one inside the assessed
+  // neighborhood, one elsewhere in the collective. The write must land on
+  // the neighborhood's page path, never the other.
+  const pagesByTitle = {
+    'Readme': { frontmatter: { confidence: 'medium' }, body: 'Section A readme.', path: 'SectionA/Readme.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const writtenPaths = [];
+  const origWrite = collectivesClient.writePageWithFrontmatterAtPath;
+  collectivesClient.writePageWithFrontmatterAtPath = async (path, fm, body) => {
+    writtenPaths.push(path);
+    return origWrite(path, fm, body);
+  };
+  const router = makeMockRouter({
+    contradictions: [], gaps: [], suspects: [], healthy: [],
+    stale: [{ page: 'Readme', reason: 'old' }],
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router }));
+
+  const neighborhood = makeInterveneNeighborhood(
+    [{ title: 'Readme', path: 'SectionA/Readme.md' }], 'SectionA'
+  );
+  await steward._intervene('knowledge', await steward._assess('knowledge', neighborhood), neighborhood);
+
+  assert.deepStrictEqual(writtenPaths, ['SectionA/Readme.md'],
+    'write addressed by the neighborhood handle path only');
+});
+
+asyncTest('hallucinated title resolves to nothing and is skipped with a log', async () => {
+  const logger = { _infos: [], debug() {}, info(m) { this._infos.push(m); }, warn() {}, error() {} };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle: {} });
+  const router = makeMockRouter({
+    contradictions: [], gaps: [], suspects: [], healthy: [],
+    stale: [{ page: 'Page That Does Not Exist', reason: 'invented' }],
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router, logger }));
+
+  const neighborhood = makeInterveneNeighborhood([{ title: 'Real Page' }], 'Documents');
+  const result = await steward._intervene('knowledge', await steward._assess('knowledge', neighborhood), neighborhood);
+
+  assert.strictEqual(result.pagesModified, 0, 'nothing written');
+  assert.ok(
+    logger._infos.some(m => m.includes('Page That Does Not Exist') && m.includes('skipping')),
+    'skip logged with the hallucinated title'
+  );
+});
+
+asyncTest('cross-cluster link target still resolves globally (findPageByTitle)', async () => {
+  const pagesByTitle = {
+    'Carlos': { frontmatter: {}, body: 'Carlos body.', path: 'People/Carlos.md' },
+    'DIEM Project': { frontmatter: {}, body: 'A research project.', path: 'Research/DIEM Project.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  let globalLookups = 0;
+  const origFind = collectivesClient.findPageByTitle;
+  collectivesClient.findPageByTitle = async (t) => { globalLookups++; return origFind(t); };
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
+
+  // Neighborhood contains only Carlos; the target lives in another cluster.
+  const neighborhood = {
+    cluster: 'People',
+    pages: [{ title: 'Carlos', path: 'People/Carlos.md' }],
+    sections: new Set(['People']),
+  };
+  const added = await steward._addWikilink(h('Carlos', 'People/Carlos.md'), 'DIEM Project', 'works_on', neighborhood);
+
+  assert.strictEqual(added, true, 'cross-cluster target linked');
+  assert.strictEqual(globalLookups, 1, 'global lookup used exactly once for the out-of-neighborhood target');
+  assert.ok(collectivesClient._writtenPages['Carlos'].body.includes('[[DIEM Project]]'));
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 9 (G5): THE HUMAN SURFACE — KNOWLEDGEBOARD BRIDGE
+// ---------------------------------------------------------------------------
+
+function makeMockKnowledgeBoard() {
+  return {
+    _disputeCards: [],
+    _staleCards: [],
+    async createDisputeCard(item) { this._disputeCards.push(item); return { id: this._disputeCards.length }; },
+    async createStaleCard(item) { this._staleCards.push(item); return { id: this._staleCards.length }; },
+  };
+}
+
+asyncTest('contradiction pair gets exactly one dispute card across two tend cycles', async () => {
+  const knowledgeBoard = makeMockKnowledgeBoard();
+  const client = makeFlagClient({
+    'Person Page': 'Person body.',
+    'Role Page': 'Role body.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client, knowledgeBoard }));
+
+  // First cycle: new flag → card. Pair title is sorted, so (A,B) === (B,A).
+  const first = await steward._flagContradiction(h('Person Page'), h('Role Page'), 'conflicting role', 'People');
+  assert.strictEqual(first, true);
+  assert.strictEqual(knowledgeBoard._disputeCards.length, 1, 'one card on first detection');
+  assert.strictEqual(knowledgeBoard._disputeCards[0].title, 'Contradiction: Person Page vs Role Page');
+
+  // Second cycle: both pages already carry the pair flag → no new card call.
+  const second = await steward._flagContradiction(h('Role Page'), h('Person Page'), 'reworded conflict', 'People');
+  assert.strictEqual(second, false);
+  assert.strictEqual(knowledgeBoard._disputeCards.length, 1, 'no second card for the same pair');
+});
+
+asyncTest('duplicate pair gets a dispute card; compost candidate gets a stale card', async () => {
+  const knowledgeBoard = makeMockKnowledgeBoard();
+  const client = makeFlagClient({
+    'Page X': 'X body.',
+    'Page Y': 'Y body.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client, knowledgeBoard }));
+
+  await steward._flagDuplicate(h('Page X'), h('Page Y'), 0.9, 'Documents');
+  assert.strictEqual(knowledgeBoard._disputeCards.length, 1);
+  assert.strictEqual(knowledgeBoard._disputeCards[0].title, 'Duplicate: Page X vs Page Y');
+
+  const pagesByTitle = {
+    'Old Doc': { frontmatter: { confidence: 'low' }, body: 'old', path: 'Documents/Old Doc.md' },
+  };
+  const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
+  const steward2 = new WikiSteward(makeFullDeps({ collectivesClient, knowledgeBoard }));
+  const marked = await steward2._markForComposting(h('Old Doc', 'Documents/Old Doc.md'), 'never accessed');
+  assert.strictEqual(marked, true);
+  assert.strictEqual(knowledgeBoard._staleCards.length, 1);
+  assert.strictEqual(knowledgeBoard._staleCards[0].title, 'Old Doc');
+  assert.ok(knowledgeBoard._staleCards[0].description.includes('never accessed'));
+});
+
+asyncTest('no knowledgeBoard: flags and compost marks behave unchanged, no error', async () => {
+  const client = makeFlagClient({
+    'Person Page': 'Person body.',
+    'Role Page': 'Role body.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
+  const modified = await steward._flagContradiction(h('Person Page'), h('Role Page'), 'conflict', 'People');
+  assert.strictEqual(modified, true, 'flag written exactly as before');
+});
+
+asyncTest('a failing board never fails the executor', async () => {
+  const knowledgeBoard = {
+    async createDisputeCard() { throw new Error('deck is down'); },
+    async createStaleCard() { throw new Error('deck is down'); },
+  };
+  const client = makeFlagClient({
+    'Person Page': 'Person body.',
+    'Role Page': 'Role body.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client, knowledgeBoard }));
+  const modified = await steward._flagContradiction(h('Person Page'), h('Role Page'), 'conflict', 'People');
+  assert.strictEqual(modified, true, 'page flag survives a board failure');
+});
+
+asyncTest('steward notices carry cluster: contradiction, duplicate, and gap', async () => {
+  const observationLog = makeObservationLog();
+  const client = makeFlagClient({
+    'Person Page': 'Person body.',
+    'Role Page': 'Role body.',
+    'Page X': 'X.',
+    'Page Y': 'Y.',
+  });
+  const steward = new WikiSteward(makeFullDeps({ collectivesClient: client, observationLog }));
+
+  await steward._flagContradiction(h('Person Page'), h('Role Page'), 'conflict', 'People');
+  await steward._flagDuplicate(h('Page X'), h('Page Y'), 0.9, 'Documents');
+
+  const lowConf = observationLog.getByType(OBSERVATION_TYPES.LOW_CONFIDENCE);
+  assert.strictEqual(lowConf.length, 2);
+  assert.ok(lowConf.every(o => o.cluster === 'People'), 'low_confidence notices carry the cluster');
+  const dups = observationLog.getByType(OBSERVATION_TYPES.NEAR_DUPLICATE);
+  assert.strictEqual(dups.length, 2);
+  assert.ok(dups.every(o => o.cluster === 'Documents'), 'near_duplicate notices carry the cluster');
+  // The Phase 5 GAP already carries cluster — asserted in its own test above.
 });
 
 // ---------------------------------------------------------------------------
@@ -687,15 +1129,14 @@ function makeConnectionNeighborhood(pages) {
       id: String(i + 1),
       title: p.title,
       section: 'Documents',
+      path: p.path || `${p.title}.md`,
       frontmatter: p.frontmatter || {},
       bodyPreview: '',
       hasEmbedding: false,
       graphConnections: [],
       wikilinks: [],
     })),
-    graphEdges: [],
     sections: new Set(['Documents']),
-    deckCards: [],
   };
 }
 
@@ -746,7 +1187,7 @@ asyncTest('_markForComposting sets compost_ready/compost_reason/compost_marked_a
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
 
-  const ok = await steward._markForComposting('Stale Doc', 'Never accessed, past decay');
+  const ok = await steward._markForComposting(h('Stale Doc', 'Documents/Stale.md'), 'Never accessed, past decay');
   assert.strictEqual(ok, true);
   const fm = collectivesClient._writtenPages['Stale Doc'].frontmatter;
   assert.strictEqual(fm.compost_ready, true, 'compost_ready should be true');
@@ -763,7 +1204,7 @@ asyncTest('_markForComposting leaves the page body unchanged (no inline archive 
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
 
-  await steward._markForComposting('Stale Doc', 'Never accessed');
+  await steward._markForComposting(h('Stale Doc', 'Documents/Stale.md'), 'Never accessed');
   const writtenBody = collectivesClient._writtenPages['Stale Doc'].body;
   assert.strictEqual(writtenBody, originalBody, 'body must be byte-identical — no inline annotation');
   assert.ok(!writtenBody.includes('Archived by Memory Steward'), 'no inline archive marker in body');
@@ -869,8 +1310,9 @@ Key entities: Carlos, Eelco
   const collectivesClient = makeMockCollectivesClient({
     collectiveName: 'Moltagent Knowledge',
     listPagesResult: [
-      { id: 1, title: 'Carlos',      section: 'People', parentId: 1 },
-      { id: 2, title: 'DIEM Project', section: 'Research', parentId: 1 },
+      { id: 9, title: 'Landing page', filePath: '', fileName: 'Readme.md', parentId: 0 },
+      { id: 1, title: 'Carlos',      section: 'People', parentId: 9 },
+      { id: 2, title: 'DIEM Project', section: 'Research', parentId: 9 },
     ],
   });
 
@@ -882,10 +1324,11 @@ Key entities: Carlos, Eelco
   assert.ok(router._calls.length > 0, 'router should have been called');
   const routerCall = router._calls[0];
   assert.strictEqual(routerCall.job, 'synthesis');
-  // After the fix, landing page goes through writePageWithFrontmatter, not writePageContent
+  // Phase 8: the landing page is resolved structurally (parentId === 0) and
+  // written by path — never by its leaf title, which a root stray can share.
   assert.ok(
-    collectivesClient._writtenPages['Moltagent Knowledge'],
-    'landing page should be written via writePageWithFrontmatter'
+    collectivesClient._writtenPages['Readme'],
+    'landing page should be written at the structural landing path'
   );
 });
 
@@ -909,16 +1352,19 @@ Key entities: Alice`;
 
   const collectivesClient = makeMockCollectivesClient({
     collectiveName: 'Moltagent Knowledge',
-    listPagesResult: [{ id: 1, title: 'Alice', section: 'People', parentId: 1 }],
+    listPagesResult: [
+      { id: 9, title: 'Landing page', filePath: '', fileName: 'Readme.md', parentId: 0 },
+      { id: 1, title: 'Alice', section: 'People', parentId: 9 },
+    ],
   });
 
   const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router }));
   await steward.refreshLandingPage();
 
-  const written = collectivesClient._writtenPages['Moltagent Knowledge'];
+  const written = collectivesClient._writtenPages['Readme'];
   assert.ok(written, 'writePageWithFrontmatter must be called for the landing page title');
   assert.ok(
-    !collectivesClient._writtenContent['Moltagent Knowledge.md'],
+    !collectivesClient._writtenContent['Readme.md'],
     'raw writePageContent must NOT be used for the landing page'
   );
   const fm = written.frontmatter;
@@ -941,13 +1387,16 @@ asyncTest('_updateLandingPage strips code fences from LLM output before writing'
 
   const collectivesClient = makeMockCollectivesClient({
     collectiveName: 'Moltagent Knowledge',
-    listPagesResult: [{ id: 1, title: 'Alice', section: 'People', parentId: 1 }],
+    listPagesResult: [
+      { id: 9, title: 'Landing page', filePath: '', fileName: 'Readme.md', parentId: 0 },
+      { id: 1, title: 'Alice', section: 'People', parentId: 9 },
+    ],
   });
 
   const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router }));
   await steward.refreshLandingPage();
 
-  const written = collectivesClient._writtenPages['Moltagent Knowledge'];
+  const written = collectivesClient._writtenPages['Readme'];
   assert.ok(written, 'page should still be written after fence stripping');
   assert.ok(!written.body.includes('```'), 'body must not contain backtick fences');
   assert.ok(written.body.startsWith('# Moltagent Knowledge'), 'body must start with the heading');
@@ -975,13 +1424,16 @@ Contacts.`;
 
   const collectivesClient = makeMockCollectivesClient({
     collectiveName: 'Moltagent Knowledge',
-    listPagesResult: [{ id: 1, title: 'Alice', section: 'People', parentId: 1 }],
+    listPagesResult: [
+      { id: 9, title: 'Landing page', filePath: '', fileName: 'Readme.md', parentId: 0 },
+      { id: 1, title: 'Alice', section: 'People', parentId: 9 },
+    ],
   });
 
   const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router }));
   await steward.refreshLandingPage();
 
-  const written = collectivesClient._writtenPages['Moltagent Knowledge'];
+  const written = collectivesClient._writtenPages['Readme'];
   assert.ok(written, 'page should still be written after frontmatter stripping');
   assert.ok(written.body.startsWith('# Moltagent Knowledge'), 'body must start with the heading, not ---');
   assert.ok(!written.body.startsWith('---'), 'body must not begin with a frontmatter fence');
@@ -997,14 +1449,17 @@ asyncTest('_updateLandingPage always sets compost: never in landing page frontma
 
   const collectivesClient = makeMockCollectivesClient({
     collectiveName: 'Moltagent Knowledge',
-    listPagesResult: [{ id: 1, title: 'Alice', section: 'People', parentId: 1 }],
+    listPagesResult: [
+      { id: 9, title: 'Landing page', filePath: '', fileName: 'Readme.md', parentId: 0 },
+      { id: 1, title: 'Alice', section: 'People', parentId: 9 },
+    ],
   });
 
   const steward = new WikiSteward(makeFullDeps({ collectivesClient, llmRouter: router }));
   await steward.refreshLandingPage();
 
   assert.strictEqual(
-    collectivesClient._writtenPages['Moltagent Knowledge'].frontmatter.compost,
+    collectivesClient._writtenPages['Readme'].frontmatter.compost,
     'never'
   );
 });
@@ -1021,15 +1476,14 @@ function makeInterveneNeighborhood(pages, cluster = 'Documents') {
       id: String(i + 1),
       title: p.title,
       section: cluster,
+      path: p.path || `${p.title}.md`,
       frontmatter: p.frontmatter || {},
       bodyPreview: '',
       hasEmbedding: false,
       graphConnections: [],
       wikilinks: [],
     })),
-    graphEdges: [],
     sections: new Set([cluster]),
-    deckCards: [],
   };
 }
 
@@ -1083,6 +1537,7 @@ asyncTest('_intervene(connection): skips structural page in missingLinks', async
   const pagesByTitle = {
     'Carlos':    { frontmatter: {}, body: 'Content page.', path: 'People/Carlos.md' },
     'Documents': { frontmatter: { type: 'index' }, body: '# Documents', path: 'Documents.md' },
+    'Eelco':     { frontmatter: {}, body: 'A person.', path: 'People/Eelco.md' },
   };
   const collectivesClient = makeMockCollectivesClient({ pagesByTitle });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient }));
@@ -1488,6 +1943,7 @@ const D2_FIXTURE = fs.readFileSync(
 
 function makeFlagClient(bodyByTitle) {
   const writes = [];
+  const titleOf = (path) => (path || '').split('/').pop().replace(/\.md$/i, '');
   return {
     _writes: writes,
     readPageWithFrontmatter: async (title) => (
@@ -1495,10 +1951,17 @@ function makeFlagClient(bodyByTitle) {
         ? { frontmatter: {}, body: bodyByTitle[title], path: `${title}.md` }
         : null
     ),
-    writePageWithFrontmatter: async (title, fm, body) => {
+    readPageWithFrontmatterAtPath: async (path) => {
+      const title = titleOf(path);
+      return bodyByTitle[title] !== undefined
+        ? { frontmatter: {}, body: bodyByTitle[title], path }
+        : null;
+    },
+    writePageWithFrontmatterAtPath: async (path, fm, body) => {
+      const title = titleOf(path);
       writes.push({ title, fm, body });
       bodyByTitle[title] = body;
-      return `${title}.md`;
+      return path;
     },
   };
 }
@@ -1513,7 +1976,7 @@ asyncTest('_flagContradiction dedups on pair key across resolved and unresolved 
       'Role Page': 'Role body.',
     });
     const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
-    const modified = await steward._flagContradiction('Person Page', 'Role Page', 'a newly worded claim');
+    const modified = await steward._flagContradiction(h('Person Page'), h('Role Page'), 'a newly worded claim');
     // Person Page already flagged for this pair in either form → only Role Page written.
     assert.strictEqual(client._writes.filter(w => w.title === 'Person Page').length, 0,
       `no append when the ${existing === unresolvedForm ? 'unresolved' : 'resolved'} form is present`);
@@ -1528,7 +1991,7 @@ asyncTest('_flagContradiction: reworded claim for an already-flagged pair does n
     'Role Page': 'Body.\n\n> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [Person Page](https://nc-host.example/y) on "wording one"\n',
   });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
-  const modified = await steward._flagContradiction('Person Page', 'Role Page', 'wording two, completely different');
+  const modified = await steward._flagContradiction(h('Person Page'), h('Role Page'), 'wording two, completely different');
   assert.strictEqual(client._writes.length, 0, 'no write for either page');
   assert.strictEqual(modified, false);
 });
@@ -1539,7 +2002,7 @@ asyncTest('_flagContradiction: a second partner does append', async () => {
     'Other Page': 'Other body.',
   });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
-  const modified = await steward._flagContradiction('Person Page', 'Other Page', 'a different conflict');
+  const modified = await steward._flagContradiction(h('Person Page'), h('Other Page'), 'a different conflict');
   assert.ok(modified);
   assert.strictEqual(client._writes.filter(w => w.title === 'Person Page').length, 1,
     'new partner pair appends on Person Page');
@@ -1554,11 +2017,11 @@ asyncTest('_flagDuplicate is per-pair: flagged against one partner, still flags 
   const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
 
   // Same pair again → no write on X
-  await steward._flagDuplicate('Page X', 'Page Y', 0.91);
+  await steward._flagDuplicate(h('Page X'), h('Page Y'), 0.91);
   assert.strictEqual(client._writes.filter(w => w.title === 'Page X').length, 0, 'same pair stays idempotent');
 
   // New partner → append
-  const modified = await steward._flagDuplicate('Page X', 'Page Z', 0.8);
+  const modified = await steward._flagDuplicate(h('Page X'), h('Page Z'), 0.8);
   assert.ok(modified);
   assert.strictEqual(client._writes.filter(w => w.title === 'Page X').length, 1, 'second partner appends');
 });
@@ -1569,13 +2032,13 @@ asyncTest('D2 fixture: already-walled pair does not grow; flag region is byte-st
     'Role Page': 'Role body.\n\n> ⚠️ Contradiction flagged by Knowledge Steward: conflicts with [Person Page](https://nc-host.example/p) on "any"\n',
   });
   const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
-  const modified = await steward._flagContradiction('Person Page', 'Role Page', 'yet another wording of the same conflict');
+  const modified = await steward._flagContradiction(h('Person Page'), h('Role Page'), 'yet another wording of the same conflict');
   assert.strictEqual(client._writes.length, 0, 'wall does not grow — pair key holds on the captured body');
   assert.strictEqual(modified, false);
 
   // Duplicate flag: the walled page is already flagged for this pair; only the
   // partner side (which carries no duplicate flag yet) may be written.
-  await steward._flagDuplicate('Person Page', 'Role Page', 0.99);
+  await steward._flagDuplicate(h('Person Page'), h('Role Page'), 0.99);
   assert.strictEqual(client._writes.filter(w => w.title === 'Person Page').length, 0,
     'duplicate flag also keyed per pair on the captured body');
 });
@@ -1583,7 +2046,7 @@ asyncTest('D2 fixture: already-walled pair does not grow; flag region is byte-st
 asyncTest('_lowerConfidence deletes verification_note and skips the write on identical state', async () => {
   const today = new Date().toISOString().split('T')[0];
   const client = makeFlagClient({});
-  client.readPageWithFrontmatter = async () => ({
+  client.readPageWithFrontmatterAtPath = async () => ({
     frontmatter: { confidence: 'low', last_verification_attempt: today, verification_note: 'LLM-worded leftover' },
     body: 'Body.',
     path: 'People/Page.md',
@@ -1591,16 +2054,16 @@ asyncTest('_lowerConfidence deletes verification_note and skips the write on ide
   const steward = new WikiSteward(makeFullDeps({ collectivesClient: client }));
 
   // First pass: removing the leftover note is a real change → one write, note gone.
-  const first = await steward._lowerConfidence('Page', 'stale');
+  const first = await steward._lowerConfidence(h('Page', 'People/Page.md'), 'stale');
   assert.strictEqual(first, true);
 
   // Second pass: state identical (low, same day, no note) → no write.
-  client.readPageWithFrontmatter = async () => ({
+  client.readPageWithFrontmatterAtPath = async () => ({
     frontmatter: { confidence: 'low', last_verification_attempt: today },
     body: 'Body.',
     path: 'People/Page.md',
   });
-  const second = await steward._lowerConfidence('Page', 'stale');
+  const second = await steward._lowerConfidence(h('Page', 'People/Page.md'), 'stale');
   assert.strictEqual(second, false, 'identical state produces identical bytes — no write');
   assert.strictEqual(client._writes.length, 1, 'only the note-removal write happened');
   assert.ok(!('verification_note' in client._writes[0].fm), 'written frontmatter carries no verification_note');

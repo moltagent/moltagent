@@ -154,6 +154,28 @@ asyncTest('_recordAccess does not throw for missing page (fire-and-forget)', asy
   assert.strictEqual(wiki.getWrites().length, 0, 'Should not write anything');
 });
 
+asyncTest('_recordAccess write rejection propagates to the caller\'s catch (Phase 5 contract)', async () => {
+  // Post-Phase 5, writePageWithFrontmatter throws on a lookup miss instead of
+  // creating a root stray. _recordAccess is read-first so this only fires on a
+  // read/write race — the throw must surface (search() absorbs it via .catch).
+  const pageData = {
+    'Test Page': { frontmatter: { access_count: 1 }, body: 'x' },
+  };
+  const wiki = createMockCollectivesClient(pageData);
+  wiki.writePageWithFrontmatter = async () => {
+    throw new Error('Page not found: "Test Page" — pass { createIfMissing } to create it inside the tree');
+  };
+  const searcher = new MemorySearcher({
+    ncSearchClient: createMockNCSearchClient(),
+    collectivesClient: wiki,
+    logger: silentLogger,
+  });
+
+  let rejected = false;
+  await searcher._recordAccess('Test Page').catch(() => { rejected = true; });
+  assert.strictEqual(rejected, true, 'rejection reaches the fire-and-forget catch, no stray creation');
+});
+
 // -----------------------------------------------------------------------
 // search() LTP integration
 // -----------------------------------------------------------------------

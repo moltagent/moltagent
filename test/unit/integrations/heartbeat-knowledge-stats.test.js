@@ -208,6 +208,30 @@ function createMinimalHeartbeat(overrides = {}) {
     assert.ok(writtenContent.includes('| Content pages | 1 |'), 'should count only People page as content (not Meta or root)');
   });
 
+  await asyncTest('TC-KSTATS-CNT-004: virtual section pages (empty filePath, child of landing) count under their title, not (root)', async () => {
+    let writtenContent = null;
+    const pages = [
+      { id: 1, title: 'Landing page', filePath: '', fileName: 'Readme.md', parentId: 0 },
+      { id: 2, title: 'Research', filePath: '', fileName: 'Research.md', parentId: 1 },
+      { id: 3, title: 'Paper', filePath: 'Research', fileName: 'Paper.md', parentId: 2 },
+    ];
+
+    const collectivesClient = {
+      resolveCollective: async () => 1,
+      listPages: async () => pages,
+      writePageContent: async (path, content) => {
+        writtenContent = content;
+      }
+    };
+
+    const hb = createMinimalHeartbeat({ collectivesClient });
+    await hb._updateKnowledgeStats();
+
+    assert.ok(writtenContent !== null, 'writePageContent should have been called');
+    assert.ok(writtenContent.includes('| Research | 2 |'), 'virtual section page and its member both count under Research');
+    assert.ok(writtenContent.includes('| (root) | 1 |'), 'only the landing page itself remains at (root)');
+  });
+
   // --------------------------------------------------------------------------
   // Summary
   // --------------------------------------------------------------------------

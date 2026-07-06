@@ -18,6 +18,41 @@ function _slugify(text) {
 }
 
 /**
+ * Derive the section (cluster) a page belongs to. THE single derivation:
+ * every consumer of section identity routes through here. Six call sites
+ * used to re-derive this each their own way (substring matches, raw
+ * filePath prefixes, title fallbacks) — the #51 generator, alive across
+ * module boundaries, until each drift eventually strands or misfiles pages.
+ * The client owns the API shape, so the client owns the derivation.
+ *
+ * Chain:
+ *   1. page.section (truthy) — returned directly; defensive for future API restores.
+ *   2. page.filePath (non-empty string) — first non-empty segment after split('/').
+ *   3. page.parentId === landingPageId (direct child of landing) — page.title.
+ *      Virtual section pages (no backing folder yet) report filePath: '' from
+ *      the Collectives API; their title IS the section. Requires landingPageId.
+ *   4. null — the landing page itself (parentId === 0, empty filePath) and orphans.
+ *
+ * @param {{ section?: string, filePath?: string, parentId?: number, title?: string }} page
+ * @param {number|undefined} [landingPageId] - Id of the landing page (parentId === 0
+ *   entry in listPages). Callers without a page list in hand may omit it; branch 3
+ *   is then unavailable and such pages derive to null (honest: unknown section).
+ * @returns {string|null}
+ */
+function deriveSection(page, landingPageId) {
+  if (!page) return null;
+  if (page.section) return page.section;
+  if (page.filePath) {
+    const parts = page.filePath.split('/').filter(Boolean);
+    return parts[0] || null;
+  }
+  if (landingPageId && page.parentId === landingPageId && page.title) {
+    return page.title;
+  }
+  return null;
+}
+
+/**
  * Custom error class for Collectives API errors
  */
 class CollectivesApiError extends Error {
@@ -691,22 +726,36 @@ class CollectivesClient {
   }
 
   /**
-   * Read a page with parsed frontmatter
+   * Read a page with parsed frontmatter by title (global leaf-title lookup).
+   * Prefer readPageWithFrontmatterAtPath when a path is already in hand —
+   * a path addresses exactly one page; a leaf title may not.
+   *
    * @param {string} title - Page title
    * @returns {Promise<{frontmatter: Object, body: string, path: string}|null>}
    */
   async readPageWithFrontmatter(title) {
     const found = await this.findPageByTitle(title);
     if (!found) return null;
+    return await this.readPageWithFrontmatterAtPath(found.path);
+  }
 
-    const content = await this.readPageContent(found.path);
+  /**
+   * Read a page with parsed frontmatter by WebDAV path — the identity-handle
+   * read. No title lookup, no page list: the path IS the page.
+   *
+   * @param {string} pagePath - Path relative to the collective root
+   * @returns {Promise<{frontmatter: Object, body: string, path: string}|null>}
+   */
+  async readPageWithFrontmatterAtPath(pagePath) {
+    if (!pagePath) return null;
+    const content = await this.readPageContent(pagePath);
     if (content === null) return null;
 
     // Lazy-load frontmatter parser to avoid circular dependency
     const { parseFrontmatter } = require('../knowledge/frontmatter');
     const { frontmatter, body } = parseFrontmatter(content);
 
-    return { frontmatter, body, path: found.path };
+    return { frontmatter, body, path: pagePath };
   }
 
   /**
@@ -789,23 +838,75 @@ class CollectivesClient {
   }
 
   /**
-   * Write a page with frontmatter
+   * Write a page with frontmatter.
+   *
+   * Page creation is explicit. A lookup miss without `createIfMissing` throws
+   * instead of silently PUTting `${title}.md` at the collective root — that
+   * fallback is where every stray root page was born (issue #43's page is one).
+   * With `createIfMissing`, the page is created through the OCS page tree
+   * (ensureSection/createPage) so it is born inside the tree, never at root.
+   *
    * @param {string} title - Page title
+   * @param {Object} frontmatter - Frontmatter metadata
+   * @param {string} body - Page body content
+   * @param {Object} [options]
+   * @param {{parentId?: number, section?: string}} [options.createIfMissing] -
+   *   When the title lookup misses, create the page under this parent page id,
+   *   or under this section (resolved via ensureSection). Without it, a miss
+   *   throws CollectivesApiError(404).
+   * @returns {Promise<string>} Path written to
+   */
+  async writePageWithFrontmatter(title, frontmatter, body, options = {}) {
+    // Try to find existing page path
+    const found = await this.findPageByTitle(title);
+    let pagePath;
+    if (found) {
+      pagePath = found.path;
+    } else if (options.createIfMissing && typeof options.createIfMissing === 'object') {
+      const collectiveId = await this.resolveCollective();
+      const { parentId, section } = options.createIfMissing;
+      let actualParentId = parentId;
+      if (actualParentId == null && section) {
+        const sectionPage = await this.ensureSection(collectiveId, section);
+        actualParentId = sectionPage?.id;
+      }
+      if (actualParentId == null) {
+        throw new CollectivesApiError(
+          `createIfMissing for "${title}" needs a parentId or section`, 400
+        );
+      }
+      const leafTitle = title.split('/').pop();
+      const created = await this.createPage(collectiveId, actualParentId, leafTitle);
+      pagePath = this._buildPagePath(created);
+    } else {
+      throw new CollectivesApiError(
+        `Page not found: "${title}" — pass { createIfMissing } to create it inside the tree`, 404
+      );
+    }
+
+    return await this.writePageWithFrontmatterAtPath(pagePath, frontmatter, body);
+  }
+
+  /**
+   * Write a page with frontmatter by WebDAV path — the identity-handle write.
+   * Same wikilink resolution and serialization as the title-addressed write,
+   * but the path addresses exactly one page: a leaf-title collision elsewhere
+   * in the collective (every section has a Readme) cannot receive this write.
+   *
+   * @param {string} pagePath - Path relative to the collective root
    * @param {Object} frontmatter - Frontmatter metadata
    * @param {string} body - Page body content
    * @returns {Promise<string>} Path written to
    */
-  async writePageWithFrontmatter(title, frontmatter, body) {
+  async writePageWithFrontmatterAtPath(pagePath, frontmatter, body) {
+    if (!pagePath) {
+      throw new CollectivesApiError('writePageWithFrontmatterAtPath requires a path', 400);
+    }
     const { serializeFrontmatter } = require('../knowledge/frontmatter');
 
     // Resolve [[wikilinks]] to Nextcloud file links before writing
     const resolved = await this.resolveWikilinks(body);
-
     const content = serializeFrontmatter(frontmatter, resolved);
-
-    // Try to find existing page path
-    const found = await this.findPageByTitle(title);
-    const pagePath = found ? found.path : `${title}.md`;
 
     await this.writePageContent(pagePath, content);
     return pagePath;
@@ -986,3 +1087,4 @@ class CollectivesClient {
 
 module.exports = CollectivesClient;
 module.exports.CollectivesApiError = CollectivesApiError;
+module.exports.deriveSection = deriveSection;

@@ -20,6 +20,7 @@ const { filterOwnerEvents } = require('./calendar-scoping');
 const ollamaGate = require('../shared/ollama-gate');
 const { WikiSteward } = require('../maintenance/wiki-steward');
 const { ObservationLog } = require('../maintenance/observation-log');
+const { deriveSection } = require('./collectives-client');
 
 class HeartbeatManager {
   /**
@@ -316,10 +317,14 @@ class HeartbeatManager {
         llmRouter: this.llmRouter,
         observationLog: this._observationLog,
         modelScorecard: this.modelScorecard,
+        knowledgeBoard: this.knowledgeBoard,
         logger: console,
         // collectiveId omitted — WikiSteward will resolve it via collectivesClient
       });
-      console.log(`[Heartbeat] WikiSteward initialized (scorecard: ${this.modelScorecard ? 'wired' : 'absent'})`);
+      console.log(
+        `[Heartbeat] WikiSteward initialized (scorecard: ${this.modelScorecard ? 'wired' : 'absent'}, ` +
+        `knowledgeBoard: ${this.knowledgeBoard ? 'wired' : 'absent'})`
+      );
     } catch (err) {
       console.warn('[Heartbeat] WikiSteward initialization failed:', err.message);
       return null;
@@ -1776,16 +1781,18 @@ class HeartbeatManager {
     const pages = await this.collectivesClient.listPages(collectiveId);
     if (!Array.isArray(pages)) return;
 
-    // Count pages by section from filePath
+    // Count pages by derived section (single derivation, owned by the client).
+    // Virtual section pages (filePath: '') now count under their own title
+    // instead of being misfiled as (root).
     const META_OR_ROOT = new Set(['Meta', '']);
+    const landingPageId = pages.find(p => p.parentId === 0)?.id;
     const sectionCounts = {};
     let contentPages = 0;
     let totalPages = 0;
 
     for (const page of pages) {
       totalPages++;
-      // filePath is like "People" or "Projects" or "Meta" or "" (root)
-      const section = (page.filePath || '').split('/')[0] || '(root)';
+      const section = deriveSection(page, landingPageId) || '(root)';
       sectionCounts[section] = (sectionCounts[section] || 0) + 1;
       if (!META_OR_ROOT.has(section) && section !== '(root)') {
         contentPages++;

@@ -324,6 +324,61 @@ asyncTest('createDisputeCard creates card in disputed stack', async () => {
   assert.ok(desc.includes('Budget is 60k'));
 });
 
+asyncTest('createDisputeCard skips duplicate cards by title key', async () => {
+  const mockDeck = createMockDeckClient({
+    getCardsInStack: (stackName) => (
+      stackName === 'disputed'
+        ? [{ id: 77, title: 'Dispute: Budget Amount' }]
+        : []
+    ),
+  });
+  const board = new KnowledgeBoard({ deckClient: mockDeck });
+
+  const card = await board.createDisputeCard({
+    title: 'Budget Amount',
+    sourceA: '@finance', claimA: 'Budget is 50k',
+    sourceB: '@marketing', claimB: 'Budget is 60k',
+  });
+
+  assert.strictEqual(card.id, 77, 'existing card returned');
+  assert.strictEqual(mockDeck._getCallsFor('createCard').length, 0, 'no second card for the same title');
+});
+
+// ============================================================
+// Tests: createStaleCard()
+// ============================================================
+
+asyncTest('createStaleCard creates card in stale stack', async () => {
+  const mockDeck = createMockDeckClient();
+  const board = new KnowledgeBoard({ deckClient: mockDeck });
+
+  await board.createStaleCard({
+    title: 'Old Procedure',
+    description: 'Marked compost-ready: never accessed, past decay.',
+  });
+
+  const createCalls = mockDeck._getCallsFor('createCard');
+  assert.strictEqual(createCalls.length, 1);
+  assert.strictEqual(createCalls[0][0], 'stale');
+  assert.strictEqual(createCalls[0][1].title, 'Stale: Old Procedure');
+  assert.ok(createCalls[0][1].description.includes('never accessed, past decay'));
+});
+
+asyncTest('createStaleCard skips duplicate cards by title key', async () => {
+  const mockDeck = createMockDeckClient({
+    getCardsInStack: (stackName) => (
+      stackName === 'stale'
+        ? [{ id: 42, title: 'Stale: Old Procedure' }]
+        : []
+    ),
+  });
+  const board = new KnowledgeBoard({ deckClient: mockDeck });
+
+  const card = await board.createStaleCard({ title: 'Old Procedure', description: 'again' });
+  assert.strictEqual(card.id, 42, 'existing card returned');
+  assert.strictEqual(mockDeck._getCallsFor('createCard').length, 0);
+});
+
 // ============================================================
 // Tests: getPendingVerifications()
 // ============================================================
