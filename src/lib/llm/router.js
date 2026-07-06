@@ -123,6 +123,13 @@ class LLMRouter {
     // CostTracker (optional, set post-construction)
     this.costTracker = null;
 
+    // #237: cloud quality veto (optional, set post-construction via
+    // setCloudQualityCheck — the costTracker pattern). (job, modelName) =>
+    // boolean; true sinks that model below all healthy peers in the job's
+    // cloud chain. Quality truth lives in ModelScorecard; the router only
+    // reads the verdict at its ONE generating function.
+    this._cloudQualityCheck = null;
+
     // JudgeQueue + language snapshot (optional, set post-construction —
     // Session 4). route() is the second LLM egress beside
     // RouterChatBridge.chat (the Talk thinking path routes here directly),
@@ -806,15 +813,51 @@ class LLMRouter {
    * @returns {Object} job → cloud-only provider-ID chain (local appended by caller)
    */
   _buildCloudJobChains(cloudIds, opts = {}) {
-    const textTiers = this._costTiers(this._eligibleCloudIds(cloudIds, isTextGeneration));
-    const toolTiers = this._costTiers(this._eligibleCloudIds(cloudIds, isToolCapable));
+    // Eligible sets computed ONCE (unknown-capability models log at most once).
+    const textEligible = this._eligibleCloudIds(cloudIds, isTextGeneration);
+    const toolEligible = this._eligibleCloudIds(cloudIds, isToolCapable);
     const out = {};
     for (const job of VALID_JOBS) {
       if (job === JOBS.CREDENTIALS) continue; // local-only, handled by caller
-      const tiers = (job === JOBS.TOOLS || job === JOBS.CODING) ? toolTiers : textTiers;
-      out[job] = this._cloudDepthChain(job, tiers, opts);
+      const eligible = (job === JOBS.TOOLS || job === JOBS.CODING) ? toolEligible : textEligible;
+      // #237 quality veto on the cost anchor, applied UPSTREAM of the depth
+      // policy: a demoted model loses its claim to its cost position, so for
+      // a 'cheapest' job the cheapest HEALTHY model becomes the leader; the
+      // demoted entries re-enter at the tail in their original cost order
+      // (reorder, never eliminate — tail service still earns them organic
+      // evidence toward reinstatement). Healthy models never swap on
+      // quality: ordering among them stays pure cost rank. With every
+      // eligible model demoted the healthy chain is empty and the emitted
+      // chain is exactly the un-vetoed one (never-go-dark).
+      const healthy = eligible.filter(id => !this._isDemotedId(job, id));
+      const chainMain = this._cloudDepthChain(job, this._costTiers(healthy), opts);
+      const chainAll = this._cloudDepthChain(job, this._costTiers(eligible), opts);
+      out[job] = [...new Set([...chainMain, ...chainAll])];
     }
     return out;
+  }
+
+  /**
+   * #237: whether a cloud provider's MODEL is demoted for a job. The
+   * scorecard keys on model names; the router filters provider IDs — the
+   * translation happens here, at the filter site, via the same
+   * providers.get(id).model lookup _cloudCapabilitiesOf performs. No check
+   * wired, no model name, or a throwing check all mean "healthy": a
+   * scorecard fault must never break chain building (fail-open).
+   * @private
+   * @param {string} job
+   * @param {string} id - Provider ID
+   * @returns {boolean}
+   */
+  _isDemotedId(job, id) {
+    if (typeof this._cloudQualityCheck !== 'function') return false;
+    const model = this.providers.get(id)?.model;
+    if (!model) return false;
+    try {
+      return !!this._cloudQualityCheck(job, model);
+    } catch (_err) {
+      return false;
+    }
   }
 
   /**
@@ -1085,7 +1128,8 @@ class LLMRouter {
       outputVerifier: this.outputVerifier.getStats(),
       roster: this.getRoster(),
       activePreset: this._activePreset,
-      routingMode: this._roster ? 'roster' : 'legacy'
+      routingMode: this._roster ? 'roster' : 'legacy',
+      cloudDemotions: this._describeCloudDemotions()
     };
   }
 
@@ -1156,6 +1200,76 @@ class LLMRouter {
         console.log(`[LLMRouter] Cloud capability classes (${presetName}): ${summary}`);
       }
     }
+  }
+
+  /**
+   * #237: wire the cloud quality veto (post-construction, the costTracker
+   * pattern). Production passes `(job, model) => scorecard.isDemoted(job,
+   * model)`. Takes effect on the next chain build; call
+   * refreshCloudOrdering() to rebuild an active preset roster immediately.
+   * @param {Function|null} fn - (job, modelName) => boolean
+   */
+  setCloudQualityCheck(fn) {
+    this._cloudQualityCheck = typeof fn === 'function' ? fn : null;
+  }
+
+  /**
+   * #237: re-resolve the active preset roster in place so demotion changes
+   * reach live routing. A custom roster (setRoster) is deliberately EXEMPT —
+   * deployer-explicit chains are human intent, the same exemption cockpit
+   * pins enjoy in NicheAssignment. Per-call allowCloud chains are built
+   * fresh per call and inherit the veto automatically.
+   * @param {string} [job] - The job whose demotion state changed (log context).
+   * @param {string} [model] - The model whose demotion state changed. When
+   *   given and NO cloud provider serves that model, the rebuild is skipped:
+   *   the scorecard computes demotions for any model meeting the condition
+   *   (local names included), but only cloud-served names can move a chain.
+   * @returns {boolean} whether a preset roster was rebuilt
+   */
+  refreshCloudOrdering(job, model) {
+    if (!this._activePreset || !this._roster) return false;
+    if (typeof model === 'string' && model) {
+      let cloudServed = false;
+      for (const [, provider] of this.providers) {
+        if (provider.type !== 'local' && provider.model === model) {
+          cloudServed = true;
+          break;
+        }
+      }
+      if (!cloudServed) return false;
+    }
+    this._roster = this._resolvePreset(this._activePreset);
+    const demoted = this._describeCloudDemotions();
+    const summary = Object.entries(demoted)
+      .map(([demotedJob, entries]) => `${demotedJob}=[${entries.map(e => e.id).join(',')}]`)
+      .join(' ');
+    console.log(
+      `[LLMRouter] Cloud ordering refreshed (preset ${this._activePreset}): ` +
+      (summary ? `demoted to tail ${summary}` : 'no active demotions')
+    );
+    return true;
+  }
+
+  /**
+   * #237 observability: per job, the cloud providers the quality veto is
+   * currently sinking to the tail. Detail (trigger, strikes, recheck) lives
+   * in ModelScorecard.getCloudDemotions() — quality truth keeps custody.
+   * @private
+   * @returns {Object<string, Array<{id: string, model: string|null}>>}
+   */
+  _describeCloudDemotions() {
+    const out = {};
+    if (typeof this._cloudQualityCheck !== 'function') return out;
+    for (const job of VALID_JOBS) {
+      if (job === JOBS.CREDENTIALS) continue;
+      const demoted = [];
+      for (const [id, provider] of this.providers) {
+        if (provider.type === 'local') continue;
+        if (this._isDemotedId(job, id)) demoted.push({ id, model: provider.model || null });
+      }
+      if (demoted.length > 0) out[job] = demoted;
+    }
+    return out;
   }
 
   /**

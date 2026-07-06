@@ -28,6 +28,11 @@
  *   under-sampled pairings, which is how a demoted model earns retries; for
  *   destructive jobs (tools) the bonus is gated by a floor so exploration
  *   never hands a job with side effects to a model with a failing record.
+ *   One selection mechanism spans local and cloud (#237): the local slot
+ *   learns through seats, the cloud chains learn through DEMOTIONS — a
+ *   quality veto the router reads via isDemoted() when it builds cloud
+ *   chains, with its own hysteresis band and escalating re-audition
+ *   cool-off (isRecheckDue(), consumed by LocalJudge's cold-cell gate).
  *
  * Data Flow:
  *   AgentLoop / MicroPipeline / RouterChatBridge / IntentRouter /
@@ -87,6 +92,28 @@ const DEFAULT_EXPLORATION_FLOOR = 0.5;
 // decision; tools creates cards, sends mail, writes files.
 const DEFAULT_DESTRUCTIVE_JOBS = ['tools'];
 
+// --- Cloud demotion (#237): a quality veto on the cost anchor -------------
+// A model with PROVEN quality problems for a job loses its claim to its
+// cost position in the cloud chain. The trigger requires one full
+// fixture-quantum of evidential mass in a single failing language cell —
+// the same weight the entire install-time golden-set measurement carries
+// per language — so a cell that merely stopped attracting probes can never
+// trigger a demotion. The band around the destructive floor is two margins
+// wide (demote below floor−margin, reinstate at floor+margin), twice the
+// seat's one-sided margin: cloud evidence is sparser and noisier, so the
+// veto moves later and releases later (#232 discipline, cloud regime).
+const DEFAULT_DEMOTION_MASS_FLOOR = 12;
+
+// Escalating re-audition cool-off: recheck after 7d × 2^(strikes−1),
+// capped at 56d. A failed recheck is confirmation, not a new offense — the
+// per-language recheck cadence simply restarts at the same period.
+const DEMOTION_RECHECK_BASE_MS = 7 * 24 * 60 * 60 * 1000;
+const DEMOTION_RECHECK_CAP_MS = 56 * 24 * 60 * 60 * 1000;
+
+// A re-demotion within this window of a reinstatement is a consecutive
+// failure and escalates strikes; a later one starts over at 1.
+const DEMOTION_STRIKE_MEMORY_MS = 14 * 24 * 60 * 60 * 1000;
+
 class ModelScorecard {
   /**
    * @param {Object} [opts]
@@ -113,6 +140,8 @@ class ModelScorecard {
    * @param {number} [opts.explorationFloor] - Minimum mean for the bonus on
    *   destructive jobs.
    * @param {string[]} [opts.destructiveJobs]
+   * @param {number} [opts.demotionMassFloor] - Evidential mass a single
+   *   language cell must carry before it can trigger a cloud demotion (#237).
    * @param {Object} [opts.logger=console]
    */
   constructor({
@@ -126,6 +155,7 @@ class ModelScorecard {
     escalationWeight = DEFAULT_ESCALATION_WEIGHT,
     explorationFloor = DEFAULT_EXPLORATION_FLOOR,
     destructiveJobs = DEFAULT_DESTRUCTIVE_JOBS,
+    demotionMassFloor = DEFAULT_DEMOTION_MASS_FLOOR,
     logger,
   } = {}) {
     this.dataDir = dataDir === null ? null : (dataDir || path.resolve(process.cwd(), 'data'));
@@ -140,7 +170,14 @@ class ModelScorecard {
       ? escalationWeight : DEFAULT_ESCALATION_WEIGHT;
     this.explorationFloor = Number.isFinite(explorationFloor) ? explorationFloor : DEFAULT_EXPLORATION_FLOOR;
     this.destructiveJobs = new Set(Array.isArray(destructiveJobs) ? destructiveJobs : DEFAULT_DESTRUCTIVE_JOBS);
+    this.demotionMassFloor = Number.isFinite(demotionMassFloor) && demotionMassFloor > 0
+      ? demotionMassFloor : DEFAULT_DEMOTION_MASS_FLOOR;
     this.logger = logger || console;
+
+    // #237 bridge: fired when a (job, model) demotion forms or lifts, so
+    // the router can rebuild the active preset roster in place. Assigned
+    // post-construction (the costTracker pattern) — see webhook-server.
+    this.onCloudDemotionChange = null;
 
     this._saveTimer = null;
     this._state = this._load();
@@ -167,7 +204,7 @@ class ModelScorecard {
    *   but does not count as production evidence, so it adds no UCB
    *   optimism — the same discipline as the golden-set seed, whose fixture
    *   numbers must never supply exploration bonus against real traffic.
-   * @returns {{recorded: boolean, seatChanged: boolean}}
+   * @returns {{recorded: boolean, seatChanged: boolean, demotionChanged: boolean}}
    */
   recordSample(job, model, language, success, { weight = 1, synthetic = false } = {}) {
     if (typeof job !== 'string' || !job || typeof model !== 'string' || !model) {
@@ -194,12 +231,17 @@ class ModelScorecard {
     }
 
     const seatChanged = this._evaluate(job);
-    // A seat change repoints live routing — persist immediately. Plain
-    // samples are statistics; they coalesce into a debounced write so the
-    // hot path never pays a synchronous disk write per LLM call.
-    if (seatChanged) this._persistNow();
+    const demotionChanged = this._evaluateCloudDemotions(job);
+    // A recheck-due sample (organic or probe) counts as that language's
+    // re-audition for this cool-off period, whether it passed or failed.
+    this._noteRecheckSample(job, model, lang);
+    // A seat or demotion change repoints live routing — persist
+    // immediately. Plain samples are statistics; they coalesce into a
+    // debounced write so the hot path never pays a synchronous disk write
+    // per LLM call.
+    if (seatChanged || demotionChanged) this._persistNow();
     else this._scheduleSave();
-    return { recorded: true, seatChanged };
+    return { recorded: true, seatChanged, demotionChanged };
   }
 
   /**
@@ -304,6 +346,54 @@ class ModelScorecard {
    */
   getPairings(job) {
     return this._state.jobs[job] || {};
+  }
+
+  /**
+   * #237: whether a (job, model) pairing carries an ACTIVE cloud demotion.
+   * The only consumer that acts on this is the router's cloud chain
+   * building — the flag is computed for any model meeting the condition,
+   * and an uninstalled or local name in the table is inert.
+   * @param {string} job
+   * @param {string} model - Model NAME (the scorecard's key), not a
+   *   provider ID; the router translates at its filter site.
+   * @returns {boolean}
+   */
+  isDemoted(job, model) {
+    const rec = this._demotionRecord(job, model);
+    return !!(rec && rec.at);
+  }
+
+  /**
+   * #237 re-audition: whether a demoted (job, model) pairing's cool-off has
+   * elapsed and the given language has not yet had its re-check sample this
+   * period. The judge's cold-cell chokepoint consults this to make warm
+   * cells probe-eligible again — one probe per fixture language per
+   * cool-off period, nothing more.
+   * @param {string} job
+   * @param {string} model
+   * @param {string} [language] - Omitted: true when ANY re-check is due.
+   * @returns {boolean}
+   */
+  isRecheckDue(job, model, language) {
+    const rec = this._demotionRecord(job, model);
+    if (!rec || !rec.at || !rec.recheckAt) return false;
+    const recheckAt = Date.parse(rec.recheckAt);
+    if (!Number.isFinite(recheckAt) || Date.now() < recheckAt) return false;
+    if (typeof language !== 'string' || !language) return true;
+    const stamp = rec.rechecked?.[language.toUpperCase()];
+    const last = stamp ? Date.parse(stamp) : NaN;
+    if (!Number.isFinite(last)) return true;
+    return Date.now() - last >= this._recheckPeriodMs(rec.strikes);
+  }
+
+  /**
+   * Observability (#237): the raw demotion table —
+   * job → model → { at, recheckAt, strikes, trigger, rechecked } for active
+   * demotions, { reinstatedAt, strikes } for reinstated strike memory.
+   * @returns {Object}
+   */
+  getCloudDemotions() {
+    return JSON.parse(JSON.stringify(this._state.cloudDemotions || {}));
   }
 
   // ---------------------------------------------------------------------------
@@ -430,9 +520,145 @@ class ModelScorecard {
     return true;
   }
 
+  /**
+   * @private
+   * #237: re-evaluate every model's cloud-demotion state for a job. Called
+   * from recordSample beside _evaluate, and idempotent: only a boundary
+   * crossing (demote or reinstate) changes anything; inside the dead band
+   * the incumbent state — demoted or not — holds.
+   *
+   * Demote: ∃ measured language cell with mass ≥ demotionMassFloor AND
+   * posterior mean < explorationFloor − margin. Min-language semantics,
+   * same as seats, restricted to cells that actually carry the mass floor
+   * so an empty PT cell can neither trigger nor block.
+   *
+   * Reinstate: every qualifying cell (mass ≥ floor) has
+   * mean ≥ explorationFloor + margin — and at least one such cell exists
+   * (no evidence is not evidence of recovery).
+   *
+   * @returns {boolean} whether any demotion formed or lifted
+   */
+  _evaluateCloudDemotions(job) {
+    const names = new Set([
+      ...Object.keys(this._state.jobs[job] || {}),
+      ...Object.keys(this._state.cloudDemotions[job] || {}),
+    ]);
+    let changed = false;
+    for (const model of names) {
+      if (this._evaluateModelDemotion(job, model)) changed = true;
+    }
+    return changed;
+  }
+
+  /** @private One model's demote/reinstate decision. See _evaluateCloudDemotions. */
+  _evaluateModelDemotion(job, model) {
+    const demoteBar = this.explorationFloor - this.margin;
+    const reinstateBar = this.explorationFloor + this.margin;
+
+    const qualifying = [];
+    for (const [lang, entry] of Object.entries(this._state.jobs[job]?.[model] || {})) {
+      const mass = (entry.a || 0) + (entry.b || 0);
+      if (!Number.isFinite(mass) || mass < this.demotionMassFloor) continue;
+      const mean = (entry.a || 0) / mass;
+      if (!Number.isFinite(mean)) continue; // corrupt cell: neither triggers nor blocks
+      qualifying.push({ lang, mass, mean });
+    }
+
+    const rec = this._demotionRecord(job, model);
+    const active = !!(rec && rec.at);
+
+    if (!active) {
+      let worst = null;
+      for (const q of qualifying) {
+        if (q.mean < demoteBar && (!worst || q.mean < worst.mean)) worst = q;
+      }
+      if (!worst) return false;
+      const now = Date.now();
+      // Consecutive-failure memory: a re-demotion shortly after a
+      // reinstatement escalates the cool-off; a distant one starts over.
+      const reinstatedAt = rec?.reinstatedAt ? Date.parse(rec.reinstatedAt) : NaN;
+      const strikes = Number.isFinite(reinstatedAt) && (now - reinstatedAt) < DEMOTION_STRIKE_MEMORY_MS
+        ? (rec.strikes || 0) + 1 : 1;
+      this._demotionSlot(job)[model] = {
+        at: new Date(now).toISOString(),
+        recheckAt: new Date(now + this._recheckPeriodMs(strikes)).toISOString(),
+        strikes,
+        trigger: {
+          lang: worst.lang,
+          mean: Number(worst.mean.toFixed(3)),
+          mass: Number(worst.mass.toFixed(1)),
+        },
+        rechecked: {},
+      };
+      this.logger.info(
+        `[ModelScorecard] Cloud demotion: ${job}/${model} ` +
+        `(trigger ${worst.lang} mean ${worst.mean.toFixed(3)} mass ${worst.mass.toFixed(1)}, ` +
+        `strikes ${strikes}, recheck ${this._demotionSlot(job)[model].recheckAt})`
+      );
+      this._fireCloudDemotionChange(job, model);
+      return true;
+    }
+
+    if (qualifying.length === 0) return false;
+    if (!qualifying.every(q => q.mean >= reinstateBar)) return false;
+    this._demotionSlot(job)[model] = {
+      reinstatedAt: new Date().toISOString(),
+      strikes: rec.strikes || 1,
+    };
+    this.logger.info(
+      `[ModelScorecard] Cloud reinstatement: ${job}/${model} ` +
+      `(every measured cell ≥ ${reinstateBar.toFixed(3)}, strikes memory ${rec.strikes || 1})`
+    );
+    this._fireCloudDemotionChange(job, model);
+    return true;
+  }
+
+  /**
+   * @private Stamp a recheck-due language as re-audited this period. Runs
+   * AFTER _evaluateCloudDemotions: if the sample just reinstated the model,
+   * the active record is gone and this is a no-op.
+   */
+  _noteRecheckSample(job, model, lang) {
+    if (!this.isRecheckDue(job, model, lang)) return;
+    const rec = this._demotionRecord(job, model);
+    if (!rec.rechecked || typeof rec.rechecked !== 'object') rec.rechecked = {};
+    rec.rechecked[lang] = new Date().toISOString();
+  }
+
+  /** @private */
+  _demotionRecord(job, model) {
+    if (typeof job !== 'string' || !job || typeof model !== 'string' || !model) return null;
+    const own = (obj, key) => !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+    const jobs = this._state.cloudDemotions;
+    return own(jobs, job) && own(jobs[job], model) ? jobs[job][model] : null;
+  }
+
+  /** @private Get-or-create the demotion map for a job (proto-safe, as _entry). */
+  _demotionSlot(job) {
+    const jobs = this._state.cloudDemotions;
+    if (!Object.prototype.hasOwnProperty.call(jobs, job)) jobs[job] = Object.create(null);
+    return jobs[job];
+  }
+
+  /** @private 7d × 2^(strikes−1), capped at 56d. */
+  _recheckPeriodMs(strikes) {
+    const s = Number.isFinite(strikes) && strikes >= 1 ? strikes : 1;
+    return Math.min(DEMOTION_RECHECK_BASE_MS * 2 ** (s - 1), DEMOTION_RECHECK_CAP_MS);
+  }
+
+  /** @private */
+  _fireCloudDemotionChange(job, model) {
+    if (typeof this.onCloudDemotionChange !== 'function') return;
+    try {
+      this.onCloudDemotionChange(job, model);
+    } catch (err) {
+      this.logger.warn(`[ModelScorecard] onCloudDemotionChange failed for ${job}/${model}: ${err.message}`);
+    }
+  }
+
   /** @private */
   _load() {
-    const fresh = { version: 1, jobs: {}, seats: {} };
+    const fresh = { version: 1, jobs: {}, seats: {}, cloudDemotions: {} };
     if (!this._storeFile) return fresh;
     try {
       const raw = fs.readFileSync(this._storeFile, 'utf8');
@@ -442,6 +668,8 @@ class ModelScorecard {
           version: 1,
           jobs: (parsed.jobs && typeof parsed.jobs === 'object') ? parsed.jobs : {},
           seats: (parsed.seats && typeof parsed.seats === 'object') ? parsed.seats : {},
+          cloudDemotions: (parsed.cloudDemotions && typeof parsed.cloudDemotions === 'object')
+            ? parsed.cloudDemotions : {},
         };
       }
     } catch (_err) {

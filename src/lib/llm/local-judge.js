@@ -356,7 +356,12 @@ class LocalJudge {
         if (!cand || !cand.model || typeof cand.chat !== 'function') continue;
         for (const lang of this._fixtureLanguages(job)) {
           if (budget <= 0) return;
-          if (this._cellMass(job, cand.model, lang) >= this.coldMassFloor) continue;
+          // #237 re-audition: a demoted pairing whose cool-off elapsed is
+          // probe-eligible despite warmth — one probe per fixture language
+          // per cool-off period; everything downstream (quota, trust gate,
+          // budget gate, cost recording) is untouched.
+          if (this._cellMass(job, cand.model, lang) >= this.coldMassFloor
+            && !this._isRecheckDue(job, cand.model, lang)) continue;
           const gate = this.budgetEnforcer.canSpendProactive(this.cloudProbeCostEstimate);
           if (!gate || !gate.allowed) {
             this.logger.info('[LocalJudge] Proactive budget exhausted — synthetic cloud probes halted');
@@ -466,6 +471,21 @@ class LocalJudge {
       return this.gapFloor;
     }
     return Math.min(1, Math.max(this.gapFloor, judgeSize / judgedSize));
+  }
+
+  /**
+   * @private #237: whether the scorecard says a demoted (job, model,
+   * language) pairing is due its re-audition probe. Null-safe: a scorecard
+   * without demotion support (or a throwing one) means no recheck, never a
+   * broken probe pass.
+   */
+  _isRecheckDue(job, model, lang) {
+    try {
+      return typeof this.scorecard?.isRecheckDue === 'function'
+        && !!this.scorecard.isRecheckDue(job, model, lang);
+    } catch (_err) {
+      return false;
+    }
   }
 
   /** @private Evidential mass of a (job, model, language) cell — its confidence. */
