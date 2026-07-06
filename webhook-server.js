@@ -3059,6 +3059,13 @@ async function shutdown(signal) {
     console.log('[SHUTDOWN] Audit logs flushed');
   }
 
+  // Flush WikiSteward durable state (visit stamps + lens rings, #246) so the
+  // next boot resumes rotation instead of treating every cluster as neglected.
+  if (heartbeatManager && heartbeatManager.wikiSteward && heartbeatManager.wikiSteward.flush) {
+    heartbeatManager.wikiSteward.flush();
+    console.log('[SHUTDOWN] WikiSteward state flushed');
+  }
+
   // Drain Talk queue before discarding credentials
   if (talkQueue) {
     await talkQueue.shutdown();
