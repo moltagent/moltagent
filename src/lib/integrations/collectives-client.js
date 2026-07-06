@@ -726,22 +726,36 @@ class CollectivesClient {
   }
 
   /**
-   * Read a page with parsed frontmatter
+   * Read a page with parsed frontmatter by title (global leaf-title lookup).
+   * Prefer readPageWithFrontmatterAtPath when a path is already in hand —
+   * a path addresses exactly one page; a leaf title may not.
+   *
    * @param {string} title - Page title
    * @returns {Promise<{frontmatter: Object, body: string, path: string}|null>}
    */
   async readPageWithFrontmatter(title) {
     const found = await this.findPageByTitle(title);
     if (!found) return null;
+    return await this.readPageWithFrontmatterAtPath(found.path);
+  }
 
-    const content = await this.readPageContent(found.path);
+  /**
+   * Read a page with parsed frontmatter by WebDAV path — the identity-handle
+   * read. No title lookup, no page list: the path IS the page.
+   *
+   * @param {string} pagePath - Path relative to the collective root
+   * @returns {Promise<{frontmatter: Object, body: string, path: string}|null>}
+   */
+  async readPageWithFrontmatterAtPath(pagePath) {
+    if (!pagePath) return null;
+    const content = await this.readPageContent(pagePath);
     if (content === null) return null;
 
     // Lazy-load frontmatter parser to avoid circular dependency
     const { parseFrontmatter } = require('../knowledge/frontmatter');
     const { frontmatter, body } = parseFrontmatter(content);
 
-    return { frontmatter, body, path: found.path };
+    return { frontmatter, body, path: pagePath };
   }
 
   /**
@@ -843,13 +857,6 @@ class CollectivesClient {
    * @returns {Promise<string>} Path written to
    */
   async writePageWithFrontmatter(title, frontmatter, body, options = {}) {
-    const { serializeFrontmatter } = require('../knowledge/frontmatter');
-
-    // Resolve [[wikilinks]] to Nextcloud file links before writing
-    const resolved = await this.resolveWikilinks(body);
-
-    const content = serializeFrontmatter(frontmatter, resolved);
-
     // Try to find existing page path
     const found = await this.findPageByTitle(title);
     let pagePath;
@@ -876,6 +883,30 @@ class CollectivesClient {
         `Page not found: "${title}" — pass { createIfMissing } to create it inside the tree`, 404
       );
     }
+
+    return await this.writePageWithFrontmatterAtPath(pagePath, frontmatter, body);
+  }
+
+  /**
+   * Write a page with frontmatter by WebDAV path — the identity-handle write.
+   * Same wikilink resolution and serialization as the title-addressed write,
+   * but the path addresses exactly one page: a leaf-title collision elsewhere
+   * in the collective (every section has a Readme) cannot receive this write.
+   *
+   * @param {string} pagePath - Path relative to the collective root
+   * @param {Object} frontmatter - Frontmatter metadata
+   * @param {string} body - Page body content
+   * @returns {Promise<string>} Path written to
+   */
+  async writePageWithFrontmatterAtPath(pagePath, frontmatter, body) {
+    if (!pagePath) {
+      throw new CollectivesApiError('writePageWithFrontmatterAtPath requires a path', 400);
+    }
+    const { serializeFrontmatter } = require('../knowledge/frontmatter');
+
+    // Resolve [[wikilinks]] to Nextcloud file links before writing
+    const resolved = await this.resolveWikilinks(body);
+    const content = serializeFrontmatter(frontmatter, resolved);
 
     await this.writePageContent(pagePath, content);
     return pagePath;

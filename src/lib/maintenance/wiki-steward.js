@@ -1002,6 +1002,26 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
         .map(p => p.title)
     );
 
+    // Identity custody (G3): every LLM-returned title resolves to a
+    // { title, path } handle from the assessed neighborhood before dispatch.
+    // Executors write by path, so an intervention can only touch a page that
+    // was in the neighborhood it assessed. A hallucinated title resolves to
+    // nothing and is skipped with a log line.
+    const handleIndex = new Map(
+      (neighborhood?.pages || []).map(p => [(p.title || '').toLowerCase().trim(), p])
+    );
+    const resolve = (title, action) => {
+      const handle = title ? handleIndex.get(String(title).toLowerCase().trim()) : null;
+      if (!handle || !handle.path) {
+        this.logger.info(
+          `[WikiSteward:${stewardType}] "${title}" is not an addressable page in the assessed ` +
+          `neighborhood — skipping ${action}`
+        );
+        return null;
+      }
+      return handle;
+    };
+
     switch (stewardType) {
       case 'knowledge': {
         for (const c of assessment.contradictions || []) {
@@ -1009,11 +1029,14 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             this.logger.info(`[WikiSteward:knowledge] Skipping structural page in contradiction: "${c.pageA}" / "${c.pageB}"`);
             continue;
           }
+          const handleA = resolve(c.pageA, 'contradiction flag');
+          const handleB = resolve(c.pageB, 'contradiction flag');
+          if (!handleA || !handleB) continue;
           try {
-            const flagged = await this._flagContradiction(c.pageA, c.pageB, c.claim);
+            const flagged = await this._flagContradiction(handleA, handleB, c.claim);
             if (flagged) {
               results.pagesModified += 2;
-              for (const p of [c.pageA, c.pageB]) {
+              for (const p of [handleA.title, handleB.title]) {
                 results.resolutions.push({ type: 'contradiction', page: p });
                 results.resolutions.push({ type: 'low_confidence', page: p });
               }
@@ -1027,11 +1050,13 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             this.logger.info(`[WikiSteward:knowledge] Skipping structural page "${s.page}" for staleness`);
             continue;
           }
+          const handle = resolve(s.page, 'confidence lowering');
+          if (!handle) continue;
           try {
-            const lowered = await this._lowerConfidence(s.page, s.reason);
+            const lowered = await this._lowerConfidence(handle, s.reason);
             if (lowered) {
               results.pagesModified++;
-              results.resolutions.push({ type: 'stale_content', page: s.page });
+              results.resolutions.push({ type: 'stale_content', page: handle.title });
             }
           } catch (err) {
             this.logger.warn(`[WikiSteward:knowledge] _lowerConfidence("${s.page}") failed: ${err.message}`);
@@ -1059,12 +1084,14 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             this.logger.info(`[WikiSteward:connection] Skipping structural page "${m.page}" for missing link`);
             continue;
           }
+          const handle = resolve(m.page, 'missing link');
+          if (!handle) continue;
           try {
-            const added = await this._addWikilink(m.page, m.shouldLinkTo, m.relationship, neighborhood);
+            const added = await this._addWikilink(handle, m.shouldLinkTo, m.relationship, neighborhood);
             if (added) {
               results.linksAdded++;
               results.pagesModified++;
-              results.resolutions.push({ type: 'missing_link', page: m.page });
+              results.resolutions.push({ type: 'missing_link', page: handle.title });
             }
           } catch (err) {
             this.logger.warn(`[WikiSteward:connection] _addWikilink("${m.page}"→"${m.shouldLinkTo}") failed: ${err.message}`);
@@ -1075,13 +1102,15 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             this.logger.info(`[WikiSteward:connection] Skipping structural page "${o.page}" for orphan resolution`);
             continue;
           }
+          const handle = resolve(o.page, 'orphan resolution');
+          if (!handle) continue;
           for (const target of o.suggestedConnections || []) {
             try {
-              const added = await this._addWikilink(o.page, target, 'related', neighborhood);
+              const added = await this._addWikilink(handle, target, 'related', neighborhood);
               if (added) {
                 results.linksAdded++;
                 results.pagesModified++;
-                results.resolutions.push({ type: 'orphan_page', page: o.page });
+                results.resolutions.push({ type: 'orphan_page', page: handle.title });
               }
             } catch (err) {
               this.logger.warn(`[WikiSteward:connection] _addWikilink orphan("${o.page}"→"${target}") failed: ${err.message}`);
@@ -1093,11 +1122,14 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             this.logger.info(`[WikiSteward:connection] Skipping structural page in duplicate check: "${d.pageA}" / "${d.pageB}"`);
             continue;
           }
+          const handleA = resolve(d.pageA, 'duplicate flag');
+          const handleB = resolve(d.pageB, 'duplicate flag');
+          if (!handleA || !handleB) continue;
           try {
-            const flagged = await this._flagDuplicate(d.pageA, d.pageB, d.similarity || 0);
+            const flagged = await this._flagDuplicate(handleA, handleB, d.similarity || 0);
             if (flagged) {
-              results.resolutions.push({ type: 'near_duplicate', page: d.pageA });
-              results.resolutions.push({ type: 'near_duplicate', page: d.pageB });
+              results.resolutions.push({ type: 'near_duplicate', page: handleA.title });
+              results.resolutions.push({ type: 'near_duplicate', page: handleB.title });
             }
           } catch (err) {
             this.logger.warn(`[WikiSteward:connection] _flagDuplicate failed: ${err.message}`);
@@ -1112,11 +1144,13 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             this.logger.info(`[WikiSteward:memory] Skipping structural page "${s.page}" for strengthening`);
             continue;
           }
+          const handle = resolve(s.page, 'strengthening');
+          if (!handle) continue;
           try {
-            const strengthened = await this._strengthenPage(s.page);
+            const strengthened = await this._strengthenPage(handle);
             if (strengthened) {
               results.pagesModified++;
-              results.resolutions.push({ type: 'high_access', page: s.page });
+              results.resolutions.push({ type: 'high_access', page: handle.title });
             }
           } catch (err) {
             this.logger.warn(`[WikiSteward:memory] _strengthenPage("${s.page}") failed: ${err.message}`);
@@ -1127,9 +1161,11 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             this.logger.info(`[WikiSteward:memory] Skipping structural page "${c.page}" for composting`);
             continue;
           }
+          const handle = resolve(c.page, 'composting');
+          if (!handle) continue;
           try {
-            const marked = await this._markForComposting(c.page, c.reason);
-            if (marked) results.resolutions.push({ type: 'compost_ready', page: c.page });
+            const marked = await this._markForComposting(handle, c.reason);
+            if (marked) results.resolutions.push({ type: 'compost_ready', page: handle.title });
           } catch (err) {
             this.logger.warn(`[WikiSteward:memory] _markForComposting("${c.page}") failed: ${err.message}`);
           }
@@ -1139,11 +1175,11 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
             this.logger.info(`[WikiSteward:memory] Skipping structural page "${e.page}" for embedding`);
             continue;
           }
-          // Find the full pageRef from neighborhood so _embedPage has path/section
-          const pageRef = neighborhood.pages.find(p => p.title === e.page) || { id: null, title: e.page };
+          const handle = resolve(e.page, 'embedding');
+          if (!handle) continue;
           try {
-            const embedded = await this._embedPage(pageRef);
-            if (embedded) results.resolutions.push({ type: 'unembedded', page: pageRef.title });
+            const embedded = await this._embedPage(handle);
+            if (embedded) results.resolutions.push({ type: 'unembedded', page: handle.title });
           } catch (err) {
             this.logger.warn(`[WikiSteward:memory] _embedPage("${e.page}") failed: ${err.message}`);
           }
@@ -1162,57 +1198,43 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
    * Knowledge lens: two pages disagree on a fact. Append a contradiction warning
    * block to each page if not already present, and log LOW_CONFIDENCE observations.
    *
-   * @param {string} pageA
-   * @param {string} pageB
+   * Handles, not titles: reads and writes go by path, so a leaf-title
+   * collision elsewhere in the collective cannot receive this write.
+   *
+   * @param {{title: string, path: string}} handleA
+   * @param {{title: string, path: string}} handleB
    * @param {string} claim
    * @returns {Promise<boolean>} true if at least one note was persisted.
    */
-  async _flagContradiction(pageA, pageB, claim) {
-    if (!pageA || !pageB || !claim) return false;
+  async _flagContradiction(handleA, handleB, claim) {
+    if (!handleA?.path || !handleB?.path || !claim) return false;
 
     const marker = 'Contradiction flagged by Knowledge Steward';
-    const flagA = `> ⚠️ ${marker}: conflicts with [[${pageB}]] on "${claim}"`;
-    const flagB = `> ⚠️ ${marker}: conflicts with [[${pageA}]] on "${claim}"`;
 
     let modified = false;
 
-    // Write to pageA — route through writePageWithFrontmatter so [[pageB]] is resolved.
     // Dedup keys on (marker, partner title), never on the claim text: the claim
     // is LLM-worded and the link form mutates on write (PR #50 Fix A class).
-    try {
-      const resultA = await this.collectivesClient.readPageWithFrontmatter(pageA);
-      if (resultA) {
-        const body = resultA.body || '';
-        if (!this._hasFlagForPair(body, marker, pageB)) {
-          const newBody = body + `\n\n${flagA}\n`;
-          await this.collectivesClient.writePageWithFrontmatter(pageA, resultA.frontmatter, newBody);
-          this.logger.info(`[WikiSteward:knowledge] Flagged contradiction on "${pageA}" vs "${pageB}"`);
-          modified = true;
-        }
+    // Writes route through the frontmatter-aware path write so [[partner]] resolves.
+    for (const [handle, partner] of [[handleA, handleB], [handleB, handleA]]) {
+      try {
+        const result = await this.collectivesClient.readPageWithFrontmatterAtPath(handle.path);
+        if (!result) continue;
+        const body = result.body || '';
+        if (this._hasFlagForPair(body, marker, partner.title)) continue;
+        const flag = `> ⚠️ ${marker}: conflicts with [[${partner.title}]] on "${claim}"`;
+        const newBody = body + `\n\n${flag}\n`;
+        await this.collectivesClient.writePageWithFrontmatterAtPath(handle.path, result.frontmatter, newBody);
+        this.logger.info(`[WikiSteward:knowledge] Flagged contradiction on "${handle.title}" vs "${partner.title}"`);
+        modified = true;
+      } catch (err) {
+        this.logger.warn(`[WikiSteward] _flagContradiction write to "${handle.title}" failed: ${err.message}`);
       }
-    } catch (err) {
-      this.logger.warn(`[WikiSteward] _flagContradiction write to "${pageA}" failed: ${err.message}`);
-    }
-
-    // Write to pageB — route through writePageWithFrontmatter so [[pageA]] is resolved.
-    try {
-      const resultB = await this.collectivesClient.readPageWithFrontmatter(pageB);
-      if (resultB) {
-        const body = resultB.body || '';
-        if (!this._hasFlagForPair(body, marker, pageA)) {
-          const newBody = body + `\n\n${flagB}\n`;
-          await this.collectivesClient.writePageWithFrontmatter(pageB, resultB.frontmatter, newBody);
-          this.logger.info(`[WikiSteward:knowledge] Flagged contradiction on "${pageB}" vs "${pageA}"`);
-          modified = true;
-        }
-      }
-    } catch (err) {
-      this.logger.warn(`[WikiSteward] _flagContradiction write to "${pageB}" failed: ${err.message}`);
     }
 
     // Emit LOW_CONFIDENCE observations for both pages so they surface for verification
-    this.observations.notice({ type: 'low_confidence', page: pageA, detail: `Contradiction with ${pageB}: ${claim}` });
-    this.observations.notice({ type: 'low_confidence', page: pageB, detail: `Contradiction with ${pageA}: ${claim}` });
+    this.observations.notice({ type: 'low_confidence', page: handleA.title, detail: `Contradiction with ${handleB.title}: ${claim}` });
+    this.observations.notice({ type: 'low_confidence', page: handleB.title, detail: `Contradiction with ${handleA.title}: ${claim}` });
 
     return modified;
   }
@@ -1220,14 +1242,14 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
   /**
    * Knowledge lens: a page's confidence should drop.
    *
-   * @param {string} page
+   * @param {{title: string, path: string}} handle
    * @param {string} reason
    * @returns {Promise<boolean>}
    */
-  async _lowerConfidence(page, reason) {
-    if (!page) return false;
+  async _lowerConfidence(handle, reason) {
+    if (!handle?.path) return false;
 
-    const result = await this.collectivesClient.readPageWithFrontmatter(page);
+    const result = await this.collectivesClient.readPageWithFrontmatterAtPath(handle.path);
     if (!result) return false;
 
     const fm = { ...result.frontmatter };
@@ -1249,8 +1271,8 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     // no pagesModified, no spurious Level 1 refresh.
     if (JSON.stringify(fm) === JSON.stringify(result.frontmatter)) return false;
 
-    await this.collectivesClient.writePageWithFrontmatter(page, fm, result.body || '');
-    this.logger.info(`[WikiSteward:knowledge] Lowered confidence for "${page}" to ${fm.confidence}: ${reason}`);
+    await this.collectivesClient.writePageWithFrontmatterAtPath(handle.path, fm, result.body || '');
+    this.logger.info(`[WikiSteward:knowledge] Lowered confidence for "${handle.title}" to ${fm.confidence}: ${reason}`);
     return true;
   }
 
@@ -1305,26 +1327,27 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
    * condition. Without this, Related sections accumulate [[Entity]] entries
    * that resolveWikilinks correctly preserves as dead markup forever.
    *
-   * @param {string} page
+   * @param {{title: string, path: string}} handle - Source page handle from
+   *   the assessed neighborhood.
    * @param {string} target
    * @param {string} relationship
    * @param {Neighborhood} [neighborhood] - Assessed neighborhood; provides
    *   the local title index and the cluster for the GAP observation.
    * @returns {Promise<boolean>} true if the wikilink was added.
    */
-  async _addWikilink(page, target, relationship, neighborhood) {
-    if (!page || !target) return false;
+  async _addWikilink(handle, target, relationship, neighborhood) {
+    if (!handle?.path || !target) return false;
 
     const canonicalTarget = await this._resolveLinkTarget(target, neighborhood);
     if (!canonicalTarget) {
       this.observations.notice({
         type: 'gap',
         cluster: neighborhood?.cluster,
-        page,
+        page: handle.title,
         detail: target,
       });
       try {
-        await this._logKnowledgeGap(target, page);
+        await this._logKnowledgeGap(target, handle.title);
       } catch (err) {
         this.logger.warn(`[WikiSteward:connection] gap log for "${target}" failed: ${err.message}`);
       }
@@ -1335,7 +1358,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     }
     target = canonicalTarget;
 
-    const result = await this.collectivesClient.readPageWithFrontmatter(page);
+    const result = await this.collectivesClient.readPageWithFrontmatterAtPath(handle.path);
     if (!result) return false;
 
     const body = result.body || '';
@@ -1364,8 +1387,8 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
       newBody = `${body.trimEnd()}\n\n## Related\n${relLine}`;
     }
 
-    await this.collectivesClient.writePageWithFrontmatter(page, result.frontmatter, newBody);
-    this.logger.info(`[WikiSteward:connection] Added [[${target}]] to "${page}" (${relationship})`);
+    await this.collectivesClient.writePageWithFrontmatterAtPath(handle.path, result.frontmatter, newBody);
+    this.logger.info(`[WikiSteward:connection] Added [[${target}]] to "${handle.title}" (${relationship})`);
     return true;
   }
 
@@ -1398,13 +1421,13 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
   /**
    * Connection lens: mark two pages as suspected duplicates.
    *
-   * @param {string} pageA
-   * @param {string} pageB
+   * @param {{title: string, path: string}} handleA
+   * @param {{title: string, path: string}} handleB
    * @param {number} similarity - 0..1
    * @returns {Promise<boolean>}
    */
-  async _flagDuplicate(pageA, pageB, similarity) {
-    if (!pageA || !pageB) return false;
+  async _flagDuplicate(handleA, handleB, similarity) {
+    if (!handleA?.path || !handleB?.path) return false;
 
     const simLabel = typeof similarity === 'number'
       ? similarity.toFixed(2)
@@ -1413,37 +1436,36 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     // Log observation for both pages
     this.observations.notice({
       type: 'near_duplicate',
-      page: pageA,
-      detail: `Possible duplicate of [[${pageB}]] (similarity: ${simLabel})`,
+      page: handleA.title,
+      detail: `Possible duplicate of [[${handleB.title}]] (similarity: ${simLabel})`,
     });
     this.observations.notice({
       type: 'near_duplicate',
-      page: pageB,
-      detail: `Possible duplicate of [[${pageA}]] (similarity: ${simLabel})`,
+      page: handleB.title,
+      detail: `Possible duplicate of [[${handleA.title}]] (similarity: ${simLabel})`,
     });
 
     const marker = 'Near-duplicate flagged by Connection Steward';
-    const warningBlock = `> ⚠️ ${marker}: possibly the same entity as [[${pageB}]] (similarity: ${simLabel}). Manual review recommended.`;
-    const warningBlockB = `> ⚠️ ${marker}: possibly the same entity as [[${pageA}]] (similarity: ${simLabel}). Manual review recommended.`;
 
     let modified = false;
 
-    for (const [pageName, warning, partner] of [[pageA, warningBlock, pageB], [pageB, warningBlockB, pageA]]) {
+    for (const [handle, partner] of [[handleA, handleB], [handleB, handleA]]) {
       try {
-        const result = await this.collectivesClient.readPageWithFrontmatter(pageName);
+        const result = await this.collectivesClient.readPageWithFrontmatterAtPath(handle.path);
         if (!result) continue;
         const body = result.body || '';
         // Pair key, not one-flag-ever: a page can be flagged against two
         // different partners while staying idempotent per pair.
-        if (this._hasFlagForPair(body, marker, partner)) continue;
+        if (this._hasFlagForPair(body, marker, partner.title)) continue;
+        const warning = `> ⚠️ ${marker}: possibly the same entity as [[${partner.title}]] (similarity: ${simLabel}). Manual review recommended.`;
         const newBody = body + `\n\n${warning}\n`;
-        // Route through writePageWithFrontmatter so the [[other page]] reference
-        // is resolved to a live Nextcloud link instead of dead text.
-        await this.collectivesClient.writePageWithFrontmatter(pageName, result.frontmatter, newBody);
-        this.logger.info(`[WikiSteward:connection] Flagged near-duplicate on "${pageName}" vs "${partner}"`);
+        // Route through the frontmatter-aware path write so the [[other page]]
+        // reference is resolved to a live Nextcloud link instead of dead text.
+        await this.collectivesClient.writePageWithFrontmatterAtPath(handle.path, result.frontmatter, newBody);
+        this.logger.info(`[WikiSteward:connection] Flagged near-duplicate on "${handle.title}" vs "${partner.title}"`);
         modified = true;
       } catch (err) {
-        this.logger.warn(`[WikiSteward:connection] _flagDuplicate write to "${pageName}" failed: ${err.message}`);
+        this.logger.warn(`[WikiSteward:connection] _flagDuplicate write to "${handle.title}" failed: ${err.message}`);
       }
     }
 
@@ -1476,13 +1498,13 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
   /**
    * Memory lens: a frequently-accessed page. Extend decay, raise confidence, bump access count.
    *
-   * @param {string} page
+   * @param {{title: string, path: string}} handle
    * @returns {Promise<boolean>}
    */
-  async _strengthenPage(page) {
-    if (!page) return false;
+  async _strengthenPage(handle) {
+    if (!handle?.path) return false;
 
-    const result = await this.collectivesClient.readPageWithFrontmatter(page);
+    const result = await this.collectivesClient.readPageWithFrontmatterAtPath(handle.path);
     if (!result) return false;
 
     const fm = { ...result.frontmatter };
@@ -1504,8 +1526,8 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
 
     fm.last_verified = new Date().toISOString().split('T')[0];
 
-    await this.collectivesClient.writePageWithFrontmatter(page, fm, result.body || '');
-    this.logger.info(`[WikiSteward:memory] Strengthened "${page}" (confidence=${fm.confidence}, decay=${fm.decay_days})`);
+    await this.collectivesClient.writePageWithFrontmatterAtPath(handle.path, fm, result.body || '');
+    this.logger.info(`[WikiSteward:memory] Strengthened "${handle.title}" (confidence=${fm.confidence}, decay=${fm.decay_days})`);
     return true;
   }
 
@@ -1519,18 +1541,18 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
    * content, not navigation), and the LLM would otherwise tautologically
    * propose them for composting.
    *
-   * @param {string} page
+   * @param {{title: string, path: string}} handle
    * @param {string} reason
    * @returns {Promise<boolean>}
    */
-  async _markForComposting(page, reason) {
-    if (!page) return false;
+  async _markForComposting(handle, reason) {
+    if (!handle?.path) return false;
 
-    const result = await this.collectivesClient.readPageWithFrontmatter(page);
+    const result = await this.collectivesClient.readPageWithFrontmatterAtPath(handle.path);
     if (!result) return false;
 
     if (result.frontmatter && result.frontmatter.compost === 'never') {
-      this.logger.info(`[WikiSteward:memory] Skipping compost of "${page}" — pinned (compost: never)`);
+      this.logger.info(`[WikiSteward:memory] Skipping compost of "${handle.title}" — pinned (compost: never)`);
       return false;
     }
 
@@ -1543,8 +1565,8 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     // it was redundant with compost_ready/compost_reason/compost_marked_at and
     // disrupted the Connection Steward's `## Related` section regex by inserting
     // content between the heading and EOF. The body holds knowledge only.
-    await this.collectivesClient.writePageWithFrontmatter(page, fm, result.body || '');
-    this.logger.info(`[WikiSteward:memory] Marked "${page}" for composting: ${reason}`);
+    await this.collectivesClient.writePageWithFrontmatterAtPath(handle.path, fm, result.body || '');
+    this.logger.info(`[WikiSteward:memory] Marked "${handle.title}" for composting: ${reason}`);
     return true;
   }
 
@@ -1554,11 +1576,12 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
    * Reads the page body, embeds via embeddingClient, and upserts into vectorStore.
    * If embeddingClient is null, skips gracefully.
    *
-   * @param {PageRef} page
+   * @param {{title: string, path: string, section?: string}} page - Handle from
+   *   the assessed neighborhood.
    * @returns {Promise<boolean>}
    */
   async _embedPage(page) {
-    if (!page || !page.title) return false;
+    if (!page || !page.title || !page.path) return false;
 
     // Guard: no embeddingClient available
     if (!this.embeddingClient || typeof this.embeddingClient.embed !== 'function') {
@@ -1569,7 +1592,7 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
     // Read page content
     let body = '';
     try {
-      const result = await this.collectivesClient.readPageWithFrontmatter(page.title);
+      const result = await this.collectivesClient.readPageWithFrontmatterAtPath(page.path);
       body = result?.body || '';
     } catch (err) {
       this.logger.warn(`[WikiSteward:memory] _embedPage read failed for "${page.title}": ${err.message}`);
@@ -1654,18 +1677,13 @@ OUTPUT FORMAT (STRICT): Your entire response must be a single JSON object. The f
         if (sectionPages.length === 0) continue;
 
         // Resolve the Level 1 parent page BEFORE the LLM call: no parent, no
-        // call. Find a page whose title matches the section name, or whose
-        // filePath looks like a section index. If not found, skip — do NOT
-        // create an orphan page.
-        const sectionParent = pageList.find(p => {
-          if (p.title === sectionName) return true;
-          if (p.filePath && (
-            p.filePath === `${sectionName}.md` ||
-            p.filePath === `${sectionName}/Readme.md` ||
-            p.filePath === `${sectionName}/README.md`
-          )) return true;
-          return false;
-        });
+        // call. Prefer the structural shape (the section folder's Readme)
+        // over a bare title match — a flat `<section>.md` stray at root
+        // shares the leaf title and must not receive the section index.
+        // If not found, skip — do NOT create an orphan page.
+        const sectionParent =
+          pageList.find(p => p.filePath === sectionName && /^readme\.md$/i.test(p.fileName || '')) ||
+          pageList.find(p => p.title === sectionName);
 
         if (!sectionParent) {
           this.logger.warn(`[WikiSteward] _updateSectionSummaries: no Level 1 parent found for section "${sectionName}" — skipping`);
@@ -1741,7 +1759,11 @@ Only write the markdown — no preamble. Keep the language of the given descript
           last_refresh: new Date().toISOString().split('T')[0],
         };
 
-        await this.collectivesClient.writePageWithFrontmatter(sectionParent.title, sectionFm, sectionBody);
+        // Write by path: the resolved parent is the page that gets the index,
+        // not whichever page in the collective shares its leaf title.
+        await this.collectivesClient.writePageWithFrontmatterAtPath(
+          this._pagePathOf(sectionParent), sectionFm, sectionBody
+        );
         refreshed++;
         this.logger.info(`[WikiSteward] Refreshed Level 1 summary for section "${sectionName}"`);
       } catch (err) {
@@ -1924,27 +1946,24 @@ Keep Level 0 under 100 lines total so it loads fast for every query.`;
       last_refresh: new Date().toISOString().split('T')[0],
     };
 
-    // Write the landing page — it's the root page of the collective
-    // writePageWithFrontmatter resolves [[wikilinks]] internally; no explicit pre-resolve needed.
+    // The landing page's identity is structural (parentId === 0), never its
+    // leaf title: live evidence showed the title-addressed write landing on a
+    // root stray that shared the collective's name while the real landing
+    // page went stale (#43's page). Address it by path.
+    const landing = allPages.find(p => p.parentId === 0);
+    if (!landing) {
+      this.logger.warn('[WikiSteward] _updateLandingPage: no landing page (parentId === 0) in page list — skipping');
+      return { clusters: 0 };
+    }
     try {
-      const landingPageTitle = this.collectivesClient.collectiveName || 'Moltagent Knowledge';
-      await this.collectivesClient.writePageWithFrontmatter(
-        landingPageTitle,
+      await this.collectivesClient.writePageWithFrontmatterAtPath(
+        this._pagePathOf(landing),
         landingFrontmatter,
         landingBody
       );
     } catch (err) {
-      // Fallback: try with the literal known title
-      try {
-        await this.collectivesClient.writePageWithFrontmatter(
-          'Moltagent Knowledge',
-          landingFrontmatter,
-          landingBody
-        );
-      } catch (err2) {
-        this.logger.warn(`[WikiSteward] _updateLandingPage write failed: ${err2.message}`);
-        return { clusters: 0 };
-      }
+      this.logger.warn(`[WikiSteward] _updateLandingPage write failed: ${err.message}`);
+      return { clusters: 0 };
     }
 
     this._lastIndexRefresh = Date.now();
@@ -1984,6 +2003,22 @@ Keep Level 0 under 100 lines total so it loads fast for every query.`;
       const yamlLines = Object.entries(frontmatter).map(([k, v]) => `${k}: ${JSON.stringify(v)}`);
       return `---\n${yamlLines.join('\n')}\n---\n\n${body}`;
     }
+  }
+
+  /**
+   * WebDAV path for a listPages entry. Delegates to the client's path builder
+   * (the client owns the path shape); the inline fallback only serves mocks
+   * that don't expose it.
+   *
+   * @param {{ filePath?: string, fileName?: string, title?: string }} page
+   * @returns {string}
+   * @private
+   */
+  _pagePathOf(page) {
+    if (typeof this.collectivesClient._buildPagePath === 'function') {
+      return this.collectivesClient._buildPagePath(page);
+    }
+    return page.filePath ? `${page.filePath}/${page.fileName}` : (page.fileName || `${page.title}.md`);
   }
 
   /**

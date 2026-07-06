@@ -484,6 +484,55 @@ asyncTest('writePageWithFrontmatter resolves wikilinks before writing', async ()
   assert.ok(!writtenContent.includes('[['), 'Should not contain raw wikilinks');
 });
 
+// -- path-addressed variants (Phase 8, G3) --
+
+asyncTest('readPageWithFrontmatterAtPath reads by path with no title lookup', async () => {
+  let pageListFetches = 0;
+  const mockNC = createMockNCRequestManager({
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives': {
+      status: 200, body: { ocs: { data: SAMPLE_COLLECTIVES } }, headers: {}
+    },
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/pages': () => {
+      pageListFetches++;
+      return { status: 200, body: { ocs: { data: PAGES_WITH_FILEIDS } }, headers: {} };
+    },
+    'GET:/remote.php/dav/files/testuser/.Collectives/Moltagent Knowledge/People/John Smith.md': {
+      status: 200, body: SAMPLE_PAGE_CONTENT, headers: {}
+    }
+  });
+  const client = new CollectivesClient(mockNC);
+  const result = await client.readPageWithFrontmatterAtPath('People/John Smith.md');
+  assert.ok(result, 'page read by path');
+  assert.strictEqual(result.frontmatter.type, 'person');
+  assert.strictEqual(result.path, 'People/John Smith.md');
+  assert.strictEqual(pageListFetches, 0, 'no listPages — the path IS the page');
+});
+
+asyncTest('writePageWithFrontmatterAtPath writes exactly the given path and resolves wikilinks', async () => {
+  const writtenPaths = [];
+  let writtenContent = null;
+  const mockNC = createMockNCRequestManager({
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives': {
+      status: 200, body: { ocs: { data: SAMPLE_COLLECTIVES } }, headers: {}
+    },
+    'GET:/ocs/v2.php/apps/collectives/api/v1.0/collectives/10/pages': {
+      status: 200, body: { ocs: { data: PAGES_WITH_FILEIDS } }, headers: {}
+    },
+    'PUT:/remote.php/dav/files/testuser/.Collectives/Moltagent Knowledge/People/John Smith.md': (path, options) => {
+      writtenPaths.push(path);
+      writtenContent = options.body;
+      return { status: 201, body: '', headers: {} };
+    }
+  });
+  const client = new CollectivesClient(mockNC);
+  const path = await client.writePageWithFrontmatterAtPath(
+    'People/John Smith.md', { type: 'person' }, 'Works with [[Q3 Campaign]].'
+  );
+  assert.strictEqual(path, 'People/John Smith.md');
+  assert.strictEqual(writtenPaths.length, 1, 'one PUT, at the addressed path');
+  assert.ok(writtenContent.includes('[Q3 Campaign]('), 'wikilinks resolved on the path write too');
+});
+
 // -- writePageWithFrontmatter — explicit creation contract (Phase 5, G3) --
 
 asyncTest('writePageWithFrontmatter throws on a lookup miss without createIfMissing', async () => {
