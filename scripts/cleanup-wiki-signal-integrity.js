@@ -197,8 +197,13 @@ async function main() {
         fmChanges,
       });
       if (WRITE) {
-        await client.writePageContent(pagePath, newContent);
-        console.log(`WROTE ${pagePath}`);
+        // Pages are independent: one failed PUT must not abort the rest.
+        try {
+          await client.writePageContent(pagePath, newContent);
+          console.log(`WROTE ${pagePath}`);
+        } catch (err) {
+          console.log(`WRITE FAILED ${pagePath}: ${err.message}`);
+        }
       }
     }
   }
@@ -223,8 +228,12 @@ async function main() {
     const action = keep ? 'KEEP until Phase 5 fallback fix is live' : 'TRASH (soft-delete; NC trash is the undo)';
     console.log(`  id=${s.id} "${s.title}" (${s.fileName}) → ${action}`);
     if (WRITE && !keep) {
-      await client.trashPage(collectiveId, s.id);
-      console.log(`  TRASHED ${s.id}`);
+      try {
+        await client.trashPage(collectiveId, s.id);
+        console.log(`  TRASHED ${s.id}`);
+      } catch (err) {
+        console.log(`  TRASH FAILED ${s.id}: ${err.message}`);
+      }
     }
   }
 
