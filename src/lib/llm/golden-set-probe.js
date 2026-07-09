@@ -91,6 +91,11 @@ class GoldenSetProbe {
     // bar by at least one fixture example's worth of accuracy, or the incumbent
     // itself drops below the bar.
     this._incumbent = null;
+
+    // The candidate list from the most recent run(), retained so the heartbeat
+    // idle lane can drain the models run()'s early exit skipped without
+    // re-deriving the list (#260). getUnmeasuredCandidates() defaults to it.
+    this._lastCandidates = [];
   }
 
   /**
@@ -118,6 +123,7 @@ class GoldenSetProbe {
    */
   async run(candidates) {
     const list = Array.isArray(candidates) ? candidates.filter(c => c && typeof c.name === 'string') : [];
+    this._lastCandidates = list;
     if (list.length === 0) {
       return this.select(list);
     }
@@ -136,54 +142,48 @@ class GoldenSetProbe {
       this._incumbent = diskCache[SELECTION_KEY].model;
     }
 
+    // Early exit (#260): candidates are smallest-first, and no model larger
+    // than the smallest passer can win the seat (smallest-passer preference).
+    // Once a passer is measured — and the incumbent's scores are in hand for
+    // the hysteresis defense — the rest of the list is pure cost (a cold 30B+
+    // load on a large roster) and is deferred to the heartbeat idle lane via
+    // getUnmeasuredCandidates()/measureOne() rather than loaded at boot. When
+    // the incumbent is smaller than the first passer it is already measured by
+    // the time we reach the passer; when it is larger, the loop runs on (a
+    // warm cache hit in the common case) until the incumbent is measured, then
+    // stops. Larger-than-both candidates are never touched.
+    const incumbentInList = !!this._incumbent && list.some(c => c.name === this._incumbent);
+    let passerSeen = false;
+    let incumbentSettled = !incumbentInList;
+
     for (const candidate of list) {
       const key = this._cacheKey(candidate);
+      if (candidate.name === this._incumbent) incumbentSettled = true;
+
       const cached = diskCache[key];
       if (cached && cached.scores) {
         this._scores[key] = cached.scores;
-        continue;
-      }
-
-      const scores = {};
-      let complete = true;
-      for (const [lang, items] of Object.entries(this.fixture.languages)) {
-        const examples = Array.isArray(items) ? items : [];
-        let correct = 0;
-        let errored = 0;
-        for (const item of examples) {
-          try {
-            // Sequential by design: one Ollama model can't usefully serve
-            // concurrent classify calls at boot.
-            const predicted = await this.classifyFn(candidate.name, item.message, lang);
-            if (predicted && predicted.gate === item.gate &&
-                (item.domain === null || predicted.domain === item.domain)) {
-              correct++;
-            }
-          } catch (err) {
-            errored++;
-            this.logger.warn(`[GoldenSetProbe] classifyFn failed for ${candidate.name}/${lang}#${item.id}: ${err.message}`);
-          }
-        }
-        // Any classify error means this language was not fully measured — a
-        // distorted (deflated) accuracy, typically because Ollama is cold or
-        // down at boot (MEMORY #124: qwen3:8b cold-start can exceed 60s). A
-        // deflated score must NOT be cached as authoritative, or the digest+
-        // version key would hit forever and the probe would serve poisoned
-        // zeros until someone deletes the cache file by hand.
-        if (errored > 0) complete = false;
-        scores[lang] = examples.length > 0 ? correct / examples.length : 0;
-      }
-
-      if (complete) {
-        diskCache[key] = { scores, at: new Date().toISOString() };
-        this._scores[key] = scores;
-        cacheChanged = true;
       } else {
-        // Incomplete measurement: neither persist nor trust it. Leaving it out
-        // of _scores means select() treats this model as unmeasured (not a
-        // passer, not a poisoned failer), and the next boot retries it.
-        this.logger.warn(`[GoldenSetProbe] ${candidate.name}: measurement incomplete (Ollama cold/unavailable?); not caching, will retry next boot.`);
+        const { scores, complete } = await this._measureCandidate(candidate);
+        if (complete) {
+          diskCache[key] = { scores, at: new Date().toISOString() };
+          this._scores[key] = scores;
+          cacheChanged = true;
+        } else {
+          // Incomplete measurement (Ollama cold/unavailable): neither persist
+          // nor trust it. Left out of _scores, select() treats this model as
+          // unmeasured (not a passer, not a poisoned failer). It is NOT retried
+          // inline next boot — that retries into the same contention (#260) —
+          // but drained by the heartbeat idle lane instead.
+          this.logger.warn(`[GoldenSetProbe] ${candidate.name}: measurement incomplete (Ollama cold/unavailable?); not caching, deferring to the heartbeat idle lane.`);
+        }
       }
+
+      // Stop as soon as selection is fully determined: a passer is in hand and
+      // the incumbent (if any) has been measured for its seat defense. Nothing
+      // further down the smallest-first list can change select()'s outcome.
+      if (this._passesAllScores(this._scores[key] || {})) passerSeen = true;
+      if (passerSeen && incumbentSettled) break;
     }
 
     const result = this.select(list);
@@ -246,7 +246,7 @@ class GoldenSetProbe {
       const key = this._cacheKey(candidate);
       const scores = this._scores[key] || {};
       const langScores = languages.map(lang => (Number.isFinite(scores[lang]) ? scores[lang] : 0));
-      const passesAll = languages.length > 0 && langScores.every(s => s >= threshold);
+      const passesAll = this._passesAllScores(scores);
       const minScore = langScores.length > 0 ? Math.min(...langScores) : 0;
       return { candidate, scores, passesAll, minScore };
     });
@@ -334,9 +334,116 @@ class GoldenSetProbe {
     return counts;
   }
 
+  /**
+   * The subset of `candidates` with no complete cached score: those run()'s
+   * early exit never reached, plus any whose boot measurement was incomplete
+   * (Ollama cold). The heartbeat idle lane drains this one candidate per pulse
+   * so calibration converges in downtime instead of competing with serving at
+   * boot (#260). Consults the on-disk cache, not just this run's in-memory
+   * _scores, so a candidate measured on a prior boot is not re-measured.
+   * @param {Array<{name: string, digest?: string}>} [candidates] defaults to
+   *   the most recent run()'s list.
+   * @returns {Array} unmeasured candidates, input order (smallest-first) preserved.
+   */
+  getUnmeasuredCandidates(candidates) {
+    const source = Array.isArray(candidates) ? candidates : this._lastCandidates;
+    const list = (source || []).filter(c => c && typeof c.name === 'string');
+    if (list.length === 0) return [];
+    const diskCache = this._loadCache();
+    return list.filter(c => {
+      const key = this._cacheKey(c);
+      if (this._scores[key]) return false;
+      const cached = diskCache[key];
+      return !(cached && cached.scores);
+    });
+  }
+
+  /**
+   * Measure a single candidate (all languages) and persist a complete result —
+   * the same measurement run() does per candidate, but seat-neutral: it never
+   * calls select() or moves the ground-truth override. It only warms the cache
+   * so a later boot's early-exit check has a hit and the maturation loop's
+   * seedFromProbe sees a richer measurement set (#260). The heartbeat idle lane
+   * calls this one candidate per pulse. An incomplete measurement is not cached
+   * and stays in getUnmeasuredCandidates() for the next idle pulse to retry.
+   * @param {{name: string, digest?: string}} candidate
+   * @returns {Promise<{name: string|null, measured: boolean, complete: boolean, scores: Object|null, reason?: string}>}
+   */
+  async measureOne(candidate) {
+    if (!candidate || typeof candidate.name !== 'string') {
+      return { name: null, measured: false, complete: false, scores: null, reason: 'invalid candidate' };
+    }
+    if (!this.classifyFn || !this.fixture || !this.fixture.languages) {
+      return { name: candidate.name, measured: false, complete: false, scores: null, reason: 'no classifyFn/fixture' };
+    }
+    const { scores, complete } = await this._measureCandidate(candidate);
+    if (!complete) {
+      return { name: candidate.name, measured: false, complete: false, scores, reason: 'incomplete' };
+    }
+    // Load-modify-save so a concurrent seat write (SELECTION_KEY) or another
+    // candidate's cached score is preserved — this runs long after run()'s save.
+    const diskCache = this._loadCache();
+    diskCache[this._cacheKey(candidate)] = { scores, at: new Date().toISOString() };
+    this._saveCache(diskCache);
+    this._scores[this._cacheKey(candidate)] = scores;
+    return { name: candidate.name, measured: true, complete: true, scores };
+  }
+
   // ---------------------------------------------------------------------------
   // Internal
   // ---------------------------------------------------------------------------
+
+  /**
+   * @private
+   * Replay every fixture example for one candidate through classifyFn and score
+   * per language. Sequential by design: one Ollama model can't usefully serve
+   * concurrent classify calls at boot. `complete` is false if ANY classify call
+   * errored — the language was not fully measured, so its accuracy is deflated
+   * (typically Ollama cold; MEMORY #124: qwen3:8b cold-start can exceed 60s) and
+   * MUST NOT be cached as authoritative, or the digest+version key would hit
+   * forever and the probe would serve poisoned zeros until the cache is deleted
+   * by hand. Shared by run() (boot) and measureOne() (idle lane).
+   * @param {{name: string}} candidate
+   * @returns {Promise<{scores: Object<string, number>, complete: boolean}>}
+   */
+  async _measureCandidate(candidate) {
+    const scores = {};
+    let complete = true;
+    for (const [lang, items] of Object.entries(this.fixture.languages)) {
+      const examples = Array.isArray(items) ? items : [];
+      let correct = 0;
+      let errored = 0;
+      for (const item of examples) {
+        try {
+          const predicted = await this.classifyFn(candidate.name, item.message, lang);
+          if (predicted && predicted.gate === item.gate &&
+              (item.domain === null || predicted.domain === item.domain)) {
+            correct++;
+          }
+        } catch (err) {
+          errored++;
+          this.logger.warn(`[GoldenSetProbe] classifyFn failed for ${candidate.name}/${lang}#${item.id}: ${err.message}`);
+        }
+      }
+      if (errored > 0) complete = false;
+      scores[lang] = examples.length > 0 ? correct / examples.length : 0;
+    }
+    return { scores, complete };
+  }
+
+  /**
+   * @private
+   * Whether a per-language score map clears the threshold in EVERY fixture
+   * language. A missing/non-finite language counts as 0 (unmeasured is not a
+   * pass). Empty fixture → never passes. The single definition of "passes",
+   * shared by run()'s early-exit check and select().
+   */
+  _passesAllScores(scores) {
+    const languages = Object.keys((this.fixture && this.fixture.languages) || {});
+    if (languages.length === 0) return false;
+    const threshold = this._threshold();
+    return languages.every(lang => (Number.isFinite(scores[lang]) ? scores[lang] : 0) >= threshold);
+  }
 
   /** @private */
   _threshold() {

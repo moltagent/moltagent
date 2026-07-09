@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
-const { ModelScout, PRIOR_STRENGTH, CONTEXT_FLOOR } = require('../../../src/lib/providers/model-scout');
+const { ModelScout, PRIOR_STRENGTH, CONTEXT_FLOOR, CLASSIFICATION_PARAM_CEILING } = require('../../../src/lib/providers/model-scout');
 
 // A realistic mixed pool: two tool-capable chat models of different sizes, a
 // small text-only chat model, an embedding model, and a vision model.
@@ -376,6 +376,57 @@ scenario('getModelInfo() returns the sensed descriptor by exact name; rosterFor(
     scout.generateLocalRoster();
     const writing = scout.rosterFor('writing');
     assert.ok(writing.length > 0 && writing[0] === 'qwen3:8b', 'largest-first chain for writing');
+  });
+});
+
+// -- getClassificationCandidates() applies the paramSize ceiling (#260) --
+
+// A pool with a code-specialist far above the classification ceiling, a text
+// model of unknown size (no parameter_size, unparseable name), and two small
+// text models. The probe should never be handed the 34B model.
+const CEILING_TAGS = [
+  { name: 'codellama:34b', model: 'codellama:34b', size: 19000000000, details: { family: 'llama', parameter_size: '34B', format: 'gguf' } },
+  { name: 'mystery-tune', model: 'mystery-tune', size: 6000000000, details: { family: 'llama', format: 'gguf' } },
+  { name: 'qwen2.5:3b', model: 'qwen2.5:3b', size: 2000000000, details: { family: 'qwen2', parameter_size: '3.1B', format: 'gguf' } },
+  { name: 'gemma2:2b', model: 'gemma2:2b', size: 1600000000, details: { family: 'gemma2', parameter_size: '2.6B', format: 'gguf' } }
+];
+const CEILING_SHOW = {
+  'codellama:34b': { capabilities: ['completion'], model_info: { 'llama.context_length': 16384 } },
+  'mystery-tune': { capabilities: ['completion'], model_info: { 'llama.context_length': 8192 } },
+  'qwen2.5:3b': { capabilities: ['completion', 'tools'], model_info: { 'qwen2.context_length': 32768 } },
+  'gemma2:2b': { capabilities: ['completion'], model_info: { 'gemma2.context_length': 8192 } }
+};
+
+scenario('getClassificationCandidates() excludes models above the paramSize ceiling; null size passes', async () => {
+  await withMock(mockFetch(CEILING_TAGS, CEILING_SHOW), async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout.discover();
+    const names = scout.getClassificationCandidates().map(c => c.name);
+    assert.ok(!names.includes('codellama:34b'), `34B model must be excluded (ceiling ${CLASSIFICATION_PARAM_CEILING}B): got ${names.join(',')}`);
+    // Unknown size is not evidence of largeness — it passes (sense-don't-predict).
+    assert.ok(names.includes('mystery-tune'), 'null-paramSize model must pass the ceiling');
+    // Smallest-first ordering is preserved among the survivors (a null
+    // paramSize sorts as 0, i.e. first — unchanged _compareSize behavior).
+    assert.deepStrictEqual(names, ['mystery-tune', 'gemma2:2b', 'qwen2.5:3b']);
+  });
+});
+
+scenario('getClassificationCandidates() never goes dark — an all-large pool falls back ungated', async () => {
+  const bigTags = [
+    { name: 'codellama:34b', model: 'codellama:34b', size: 19000000000, details: { family: 'llama', parameter_size: '34B', format: 'gguf' } },
+    { name: 'qwen3:30b', model: 'qwen3:30b', size: 18000000000, details: { family: 'qwen3', parameter_size: '30B', format: 'gguf' } }
+  ];
+  const bigShow = {
+    'codellama:34b': { capabilities: ['completion'], model_info: { 'llama.context_length': 16384 } },
+    'qwen3:30b': { capabilities: ['completion'], model_info: { 'qwen3.context_length': 40960 } }
+  };
+  await withMock(mockFetch(bigTags, bigShow), async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout.discover();
+    const names = scout.getClassificationCandidates().map(c => c.name);
+    // Every model is above the ceiling, but returning [] would leave the probe
+    // with nothing to measure — fall back to the ungated (smallest-first) list.
+    assert.deepStrictEqual(names, ['qwen3:30b', 'codellama:34b']);
   });
 });
 

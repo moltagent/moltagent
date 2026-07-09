@@ -533,6 +533,141 @@ asyncTest('TC-HYST-005: a least-bad (non-passing) pick is not seated as incumben
   }
 });
 
+// ============================================================
+// Early exit + idle-lane migration (#260): run() stops at the first passer
+// (plus a larger incumbent, for the hysteresis defense) and defers the rest
+// to getUnmeasuredCandidates()/measureOne().
+// ============================================================
+
+console.log('\n--- Early exit + idle lane (#260) ---\n');
+
+// Wraps a classifyFn and records every model name it is asked to classify —
+// lets a test assert which candidates run() actually loaded.
+function trackingClassifyFn(inner, seen) {
+  return async (model, message, lang) => {
+    seen.add(model);
+    return inner(model, message, lang);
+  };
+}
+
+asyncTest('TC-EXIT-001: run() stops at the smallest passer — larger candidates are never measured', async () => {
+  const fixture = makeFixture();
+  const cacheDir = uniqueTmpDir();
+  try {
+    const seen = new Set();
+    const probe = new GoldenSetProbe({
+      classifyFn: trackingClassifyFn(perfectClassifyFn(fixture), seen),
+      fixture,
+      cacheDir,
+      logger: silentLogger
+    });
+    const result = await probe.run([
+      { name: 'small', paramSize: 2, digest: 's1' },
+      { name: 'mid', paramSize: 8, digest: 'm1' },
+      { name: 'big', paramSize: 30, digest: 'b1' }
+    ]);
+    assert.strictEqual(result.model, 'small');
+    assert.strictEqual(result.passed, true);
+    assert.deepStrictEqual([...seen], ['small'], 'only the smallest passer is measured; mid/big are deferred');
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+asyncTest('TC-EXIT-002: run() still measures a LARGER incumbent so hysteresis can defend the seat', async () => {
+  const fixture = makeFixture();
+  const cacheDir = uniqueTmpDir();
+  try {
+    const seen = new Set();
+    // small passes at the bar (0.75) but not by margin; big (incumbent) is perfect.
+    const probe = new GoldenSetProbe({
+      classifyFn: trackingClassifyFn(accuracyClassifyFn(fixture, { small: 3, big: 4, huge: 4 }), seen),
+      fixture,
+      cacheDir,
+      logger: silentLogger
+    });
+    probe._incumbent = 'big';
+    const result = await probe.run([
+      { name: 'small', paramSize: 2, digest: 's1' },
+      { name: 'big', paramSize: 8, digest: 'b1' },
+      { name: 'huge', paramSize: 30, digest: 'h1' }
+    ]);
+    // Seat defense needs the incumbent's scores, so 'big' IS measured even
+    // though a smaller passer preceded it; 'huge' (larger than both) is not.
+    assert.ok(seen.has('small') && seen.has('big'), 'small and the larger incumbent big are both measured');
+    assert.ok(!seen.has('huge'), 'nothing larger than the incumbent is measured');
+    assert.strictEqual(result.model, 'big', 'incumbent holds — small did not clear bar+margin');
+    assert.strictEqual(result.reason, 'incumbent holds seat');
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+asyncTest('TC-EXIT-003: getUnmeasuredCandidates() lists the skipped candidates; measureOne() drains one', async () => {
+  const fixture = makeFixture();
+  const cacheDir = uniqueTmpDir();
+  try {
+    const seen = new Set();
+    const candidates = [
+      { name: 'small', paramSize: 2, digest: 's1' },
+      { name: 'mid', paramSize: 8, digest: 'm1' },
+      { name: 'big', paramSize: 30, digest: 'b1' }
+    ];
+    const probe = new GoldenSetProbe({
+      classifyFn: trackingClassifyFn(perfectClassifyFn(fixture), seen),
+      fixture,
+      cacheDir,
+      logger: silentLogger
+    });
+    await probe.run(candidates);
+
+    // The two the early exit skipped are unmeasured (defaults to run()'s list).
+    assert.deepStrictEqual(probe.getUnmeasuredCandidates().map(c => c.name), ['mid', 'big']);
+
+    const r = await probe.measureOne({ name: 'mid', paramSize: 8, digest: 'm1' });
+    assert.strictEqual(r.measured, true);
+    assert.strictEqual(r.complete, true);
+    assert.strictEqual(r.scores.EN, 1);
+    // measureOne is seat-neutral — it must not touch the selection state.
+    const persisted = JSON.parse(fs.readFileSync(path.join(cacheDir, 'golden-set-probe.json'), 'utf8'));
+    assert.strictEqual(persisted.__selection__.model, 'small', 'measureOne must not reseat');
+
+    // mid is now measured; only big remains unmeasured.
+    assert.deepStrictEqual(probe.getUnmeasuredCandidates().map(c => c.name), ['big']);
+
+    // A fresh probe over the same cacheDir sees the persisted measurements on disk.
+    const probe2 = new GoldenSetProbe({ classifyFn: perfectClassifyFn(fixture), fixture, cacheDir, logger: silentLogger });
+    assert.deepStrictEqual(probe2.getUnmeasuredCandidates(candidates).map(c => c.name), ['big'], 'disk cache, not just in-memory, gates re-measurement');
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+asyncTest('TC-EXIT-004: measureOne() does not cache an incomplete (cold-Ollama) measurement', async () => {
+  const fixture = makeFixture();
+  const cacheDir = uniqueTmpDir();
+  try {
+    const probe = new GoldenSetProbe({
+      classifyFn: async () => { throw new Error('Ollama request timed out'); },
+      fixture,
+      cacheDir,
+      logger: silentLogger
+    });
+    const r = await probe.measureOne({ name: 'cold', paramSize: 8, digest: 'c1' });
+    assert.strictEqual(r.measured, false);
+    assert.strictEqual(r.complete, false);
+    assert.strictEqual(r.reason, 'incomplete');
+    // Not persisted → still unmeasured, so the next idle pulse retries it.
+    assert.deepStrictEqual(
+      probe.getUnmeasuredCandidates([{ name: 'cold', paramSize: 8, digest: 'c1' }]).map(c => c.name),
+      ['cold']
+    );
+    assert.strictEqual(fs.existsSync(path.join(cacheDir, 'golden-set-probe.json')), false, 'no cache file written for an incomplete measurement');
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
 // Summary
 setTimeout(() => {
   summary();

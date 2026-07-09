@@ -150,6 +150,15 @@ class HeartbeatManager {
     // NicheAssignment (optional, Layer 3): /api/ps snapshot + replan each
     // pulse. A thunk, not an instance — it is constructed asynchronously
     // (after ModelScout discovery), possibly after this manager.
+    // GoldenSetProbe (optional, #260): a thunk, like getNicheAssignment — the
+    // probe is constructed inside the async ModelScout discovery block, after
+    // this manager. The idle branch drains one unmeasured classification
+    // candidate per pulse so calibration converges in downtime instead of
+    // competing with serving at boot.
+    this.getGoldenSetProbe = typeof config.getGoldenSetProbe === 'function'
+      ? config.getGoldenSetProbe
+      : null;
+
     this.getNicheAssignment = typeof config.getNicheAssignment === 'function'
       ? config.getNicheAssignment
       : null;
@@ -593,6 +602,34 @@ class HeartbeatManager {
             results.errors.push({ component: 'localJudge', error: err.message });
           }
         }
+
+        // GoldenSetProbe idle lane (#260): the boot probe measures only up to
+        // its early-exit winner; the candidates it skipped (and any whose boot
+        // measurement was incomplete) are drained here, one per idle pulse, so
+        // classification calibration never competes with serving at boot. This
+        // is informational only — it warms the probe's cache for the next
+        // boot's early exit and the maturation loop's seedFromProbe; it never
+        // reseats (that is the probe's boot select() and the maturation loop's
+        // authority). One candidate per pulse keeps a cold load off the GPU
+        // during the same window the judge grades in.
+        const probe = this.getGoldenSetProbe ? this.getGoldenSetProbe() : null;
+        if (probe && typeof probe.getUnmeasuredCandidates === 'function') {
+          try {
+            const unmeasured = probe.getUnmeasuredCandidates();
+            if (unmeasured.length > 0) {
+              const r = await probe.measureOne(unmeasured[0]);
+              if (r && r.measured) {
+                console.log(`[Heartbeat] Probe idle measurement: ${r.name} (${Object.entries(r.scores || {}).map(([l, s]) => `${l} ${s}`).join(' ')}); ${unmeasured.length - 1} candidate(s) remain`);
+              } else {
+                console.log(`[Heartbeat] Probe idle measurement: ${r?.name || unmeasured[0].name} incomplete (${r?.reason || 'unknown'}); will retry next idle pulse`);
+              }
+            }
+          } catch (err) {
+            console.warn('[Heartbeat] Probe idle measurement error:', err.message);
+            results.errors.push({ component: 'goldenSetProbe', error: err.message });
+          }
+        }
+
         this.state.lastRun = new Date();
         // Restore status to ready even during quiet hours (prevents status going stale)
         await this.statusIndicator?.setStatus('ready', { force: true });
