@@ -164,10 +164,9 @@ function buildLiveContext(session, currentMessage) {
         description: content.substring(0, 200)
       };
     }
-    if (/Do you want me to|Should I|Would you like me to|I can |Want me to|I[''']ll .{1,30} if you|I[''']m ready to|Once you .{1,40} I[''']ll|Confirm and I/i.test(content)) {
-      lastAssistantAction = lastAssistantAction || { type: 'offered_action' };
-      lastAssistantAction.offer = content.substring(0, 200);
-    }
+    // An English-only regex used to lift an "offer" out of the agent's prose here.
+    // Its one reader was the confirmation re-feed branch, and offers are held as
+    // PendingAction records now (#104) — so the prose is no longer read at all.
     if (/don't have that|no information|not in my|can't access|don't have .{0,20} information/i.test(content)) {
       lastAssistantAction = lastAssistantAction || {};
       lastAssistantAction.admittedIgnorance = true;
@@ -637,7 +636,19 @@ class MessageProcessor {
       // The LLM can hallucinate "card #N" in compound fallback responses — text matching alone
       // is not trustworthy. Cross-check against the action ledger which only records real API calls.
       const earlyLiveContext = session ? buildLiveContext(session, pipelineMessage) : null;
-      if (earlyLiveContext?.lastAssistantAction?.type === 'card_created' &&
+
+      // #104: an offer whose approval poll timed out survives as a record, not as
+      // prose. If one is live in this room, the user's reply is an answer to it.
+      // Resolved here, above every pipeline, because it decides authorization —
+      // the reply must not reach a dispatch path that would re-derive the intent.
+      // Read exactly once, by this single consumer (the #108 lesson).
+      const pendingAction = await this._resolvePendingAction(extracted, pipelineMessage);
+
+      if (pendingAction) {
+        response = pendingAction.response;
+        result = pendingAction.result;
+      }
+      else if (earlyLiveContext?.lastAssistantAction?.type === 'card_created' &&
           earlyLiveContext.lastAssistantAction.cardId &&
           /\b(link|url|card|created|made|just)\b/i.test(pipelineMessage)) {
         const cardId = earlyLiveContext.lastAssistantAction.cardId;
@@ -809,51 +820,6 @@ class MessageProcessor {
               result = { intent: 'smart_mix_escalated:compound', provider: 'agent' };
               response = response || 'Sorry, I encountered an error processing your message.';
             }
-          }
-        } else if (useLocalPipeline && useDomainTools && intent === 'confirmation') {
-          // Direct execution from Living Context — bypass AgentLoop entirely
-          const offerText = liveContext?.lastAssistantAction?.offer || '';
-          console.log(`[Message] Confirmation: executing from context — "${offerText.substring(0, 80)}"`);
-          if (!offerText) {
-            response = "I'm not sure what to execute — could you tell me what you'd like me to do?";
-            result = { intent: 'smart_mix_confirmation_empty', provider: 'context' };
-          } else try {
-            const actionMessage = offerText;
-            response = await this.microPipeline.process(actionMessage, {
-              userName: extracted.user,
-              roomToken: extracted.token,
-              warmMemory: focusContext || '',
-              gate,
-              onArtifact,
-              getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
-              getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
-              getRecentContext: session ? () => session.context.slice(-4) : undefined,
-            });
-            if (typeof response === 'object' && response !== null) {
-              if (response.pendingClarification && session && this.sessionManager) {
-                this.sessionManager.setPendingClarification(session, response.pendingClarification);
-              }
-              this._captureActionRecord(session, response.actionRecord);
-              if (response.enrichmentBlock) _enrichmentBlock = response.enrichmentBlock;
-              response = response.response || 'Done.';
-            }
-            result = { intent: 'smart_mix_confirmation', provider: 'local-tools' };
-          } catch (confirmErr) {
-            console.warn(`[Message] Confirmation execution failed, escalating: ${confirmErr.message}`);
-            if (this.agentLoop?.llmProvider?.skipLocalForConversation) {
-              this.agentLoop.llmProvider.skipLocalForConversation();
-            }
-            response = await this.agentLoop.process(pipelineMessage, extracted.token, {
-              messageId: extracted.messageId,
-              inputType: extracted._isVoice ? 'voice' : 'text',
-              user: extracted.user,
-              gate,
-              domain,
-              systemSuffix: focusContext || undefined,
-              onArtifact
-            });
-            result = { intent: 'smart_mix_escalated:confirmation', provider: 'agent' };
-            response = response || 'Sorry, I encountered an error processing your message.';
           }
         } else if (useLocalPipeline && useDomainTools && intent === 'knowledge') {
           // Path 2a: Knowledge query — synthesize from enricher + multi-source probes
@@ -1043,12 +1009,6 @@ class MessageProcessor {
             domain,
             compound
           };
-
-          // Bug 3 fix: Short confirmations shouldn't loop to max iterations
-          const trimmed = extracted.content.trim().toLowerCase();
-          if (trimmed.length <= 12 && trimmed.split(/\s+/).length <= 3) {
-            agentOpts.maxIterations = 2;
-          }
 
           response = await this.agentLoop.process(pipelineMessage, extracted.token, {
             ...agentOpts,
@@ -1748,7 +1708,8 @@ class MessageProcessor {
    * failed downstream (half-weight negative — the executing model, not the
    * classifier, may be at fault; tools carries its own cleaner signal).
    * Neutral: flush overrides (the verdict was bypassed, not judged) and
-   * empty-confirmation context. Parse-failed verdicts were already scored
+   * PendingAction resolutions (the record decided, not the verdict — its marker
+   * carries no smart_mix prefix). Parse-failed verdicts were already scored
    * structurally at IntentRouter and prove nothing further here.
    * @param {Object} result - Dispatch result carrying the smart_mix_* marker
    * @param {string|null} model - Verdict's producing model
@@ -1760,11 +1721,74 @@ class MessageProcessor {
     if (!this.modelScorecard || !model || parseFailed) return;
     const marker = typeof result?.intent === 'string' ? result.intent : '';
     if (!marker.startsWith('smart_mix')) return;
-    if (marker.startsWith('smart_mix_flush') || marker === 'smart_mix_confirmation_empty' ||
-        marker.startsWith('smart_mix_cloud_error')) return;
+    if (marker.startsWith('smart_mix_flush') || marker.startsWith('smart_mix_cloud_error')) return;
     const escalated = marker.startsWith('smart_mix_escalated') || marker === 'smart_mix_compound_fallback';
     this.modelScorecard.recordSample('classification', model, language, !escalated,
       escalated ? { weight: this.modelScorecard.escalationWeight } : undefined);
+  }
+
+  /**
+   * Resolve a live PendingAction record against the user's reply (#104).
+   *
+   * Execution from a record is plumbing: the record holds (tool, args), the
+   * confirmation-classifier already said "approve", and the model is never asked
+   * again what to execute — it only narrates the outcome. An edit-confirmation
+   * ("ja, aber morgen") drops the record and routes onward as a new request; the
+   * record is never mutated.
+   *
+   * @param {Object} extracted - Inbound message envelope ({token, ...})
+   * @param {string} message - The user's reply text
+   * @returns {Promise<{response: string, result: Object}|null>} null → not ours; route on
+   * @private
+   */
+  async _resolvePendingAction(extracted, message) {
+    const enforcer = this.agentLoop?.guardrailEnforcer;
+    if (!enforcer || !extracted.token) return null;
+
+    const record = enforcer.getPendingAction(extracted.token);
+    if (!record) return null;
+
+    const verdict = await enforcer.classifyPendingReply(message);
+    console.log(`[Message] PendingAction ${record.tool}: classifier=${verdict}`);
+
+    if (verdict === 'approve') {
+      const approved = enforcer.consumePendingAction(extracted.token);
+      if (!approved) return null; // expired between lookup and consumption
+      const toolResult = await this.agentLoop.executeApprovedTool(
+        { name: approved.tool, arguments: approved.args }, extracted.token
+      );
+      const outcome = toolResult.success
+        ? (toolResult.result || 'Done.')
+        : `The action failed: ${toolResult.error}`;
+      console.log(`[Message] PendingAction executed: ${approved.tool} success=${toolResult.success}`);
+      const response = await this.agentLoop.narrateOutcome({
+        userMessage: message, label: approved.label, outcome
+      });
+      return { response, result: { intent: 'pending_action_executed', provider: 'agent' } };
+    }
+
+    if (verdict === 'deny') {
+      const denied = enforcer.consumePendingAction(extracted.token);
+      if (!denied) return null;
+      const response = await this.agentLoop.narrateOutcome({
+        userMessage: message,
+        label: denied.label,
+        outcome: 'Cancelled at your request. Nothing was changed.'
+      });
+      return { response, result: { intent: 'pending_action_denied', provider: 'agent' } };
+    }
+
+    if (verdict === 'edit') {
+      // The reply revises the offer. The record cannot be patched into the new
+      // shape without re-deciding what to execute, so it dies here and the
+      // message goes through the pipeline as the fresh request it is.
+      enforcer.dropPendingAction(extracted.token);
+      console.log('[Message] PendingAction dropped — reply revises the offer; routing as new work');
+    }
+
+    // 'unknown' → the reply is not an answer to the offer. The record stays live
+    // until it expires; the message routes on as ordinary work.
+    return null;
   }
 
   async _smartMixClassify(message, session, roomToken, liveContext) {

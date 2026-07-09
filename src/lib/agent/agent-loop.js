@@ -338,7 +338,7 @@ class AgentLoop {
       // Bounded to one re-prompt per turn via actionGuardFired so legitimate
       // text-only refusals on the second pass ("I can't because…") are not
       // re-prompted again. maxIter is bumped to guarantee at least one more
-      // iteration even when the short-message heuristic capped it at 2.
+      // iteration even when the caller passed a tight iteration budget.
       // Marker staging is illegitimate at ANY gate — the 🔐 codepoint belongs to
       // GuardrailEnforcer's Talk surface, never a model response. A confirmation
       // follow-up ("lösch den dritten") classifies as gate=confirmation, so gating
@@ -625,40 +625,99 @@ class AgentLoop {
   }
 
   /**
+   * Execute a tool the user already approved. The approval ceremony ran when the
+   * offer was made; its answer arrived after the poll had timed out, so it is
+   * resolved from the PendingAction record instead (#104). Every other guard —
+   * ToolGuard's non-approval levels, the Cockpit GATE guardrails — still runs:
+   * only the approval the record already carries is skipped.
+   *
+   * @param {Object} toolCall - { name, arguments }
+   * @param {string|null} roomToken
+   * @returns {Promise<{success: boolean, result: string, error?: string}>}
+   */
+  executeApprovedTool(toolCall, roomToken) {
+    return this._executeWithGuards(toolCall, roomToken, { approvalGranted: true });
+  }
+
+  /**
+   * Narrate an outcome the code already decided. The model is not re-involved in
+   * deciding what to execute — it receives the result and tells the user about
+   * it, in whatever language they were speaking.
+   *
+   * @param {Object} params
+   * @param {string} params.userMessage - The user's reply that resolved the offer
+   * @param {string} params.label - Human-readable action label
+   * @param {string} params.outcome - What actually happened (tool result or cancellation)
+   * @returns {Promise<string>} A sentence for the user
+   */
+  async narrateOutcome({ userMessage, label, outcome }) {
+    try {
+      const response = await this.llmProvider.chat({
+        job: 'synthesis',
+        system: [
+          'You report an outcome to the person you assist. The action is already finished.',
+          '',
+          'Rules:',
+          '  - Reply in the same language the person used.',
+          '  - One or two sentences. State what happened.',
+          '  - Never ask for confirmation. Never offer to do it again. It is done.',
+        ].join('\n'),
+        messages: [{
+          role: 'user',
+          content: `I said: "${userMessage}"\n\nAction: ${label}\nOutcome: ${outcome}\n\nTell me what happened.`
+        }],
+        tools: []
+      });
+      const content = (response?.content || '').trim();
+      if (content) return content;
+    } catch (err) {
+      this.logger.warn(`[AgentLoop] Outcome narration failed: ${err.message}`);
+    }
+    return `${label}: ${outcome}`;
+  }
+
+  /**
    * Execute a tool call with ToolGuard (hardcoded security) and GuardrailEnforcer
    * (dynamic Cockpit guardrails with HITL confirmation) checks.
    *
    * @param {Object} toolCall - { name, arguments }
    * @param {string|null} roomToken - Talk room token (null for workflow)
+   * @param {Object} [options]
+   * @param {boolean} [options.approvalGranted=false] - Approval already held as a fact
    * @returns {Promise<{success: boolean, result: string, error?: string}>}
    * @private
    */
-  async _executeWithGuards(toolCall, roomToken) {
+  async _executeWithGuards(toolCall, roomToken, { approvalGranted = false } = {}) {
     // ToolGuard: hardcoded security policy
     if (this.toolGuard) {
       const guardResult = this.toolGuard.evaluate(toolCall.name);
       if (!guardResult.allowed) {
         if (guardResult.level === 'APPROVAL_REQUIRED' && this.guardrailEnforcer) {
-          // Route through HITL approval instead of hard-blocking
-          const history = (roomToken && this.conversationContext)
-            ? await this.conversationContext.getHistory(roomToken, { limit: 10 })
-            : [];
-          const approvalResult = await this.guardrailEnforcer.checkApproval(
-            toolCall.name, toolCall.arguments, roomToken, history
-          );
-          if (!approvalResult.allowed) {
-            if (approvalResult.editRequest) {
-              this.logger.info(`[AgentLoop] ToolGuard approval edit: ${toolCall.name}`);
-              return {
-                success: false, result: '', error:
-                  `The user wants to revise this before it's sent. Their message: "${approvalResult.editMessage || 'edit'}". ` +
-                  'Ask the user what they\'d like to change, then retry with the updated content.'
-              };
+          if (approvalGranted) {
+            this.logger.info(`[AgentLoop] ToolGuard approval pre-granted by PendingAction record: ${toolCall.name}`);
+            // Fall through to GuardrailEnforcer.check() and then execute
+          } else {
+            // Route through HITL approval instead of hard-blocking
+            const history = (roomToken && this.conversationContext)
+              ? await this.conversationContext.getHistory(roomToken, { limit: 10 })
+              : [];
+            const approvalResult = await this.guardrailEnforcer.checkApproval(
+              toolCall.name, toolCall.arguments, roomToken, history
+            );
+            if (!approvalResult.allowed) {
+              if (approvalResult.editRequest) {
+                this.logger.info(`[AgentLoop] ToolGuard approval edit: ${toolCall.name}`);
+                return {
+                  success: false, result: '', error:
+                    `The user wants to revise this before it's sent. Their message: "${approvalResult.editMessage || 'edit'}". ` +
+                    'Ask the user what they\'d like to change, then retry with the updated content.'
+                };
+              }
+              this.logger.info(`[AgentLoop] ToolGuard approval denied: ${toolCall.name} — ${approvalResult.reason}`);
+              return { success: false, result: '', error: `Action blocked: ${approvalResult.reason}` };
             }
-            this.logger.info(`[AgentLoop] ToolGuard approval denied: ${toolCall.name} — ${approvalResult.reason}`);
-            return { success: false, result: '', error: `Action blocked: ${approvalResult.reason}` };
+            // Approved — fall through to GuardrailEnforcer.check() and then execute
           }
-          // Approved — fall through to GuardrailEnforcer.check() and then execute
         } else {
           this.logger.warn(`[AgentLoop] ToolGuard blocked: ${toolCall.name} — ${guardResult.reason}`);
           return { success: false, result: '', error: `Tool call blocked by security policy: ${guardResult.reason}` };
