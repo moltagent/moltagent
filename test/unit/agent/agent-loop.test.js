@@ -45,7 +45,15 @@ function createMockContextLoader(context = '') {
   };
 }
 
-function createMockToolRegistry(tools = {}) {
+/**
+ * @param {Object} tools - name → handler
+ * @param {string[]} [readOnly] - names that change nothing. Everything else
+ *   mutates, mirroring ToolRegistry.isMutating's fail-safe default: a tool that
+ *   cannot say is assumed to have acted, so the guard never prints a false
+ *   "nothing happened" over a real mutation.
+ */
+function createMockToolRegistry(tools = {}, readOnly = []) {
+  const readOnlyNames = new Set(readOnly);
   return {
     getToolDefinitions: () => Object.keys(tools).map(name => ({
       type: 'function',
@@ -55,9 +63,12 @@ function createMockToolRegistry(tools = {}) {
       if (tools[name]) return tools[name](args);
       return { success: false, result: '', error: `Unknown tool: ${name}` };
     },
-    has: (name) => name in tools
+    has: (name) => name in tools,
+    isMutating: (name) => !readOnlyNames.has(name)
   };
 }
+
+const { NO_ACTION_TRAILER } = require('../../../src/lib/agent/action-guard');
 
 // Write a temp SOUL.md for testing
 const testSoulPath = path.join(__dirname, 'test-soul.md');
@@ -1468,8 +1479,12 @@ asyncTest('action-hallucination guard fires at most once per turn (legitimate te
   });
 
   const response = await loop.process('delete card 42 on Imaginary board', 'room-abc', { gate: 'action' });
-  assert.strictEqual(response, 'I cannot delete it — the board does not exist.');
   assert.strictEqual(provider._getCallCount(), 2);  // exactly 2 LLM calls, no infinite loop
+
+  // The refusal survives intact — the honesty floor appends beneath it and never
+  // replaces it. Replacement would delete the one useful sentence in the turn.
+  assert.ok(response.startsWith('I cannot delete it — the board does not exist.'));
+  assert.ok(response.endsWith(NO_ACTION_TRAILER.EN));
 });
 
 asyncTest('action-hallucination guard bumps maxIter when capped at 2 (short-message heuristic case)', async () => {
@@ -1596,17 +1611,27 @@ asyncTest('action-hallucination guard: response stages HITL marker after read-on
   assert.strictEqual(response, 'Deleted card #42.');
 });
 
-asyncTest('action-hallucination guard does NOT fire when read-only tool runs and response has no HITL marker (legitimate summarize-result reply)', async () => {
-  // gate=action + one read-only tool + clean text response = legitimate.
-  // Common case: "how many cards" classified as action; list-then-summarize is right.
+asyncTest('a read-only turn misclassified as gate=action carries the trailer (diagnostic, not suppressed)', async () => {
+  // "how many cards" classified as action; list-then-summarize is the right work,
+  // but the classifier called it an action. Nothing structural distinguishes this
+  // from a prose offer — both are gate=action with only a read — and separating
+  // them would mean reading prose. So the guard re-prompts and the trailer lands.
+  //
+  // That is deliberate. The trailer is a classifier-quality signal surfacing in
+  // production: it says, truthfully, that this turn changed nothing. No heuristic
+  // suppresses it, and its journal line carries the gate and the invoked tool
+  // names so a recurring false fire is attributable to the classification, which
+  // is where the fix belongs.
   const provider = createMockProvider([
     { content: null, toolCalls: [{ id: 'call_1', name: 'deck_list_cards', arguments: {} }] },
+    { content: 'There are 3 cards in Ideas.', toolCalls: null },
     { content: 'There are 3 cards in Ideas.', toolCalls: null }
   ]);
 
-  const registry = createMockToolRegistry({
-    deck_list_cards: async () => ({ success: true, result: '#1, #2, #3' })
-  });
+  const registry = createMockToolRegistry(
+    { deck_list_cards: async () => ({ success: true, result: '#1, #2, #3' }) },
+    ['deck_list_cards']
+  );
 
   const loop = new AgentLoop({
     toolRegistry: registry,
@@ -1616,9 +1641,36 @@ asyncTest('action-hallucination guard does NOT fire when read-only tool runs and
     logger: silentLogger
   });
 
-  const response = await loop.process('list cards on the board', 'room-abc', { gate: 'action' });
+  const response = await loop.process('how many cards on the board', 'room-abc', { gate: 'action' });
+  assert.ok(response.startsWith('There are 3 cards in Ideas.'), 'informational answer preserved');
+  assert.ok(response.endsWith(NO_ACTION_TRAILER.EN), 'trailer appended beneath it');
+  assert.strictEqual(provider._getCallCount(), 3);  // one bounded re-prompt
+});
+
+asyncTest('a read-only turn at gate=knowledge is untouched (no re-prompt, no trailer)', async () => {
+  // The guard is armed only at gate=action. A knowledge turn that reads and
+  // summarizes is exactly what it should do.
+  const provider = createMockProvider([
+    { content: null, toolCalls: [{ id: 'call_1', name: 'deck_list_cards', arguments: {} }] },
+    { content: 'There are 3 cards in Ideas.', toolCalls: null }
+  ]);
+
+  const registry = createMockToolRegistry(
+    { deck_list_cards: async () => ({ success: true, result: '#1, #2, #3' }) },
+    ['deck_list_cards']
+  );
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('how many cards on the board', 'room-abc', { gate: 'knowledge' });
   assert.strictEqual(response, 'There are 3 cards in Ideas.');
-  assert.strictEqual(provider._getCallCount(), 2);  // no re-prompt
+  assert.strictEqual(provider._getCallCount(), 2);
 });
 
 asyncTest('action-hallucination guard: HITL marker fires at gate=confirmation (#85 — destructive intent via follow-up turn)', async () => {
@@ -1981,6 +2033,245 @@ asyncTest('#164: text-form call on a gate=action turn is invoked, reply is synth
 // ============================================================
 // Cleanup & Summary
 // ============================================================
+
+// ============================================================
+// #81 commit 2 — the write-class guard, the honesty floor,
+// and the two production transcripts of 2026-07-09
+// ============================================================
+
+// ── Fixture 1: the fabricated confirmation ──────────────────
+//
+// gate=action, zero tool calls, no 🔐 marker, and a final reply asserting a
+// deletion that never happened. The guard re-prompted; the model spent its one
+// second chance producing a MORE confident falsehood. One re-prompt is a
+// request, not a guarantee — the floor is what stops the lie.
+
+asyncTest('#81 fixture 1: fabricated tool confirmation is re-prompted, then floored', async () => {
+  const provider = createMockProvider([
+    { content: 'Ich lösche die Karte.', toolCalls: null },
+    { content: 'Ich habe die Karte gelöscht — die Tool-Bestätigung liegt vor. Karte #2475 ist weg.', toolCalls: null }
+  ]);
+
+  const loop = new AgentLoop({
+    toolRegistry: createMockToolRegistry(),
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('lösch die Karte test a', 'room-abc', { gate: 'action', language: 'DE' });
+
+  assert.strictEqual(provider._getCallCount(), 2, 'one bounded re-prompt');
+  // The lie still reaches the user — the model cannot be prevented from writing it.
+  // What cannot happen is the turn ENDING on it without contradiction.
+  assert.ok(response.includes('Ich habe die Karte gelöscht'));
+  assert.ok(response.endsWith(NO_ACTION_TRAILER.DE), 'floor states, in the user\'s language, that nothing was executed');
+});
+
+// ── Fixture 2: the prose offer after a read call ────────────
+//
+// gate=action, deck_list_cards ran, the turn ends asking "Delete it?" in prose.
+// Defeats BOTH pre-#266 signals: actionWithoutToolCall is false (a tool ran) and
+// responseStagesApproval is false (no 🔐 marker). This is why the condition had
+// to become "no MUTATING call" rather than "no call".
+//
+// This shape is a UX degradation, not a safety hole, and only because #264
+// landed first: the prose offer opens no approval poll and creates no
+// PendingAction record, so a later "ja" finds no record, self-authorizes
+// nothing, and lands in a real ceremony. The re-prompt is its remedy, not the
+// floor — the floor intercepts false success claims, and an offer claims
+// nothing. "Delete it?" is a question; there is no proposition to be ungrounded.
+
+asyncTest('#81 fixture 2: prose offer after a read-only call is re-prompted into the real tool call', async () => {
+  const provider = createMockProvider([
+    { content: null, toolCalls: [{ id: 'c1', name: 'deck_list_cards', arguments: {} }] },
+    { content: 'Found it — card #2460 "ORG-RECORD" is in the Reference stack. Delete it?', toolCalls: null },
+    { content: null, toolCalls: [{ id: 'c2', name: 'deck_delete_card', arguments: { card: '#2460' } }] },
+    { content: 'Deleted card #2460.', toolCalls: null }
+  ]);
+
+  const registry = createMockToolRegistry({
+    deck_list_cards: async () => ({ success: true, result: '#2460 ORG-RECORD' }),
+    deck_delete_card: async () => ({ success: true, result: 'Deleted card #2460.' })
+  }, ['deck_list_cards']);
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('take care of ORG-RECORD', 'room-abc', { gate: 'action', language: 'EN' });
+
+  // The re-prompt did its job: the destructive tool was actually invoked, so the
+  // turn acted and the floor stays silent.
+  assert.strictEqual(response, 'Deleted card #2460.');
+  assert.ok(!response.includes(NO_ACTION_TRAILER.EN), 'no trailer once the turn mutated');
+  assert.strictEqual(provider._getCallCount(), 4);
+});
+
+asyncTest('#81 fixture 2 (unrepaired): if the model re-offers instead of calling, the floor lands', async () => {
+  const provider = createMockProvider([
+    { content: null, toolCalls: [{ id: 'c1', name: 'deck_list_cards', arguments: {} }] },
+    { content: 'Found it. Delete it?', toolCalls: null },
+    { content: 'Shall I go ahead and delete it?', toolCalls: null }
+  ]);
+
+  const registry = createMockToolRegistry({
+    deck_list_cards: async () => ({ success: true, result: '#2460' })
+  }, ['deck_list_cards']);
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('take care of ORG-RECORD', 'room-abc', { gate: 'action', language: 'PT' });
+  assert.ok(response.startsWith('Shall I go ahead and delete it?'));
+  assert.ok(response.endsWith(NO_ACTION_TRAILER.PT));
+  assert.strictEqual(provider._getCallCount(), 3, 'bounded to one re-prompt');
+});
+
+// ── Mutation, not approval ──────────────────────────────────
+
+asyncTest('a successful card creation gets no trailer and no re-prompt (mutating, ungated)', async () => {
+  // The regression that killed the briefed design: deck_create_card mutates but
+  // needs no approval, so keying the guard on the WRITE CLASS printed
+  // "no action was executed" beneath a card that had just been created.
+  const provider = createMockProvider([
+    { content: null, toolCalls: [{ id: 'c1', name: 'deck_create_card', arguments: { title: 'Q3' } }] },
+    { content: 'Karte erstellt.', toolCalls: null }
+  ]);
+
+  const registry = createMockToolRegistry({
+    deck_create_card: async () => ({ success: true, result: 'Created card #77.' })
+  });  // not read-only → mutating
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('Erstell eine Karte Q3', 'room-abc', { gate: 'action', language: 'DE' });
+  assert.strictEqual(response, 'Karte erstellt.', 'no trailer on a real mutation');
+  assert.strictEqual(provider._getCallCount(), 2, 'no re-prompt on a turn that acted');
+});
+
+asyncTest('a DENIED destructive call counts as a call — the turn acted, guard and floor stay silent', async () => {
+  // The user said "nein" to the ceremony. That is a legitimate ending: the tool
+  // was really invoked and really answered. Both layers key on the CALL, never
+  // on its success, or a refused deletion would be re-prompted and then told the
+  // user "no action was executed" as though the model had failed to try.
+  const provider = createMockProvider([
+    { content: null, toolCalls: [{ id: 'c1', name: 'deck_delete_card', arguments: { card: '#1' } }] },
+    { content: 'Okay, ich habe nichts gelöscht.', toolCalls: null }
+  ]);
+
+  const registry = createMockToolRegistry({
+    deck_delete_card: async () => ({ success: false, result: '', error: 'Action blocked: denied or timed out' })
+  });
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('lösch Karte #1', 'room-abc', { gate: 'action', language: 'DE' });
+  assert.strictEqual(response, 'Okay, ich habe nichts gelöscht.');
+  assert.strictEqual(provider._getCallCount(), 2);
+});
+
+asyncTest('the consecutive-failure skip path does not count as an invocation', async () => {
+  // iterationToolsCalled.push() also fires when a tool is SKIPPED after repeated
+  // failures. A skipped tool never ran, so it must not satisfy "the turn acted".
+  let attempts = 0;
+  const provider = createMockProvider([
+    { content: null, toolCalls: [{ id: 'c1', name: 'flaky_write', arguments: {} }] },
+    { content: null, toolCalls: [{ id: 'c2', name: 'flaky_write', arguments: {} }] },
+    { content: null, toolCalls: [{ id: 'c3', name: 'flaky_write', arguments: {} }] },  // skipped
+    { content: 'All set.', toolCalls: null },
+    { content: 'All set.', toolCalls: null }
+  ]);
+
+  const registry = createMockToolRegistry({
+    flaky_write: async () => { attempts++; return { success: false, result: '', error: 'boom' }; }
+  });
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('do the thing', 'room-abc', { gate: 'action', language: 'EN' });
+  assert.strictEqual(attempts, 2, 'third call was skipped, not executed');
+  // The two real attempts were invocations of a mutating tool, so the turn "acted"
+  // even though both failed. Failure is an outcome; the guard polices non-invocation.
+  assert.ok(!response.includes(NO_ACTION_TRAILER.EN));
+});
+
+// ── The trailer is multilingual on a code-owned surface ─────
+
+asyncTest('the honesty trailer speaks the turn\'s language', async () => {
+  const cases = [
+    ['DE', NO_ACTION_TRAILER.DE],
+    ['EN', NO_ACTION_TRAILER.EN],
+    ['PT', NO_ACTION_TRAILER.PT],
+    ['DE+EN', NO_ACTION_TRAILER.DE],   // bilingual persona → first tag
+    ['pt', NO_ACTION_TRAILER.PT],      // case-insensitive
+    ['FR', NO_ACTION_TRAILER.EN],      // untemplated language → EN, never a guess
+    [undefined, NO_ACTION_TRAILER.EN]  // unset → EN
+  ];
+
+  for (const [language, expected] of cases) {
+    const provider = createMockProvider([
+      { content: 'Ok.', toolCalls: null },
+      { content: 'Ok.', toolCalls: null }
+    ]);
+    const loop = new AgentLoop({
+      toolRegistry: createMockToolRegistry(),
+      conversationContext: createMockConversationContext(),
+      llmProvider: provider,
+      config: { soulPath: testSoulPath },
+      logger: silentLogger
+    });
+    const response = await loop.process('do it', 'room-abc', { gate: 'action', language });
+    assert.ok(response.endsWith(expected), `language=${language} → ${expected}`);
+  }
+});
+
+asyncTest('the trailer appends and never replaces', async () => {
+  const provider = createMockProvider([
+    { content: 'I could not find a card called "DOES-NOT-EXIST".', toolCalls: null },
+    { content: 'I could not find a card called "DOES-NOT-EXIST".', toolCalls: null }
+  ]);
+  const loop = new AgentLoop({
+    toolRegistry: createMockToolRegistry(),
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('delete DOES-NOT-EXIST', 'room-abc', { gate: 'action', language: 'EN' });
+  assert.ok(response.startsWith('I could not find a card called "DOES-NOT-EXIST".'),
+    'the specific refusal is the useful sentence and must survive');
+  assert.ok(response.endsWith(NO_ACTION_TRAILER.EN));
+});
 
 setTimeout(() => {
   try { fs.unlinkSync(testSoulPath); } catch { /* ignore */ }

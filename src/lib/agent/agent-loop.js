@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { extractArtifact } = require('./artifact-extractor');
-const { stagesApprovalCeremony, stripApprovalMarker, ACTION_REPROMPT_DIRECTIVE } = require('./action-guard');
+const { stagesApprovalCeremony, stripApprovalMarker, buildNoActionTrailer, ACTION_REPROMPT_DIRECTIVE } = require('./action-guard');
 
 /**
  * AgentLoop - The Nervous System
@@ -71,6 +71,9 @@ class AgentLoop {
    * @param {string} roomToken - NC Talk room token
    * @param {Object} [options]
    * @param {number} [options.messageId]
+   * @param {string} [options.gate] - Classification gate; 'action' arms the mutation guard
+   * @param {string} [options.language] - Cockpit language from the verdict ('EN'|'DE'|'PT'|'DE+EN'…),
+   *   used only to pick the honesty trailer's template. Unset falls back to EN.
    * @returns {Promise<string>} The agent's final text response
    */
   async process(message, roomToken, options = {}) {
@@ -157,6 +160,32 @@ class AgentLoop {
     const toolResultIndices = [];  // indices into messages[] of tool results
     const failedCallIds = new Set();  // tool_call_ids that returned errors
     let actionGuardFired = false;  // once-per-turn re-prompt for tool-less action responses
+
+    // #81 commit 2: the names of tools this turn actually invoked, accumulated
+    // across iterations. toolResultIndices holds message indices, not names, and
+    // iterationToolsCalled resets each iteration — neither can answer "did this
+    // turn change anything?". A name lands here only where the tool is really
+    // handed to _executeWithGuards, so the consecutive-failure skip path (which
+    // pushes to iterationToolsCalled for a tool that never ran) cannot fake a
+    // mutation. A DENIED or timed-out call does land here, and must: the guard
+    // polices narration-instead-of-invocation, and a refused ceremony is a real
+    // invocation with a real answer.
+    //
+    // The question is MUTATION, not approval. The write class (#266) is the set
+    // of tools that need a human's consent — deletes, shares, sends. It is a
+    // strict subset of the tools that change the world: deck_create_card mutates
+    // and needs no consent. Keying the guard on the write class would append
+    // "no action was executed" beneath a successfully created card, which is
+    // #81's harm inverted. Each tool declares `mutates` or `readOnly` at its
+    // registration site, and the write-class pin asserts write-class ⊆ mutates.
+    const toolsInvokedThisTurn = new Set();
+    const invokedMutatingTool = () => [...toolsInvokedThisTurn].some(name =>
+      // A registry that cannot answer is treated as "it mutated", so the guard
+      // stays silent rather than printing a false "nothing happened". Unknown
+      // names (a fuzzy alias, a SkillForge tool) answer the same way inside
+      // ToolRegistry.isMutating, for the same reason.
+      typeof this.toolRegistry?.isMutating !== 'function' || this.toolRegistry.isMutating(name)
+    );
 
     while (iteration < maxIter) {
       iteration++;
@@ -245,6 +274,12 @@ class AgentLoop {
             continue;
           }
 
+          // The turn invoked this tool. Recorded before the result is known:
+          // a denial, a timeout, or a handler error are all outcomes of a real
+          // invocation, and the guard asks whether the tool was called — not
+          // whether it succeeded.
+          toolsInvokedThisTurn.add(toolCall.name);
+
           const toolResult = await this._executeWithGuards(toolCall, roomToken);
 
           // Track tool failures (don't count errors toward maxIterations)
@@ -324,16 +359,29 @@ class AgentLoop {
       // Action-hallucination guard: when the classifier said this turn is an
       // action but the LLM produced text without doing the work, re-prompt
       // once before letting the response reach the user. The check is
-      // structural (gate + tool-call history + HITL marker) — language-free.
+      // structural (gate + invoked tool names + HITL marker) — language-free.
       //
       // Two structural signals trigger the re-prompt:
-      //   (a) Zero tool calls this turn — the original PR #68 case.
+      //   (a) No MUTATING tool call this turn. Zero-tool-calls was the
+      //       original PR #68 proxy for this, and it was too weak: on
+      //       2026-07-09 a gate=action turn called deck_list_cards, then ended
+      //       by asking "Delete it?" in prose. A read had run, so the old
+      //       condition was false, and no marker was emitted, so (b) was false
+      //       too. The turn talked about a deletion it never invoked. Mutation
+      //       is each tool's own declaration at its registration site, read via
+      //       ToolRegistry.isMutating() — never the approval policy, which
+      //       covers a strictly smaller set (see the note above the Set).
       //   (b) The response renders the HITL prompt marker (\u{1F510}) that
       //       the GuardrailEnforcer reserves for its Talk surface. If the
       //       agent emits that codepoint, it is staging a fake approval
-      //       ceremony instead of calling the destructive tool (#81). This
-      //       fires even when read-only tools were called (e.g. list-then-
-      //       narrate-approval).
+      //       ceremony instead of calling the destructive tool (#81).
+      //
+      // A read-only tool call no longer satisfies "this turn did the work",
+      // which means an honest not-found refusal ("I couldn't find that card")
+      // trips (a) as well — it is structurally identical to the prose offer,
+      // and telling them apart would mean reading prose. That is accepted: the
+      // model restates the refusal on its second pass, the bound below stops
+      // there, and the user's answer is unchanged.
       //
       // Bounded to one re-prompt per turn via actionGuardFired so legitimate
       // text-only refusals on the second pass ("I can't because…") are not
@@ -342,11 +390,11 @@ class AgentLoop {
       // Marker staging is illegitimate at ANY gate — the 🔐 codepoint belongs to
       // GuardrailEnforcer's Talk surface, never a model response. A confirmation
       // follow-up ("lösch den dritten") classifies as gate=confirmation, so gating
-      // this on action would miss the #85 leak. The no-tool-call signal stays
-      // gate=action (a knowledge turn legitimately produces no tool call).
+      // this on action would miss the #85 leak. The write-class signal stays
+      // gate=action (a knowledge turn legitimately performs no write).
       const responseStagesApproval = stagesApprovalCeremony(response.content);
-      const actionWithoutToolCall = options.gate === 'action' && toolResultIndices.length === 0;
-      if (!actionGuardFired && (actionWithoutToolCall || responseStagesApproval)) {
+      const actionWithoutMutation = options.gate === 'action' && !invokedMutatingTool();
+      if (!actionGuardFired && (actionWithoutMutation || responseStagesApproval)) {
         actionGuardFired = true;
         maxIter = Math.max(maxIter, iteration + 1);
 
@@ -361,7 +409,7 @@ class AgentLoop {
 
         const reason = responseStagesApproval
           ? 'response staged HITL marker without destructive tool call'
-          : 'zero tool calls (gate=action)';
+          : `no mutating tool call (gate=action, invoked=[${[...toolsInvokedThisTurn].join(', ')}])`;
         this.logger.warn(`[AgentLoop] Action-hallucination guard fired at iteration ${iteration} — re-prompting (${reason})`);
         // Maturation loop: the guard firing is a structural failure of the
         // (tools, model) pairing — an action turn that didn't act.
@@ -425,6 +473,37 @@ class AgentLoop {
     if (stagesApprovalCeremony(lastResponse)) {
       this.logger.warn('[AgentLoop] HITL marker survived the re-prompt — stripping from final response (model staged ceremony twice)');
       lastResponse = stripApprovalMarker(lastResponse);
+    }
+
+    // 5. Honesty floor (#81 commit 2, Layer 2). The re-prompt above is bounded to
+    // one attempt, and on 2026-07-09 a model spent that attempt producing a more
+    // confident falsehood ("Ich habe die Karte gelöscht — die Tool-Bestätigung
+    // liegt vor", zero tool calls). One re-prompt is a request, not a guarantee.
+    //
+    // So the turn's honesty is made structural rather than hoped for: a
+    // gate=action turn that invoked no write-class tool did not act, and says so
+    // in a code-owned sentence beneath whatever the model wrote. The trailer
+    // appends and never replaces — substituting it would delete a legitimate
+    // specific refusal ("I couldn't find that card"), the most useful sentence in
+    // such a turn, in favour of a generic one.
+    //
+    // The trigger reads the turn's invoked tool names, never its prose. The
+    // ProvenanceAnnotator's groundedRatio was the tempting alternative and is not
+    // consulted: it scores a fabricated claim as grounded whenever the claim
+    // echoes the user's own nouns (#267).
+    //
+    // This is also a diagnostic. A read-only request misclassified as
+    // gate=action will visibly carry the trailer under an informational answer.
+    // That is a classifier-quality signal surfacing in production, not a defect
+    // here, and no heuristic suppresses it — the journal line below carries the
+    // gate and the invoked tool names so a recurring false fire is attributable
+    // to the classification, which is where the fix belongs.
+    if (options.gate === 'action' && !invokedMutatingTool() && lastResponse) {
+      this.logger.warn(
+        `[AgentLoop] Honesty trailer appended: gate=action mutatingCall=none ` +
+        `invoked=[${[...toolsInvokedThisTurn].join(', ')}] guardFired=${actionGuardFired} language=${options.language || 'unset'}`
+      );
+      lastResponse = `${lastResponse}\n\n${buildNoActionTrailer(options.language)}`;
     }
 
     const elapsed = Date.now() - startTime;

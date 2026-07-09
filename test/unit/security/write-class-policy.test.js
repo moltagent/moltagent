@@ -63,6 +63,12 @@ const registered = new Set(registry.tools.keys());
 const declaredWrites = new Set(
   [...registry.tools.values()].filter(t => t.writes === true).map(t => t.name)
 );
+const declaredMutates = new Set(
+  [...registry.tools.values()].filter(t => t.mutates === true).map(t => t.name)
+);
+const declaredReadOnly = new Set(
+  [...registry.tools.values()].filter(t => t.readOnly === true).map(t => t.name)
+);
 
 console.log('Write-Class Policy Pin\n');
 
@@ -133,6 +139,63 @@ test('the write class covers the tools that leave the box', () => {
   for (const tool of ['mail_send', 'wiki_write', 'file_write', 'deck_delete_card', 'wiki_delete']) {
     assert.ok(writeClass.has(tool), `${tool} must be write-class`);
   }
+});
+
+// ── The mutation partition (#81 commit 2) ───────────────────────
+//
+// "Does it need approval?" and "does it change the world?" are different
+// questions. The write class answers the first; `mutates` answers the second and
+// is strictly larger — deck_create_card mutates and needs no approval. The action
+// guard reads mutation, and keying it on the write class made it print
+// "no action was executed" beneath a successfully created card.
+
+test('every registered tool declares exactly one of readOnly / mutates', () => {
+  const undeclared = [];
+  const both = [];
+  for (const tool of registry.tools.values()) {
+    const ro = tool.readOnly === true;
+    const mut = tool.mutates === true;
+    if (ro && mut) both.push(tool.name);
+    if (!ro && !mut) undeclared.push(tool.name);
+  }
+  assert.deepStrictEqual(both.sort(), [], `declared both readOnly and mutates: ${both.join(', ')}`);
+  assert.deepStrictEqual(undeclared.sort(), [],
+    `these tools declare neither readOnly nor mutates: ${undeclared.join(', ')}. ` +
+    'Every tool must answer "does calling this change the world?" at its registration ' +
+    'site — the action-hallucination guard reads that answer to decide whether a ' +
+    'gate=action turn actually acted.');
+});
+
+test('the partition is total', () => {
+  assert.strictEqual(declaredReadOnly.size + declaredMutates.size, registered.size);
+});
+
+test('every write-class tool is a mutating tool', () => {
+  const gatedButNotMutating = [...getWriteClassTools()].filter(t => !declaredMutates.has(t)).sort();
+  assert.deepStrictEqual(gatedButNotMutating, [],
+    `these tools require approval but do not declare mutates: ${gatedButNotMutating.join(', ')}. ` +
+    'Approval exists because the tool changes something; a gated tool that changes ' +
+    'nothing is a policy error.');
+});
+
+test('mutation is strictly larger than the write class', () => {
+  // Not a tautology: it pins the distinction the guard depends on. If these ever
+  // coincide, someone has re-conflated approval with mutation.
+  const mutatingButUngated = [...declaredMutates].filter(t => !getWriteClassTools().has(t));
+  assert.ok(mutatingButUngated.length > 0,
+    'expected tools that mutate without needing approval (e.g. deck_create_card)');
+  assert.ok(declaredMutates.has('deck_create_card'), 'deck_create_card must declare mutates');
+  assert.ok(!getWriteClassTools().has('deck_create_card'), 'deck_create_card must not need approval');
+});
+
+test('ToolRegistry.isMutating answers from the declaration, and fails safe', () => {
+  assert.strictEqual(registry.isMutating('deck_create_card'), true);
+  assert.strictEqual(registry.isMutating('deck_delete_card'), true);
+  assert.strictEqual(registry.isMutating('deck_list_cards'), false);
+  assert.strictEqual(registry.isMutating('wiki_read'), false);
+  // Unknown / undeclared: assume the turn acted, so the guard never prints a
+  // false "nothing happened" over a real mutation.
+  assert.strictEqual(registry.isMutating('some_skillforge_tool'), true);
 });
 
 // ── FORBIDDEN is the opposite relationship ──────────────────────

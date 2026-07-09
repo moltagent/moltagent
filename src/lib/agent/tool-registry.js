@@ -338,21 +338,55 @@ class ToolRegistry {
    * @param {Object} [toolDef.metadata]
    */
   /**
-   * `writes: true` declares that a tool changes something outside this process —
-   * it deletes, shares, sends, or overwrites. It is the tool's own statement about
-   * itself, independent of any gating policy, and that independence is the point:
-   * the write-class pin cross-checks these declarations against
-   * GuardrailEnforcer.getWriteClassTools(), so a destructive tool registered
-   * without a policy entry fails the suite instead of shipping ungated.
+   * Every tool declares exactly one of `readOnly: true` or `mutates: true`, and
+   * the write-class pin asserts that partition is total. Two questions get asked
+   * about a tool, and conflating them was a real bug (#81 commit 2):
+   *
+   * - **`mutates`** — *does calling this change the world?* Creating a card
+   *   mutates. Listing cards does not. This is what the action-hallucination
+   *   guard reads: a gate=action turn that invoked no mutating tool did not act,
+   *   whatever its prose says.
+   * - **`writes`** — *does calling this need approval?* A strictly smaller set
+   *   (#266's write class: deletes, shares, sends, overwrites). `deck_create_card`
+   *   mutates and needs no approval; the two sets are not the same, and keying
+   *   the guard on `writes` made it deny successful card creations.
+   *
+   * Both are the tool's own statement about itself, independent of any policy
+   * table, and that independence is what gives the pin teeth: it cross-checks
+   * `writes` against `GuardrailEnforcer.getWriteClassTools()` and requires
+   * `write-class ⊆ mutates`, so neither an ungated destructive tool nor a
+   * gated-but-undeclared one can ship.
    *
    * @param {Object} toolDef
-   * @param {boolean} [toolDef.writes] - true when the tool mutates external state
+   * @param {boolean} [toolDef.mutates] - true when calling the tool changes external state
+   * @param {boolean} [toolDef.readOnly] - true when calling the tool changes nothing
+   * @param {boolean} [toolDef.writes] - true when the tool additionally requires approval
    */
   register(toolDef) {
     if (!toolDef.name || !toolDef.handler) {
       throw new Error('Tool definition requires name and handler');
     }
     this.tools.set(toolDef.name, toolDef);
+  }
+
+  /**
+   * Does invoking this tool change state outside the process?
+   *
+   * Undeclared and unknown tools answer **true**. The caller (the action guard)
+   * uses this to decide whether a turn may have acted, and the only unsafe answer
+   * is a false "nothing happened" printed under a real mutation. So the default
+   * fails toward silence: a dynamically registered tool (SkillForge) that never
+   * declared itself is assumed to have acted, and the guard stays quiet.
+   *
+   * @param {string} name - Tool name (resolved)
+   * @returns {boolean}
+   */
+  isMutating(name) {
+    const tool = this.tools.get(name);
+    if (!tool) return true;              // unknown: assume it acted
+    if (tool.mutates === true) return true;
+    if (tool.readOnly === true) return false;
+    return true;                         // undeclared: assume it acted
   }
 
   /**
@@ -688,6 +722,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_list_cards',
+      readOnly: true,
       domains: ['deck'],
       description: 'List all cards on a board, grouped by stack. Defaults to the task board. Use the board parameter to query other boards (e.g. "Cockpit", "Moltagent Cockpit"). Omit the stack parameter to search all stacks (preferred default).',
       parameters: {
@@ -783,6 +818,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_move_card',
+      mutates: true,
       domains: ['deck'],
       description: 'Move a card to a different stack. Use this when asked to close, finish, start, or queue a task. The card can be identified by title (partial match) or ID. Defaults to the task board; pass `board` to operate on a shared board.',
       parameters: {
@@ -848,6 +884,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_create_card',
+      mutates: true,
       domains: ['deck', 'news'],
       description: 'Create a new card (task) on a board. ALWAYS include a description with relevant context from the conversation — findings, results, next steps, or details discussed. If the user asks to save findings or results to a card, include that content in the description field. Cards are created in the Inbox stack by default.',
       parameters: {
@@ -922,6 +959,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_list_boards',
+      readOnly: true,
       domains: ['deck'],
       description: 'List all Deck boards accessible to you (owned and shared). Returns board names, IDs, and ownership info.',
       parameters: { type: 'object', properties: {}, required: [] },
@@ -943,6 +981,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_get_board',
+      readOnly: true,
       domains: ['deck'],
       description: 'Get details of a specific Deck board including its stacks, labels, and sharing settings. Accepts board name (partial match) or ID.',
       parameters: {
@@ -975,6 +1014,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_create_board',
+      mutates: true,
       domains: ['deck'],
       description: 'Create a new Deck board. You will own this board.',
       parameters: {
@@ -1003,6 +1043,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_rename_board',
+      mutates: true,
       domains: ['deck'],
       description: 'Rename an existing Deck board.',
       parameters: {
@@ -1028,6 +1069,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_archive_board',
+      mutates: true,
       domains: ['deck'],
       description: 'Archive a Deck board. Archived boards are hidden from the default view but not deleted.',
       parameters: {
@@ -1052,6 +1094,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_delete_board',
+      mutates: true,
       writes: true,
       domains: ['deck'],
       description: 'Permanently delete a Deck board and all its stacks and cards. This is irreversible and requires confirmation.',
@@ -1079,6 +1122,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_list_stacks',
+      readOnly: true,
       domains: ['deck'],
       description: 'List all stacks (columns) in a Deck board with card counts. Accepts board name (partial match) or ID.',
       parameters: {
@@ -1108,6 +1152,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_create_stack',
+      mutates: true,
       domains: ['deck'],
       description: 'Create a new stack (column) in a Deck board.',
       parameters: {
@@ -1135,6 +1180,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_rename_stack',
+      mutates: true,
       domains: ['deck'],
       description: 'Rename a stack (column) in a Deck board.',
       parameters: {
@@ -1168,6 +1214,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_delete_stack',
+      mutates: true,
       writes: true,
       domains: ['deck'],
       description: 'Permanently delete a stack (column) and all its cards from a Deck board. This is irreversible and requires confirmation.',
@@ -1203,6 +1250,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_get_card',
+      readOnly: true,
       domains: ['deck'],
       description: 'Get full details of a card including description, due date, assigned users, labels, and comments. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to read from a shared board.',
       parameters: {
@@ -1254,6 +1302,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_update_card',
+      mutates: true,
       domains: ['deck'],
       description: 'Update a card\'s title, description, or due date. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to update a card on a shared board.',
       parameters: {
@@ -1306,6 +1355,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_delete_card',
+      mutates: true,
       writes: true,
       domains: ['deck'],
       description: 'Delete a card from the board. This is destructive and requires confirmation. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to delete a card on a shared board.',
@@ -1338,6 +1388,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_assign_user',
+      mutates: true,
       domains: ['deck'],
       description: 'Assign a user to a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to assign on a shared board.',
       parameters: {
@@ -1384,6 +1435,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_unassign_user',
+      mutates: true,
       domains: ['deck'],
       description: 'Remove a user assignment from a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to unassign on a shared board.',
       parameters: {
@@ -1419,6 +1471,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_set_due_date',
+      mutates: true,
       domains: ['deck'],
       description: 'Set or clear the due date on a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to update a card on a shared board.',
       parameters: {
@@ -1472,6 +1525,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_add_label',
+      mutates: true,
       domains: ['deck'],
       description: 'Add a label to a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to operate on a shared board. The label must already exist on the target board (use deck_create_label first if needed).',
       parameters: {
@@ -1511,6 +1565,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_remove_label',
+      mutates: true,
       domains: ['deck'],
       description: 'Remove a label from a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to operate on a shared board.',
       parameters: {
@@ -1549,6 +1604,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_create_label',
+      mutates: true,
       domains: ['deck'],
       description: 'Create a new label on a board. Use this when the board needs a label that doesn\'t exist yet.',
       parameters: {
@@ -1575,6 +1631,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_add_comment',
+      mutates: true,
       domains: ['deck'],
       description: 'Add a comment to a card. Use this to leave notes, updates, or communicate about a task. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to comment on a shared board.',
       parameters: {
@@ -1603,6 +1660,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_list_comments',
+      readOnly: true,
       domains: ['deck'],
       description: 'List all comments on a card. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to read comments on a shared board.',
       parameters: {
@@ -1641,6 +1699,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_share_board',
+      mutates: true,
       writes: true,
       domains: ['deck'],
       description: 'Share a board you own with another user or group. Requires confirmation.',
@@ -1681,6 +1740,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_overview',
+      readOnly: true,
       domains: ['deck'],
       description: 'Get a summary of all accessible boards: board names, card counts per stack, and overdue items. Use when asked for a board overview or status summary.',
       parameters: { type: 'object', properties: {}, required: [] },
@@ -1718,6 +1778,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_my_assigned_cards',
+      readOnly: true,
       domains: ['deck'],
       description: 'List all cards assigned to a user across all accessible boards. Defaults to you if no user specified.',
       parameters: {
@@ -1753,6 +1814,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_overdue_cards',
+      readOnly: true,
       domains: ['deck'],
       description: 'List all cards with past due dates across all accessible boards.',
       parameters: { type: 'object', properties: {}, required: [] },
@@ -1779,6 +1841,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_mark_done',
+      mutates: true,
       domains: ['deck'],
       description: 'Mark a card as done by moving it to the Done stack. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to mark a card on a shared board (requires a stack titled "Done" on that board).',
       parameters: {
@@ -1822,6 +1885,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_complete_task',
+      mutates: true,
       domains: ['deck'],
       description: 'Mark a task as complete: moves the card to Done and adds a completion comment.',
       parameters: {
@@ -1845,6 +1909,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_complete_review',
+      mutates: true,
       domains: ['deck'],
       description: 'Complete the review process: moves a card from Review to Done with an optional final note.',
       parameters: {
@@ -1870,6 +1935,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_setup_workflow',
+      mutates: true,
       writes: true,
       domains: ['deck'],
       description: 'Create a new board with a set of named stacks (columns), optionally seed it with cards in the first stack, and optionally share it with a user. Use when asked to set up a workflow or project board with a defined column structure. Requires confirmation.',
@@ -1952,6 +2018,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_troubleshoot',
+      readOnly: true,
       domains: ['deck'],
       description: 'Diagnose board access and visibility issues. Lists accessible boards and reports whether a specific board exists. Does NOT perform sharing — if a share is needed, use deck_share_board.',
       parameters: {
@@ -2010,6 +2077,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_list_events',
+      readOnly: true,
       domains: ['calendar'],
       description: 'List upcoming calendar events. Returns event titles, times, and descriptions.',
       parameters: {
@@ -2047,6 +2115,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_create_event',
+      mutates: true,
       writes: true,
       domains: ['calendar'],
       description: 'Create a calendar event. Optionally checks availability first (set check_availability: true). Supports attendees with automatic invitation emails. Use duration_minutes OR end to set the event length (default: 60 minutes).',
@@ -2184,6 +2253,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_update_event',
+      mutates: true,
       writes: true,
       domains: ['calendar'],
       description: 'Update an existing calendar event. Use to reschedule, rename, change duration, add attendees, or modify any event property.',
@@ -2293,6 +2363,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_delete_event',
+      mutates: true,
       writes: true,
       domains: ['calendar'],
       description: 'Delete a calendar event.',
@@ -2325,6 +2396,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_check_availability',
+      readOnly: true,
       domains: ['calendar'],
       description: 'Check whether a time slot is free. Returns availability and any conflicting events. If end is omitted, checks a 1-hour window from start.',
       parameters: {
@@ -2374,6 +2446,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_cancel_meeting',
+      mutates: true,
       writes: true,
       domains: ['calendar'],
       description: 'Cancel a scheduled meeting and send cancellation notices to all attendees.',
@@ -2408,6 +2481,7 @@ class ToolRegistry {
 
     this.register({
       name: 'meeting_compose',
+      mutates: true,
       domains: ['calendar'],
       description: 'Start or continue a smart meeting scheduling flow. Resolves participant names from Nextcloud Contacts, checks calendar conflicts, asks for confirmation, creates the event, sends invitations, and tracks RSVPs on Deck. Works in multiple languages (EN/DE/PT). Use this for natural language meeting requests like "Schedule a meeting with João and Maria next Tuesday at 2pm".',
       parameters: {
@@ -2445,6 +2519,7 @@ class ToolRegistry {
 
     this.register({
       name: 'meeting_check_rsvp',
+      readOnly: true,
       domains: ['calendar'],
       description: 'Check RSVP status for a scheduled meeting. Shows who accepted, declined, or hasn\'t responded yet.',
       parameters: {
@@ -2516,6 +2591,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_read',
+      readOnly: true,
       domains: ['file'],
       description: 'Read the contents of a text file from Nextcloud. Works with .txt, .md, .json, .csv, .yaml, .html, .xml, and similar text files. For PDF or Word documents, use file_extract instead.',
       parameters: {
@@ -2554,6 +2630,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_list',
+      readOnly: true,
       domains: ['file'],
       description: 'List files and folders in a Nextcloud directory. Shows name, size, modified date, and type.',
       parameters: {
@@ -2619,6 +2696,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_write',
+      mutates: true,
       writes: true,
       domains: ['file'],
       description: 'Write content to a file in your Nextcloud workspace. Creates the file if it doesn\'t exist, overwrites if it does.',
@@ -2665,6 +2743,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_info',
+      readOnly: true,
       domains: ['file'],
       description: 'Get metadata about a file: size, last modified, type, permissions, and whether it\'s shared.',
       parameters: {
@@ -2707,6 +2786,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_move',
+      mutates: true,
       writes: true,
       domains: ['file'],
       description: 'Move or rename a file within Nextcloud.',
@@ -2731,6 +2811,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_copy',
+      mutates: true,
       domains: ['file'],
       description: 'Copy a file to a new location.',
       parameters: {
@@ -2754,6 +2835,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_delete',
+      mutates: true,
       writes: true,
       domains: ['file'],
       description: 'Delete a file or folder. Requires confirmation.',
@@ -2777,6 +2859,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_mkdir',
+      mutates: true,
       domains: ['file'],
       description: 'Create a new folder in your workspace.',
       parameters: {
@@ -2799,6 +2882,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_share',
+      mutates: true,
       writes: true,
       domains: ['file'],
       description: 'Share a file or folder with a user. Uses NC\'s native sharing. Requires confirmation.',
@@ -2827,6 +2911,7 @@ class ToolRegistry {
     if (extractor) {
       this.register({
         name: 'file_extract',
+        readOnly: true,
         domains: ['file'],
         description: 'Extract text content from PDF, Word (.docx), or Excel (.xlsx) files. Downloads the file and extracts readable text.',
         parameters: {
@@ -2880,6 +2965,7 @@ class ToolRegistry {
 
     this.register({
       name: 'unified_search',
+      readOnly: true,
       domains: ['search'],
       description: 'Search across everything in Nextcloud — files, tasks, calendar events, contacts, chat messages. Use when you don\'t know which app contains what you\'re looking for.',
       parameters: {
@@ -2947,6 +3033,7 @@ class ToolRegistry {
 
     this.register({
       name: 'tag_file',
+      mutates: true,
       domains: ['file'],
       description: 'Assign a system tag to a file. Tags: pending, processed, needs-review, ai-flagged.',
       parameters: {
@@ -2984,6 +3071,7 @@ class ToolRegistry {
 
     this.register({
       name: 'memory_recall',
+      readOnly: true,
       domains: ['search'],
       description: 'Search the learning log for information about a topic. Use this when you need to recall something previously learned.',
       parameters: {
@@ -3030,6 +3118,7 @@ class ToolRegistry {
 
     this.register({
       name: 'wiki_read',
+      readOnly: true,
       domains: ['wiki'],
       description: 'Read a page from the Moltagent Knowledge wiki. Returns page content with frontmatter metadata summary.',
       parameters: {
@@ -3072,6 +3161,7 @@ class ToolRegistry {
 
     this.register({
       name: 'wiki_write',
+      mutates: true,
       writes: true,
       domains: ['wiki'],
       description: 'Create or update a page in the Moltagent Knowledge wiki. Content can include YAML frontmatter between --- delimiters. To ADD to an existing page rather than replace it, call wiki_read first, then wiki_write with the merged content.',
@@ -3237,6 +3327,7 @@ class ToolRegistry {
 
     this.register({
       name: 'wiki_search',
+      readOnly: true,
       domains: ['wiki'],
       description: 'Search the Moltagent Knowledge wiki for pages matching a query.',
       parameters: {
@@ -3326,6 +3417,7 @@ class ToolRegistry {
 
     this.register({
       name: 'wiki_list',
+      readOnly: true,
       domains: ['wiki', 'search'],
       description: 'List pages in a section of the Moltagent Knowledge wiki. Sections: People, Projects, Procedures, Research, Meta.',
       parameters: {
@@ -3386,6 +3478,7 @@ class ToolRegistry {
 
     this.register({
       name: 'wiki_delete',
+      mutates: true,
       writes: true,
       domains: ['wiki'],
       description: 'Delete (trash) a page from the Moltagent Knowledge wiki. This action cannot be undone.',
@@ -3431,6 +3524,7 @@ class ToolRegistry {
     if (searxng) {
       this.register({
         name: 'web_search',
+        readOnly: true,
         universal: true,
         description: 'Search the web via SearXNG (default) or commercial providers. Use provider="multi" to query all available sources in parallel with deduplication.',
         parameters: {
@@ -3541,6 +3635,7 @@ class ToolRegistry {
     if (webReader) {
       this.register({
         name: 'web_read',
+        readOnly: true,
         domains: ['search'],
         description: 'Fetch and extract readable content from a URL. Returns article text, title, and metadata.',
         parameters: {
@@ -3575,6 +3670,7 @@ class ToolRegistry {
 
     this.register({
       name: 'contacts_search',
+      readOnly: true,
       domains: ['email', 'search'],
       description: 'Search Nextcloud Contacts (address book) by name. Returns matching contacts with name, email, phone, and organization. Use when you need to find someone\'s email or contact details.',
       parameters: {
@@ -3623,6 +3719,7 @@ class ToolRegistry {
 
     this.register({
       name: 'contacts_get',
+      readOnly: true,
       domains: ['email'],
       description: 'Get full details for a specific contact by their CardDAV href. Use after contacts_search to get complete contact information.',
       parameters: {
@@ -3677,6 +3774,7 @@ class ToolRegistry {
 
     this.register({
       name: 'contacts_resolve',
+      readOnly: true,
       domains: ['email'],
       description: 'Look up a contact by name. Returns email, phone, and other details. Handles partial names and disambiguates if multiple matches are found.',
       parameters: {
@@ -3723,6 +3821,7 @@ class ToolRegistry {
 
     this.register({
       name: 'memory_search',
+      readOnly: true,
       domains: ['email', 'wiki', 'search'],
       description: 'Search across your knowledge wiki, Talk conversations, files, tasks, and calendar. Use to recall past decisions, people, project details, conversations, or events. Supports time filtering with since/until.',
       parameters: {
@@ -3795,6 +3894,7 @@ class ToolRegistry {
 
     this.register({
       name: 'workflow_deck_move_card',
+      mutates: true,
       domains: ['workflow'],
       description: 'Move a card to a different stack using raw numeric IDs. Use this in workflow processing to move cards between stacks on any board.',
       parameters: {
@@ -3822,6 +3922,7 @@ class ToolRegistry {
 
     this.register({
       name: 'workflow_deck_add_comment',
+      mutates: true,
       domains: ['workflow'],
       description: 'Add a comment to a card using its numeric ID. Use this in workflow processing to log actions on cards in any board.',
       parameters: {
@@ -3848,6 +3949,7 @@ class ToolRegistry {
 
     this.register({
       name: 'workflow_deck_create_card',
+      mutates: true,
       domains: ['workflow'],
       description: 'Create a card on any board. Provide board_id and either stack (name) or stack_id. Stack names are resolved against the target board to avoid cross-board ID mismatches.',
       parameters: {
@@ -3919,6 +4021,7 @@ class ToolRegistry {
 
     this.register({
       name: 'workflow_deck_update_card',
+      mutates: true,
       domains: ['workflow'],
       description: 'Update a card on any board using raw numeric IDs. Use this in workflow processing to modify card title, description, or due date.',
       parameters: {
@@ -3983,6 +4086,7 @@ class ToolRegistry {
 
     this.register({
       name: 'workflow_deck_assign_label',
+      mutates: true,
       domains: ['workflow'],
       description: 'Assign a label to a card using raw numeric IDs. Use this in workflow processing to add labels (e.g. GATE, APPROVED) to cards on any board.',
       parameters: {
@@ -4019,6 +4123,7 @@ class ToolRegistry {
     if (emailHandler) {
       this.register({
         name: 'mail_send',
+        mutates: true,
         writes: true,
         domains: ['email'],
         description: 'Send an email. REQUIRES human approval before execution. Provide recipient, subject, and body. The email will be sent via SMTP from the configured Moltagent email account.',
@@ -4058,6 +4163,7 @@ class ToolRegistry {
     if (newsClient) {
       this.register({
         name: 'news_get_items',
+        readOnly: true,
         domains: ['news'],
         description: 'Get recent unread articles from NC News RSS feeds. Returns title, URL, body summary, and feed source for each item.',
         parameters: {
@@ -4095,6 +4201,7 @@ class ToolRegistry {
 
       this.register({
         name: 'news_list_feeds',
+        readOnly: true,
         domains: ['news'],
         description: 'List all RSS feeds subscribed in NC News with their unread counts.',
         parameters: {
@@ -4123,6 +4230,7 @@ class ToolRegistry {
 
       this.register({
         name: 'news_mark_read',
+        mutates: true,
         domains: ['news'],
         description: 'Mark a news item as read after it has been evaluated or turned into a Deck card.',
         parameters: {

@@ -745,6 +745,7 @@ class MessageProcessor {
             user: extracted.user,
             gate,
             domain,
+            language: clsLanguage,
             compound,
             systemSuffix: focusContext ? (flushPrompt ? flushPrompt + '\n' + focusContext : focusContext) : flushPrompt,
             onArtifact
@@ -813,6 +814,7 @@ class MessageProcessor {
                 user: extracted.user,
                 gate,
                 domain,
+                language: clsLanguage,
                 compound,
                 systemSuffix: focusContext || undefined,
                 onArtifact
@@ -848,6 +850,7 @@ class MessageProcessor {
               user: extracted.user,
               gate,
               domain,
+              language: clsLanguage,
               systemSuffix: focusContext || undefined,
               onArtifact
             });
@@ -892,6 +895,7 @@ class MessageProcessor {
               user: extracted.user,
               gate,
               domain,
+              language: clsLanguage,
               systemSuffix: focusContext
                 ? (flushPrompt ? flushPrompt + '\n' + focusContext : focusContext)
                 : flushPrompt,
@@ -937,6 +941,7 @@ class MessageProcessor {
               user: extracted.user,
               gate,
               domain,
+              language: clsLanguage,
               systemSuffix: focusContext || undefined,
               onArtifact
             });
@@ -967,6 +972,7 @@ class MessageProcessor {
               user: extracted.user,
               gate,
               domain,
+              language: clsLanguage,
               systemSuffix: focusContext || undefined,
               onArtifact
             });
@@ -1007,6 +1013,7 @@ class MessageProcessor {
             user: extracted.user,
             gate,
             domain,
+            language: clsLanguage,
             compound
           };
 
