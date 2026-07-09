@@ -525,6 +525,7 @@ let modelScorecard = null; // Maturation loop: per-(job, model, language) scores
 let judgeQueue = null; // Session 4: bounded judge-then-delete retention of judged-job samples
 let localJudge = null; // Session 4: heartbeat-idle grader for writing/thinking
 let nicheAssignment = null; // Session 5 (Layer 3): carrying-capacity plan over the winners
+let goldenSetProbe = null; // #260: retained so the heartbeat idle lane drains the candidates run()'s early exit skipped
 
 // Residency-signal sink for every local Ollama adapter (both families).
 // Late-bound: no-ops until NicheAssignment is constructed after discovery,
@@ -2183,6 +2184,10 @@ async function initialize() {
               cacheDir: path.join(__dirname, 'data'),
               logger: console,
             });
+            // Retain the instance so the heartbeat idle lane can drain the
+            // candidates run()'s early exit skipped (#260). Same probe, same
+            // cache; the thunk into HeartbeatManager mirrors getNicheAssignment.
+            goldenSetProbe = probe;
             const clsCandidates = modelScout.getClassificationCandidates();
             probe.run(clsCandidates)
               .then(async sel => {
@@ -2646,6 +2651,10 @@ async function initialize() {
         // ModelScout discovery, possibly after this manager. The sink keeps
         // timing capture alive across heartbeat roster rebuilds.
         getNicheAssignment: () => nicheAssignment,
+        // #260: same thunk pattern — the golden-set probe is constructed inside
+        // the async ModelScout discovery block, after this manager. The idle
+        // lane drains its unmeasured candidates one per pulse.
+        getGoldenSetProbe: () => goldenSetProbe,
         onOllamaTimings: ollamaTimingsSink,
         dailyBriefing,
         reviewUser: appConfig.cockpit?.adminUser || appConfig.knowledge?.adminUser || '',

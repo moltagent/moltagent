@@ -71,6 +71,22 @@ const CONTEXT_FLOOR = Object.freeze({
  */
 const JUDGE_CONTEXT_FLOOR = 8192;
 
+/**
+ * Parameter-size ceiling (in billions) for golden-set classification
+ * candidates (#260). Classification is a latency job with a 12-example/language
+ * fixture; a model larger than this is already far past what the task demands,
+ * and loading a 30B+ code-specialist just to measure it evicts the serving
+ * model on a single-GPU box and can starve a live request for minutes. A 34B
+ * seat is never the right classification pick, so walking to it must be
+ * structurally impossible, not merely unlikely. 14 is generous — well above
+ * qwen3:8b, the reference box's classification winner. Models above the ceiling
+ * stay available for every other job (thinking/writing/tools) through the
+ * regular roster; only the probe's candidate walk is bounded. Cloud models
+ * never pass through here, so the ceiling does not touch them.
+ * @type {number}
+ */
+const CLASSIFICATION_PARAM_CEILING = 14;
+
 class ModelScout {
   /**
    * @param {Object} config
@@ -212,9 +228,10 @@ class ModelScout {
    */
   getClassificationCandidates() {
     if (!this._discovered || this._discovered.length === 0) return [];
-    return this._discovered
+    const textGen = this._discovered
       .filter(m => this._isTextGen(m))
-      .sort((a, b) => this._compareSize(a, b))
+      .sort((a, b) => this._compareSize(a, b));
+    return this._paramCeilinged(textGen, CLASSIFICATION_PARAM_CEILING)
       .map(m => ({ name: m.name, paramSize: m.paramSize, digest: m.digest || null }));
   }
 
@@ -393,6 +410,24 @@ class ModelScout {
   }
 
   /**
+   * Apply a parameter-size ceiling (in billions) to an already-sorted model
+   * list (#260). A model whose sensed paramSize exceeds the ceiling is excluded
+   * — UNLESS excluding would empty the list, in which case the ungated list is
+   * returned (never-go-dark: a box of only large models still needs a
+   * classification candidate). A null paramSize PASSES the gate: unknown size
+   * is not evidence of largeness (sense-don't-predict), mirroring _contextGated.
+   * No ceiling (falsy) is an identity pass-through.
+   * @param {Array} sorted - models pre-sorted by the caller's prior
+   * @param {number} [ceiling] - billions of parameters
+   * @returns {Array}
+   */
+  _paramCeilinged(sorted, ceiling) {
+    if (!ceiling) return sorted;
+    const gated = sorted.filter(m => m.paramSize === null || m.paramSize <= ceiling);
+    return gated.length > 0 ? gated : sorted;
+  }
+
+  /**
    * Extract model family from Ollama model metadata.
    * @param {Object} model - Raw Ollama model object
    * @returns {string}
@@ -432,4 +467,4 @@ class ModelScout {
   }
 }
 
-module.exports = { ModelScout, PRIOR_STRENGTH, CONTEXT_FLOOR, JUDGE_CONTEXT_FLOOR };
+module.exports = { ModelScout, PRIOR_STRENGTH, CONTEXT_FLOOR, JUDGE_CONTEXT_FLOOR, CLASSIFICATION_PARAM_CEILING };
