@@ -215,11 +215,12 @@ asyncTest('TC-SI-025: Strict mode blocks REVIEW content', async () => {
 // beforeExecute — APPROVAL_REQUIRED cases
 // -----------------------------------------------------------------------------
 
-asyncTest('TC-SI-030: send_email requires approval', async () => {
+// send_email was never a registered tool (#217). The interceptor's approval flow is
+// the thing under test; deck_delete_card is a real gated tool that exercises it.
+asyncTest('TC-SI-030: deck_delete_card requires approval', async () => {
   const si = createInterceptor();
-  const result = await si.beforeExecute('send_email', {
-    to: 'boss@company.com',
-    subject: 'Report',
+  const result = await si.beforeExecute('deck_delete_card', {
+    card: 'Q3 Planning',
   }, defaultCtx);
 
   assert.strictEqual(result.proceed, false);
@@ -233,14 +234,14 @@ asyncTest('TC-SI-031: Approved operation proceeds on re-check', async () => {
   const ctx = { roomToken: 'room1', userId: 'alice' };
 
   // First call — needs approval
-  const result1 = await si.beforeExecute('send_email', { to: 'boss@company.com' }, ctx);
+  const result1 = await si.beforeExecute('deck_delete_card', { card: 'Q3 Planning' }, ctx);
   assert.strictEqual(result1.decision, 'APPROVAL_REQUIRED');
 
   // Grant approval
-  si.handleApproval(ctx, 'send_email', { to: 'boss@company.com' }, true);
+  si.handleApproval(ctx, 'deck_delete_card', { card: 'Q3 Planning' }, true);
 
   // Second call — should proceed
-  const result2 = await si.beforeExecute('send_email', { to: 'boss@company.com' }, ctx);
+  const result2 = await si.beforeExecute('deck_delete_card', { card: 'Q3 Planning' }, ctx);
   assert.strictEqual(result2.proceed, true);
   assert.strictEqual(result2.decision, 'ALLOW');
 });

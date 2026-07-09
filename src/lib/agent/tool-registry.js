@@ -337,6 +337,17 @@ class ToolRegistry {
    *   (a cross-cutting helper such as web_search), not a domain of its own.
    * @param {Object} [toolDef.metadata]
    */
+  /**
+   * `writes: true` declares that a tool changes something outside this process —
+   * it deletes, shares, sends, or overwrites. It is the tool's own statement about
+   * itself, independent of any gating policy, and that independence is the point:
+   * the write-class pin cross-checks these declarations against
+   * GuardrailEnforcer.getWriteClassTools(), so a destructive tool registered
+   * without a policy entry fails the suite instead of shipping ungated.
+   *
+   * @param {Object} toolDef
+   * @param {boolean} [toolDef.writes] - true when the tool mutates external state
+   */
   register(toolDef) {
     if (!toolDef.name || !toolDef.handler) {
       throw new Error('Tool definition requires name and handler');
@@ -1041,6 +1052,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_delete_board',
+      writes: true,
       domains: ['deck'],
       description: 'Permanently delete a Deck board and all its stacks and cards. This is irreversible and requires confirmation.',
       parameters: {
@@ -1156,6 +1168,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_delete_stack',
+      writes: true,
       domains: ['deck'],
       description: 'Permanently delete a stack (column) and all its cards from a Deck board. This is irreversible and requires confirmation.',
       parameters: {
@@ -1293,6 +1306,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_delete_card',
+      writes: true,
       domains: ['deck'],
       description: 'Delete a card from the board. This is destructive and requires confirmation. Card identified by title (partial match) or #ID. Defaults to the task board; pass `board` to delete a card on a shared board.',
       parameters: {
@@ -1627,6 +1641,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_share_board',
+      writes: true,
       domains: ['deck'],
       description: 'Share a board you own with another user or group. Requires confirmation.',
       parameters: {
@@ -1855,6 +1870,7 @@ class ToolRegistry {
 
     this.register({
       name: 'deck_setup_workflow',
+      writes: true,
       domains: ['deck'],
       description: 'Create a new board with a set of named stacks (columns), optionally seed it with cards in the first stack, and optionally share it with a user. Use when asked to set up a workflow or project board with a defined column structure. Requires confirmation.',
       parameters: {
@@ -2031,6 +2047,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_create_event',
+      writes: true,
       domains: ['calendar'],
       description: 'Create a calendar event. Optionally checks availability first (set check_availability: true). Supports attendees with automatic invitation emails. Use duration_minutes OR end to set the event length (default: 60 minutes).',
       parameters: {
@@ -2167,6 +2184,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_update_event',
+      writes: true,
       domains: ['calendar'],
       description: 'Update an existing calendar event. Use to reschedule, rename, change duration, add attendees, or modify any event property.',
       parameters: {
@@ -2275,6 +2293,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_delete_event',
+      writes: true,
       domains: ['calendar'],
       description: 'Delete a calendar event.',
       parameters: {
@@ -2355,6 +2374,7 @@ class ToolRegistry {
 
     this.register({
       name: 'calendar_cancel_meeting',
+      writes: true,
       domains: ['calendar'],
       description: 'Cancel a scheduled meeting and send cancellation notices to all attendees.',
       parameters: {
@@ -2599,6 +2619,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_write',
+      writes: true,
       domains: ['file'],
       description: 'Write content to a file in your Nextcloud workspace. Creates the file if it doesn\'t exist, overwrites if it does.',
       parameters: {
@@ -2686,6 +2707,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_move',
+      writes: true,
       domains: ['file'],
       description: 'Move or rename a file within Nextcloud.',
       parameters: {
@@ -2732,6 +2754,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_delete',
+      writes: true,
       domains: ['file'],
       description: 'Delete a file or folder. Requires confirmation.',
       parameters: {
@@ -2776,6 +2799,7 @@ class ToolRegistry {
 
     this.register({
       name: 'file_share',
+      writes: true,
       domains: ['file'],
       description: 'Share a file or folder with a user. Uses NC\'s native sharing. Requires confirmation.',
       parameters: {
@@ -3048,6 +3072,7 @@ class ToolRegistry {
 
     this.register({
       name: 'wiki_write',
+      writes: true,
       domains: ['wiki'],
       description: 'Create or update a page in the Moltagent Knowledge wiki. Content can include YAML frontmatter between --- delimiters. To ADD to an existing page rather than replace it, call wiki_read first, then wiki_write with the merged content.',
       parameters: {
@@ -3361,6 +3386,7 @@ class ToolRegistry {
 
     this.register({
       name: 'wiki_delete',
+      writes: true,
       domains: ['wiki'],
       description: 'Delete (trash) a page from the Moltagent Knowledge wiki. This action cannot be undone.',
       parameters: {
@@ -3993,6 +4019,7 @@ class ToolRegistry {
     if (emailHandler) {
       this.register({
         name: 'mail_send',
+        writes: true,
         domains: ['email'],
         description: 'Send an email. REQUIRES human approval before execution. Provide recipient, subject, and body. The email will be sent via SMTP from the configured Moltagent email account.',
         parameters: {

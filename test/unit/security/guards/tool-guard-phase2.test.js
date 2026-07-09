@@ -39,15 +39,17 @@ test('mail_send is allowed (HITL handled by SOUL.md instruction, not guard)', ()
   assert.strictEqual(result.level, 'ALLOWED', 'Should be ALLOWED level');
 });
 
-test('notification_send requires approval', () => {
+// notification_send named a tool nobody registered (#217). The gate it was meant to
+// demonstrate is exercised on a real one: deck_share_board pushes data to another user.
+test('deck_share_board requires approval', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('notification_send');
+  const result = guard.evaluate('deck_share_board');
 
-  assert.strictEqual(result.allowed, false, 'notification_send should require approval');
+  assert.strictEqual(result.allowed, false, 'deck_share_board should require approval');
   assert.strictEqual(result.level, 'APPROVAL_REQUIRED', 'Should be APPROVAL_REQUIRED level');
   assert.strictEqual(result.requiresAction, 'await_approval', 'Should require await_approval action');
   assert.ok(result.approvalPrompt, 'Should provide approval prompt');
-  assert.ok(result.approvalPrompt.includes('notification_send'), 'Prompt should mention operation name');
+  assert.ok(result.approvalPrompt.includes('deck_share_board'), 'Prompt should mention operation name');
 });
 
 test('web_search is allowed (not in restricted lists)', () => {
@@ -89,12 +91,12 @@ test('wiki_search is allowed (not in restricted lists)', () => {
 });
 
 // Additional tests to verify the guard is working correctly
-test('Approval prompt includes operation name for notification_send', () => {
+test('Approval prompt includes operation name for deck_share_board', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('notification_send', { target: 'user123' });
+  const result = guard.evaluate('deck_share_board', { target: 'user123' });
 
   assert.ok(result.approvalPrompt, 'Should have approval prompt');
-  assert.ok(result.approvalPrompt.includes('notification_send'), 'Prompt should mention operation');
+  assert.ok(result.approvalPrompt.includes('deck_share_board'), 'Prompt should mention operation');
   assert.ok(result.approvalPrompt.includes('user123'), 'Prompt should mention target when provided');
 });
 
