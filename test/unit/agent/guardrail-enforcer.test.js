@@ -7,7 +7,8 @@
 const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 
-const { GuardrailEnforcer } = require('../../../src/lib/agent/guardrail-enforcer');
+const { GuardrailEnforcer, TOOL_APPROVAL_LABELS } = require('../../../src/lib/agent/guardrail-enforcer');
+const { PendingActionStore } = require('../../../src/lib/pending-action-store');
 
 // ============================================================
 // Helpers
@@ -47,6 +48,23 @@ function createMockOllama(response) {
  * and classifierResponse for all other calls (_classifyReply via ConfirmationClassifier).
  * Use when a test exercises both the semantic guardrail match AND the HITL polling loop.
  */
+/**
+ * Mock for the same-turn authorization downgrade (_userRequestedAction).
+ * Answers the downgrade prompt with `verdict` (or throws it, if an Error) and
+ * leaves every other call — notably the HITL reply classifier — as UNKNOWN so
+ * the ceremony's poll behaves deterministically.
+ */
+function createMockDowngradeOllama(verdict, otherResponse = 'UNKNOWN') {
+  return {
+    chat: async (params) => {
+      const isDowngrade = (params.system || '').includes('whether a person already asked');
+      if (!isDowngrade) return { content: otherResponse };
+      if (verdict instanceof Error) throw verdict;
+      return { content: verdict };
+    }
+  };
+}
+
 function createDualMockOllama(semanticResponse, classifierResponse) {
   let callCount = 0;
   let lastCall = null;
@@ -93,6 +111,7 @@ function makeEnforcer(overrides = {}) {
     semanticTimeoutMs: overrides.semanticTimeoutMs || 5000,
     confirmationTimeoutMs: overrides.confirmationTimeoutMs || 500,
     pollIntervalMs: overrides.pollIntervalMs || 50,
+    pendingActionStore: overrides.pendingActionStore || undefined,
     logger: silentLogger
   });
 }
@@ -1061,17 +1080,20 @@ async function runTests() {
     assert.ok(result.reason.includes('no interactive session'));
   });
 
-  await asyncTest('TC-APPROVE-002: checkApproval allows MEDIUM tool when recent confirmation found', async () => {
+  await asyncTest('TC-APPROVE-002: checkApproval downgrades MEDIUM tool when the user asked for it', async () => {
+    const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
-      talkSendQueue: createMockTalkQueue(),
+      ollamaProvider: createMockDowngradeOllama('YES'),
+      talkSendQueue: queue,
       conversationContext: createMockConversationContext([])
     });
 
     const history = [
-      { role: 'user', content: 'Please delete the card' }
+      { role: 'user', content: 'Please delete the card Q3 Planning' }
     ];
-    const result = await enforcer.checkApproval('deck_delete_card', { cardId: 42 }, 'room1', history);
+    const result = await enforcer.checkApproval('deck_delete_card', { card: 'Q3 Planning' }, 'room1', history);
     assert.strictEqual(result.allowed, true);
+    assert.strictEqual(queue._getSent().length, 0, 'no ceremony when the request was the authorization');
   });
 
   await asyncTest('TC-APPROVE-003: checkApproval asks HITL for MEDIUM tool when no confirmation', async () => {
@@ -1182,56 +1204,244 @@ async function runTests() {
     assert.strictEqual(enforcer._classifySeverity('delete_folder'), 'MEDIUM');
   });
 
-  // --- _checkRecentConfirmation ---
+  // --- _userRequestedAction: the same-turn downgrade (#263) ---
+  //
+  // The regex table these replace was English-only: "delete the card X" skipped
+  // the ceremony, "Lösch die Karte X" did not. The decision is now the model's.
 
-  test('TC-APPROVE-010: _checkRecentConfirmation matches "delete the card"', () => {
-    const enforcer = makeEnforcer({});
-    const history = [
-      { role: 'user', content: 'please delete the card' }
+  await asyncTest('TC-APPROVE-010: downgrade decision is identical in DE, EN and PT', async () => {
+    const messages = [
+      'Delete the card Q3 Planning',
+      'Lösch die Karte Q3 Planning',
+      'Apaga o cartão Q3 Planning'
     ];
-    assert.strictEqual(
-      enforcer._checkRecentConfirmation(history, 'deck_delete_card', {}),
-      true
-    );
+
+    for (const content of messages) {
+      const queue = createMockTalkQueue();
+      const enforcer = makeEnforcer({
+        ollamaProvider: createMockDowngradeOllama('The message names the card and the action.\nYES'),
+        talkSendQueue: queue,
+        conversationContext: createMockConversationContext([])
+      });
+      const result = await enforcer.checkApproval(
+        'deck_delete_card', { card: 'Q3 Planning' }, 'room1', [{ role: 'user', content }]
+      );
+      assert.strictEqual(result.allowed, true, `downgrade failed for: ${content}`);
+      assert.strictEqual(queue._getSent().length, 0, `ceremony ran for: ${content}`);
+    }
   });
 
-  test('TC-APPROVE-011: _checkRecentConfirmation does not match unrelated text', () => {
-    const enforcer = makeEnforcer({});
-    const history = [
-      { role: 'user', content: 'what is the weather today?' }
+  await asyncTest('TC-APPROVE-011: downgrade declines when the message did not ask for the action', async () => {
+    const queue = createMockTalkQueue();
+    const enforcer = makeEnforcer({
+      ollamaProvider: createMockDowngradeOllama('Only a question about the board.\nNO'),
+      talkSendQueue: queue,
+      conversationContext: createMockConversationContext([]),
+      confirmationTimeoutMs: 150,
+      pollIntervalMs: 50
+    });
+
+    const result = await enforcer.checkApproval(
+      'deck_delete_card', { card: 'Q3 Planning' }, 'room1',
+      [{ role: 'user', content: 'Welche Karten sind auf dem Board?' }]
+    );
+    assert.strictEqual(result.allowed, false);
+    assert.strictEqual(queue._getSent().length, 1, 'ceremony must run');
+  });
+
+  await asyncTest('TC-APPROVE-012: downgrade fails toward the ceremony', async () => {
+    // Three ways the check can fail to produce a clear YES. All must ask.
+    const providers = [
+      ['classifier error', createMockDowngradeOllama(new Error('ollama down'))],
+      ['uncertain verdict', createMockDowngradeOllama('I am not sure about this one.')],
+      ['no provider at all', null]
     ];
-    assert.strictEqual(
-      enforcer._checkRecentConfirmation(history, 'deck_delete_card', {}),
-      false
+
+    for (const [why, ollamaProvider] of providers) {
+      const queue = createMockTalkQueue();
+      const enforcer = makeEnforcer({
+        ollamaProvider,
+        talkSendQueue: queue,
+        conversationContext: createMockConversationContext([]),
+        confirmationTimeoutMs: 150,
+        pollIntervalMs: 50
+      });
+      const result = await enforcer.checkApproval(
+        'deck_delete_card', { card: 'Q3 Planning' }, 'room1',
+        [{ role: 'user', content: 'Lösch die Karte Q3 Planning' }]
+      );
+      assert.strictEqual(result.allowed, false, `${why}: must not allow`);
+      assert.strictEqual(queue._getSent().length, 1, `${why}: ceremony must run`);
+    }
+  });
+
+  await asyncTest('TC-APPROVE-012b: HIGH-severity tools never reach the downgrade', async () => {
+    let downgradeCalls = 0;
+    const enforcer = makeEnforcer({
+      ollamaProvider: {
+        chat: async (params) => {
+          if ((params.system || '').includes('whether a person already asked')) downgradeCalls++;
+          return { content: 'UNKNOWN' };
+        }
+      },
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([]),
+      confirmationTimeoutMs: 150,
+      pollIntervalMs: 50
+    });
+
+    await enforcer.checkApproval('send_email', { to: 'a@b.com' }, 'room1',
+      [{ role: 'user', content: 'send the email now' }]);
+    assert.strictEqual(downgradeCalls, 0);
+  });
+
+  // --- _buildToolApprovalMessage: renders the args the tool registered (#107) ---
+
+  test('TC-APPROVE-013: approval message renders deck_delete_card\'s real schema', () => {
+    const enforcer = makeEnforcer({});
+    const msg = enforcer._buildToolApprovalMessage(
+      'Delete Deck card', 'deck_delete_card', { card: 'Buy groceries', board: 'Personal' }
     );
-  });
-
-  // --- _getConfirmationPatterns ---
-
-  test('TC-APPROVE-012: _getConfirmationPatterns returns empty for HIGH tools', () => {
-    const enforcer = makeEnforcer({});
-    assert.strictEqual(enforcer._getConfirmationPatterns('send_email', {}).length, 0);
-    assert.strictEqual(enforcer._getConfirmationPatterns('execute_shell', {}).length, 0);
-    assert.strictEqual(enforcer._getConfirmationPatterns('webhook_call', {}).length, 0);
-  });
-
-  // --- _buildToolApprovalMessage ---
-
-  test('TC-APPROVE-013: _buildToolApprovalMessage shows card title for deck_delete_card', () => {
-    const enforcer = makeEnforcer({});
-    const msg = enforcer._buildToolApprovalMessage('Delete Deck card', 'deck_delete_card', { title: 'Buy groceries' });
-    assert.ok(msg.includes('Buy groceries'));
+    assert.ok(msg.includes('Card: **Buy groceries**'));
+    assert.ok(msg.includes('Board: **Personal**'));
+    assert.ok(!msg.includes('#?'), 'must never render a placeholder identifier');
     assert.ok(msg.includes('cannot be undone'));
     assert.ok(msg.includes('requires approval'));
     assert.ok(!msg.includes('deck_delete_card'));
   });
 
-  test('TC-APPROVE-014: _buildToolApprovalMessage shows path for file_delete', () => {
+  test('TC-APPROVE-014: approval message shows path for file_delete', () => {
     const enforcer = makeEnforcer({});
     const msg = enforcer._buildToolApprovalMessage('Delete file', 'file_delete', { path: '/docs/secret.txt' });
     assert.ok(msg.includes('/docs/secret.txt'));
     assert.ok(msg.includes('cannot be undone'));
     assert.ok(!msg.includes('file_delete'));
+  });
+
+  test('TC-APPROVE-015: absent optional args are omitted, not rendered as "?"', () => {
+    const enforcer = makeEnforcer({});
+    const msg = enforcer._buildToolApprovalMessage('Delete Deck card', 'deck_delete_card', { card: 'Solo' });
+    assert.ok(msg.includes('Card: **Solo**'));
+    assert.ok(!msg.includes('Board:'));
+    assert.ok(!msg.includes('?'));
+  });
+
+  test('TC-APPROVE-016: unmapped tools fall back to their own arg names', () => {
+    const enforcer = makeEnforcer({});
+    const msg = enforcer._buildToolApprovalMessage('Run command', 'run_command', { command: 'ls -la' });
+    assert.ok(msg.includes('command: **ls -la**'));
+    assert.ok(!msg.includes('cannot be undone'), 'run_command is not in IRREVERSIBLE_TOOLS');
+  });
+
+  test('TC-APPROVE-017: every approval-labelled tool renders without a placeholder', () => {
+    const enforcer = makeEnforcer({});
+    const args = {
+      deck_delete_card: { card: 'Card A', board: 'Board B' },
+      file_delete: { path: '/a/b.txt' },
+      wiki_delete: { page_title: 'People/Ada' },
+      deck_share_board: { board: 'Board B', participant: 'ada' },
+      file_share: { path: '/a/b.txt', share_with: 'ada' },
+      calendar_cancel_meeting: { calendar_id: 'personal', event_uid: 'uid-1' },
+    };
+    for (const [tool, toolArgs] of Object.entries(args)) {
+      const msg = enforcer._buildToolApprovalMessage(TOOL_APPROVAL_LABELS[tool], tool, toolArgs);
+      assert.ok(!msg.includes('**#?**'), `${tool} rendered a placeholder`);
+      assert.ok(!msg.includes('?**'), `${tool} rendered a placeholder`);
+      const identifier = Object.values(toolArgs)[0];
+      assert.ok(msg.includes(identifier), `${tool} omitted its identifier ${identifier}`);
+    }
+  });
+
+  // ── PendingAction record (#104) ────────────────────────────────
+
+  await asyncTest('TC-RECORD-001: a timed-out offer is born as a record', async () => {
+    const enforcer = makeEnforcer({
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([]),
+      confirmationTimeoutMs: 150,
+      pollIntervalMs: 50
+    });
+
+    assert.strictEqual(enforcer.getPendingAction('room1'), null);
+
+    const result = await enforcer.checkApproval('deck_delete_card', { card: 'Q3 Planning' }, 'room1', []);
+    assert.strictEqual(result.allowed, false);
+
+    const record = enforcer.getPendingAction('room1');
+    assert.ok(record, 'poll timeout must persist the offer');
+    assert.strictEqual(record.tool, 'deck_delete_card');
+    assert.deepStrictEqual(record.args, { card: 'Q3 Planning' });
+    assert.strictEqual(record.label, 'Delete Deck card');
+  });
+
+  await asyncTest('TC-RECORD-002: a denied offer leaves no record', async () => {
+    const nowSec = Math.floor(Date.now() / 1000) + 1;
+    const enforcer = makeEnforcer({
+      ollamaProvider: createMockOllama('DENY'),
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([
+        { role: 'user', content: 'nein', timestamp: nowSec }
+      ]),
+      confirmationTimeoutMs: 500,
+      pollIntervalMs: 50
+    });
+
+    const result = await enforcer.checkApproval('deck_delete_card', { card: 'X' }, 'room1', []);
+    assert.strictEqual(result.allowed, false);
+    assert.strictEqual(enforcer.getPendingAction('room1'), null, 'the poll answered; nothing to remember');
+  });
+
+  test('TC-RECORD-003: records are room-scoped', () => {
+    const enforcer = makeEnforcer({});
+    enforcer._rememberPendingAction('roomA', 'deck_delete_card', { card: 'A' }, 'Delete Deck card');
+    enforcer._rememberPendingAction('roomB', 'file_delete', { path: '/b' }, 'Delete file');
+
+    assert.strictEqual(enforcer.getPendingAction('roomA').tool, 'deck_delete_card');
+    assert.strictEqual(enforcer.getPendingAction('roomB').tool, 'file_delete');
+    assert.strictEqual(enforcer.getPendingAction('roomC'), null);
+  });
+
+  test('TC-RECORD-004: a newer offer supersedes the older one in the same room', () => {
+    const enforcer = makeEnforcer({});
+    enforcer._rememberPendingAction('room1', 'deck_delete_card', { card: 'Old' }, 'Delete Deck card');
+    enforcer._rememberPendingAction('room1', 'deck_delete_card', { card: 'New' }, 'Delete Deck card');
+
+    assert.strictEqual(enforcer.pendingActions.size('offered-work:room1'), 1);
+    assert.strictEqual(enforcer.getPendingAction('room1').args.card, 'New');
+  });
+
+  test('TC-RECORD-005: consumption is single-shot', () => {
+    const enforcer = makeEnforcer({});
+    enforcer._rememberPendingAction('room1', 'deck_delete_card', { card: 'A' }, 'Delete Deck card');
+
+    const first = enforcer.consumePendingAction('room1');
+    assert.strictEqual(first.args.card, 'A');
+    assert.strictEqual(enforcer.consumePendingAction('room1'), null, 'a spent record cannot be re-read');
+    assert.strictEqual(enforcer.getPendingAction('room1'), null);
+  });
+
+  test('TC-RECORD-006: dropPendingAction forgets the offer', () => {
+    const enforcer = makeEnforcer({});
+    enforcer._rememberPendingAction('room1', 'deck_delete_card', { card: 'A' }, 'Delete Deck card');
+    enforcer.dropPendingAction('room1');
+    assert.strictEqual(enforcer.getPendingAction('room1'), null);
+  });
+
+  test('TC-RECORD-007: an expired record is invisible', () => {
+    const store = new PendingActionStore({ defaultTTLMs: 1, cleanupIntervalMs: 60000 });
+    const enforcer = makeEnforcer({ pendingActionStore: store });
+    // The store stamps expiresAt from its own TTL; write one already in the past.
+    store.set('offered-work:room1', { tool: 'deck_delete_card', args: {}, label: 'x' }, { ttlMs: -1 });
+
+    assert.strictEqual(enforcer.getPendingAction('room1'), null);
+    store.stop();
+  });
+
+  test('TC-RECORD-008: no roomToken, no record', () => {
+    const enforcer = makeEnforcer({});
+    enforcer._rememberPendingAction(null, 'deck_delete_card', { card: 'A' }, 'Delete Deck card');
+    assert.strictEqual(enforcer.pendingActions.size(), 0);
+    assert.strictEqual(enforcer.getPendingAction(null), null);
   });
 
   // ── isPendingConfirmation (HITL duplicate prevention) ──────────
