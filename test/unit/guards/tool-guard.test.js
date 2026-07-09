@@ -22,6 +22,7 @@
 const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 const ToolGuard = require('../../../src/security/guards/tool-guard');
+const { REQUIRES_APPROVAL } = require('../../../src/security/guards/tool-guard');
 
 console.log('\n=== ToolGuard Tests ===\n');
 
@@ -191,112 +192,41 @@ test('TC-TG-023: FORBIDDEN - access_other_session', () => {
 // APPROVAL_REQUIRED Tests (blocked with prompt)
 // -----------------------------------------------------------------------------
 
-test('TC-TG-030: APPROVAL_REQUIRED - send_email', () => {
+// Every gated name must be a tool that exists (#217 cleanup). Fourteen tests here
+// asserted that send_email, execute_shell, delete_folder … require approval —
+// none of them were ever registered tools, so the assertions proved nothing about
+// the running system. The policy list itself is now the table.
+
+test('TC-TG-030: every REQUIRES_APPROVAL tool evaluates to APPROVAL_REQUIRED', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('send_email');
-  assert.strictEqual(result.allowed, false);
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
-  assert.strictEqual(result.requiresAction, 'await_approval');
-  assert.ok(result.approvalPrompt !== null);
-  assert.ok(result.approvalPrompt.includes('send_email'));
-  assert.ok(result.reason.includes('approval'));
+  for (const tool of REQUIRES_APPROVAL) {
+    const result = guard.evaluate(tool);
+    assert.strictEqual(result.allowed, false, `${tool} should be blocked`);
+    assert.strictEqual(result.level, 'APPROVAL_REQUIRED', `${tool} level`);
+    assert.strictEqual(result.requiresAction, 'await_approval', `${tool} action`);
+    assert.ok(result.approvalPrompt, `${tool} prompt`);
+    assert.ok(result.approvalPrompt.includes(tool), `${tool} named in prompt`);
+    assert.ok(result.reason.includes('approval'), `${tool} reason`);
+  }
 });
 
-test('TC-TG-031: APPROVAL_REQUIRED - delete_file', () => {
+test('TC-TG-031: an operation absent from every list is allowed', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('delete_file');
-  assert.strictEqual(result.allowed, false);
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
-  assert.strictEqual(result.requiresAction, 'await_approval');
-  assert.ok(result.approvalPrompt !== null);
-});
-
-test('TC-TG-032: APPROVAL_REQUIRED - execute_shell', () => {
-  const guard = new ToolGuard();
+  // execute_shell used to sit in REQUIRES_APPROVAL guarding a tool nobody wrote.
+  // With the entry gone it evaluates as an unknown operation. That is the point of
+  // the write-class pin: if someone ever registers it, the pin fails the build
+  // until it is gated. FORBIDDEN, not REQUIRES_APPROVAL, is where never-build-this
+  // belongs — and the FORBIDDEN entries below still hold.
   const result = guard.evaluate('execute_shell');
-  assert.strictEqual(result.allowed, false);
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
-  assert.strictEqual(result.requiresAction, 'await_approval');
-  assert.ok(result.approvalPrompt !== null);
+  assert.strictEqual(result.level, 'ALLOWED');
 });
 
-test('TC-TG-033: APPROVAL_REQUIRED - webhook_call', () => {
-  const guard = new ToolGuard();
-  const result = guard.evaluate('webhook_call');
+test('TC-TG-032: additionalApproval extends the gate at construction', () => {
+  const guard = new ToolGuard({ additionalApproval: ['custom_op'] });
+  const result = guard.evaluate('custom_op');
   assert.strictEqual(result.allowed, false);
   assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
-  assert.strictEqual(result.requiresAction, 'await_approval');
-  assert.ok(result.approvalPrompt !== null);
-});
-
-test('TC-TG-034: APPROVAL_REQUIRED - send_message_external', () => {
-  const guard = new ToolGuard();
-  const result = guard.evaluate('send_message_external');
-  assert.strictEqual(result.allowed, false);
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
-});
-
-test('TC-TG-035: APPROVAL_REQUIRED - delete_files', () => {
-  const guard = new ToolGuard();
-  const result = guard.evaluate('delete_files');
-  assert.strictEqual(result.allowed, false);
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
-});
-
-test('TC-TG-036: APPROVAL_REQUIRED - delete_folder', () => {
-  const guard = new ToolGuard();
-  const result = guard.evaluate('delete_folder');
-  assert.strictEqual(result.allowed, false);
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
-});
-
-test('TC-TG-037: APPROVAL_REQUIRED - modify_calendar', () => {
-  const guard = new ToolGuard();
-  const result = guard.evaluate('modify_calendar');
-  assert.strictEqual(result.allowed, false);
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
-});
-
-test('TC-TG-038: APPROVAL_REQUIRED - delete_calendar_event', () => {
-  const guard = new ToolGuard();
-  const result = guard.evaluate('delete_calendar_event');
-  assert.strictEqual(result.allowed, false);
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
-});
-
-test('TC-TG-038b: APPROVAL_REQUIRED - calendar_delete_event (executor name)', () => {
-  const guard = new ToolGuard();
-  const result = guard.evaluate('calendar_delete_event');
-  assert.strictEqual(result.allowed, false);
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
-});
-
-test('TC-TG-039: APPROVAL_REQUIRED - modify_contacts', () => {
-  const guard = new ToolGuard();
-  const result = guard.evaluate('modify_contacts');
-  assert.strictEqual(result.allowed, false);
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
-});
-
-test('TC-TG-040: APPROVAL_REQUIRED - run_command', () => {
-  const guard = new ToolGuard();
-  const result = guard.evaluate('run_command');
-  assert.strictEqual(result.allowed, false);
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
-});
-
-test('TC-TG-041: APPROVAL_REQUIRED - access_new_credential', () => {
-  const guard = new ToolGuard();
-  const result = guard.evaluate('access_new_credential');
-  assert.strictEqual(result.allowed, false);
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
-});
-
-test('TC-TG-042: APPROVAL_REQUIRED - external_api_call', () => {
-  const guard = new ToolGuard();
-  const result = guard.evaluate('external_api_call');
-  assert.strictEqual(result.allowed, false);
-  assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
+  assert.ok(result.approvalPrompt.includes('custom_op'));
 });
 
 test('TC-TG-043: APPROVAL_REQUIRED - deck_delete_card', () => {
@@ -443,39 +373,39 @@ test('TC-TG-067: ALLOWED - random_operation', () => {
 // Fuzzy Matching Tests
 // -----------------------------------------------------------------------------
 
-test('TC-TG-070: Fuzzy match - Send Email (title case)', () => {
+test('TC-TG-070: Fuzzy match - Deck Delete Card (title case)', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('Send Email');
+  const result = guard.evaluate('Deck Delete Card');
   assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
   assert.strictEqual(result.allowed, false);
 });
 
-test('TC-TG-071: Fuzzy match - send-email (hyphenated)', () => {
+test('TC-TG-071: Fuzzy match - deck-delete-card (hyphenated)', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('send-email');
+  const result = guard.evaluate('deck-delete-card');
   assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
   assert.strictEqual(result.allowed, false);
 });
 
-test('TC-TG-072: Fuzzy match - SEND_EMAIL (uppercase)', () => {
+test('TC-TG-072: Fuzzy match - WIKI_DELETE (uppercase)', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('SEND_EMAIL');
+  const result = guard.evaluate('WIKI_DELETE');
   assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
   assert.strictEqual(result.allowed, false);
 });
 
-test('TC-TG-073: Fuzzy match - send email (space separated)', () => {
+test('TC-TG-073: Fuzzy match - file delete (space separated)', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('send email');
+  const result = guard.evaluate('file delete');
   assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
   assert.strictEqual(result.allowed, false);
 });
 
-test('TC-TG-074: Fuzzy match - Delete File (various cases)', () => {
+test('TC-TG-074: Fuzzy match - File Delete (various cases)', () => {
   const guard = new ToolGuard();
-  assert.strictEqual(guard.evaluate('Delete File').level, 'APPROVAL_REQUIRED');
-  assert.strictEqual(guard.evaluate('delete-file').level, 'APPROVAL_REQUIRED');
-  assert.strictEqual(guard.evaluate('DELETE_FILE').level, 'APPROVAL_REQUIRED');
+  assert.strictEqual(guard.evaluate('File Delete').level, 'APPROVAL_REQUIRED');
+  assert.strictEqual(guard.evaluate('file-delete').level, 'APPROVAL_REQUIRED');
+  assert.strictEqual(guard.evaluate('FILE_DELETE').level, 'APPROVAL_REQUIRED');
 });
 
 test('TC-TG-075: Fuzzy match - Process Credential', () => {
@@ -504,30 +434,30 @@ test('TC-TG-077: Fuzzy match - Mixed separators', () => {
 // -----------------------------------------------------------------------------
 
 test('TC-TG-080: Context target included in approval prompt', () => {
-  const guard = new ToolGuard();
-  const result = guard.evaluate('send_email', { target: 'boss@company.com' });
+  const guard = new ToolGuard({ additionalApproval: ['mail_send'] });
+  const result = guard.evaluate('mail_send', { target: 'boss@company.com' });
   assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
   assert.ok(result.approvalPrompt.includes('boss@company.com'));
   assert.ok(result.approvalPrompt.includes('target:'));
 });
 
-test('TC-TG-081: Context target included for delete_file', () => {
+test('TC-TG-081: Context target included for file_delete', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('delete_file', { target: '/important/file.txt' });
+  const result = guard.evaluate('file_delete', { target: '/important/file.txt' });
   assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
   assert.ok(result.approvalPrompt.includes('/important/file.txt'));
 });
 
 test('TC-TG-082: Context with no target does not include target', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('send_email', {});
+  const result = guard.evaluate('deck_delete_card', {});
   assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
   assert.ok(!result.approvalPrompt.includes('target:'));
 });
 
 test('TC-TG-083: Context with additional fields only uses target', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('webhook_call', {
+  const result = guard.evaluate('deck_share_board', {
     target: 'https://example.com/hook',
     user: 'alice',
     data: 'sensitive'
@@ -539,16 +469,16 @@ test('TC-TG-083: Context with additional fields only uses target', () => {
 
 test('TC-TG-084: Approval prompt contains action instructions', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('send_email');
+  const result = guard.evaluate('deck_delete_card');
   assert.ok(result.approvalPrompt.includes('approve'));
   assert.ok(result.approvalPrompt.includes('deny'));
 });
 
 test('TC-TG-085: Approval prompt format is consistent', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('execute_shell', { target: 'rm -rf /' });
+  const result = guard.evaluate('wiki_delete', { target: 'People/Ada' });
   assert.ok(result.approvalPrompt.startsWith('⚠️ Moltagent wants to:'));
-  assert.ok(result.approvalPrompt.includes('execute_shell'));
+  assert.ok(result.approvalPrompt.includes('wiki_delete'));
 });
 
 // -----------------------------------------------------------------------------
@@ -618,9 +548,9 @@ test('TC-TG-097: getAllLists forbidden includes expected operations', () => {
 test('TC-TG-098: getAllLists approval includes expected operations', () => {
   const guard = new ToolGuard();
   const lists = guard.getAllLists();
-  assert.ok(lists.approval.includes('send_email'));
-  assert.ok(lists.approval.includes('delete_file'));
-  assert.ok(lists.approval.includes('execute_shell'));
+  assert.ok(lists.approval.includes('deck_delete_card'));
+  assert.ok(lists.approval.includes('file_delete'));
+  assert.ok(lists.approval.includes('wiki_delete'));
 });
 
 test('TC-TG-099: getAllLists local includes expected operations', () => {
@@ -736,15 +666,15 @@ test('TC-TG-127: Very long operation name', () => {
 
 test('TC-TG-128: Context without target field works', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('send_email', { user: 'alice', other: 'data' });
+  const result = guard.evaluate('deck_delete_card', { user: 'alice', other: 'data' });
   assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
   assert.ok(!result.approvalPrompt.includes('target:'));
 });
 
 test('TC-TG-129: Null context handled same as empty context', () => {
   const guard = new ToolGuard();
-  const result1 = guard.evaluate('send_email', null);
-  const result2 = guard.evaluate('send_email', {});
+  const result1 = guard.evaluate('deck_delete_card', null);
+  const result2 = guard.evaluate('deck_delete_card', {});
   assert.strictEqual(result1.level, result2.level);
   assert.strictEqual(result1.allowed, result2.allowed);
 });
@@ -767,8 +697,8 @@ test('TC-TG-131: FORBIDDEN takes priority over custom LOCAL', () => {
 });
 
 test('TC-TG-132: APPROVAL takes priority over custom LOCAL', () => {
-  const guard = new ToolGuard({ additionalLocal: ['send_email'] });
-  const result = guard.evaluate('send_email');
+  const guard = new ToolGuard({ additionalLocal: ['deck_delete_card'] });
+  const result = guard.evaluate('deck_delete_card');
   // Should still be APPROVAL_REQUIRED
   assert.strictEqual(result.level, 'APPROVAL_REQUIRED');
 });
@@ -856,7 +786,7 @@ test('TC-TG-150: FORBIDDEN result has correct structure', () => {
 
 test('TC-TG-151: APPROVAL_REQUIRED result has correct structure', () => {
   const guard = new ToolGuard();
-  const result = guard.evaluate('send_email');
+  const result = guard.evaluate('deck_delete_card');
   assert.strictEqual(typeof result.allowed, 'boolean');
   assert.strictEqual(typeof result.reason, 'string');
   assert.strictEqual(typeof result.level, 'string');

@@ -2,6 +2,7 @@
 
 const { classifyConfirmationReply } = require('../shared/confirmation-classifier');
 const { PendingActionStore } = require('../pending-action-store');
+const { REQUIRES_APPROVAL } = require('../../security/guards/tool-guard');
 
 /**
  * GuardrailEnforcer - Runtime Guardrail Enforcement
@@ -86,36 +87,31 @@ const KEYWORD_FALLBACK_MAP = {
 const MATCH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 const SEMANTIC_TIMEOUT_MS = 30000; // 30s — classification needs headroom
 
-// Severity classification for ToolGuard APPROVAL_REQUIRED tools
+// Severity classification for ToolGuard APPROVAL_REQUIRED tools. Every name is a
+// registered tool: seven that no tool registered (send_email, execute_shell, …)
+// were removed — they classified nothing.
 const HIGH_SEVERITY_TOOLS = new Set([
-  'send_email', 'send_message_external', 'webhook_call',
-  'execute_shell', 'run_command',
-  'notification_send', 'external_api_call',
   'file_share', 'deck_share_board',
   'calendar_cancel_meeting',
 ]);
 
 const TOOL_APPROVAL_LABELS = {
-  deck_delete_card:     'Delete Deck card',
-  file_delete:          'Delete file',
-  delete_file:          'Delete file',
-  delete_files:         'Delete files',
-  delete_folder:        'Delete folder',
-  file_move:            'Move file',
-  modify_calendar:      'Modify calendar',
-  delete_calendar_event:'Delete calendar event',
-  modify_contacts:      'Modify contacts',
-  send_email:           'Send email',
-  webhook_call:         'Call webhook',
-  execute_shell:        'Execute shell command',
-  run_command:          'Run command',
-  notification_send:    'Send notification',
-  external_api_call:    'External API call',
-  file_share:           'Share file',
-  deck_share_board:     'Share board',
-  access_new_credential:'Access credential',
-  wiki_delete:          'Delete wiki page',
-  calendar_cancel_meeting:  'Cancel meeting',
+  deck_delete_card:        'Delete Deck card',
+  deck_delete_board:       'Delete Deck board',
+  deck_delete_stack:       'Delete Deck stack',
+  deck_setup_workflow:     'Set up Deck workflow',
+  deck_share_board:        'Share board',
+  file_delete:             'Delete file',
+  file_move:               'Move file',
+  file_write:              'Write file',
+  file_share:              'Share file',
+  calendar_create_event:   'Create calendar event',
+  calendar_update_event:   'Update calendar event',
+  calendar_delete_event:   'Delete calendar event',
+  calendar_cancel_meeting: 'Cancel meeting',
+  wiki_write:              'Write wiki page',
+  wiki_delete:             'Delete wiki page',
+  mail_send:               'Send email',
 };
 
 // #107: the approval prompt renders the arguments the tool actually registered.
@@ -147,6 +143,33 @@ const PENDING_ACTION_TYPE = 'offered-work';
 // Talk surface (U+1F510, "closed lock with key"). Any other component emitting
 // this codepoint in a chat response is staging a fake ceremony — see #81.
 const HITL_PROMPT_MARKER = '\u{1F510}';
+
+/**
+ * The write class: every tool that changes something outside this process —
+ * deletes, shares, sends, or writes. The one place in the codebase that answers
+ * "what is write-class?".
+ *
+ * Policy still has three writer homes (#217): ToolGuard.REQUIRES_APPROVAL for
+ * hardcoded gating, HIGH_SEVERITY_TOOLS for the severity split, and
+ * SENSITIVE_TOOLS for the Cockpit-governed GATE guardrails. Their union is the
+ * write class, and consolidating the homes is Wave 3 work with F1 retirement.
+ * Until then: two writers, ONE reader. A caller that needs the write class calls
+ * this. A caller that re-derives it from the underlying sets becomes the third
+ * derivation site, and the three drift apart the way they already have.
+ *
+ * SENSITIVE_TOOLS matters here and is easy to miss: mail_send, wiki_write and
+ * file_write live only there, so a union of the other two sets silently excludes
+ * email — the exact tool #81's hallucinated ceremony was staged around.
+ *
+ * @returns {Set<string>} tool names, deduplicated
+ */
+function getWriteClassTools() {
+  return new Set([
+    ...REQUIRES_APPROVAL,
+    ...HIGH_SEVERITY_TOOLS,
+    ...SENSITIVE_TOOLS,
+  ]);
+}
 
 class GuardrailEnforcer {
   /**
@@ -1218,4 +1241,11 @@ class GuardrailEnforcer {
   }
 }
 
-module.exports = { GuardrailEnforcer, HIGH_SEVERITY_TOOLS, TOOL_APPROVAL_LABELS, HITL_PROMPT_MARKER };
+module.exports = {
+  GuardrailEnforcer,
+  HIGH_SEVERITY_TOOLS,
+  SENSITIVE_TOOLS,
+  TOOL_APPROVAL_LABELS,
+  HITL_PROMPT_MARKER,
+  getWriteClassTools,
+};

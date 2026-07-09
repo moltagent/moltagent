@@ -1129,11 +1129,11 @@ async function runTests() {
       pollIntervalMs: 50
     });
 
-    // Even with "send the email" in history, HIGH tools always ask HITL
+    // Even with an explicit request in history, HIGH tools always ask HITL
     const history = [
-      { role: 'user', content: 'send the email now' }
+      { role: 'user', content: 'share the Personal board with ada' }
     ];
-    const result = await enforcer.checkApproval('send_email', { to: 'a@b.com' }, 'room1', history);
+    const result = await enforcer.checkApproval('deck_share_board', { board: 'Personal', participant: 'ada' }, 'room1', history);
     assert.strictEqual(result.allowed, true);
     // Verify it actually sent a HITL message (not short-circuited)
     assert.strictEqual(queue._getSent().length, 1);
@@ -1187,13 +1187,13 @@ async function runTests() {
 
   // --- _classifySeverity ---
 
+  // HIGH severity is the sharing/broadcasting class: an action whose effect leaves
+  // the box and reaches someone else. Every name is a registered tool (#217).
   test('TC-APPROVE-008: _classifySeverity returns HIGH for high-severity tools', () => {
     const enforcer = makeEnforcer({});
-    assert.strictEqual(enforcer._classifySeverity('send_email'), 'HIGH');
-    assert.strictEqual(enforcer._classifySeverity('execute_shell'), 'HIGH');
-    assert.strictEqual(enforcer._classifySeverity('webhook_call'), 'HIGH');
-    assert.strictEqual(enforcer._classifySeverity('external_api_call'), 'HIGH');
+    assert.strictEqual(enforcer._classifySeverity('file_share'), 'HIGH');
     assert.strictEqual(enforcer._classifySeverity('deck_share_board'), 'HIGH');
+    assert.strictEqual(enforcer._classifySeverity('calendar_cancel_meeting'), 'HIGH');
   });
 
   test('TC-APPROVE-009: _classifySeverity returns MEDIUM for deck_delete_card', () => {
@@ -1290,8 +1290,8 @@ async function runTests() {
       pollIntervalMs: 50
     });
 
-    await enforcer.checkApproval('send_email', { to: 'a@b.com' }, 'room1',
-      [{ role: 'user', content: 'send the email now' }]);
+    await enforcer.checkApproval('deck_share_board', { board: 'Personal', participant: 'ada' }, 'room1',
+      [{ role: 'user', content: 'share the board with ada' }]);
     assert.strictEqual(downgradeCalls, 0);
   });
 

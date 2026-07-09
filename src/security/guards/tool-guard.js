@@ -11,6 +11,14 @@
 'use strict';
 
 // Hardcoded operation categories (never modifiable at runtime)
+//
+// FORBIDDEN and REQUIRES_APPROVAL have opposite relationships to the registry.
+// FORBIDDEN names operations that must NEVER become tools — it is a denylist,
+// and every name in it is expected to be unregistered forever. REQUIRES_APPROVAL
+// names tools that DO exist and must be gated. A name in REQUIRES_APPROVAL that
+// no tool registers gates nothing; it is a map that lies about the territory.
+// The write-class pin (test/unit/security/write-class-policy.test.js) enforces
+// that asymmetry so the two lists cannot drift back together.
 const FORBIDDEN = [
   // Self-modification (prevents "soul-evil" attacks)
   'modify_system_prompt', 'modify_soul', 'replace_instructions',
@@ -27,29 +35,22 @@ const FORBIDDEN = [
   'access_other_session', 'export_credentials',
 ];
 
-// NOTE(#217): gating policy has two homes (this list + GuardrailEnforcer.SENSITIVE_TOOLS);
-// single-home consolidation tracked for F1 retirement.
+// NOTE(#217): gating policy still has two WRITER homes (this list +
+// GuardrailEnforcer's HIGH_SEVERITY_TOOLS / SENSITIVE_TOOLS). Full single-home
+// consolidation lands in Wave 3 with F1 retirement. In the meantime there is
+// exactly one READER: GuardrailEnforcer.getWriteClassTools(), which computes the
+// union. Nothing else may re-derive "what is write-class?" from these lists.
+//
+// Every name here must be a registered tool. Fourteen names that no tool ever
+// registered (send_email, execute_shell, delete_folder, modify_calendar, …) were
+// removed: they gated nothing and made this list unreadable as policy. Guarding a
+// tool that does not exist belongs in FORBIDDEN, not here.
 const REQUIRES_APPROVAL = [
-  // External communication
-  'send_email', 'send_message_external', 'webhook_call',
-
   // Destructive file operations
-  'delete_file', 'delete_files', 'delete_folder', 'file_delete',
+  'file_delete',
 
-  // Calendar/contact modification
-  'modify_calendar', 'delete_calendar_event', 'calendar_delete_event', 'modify_contacts',
-
-  // Calendar scheduling (sends external invitations/cancellations)
-  'calendar_cancel_meeting',
-
-  // System-level operations
-  'execute_shell', 'run_command',
-
-  // Credential access
-  'access_new_credential',
-
-  // External API calls
-  'external_api_call',
+  // Calendar modification (sends external invitations/cancellations)
+  'calendar_delete_event', 'calendar_cancel_meeting',
 
   // Destructive deck operations
   'deck_delete_card',
@@ -68,10 +69,8 @@ const REQUIRES_APPROVAL = [
   // Sensitive file operations (sharing data)
   'file_share',
 
-  // Phase 2: External communication
-  // mail_send — handled by SOUL.md instruction (LLM must confirm with user before calling)
-  // wiki_write — moved to GuardrailEnforcer SENSITIVE_TOOLS (Cockpit-governed, not hardcoded)
-  'notification_send',    // Pushing notifications — prevent spam
+  // mail_send — Cockpit-governed via GuardrailEnforcer SENSITIVE_TOOLS
+  // wiki_write, file_write, file_move — likewise
 ];
 
 const LOCAL_LLM_ONLY = [
@@ -271,3 +270,5 @@ class ToolGuard {
 
 module.exports = ToolGuard;
 module.exports.ToolGuard = ToolGuard;
+module.exports.FORBIDDEN = FORBIDDEN;
+module.exports.REQUIRES_APPROVAL = REQUIRES_APPROVAL;
