@@ -96,6 +96,13 @@ class GoldenSetProbe {
     // idle lane can drain the models run()'s early exit skipped without
     // re-deriving the list (#260). getUnmeasuredCandidates() defaults to it.
     this._lastCandidates = [];
+
+    // True only while run()'s measurement loop + final cache save are in flight.
+    // The idle lane (getUnmeasuredCandidates) no-ops while set, so a nighttime
+    // restart's fire-and-forget boot run() and the heartbeat idle pulse never
+    // interleave their cache writes (#260). run() knows the full skip set only
+    // once it has finished anyway, so waiting costs nothing.
+    this._running = false;
   }
 
   /**
@@ -131,6 +138,12 @@ class GoldenSetProbe {
       this.logger.warn('[GoldenSetProbe] Missing classifyFn or fixture; skipping probe.');
       return this.select(list);
     }
+
+    // Fence the idle lane out until this measurement pass has persisted its
+    // result (#260). Cleared before the single return below; the only awaited
+    // call past this point (_measureCandidate) catches its own errors, so the
+    // flag always clears.
+    this._running = true;
 
     const diskCache = this._loadCache();
     let cacheChanged = false;
@@ -212,6 +225,7 @@ class GoldenSetProbe {
         `models classify ${weak.join('/') || 'one or more languages'} poorly.`
       );
     }
+    this._running = false;
     return result;
   }
 
@@ -346,6 +360,9 @@ class GoldenSetProbe {
    * @returns {Array} unmeasured candidates, input order (smallest-first) preserved.
    */
   getUnmeasuredCandidates(candidates) {
+    // While the boot run() is still measuring, the skip set isn't final and its
+    // cache save is pending — don't let the idle lane act on a moving target (#260).
+    if (this._running) return [];
     const source = Array.isArray(candidates) ? candidates : this._lastCandidates;
     const list = (source || []).filter(c => c && typeof c.name === 'string');
     if (list.length === 0) return [];

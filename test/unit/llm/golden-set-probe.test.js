@@ -668,6 +668,41 @@ asyncTest('TC-EXIT-004: measureOne() does not cache an incomplete (cold-Ollama) 
   }
 });
 
+asyncTest('TC-EXIT-005: idle lane is fenced out while a boot run() is in flight', async () => {
+  const fixture = makeFixture();
+  const cacheDir = uniqueTmpDir();
+  try {
+    const candidates = [
+      { name: 'small', paramSize: 2, digest: 's1' },
+      { name: 'big', paramSize: 30, digest: 'b1' }
+    ];
+    // Gate the classify call on a promise we control, so run() is provably
+    // mid-measurement when we probe the idle-lane accessor.
+    let release;
+    const gate = new Promise(res => { release = res; });
+    let gateUsed = false;
+    const probe = new GoldenSetProbe({
+      classifyFn: async (model, message, lang) => {
+        if (!gateUsed) { gateUsed = true; await gate; }
+        return perfectClassifyFn(fixture)(model, message, lang);
+      },
+      fixture,
+      cacheDir,
+      logger: silentLogger
+    });
+    const running = probe.run(candidates);
+    // Yield so run() reaches its first (gated) classify call.
+    await Promise.resolve();
+    assert.deepStrictEqual(probe.getUnmeasuredCandidates(candidates), [], 'idle lane must no-op while run() is measuring');
+    release();
+    await running;
+    // After run() completes the fence lifts and the skipped candidate surfaces.
+    assert.deepStrictEqual(probe.getUnmeasuredCandidates().map(c => c.name), ['big']);
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
 // Summary
 setTimeout(() => {
   summary();
