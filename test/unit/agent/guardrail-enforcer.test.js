@@ -7,7 +7,8 @@
 const assert = require('assert');
 const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-runner');
 
-const { GuardrailEnforcer, TOOL_APPROVAL_LABELS } = require('../../../src/lib/agent/guardrail-enforcer');
+const { GuardrailEnforcer } = require('../../../src/lib/agent/guardrail-enforcer');
+const { toolLabel } = require('../../../src/lib/agent/surface-text');
 const { PendingActionStore } = require('../../../src/lib/pending-action-store');
 
 // ============================================================
@@ -1344,7 +1345,7 @@ async function runTests() {
       calendar_cancel_meeting: { calendar_id: 'personal', event_uid: 'uid-1' },
     };
     for (const [tool, toolArgs] of Object.entries(args)) {
-      const msg = enforcer._buildToolApprovalMessage(TOOL_APPROVAL_LABELS[tool], tool, toolArgs);
+      const msg = enforcer._buildToolApprovalMessage(toolLabel(tool, 'EN'), tool, toolArgs, 'EN');
       assert.ok(!msg.includes('**#?**'), `${tool} rendered a placeholder`);
       assert.ok(!msg.includes('?**'), `${tool} rendered a placeholder`);
       const identifier = Object.values(toolArgs)[0];

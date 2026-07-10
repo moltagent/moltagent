@@ -269,15 +269,18 @@ asyncTest('contacts_resolve no match returns not found', async () => {
 });
 
 // ============================================================
-// REQUIRES_APPROVAL tools have TOOL_APPROVAL_LABELS
+// REQUIRES_APPROVAL tools have a surface-text label
 // ============================================================
 
-test('surviving calendar approval tools have TOOL_APPROVAL_LABELS (#169)', () => {
-  const { TOOL_APPROVAL_LABELS } = require('../../../src/lib/agent/guardrail-enforcer');
-  assert.ok(TOOL_APPROVAL_LABELS.calendar_cancel_meeting, 'calendar_cancel_meeting label');
+test('surviving calendar approval tools have a surface-text label (#169)', () => {
+  // The labels moved from guardrail-enforcer's TOOL_APPROVAL_LABELS into
+  // surface-text.js, where they are multilingual (#276). The pin is unchanged.
+  const { labelledTools } = require('../../../src/lib/agent/surface-text');
+  const labelled = new Set(labelledTools());
+  assert.ok(labelled.has('calendar_cancel_meeting'), 'calendar_cancel_meeting label');
   // Retired tools must not linger as ghost references.
-  assert.ok(!TOOL_APPROVAL_LABELS.calendar_quick_schedule, 'calendar_quick_schedule label removed');
-  assert.ok(!TOOL_APPROVAL_LABELS.calendar_schedule_meeting, 'calendar_schedule_meeting label removed');
+  assert.ok(!labelled.has('calendar_quick_schedule'), 'calendar_quick_schedule label removed');
+  assert.ok(!labelled.has('calendar_schedule_meeting'), 'calendar_schedule_meeting label removed');
 });
 
 // ============================================================

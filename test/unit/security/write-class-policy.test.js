@@ -28,9 +28,10 @@ const { test, summary, exitWithCode } = require('../../helpers/test-runner');
 
 const { ToolRegistry } = require('../../../src/lib/agent/tool-registry');
 const {
-  getWriteClassTools, HIGH_SEVERITY_TOOLS, SENSITIVE_TOOLS, TOOL_APPROVAL_LABELS
+  getWriteClassTools, HIGH_SEVERITY_TOOLS, SENSITIVE_TOOLS
 } = require('../../../src/lib/agent/guardrail-enforcer');
 const { FORBIDDEN, REQUIRES_APPROVAL } = require('../../../src/security/guards/tool-guard');
+const { labelledTools } = require('../../../src/lib/agent/surface-text');
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
 
@@ -99,9 +100,9 @@ test('every SENSITIVE_TOOLS name is a registered tool', () => {
   assert.deepStrictEqual(ghosts, [], `SENSITIVE_TOOLS names non-tools: ${ghosts.join(', ')}`);
 });
 
-test('every TOOL_APPROVAL_LABELS key is a registered tool', () => {
-  const ghosts = Object.keys(TOOL_APPROVAL_LABELS).filter(t => !registered.has(t));
-  assert.deepStrictEqual(ghosts, [], `TOOL_APPROVAL_LABELS labels non-tools: ${ghosts.join(', ')}`);
+test('every surface-text tool label names a registered tool', () => {
+  const ghosts = labelledTools().filter(t => !registered.has(t));
+  assert.deepStrictEqual(ghosts, [], `surface-text labels non-tools: ${ghosts.join(', ')}`);
 });
 
 // ── Direction 2: registered ∩ destructive ⊆ policy — no ungated tool ──
