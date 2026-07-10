@@ -23,8 +23,9 @@ const { HITL_PROMPT_MARKER } = require('./guardrail-enforcer');
  * must therefore be unconditional. The "no mutating tool call on an action
  * turn" signal stays gate-conditional and lives in the caller.
  *
- * This module also owns the honesty floor's text (#81 commit 2). The invariant
- * both halves serve:
+ * This module owns the honesty floor's *predicate*. Its text lives in
+ * `surface-text.js` (#276), with every other code-owned sentence a user reads.
+ * The invariant both halves serve:
  *
  *   A gate=action turn that invoked no mutating tool must not deliver a
  *   success claim to the user.
@@ -79,64 +80,8 @@ const ACTION_REPROMPT_DIRECTIVE =
   'If you can perform the action, call the appropriate tool now. If you cannot, explain what prevented you. ' +
   'Do not describe a result the tool has not returned.';
 
-/**
- * The honesty floor's text, per language.
- *
- * This is output templating on a code-owned surface — the same class as the
- * enforcer's approval prompt — not language handling. No prose is read and no
- * language is detected here: the key is the Cockpit language already travelling
- * with the turn on the classification verdict. Unknown languages fall back to EN
- * rather than guessing.
- *
- * The text states a fact about what the turn did, and claims nothing about why.
- * It sits beneath the model's narration, so a specific refusal ("I couldn't find
- * that card") keeps its place as the useful sentence and this only adds the part
- * the model may have omitted or contradicted.
- */
-const NO_ACTION_TRAILER = {
-  EN: '⚠️ No action was executed — nothing was created, changed, or deleted.',
-  DE: '⚠️ Es wurde keine Aktion ausgeführt — nichts wurde erstellt, geändert oder gelöscht.',
-  PT: '⚠️ Nenhuma ação foi executada — nada foi criado, alterado ou eliminado.',
-};
-
-/**
- * Normalise a Cockpit language tag to a trailer key.
- *
- * Accepts the shapes the verdict actually carries: 'DE', 'de', 'DE+EN' (the
- * bilingual persona setting), null. Anything not templated falls back to EN.
- *
- * @param {string|null|undefined} language
- * @returns {'EN'|'DE'|'PT'}
- */
-function _trailerKey(language) {
-  const key = String(language || 'EN').toUpperCase().split('+')[0].trim();
-  return Object.prototype.hasOwnProperty.call(NO_ACTION_TRAILER, key) ? key : 'EN';
-}
-
-/**
- * The honesty floor (#81 commit 2, Layer 2).
- *
- * A gate=action turn that invoked no mutating tool did not act, whatever its
- * prose says. Rather than inspect that prose — the ProvenanceAnnotator's
- * groundedRatio scores a fabricated claim as "grounded" whenever it echoes the
- * user's own nouns, see #267 — the floor appends a code-owned statement of what
- * the turn actually did.
- *
- * Appended, never substituted: replacing the narration would destroy a
- * legitimate specific refusal, and the trailer's job is to add a true sentence,
- * not to remove a useful one.
- *
- * @param {string|null|undefined} language - Cockpit language from the verdict
- * @returns {string}
- */
-function buildNoActionTrailer(language) {
-  return NO_ACTION_TRAILER[_trailerKey(language)];
-}
-
 module.exports = {
   stagesApprovalCeremony,
   stripApprovalMarker,
-  buildNoActionTrailer,
   ACTION_REPROMPT_DIRECTIVE,
-  NO_ACTION_TRAILER,
 };

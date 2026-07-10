@@ -42,6 +42,7 @@ const { MODES } = require('../integrations/cockpit-modes');
 const ProvenanceAnnotator = require('../security/provenance-annotator');
 const { getFeedbackMessage } = require('../talk/feedback-messages');
 const IntentDecomposer = require('../agent/intent-decomposer');
+const { surfaceText } = require('../agent/surface-text');
 const ollamaGate = require('../shared/ollama-gate');
 const CONFIG = require('../config');
 const { OBSERVATION_TYPES } = require('../maintenance/observation-log');
@@ -698,6 +699,10 @@ class MessageProcessor {
           roomToken: extracted.token,
           warmMemory: focusContext || '',
           onArtifact,
+          // This branch runs before classification, so no verdict exists to read
+          // the message's language from. The resolver's absent-verdict case is
+          // the honest answer: the persona language, because nothing read it.
+          language: this._resolveMessageLanguage(null),
           // Layer 3: Action ledger accessors
           getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
           getRecentActions: session ? (dp) => this.sessionManager.getRecentActions(session, dp) : undefined,
@@ -879,6 +884,7 @@ class MessageProcessor {
               roomToken: extracted.token,
               warmMemory: focusContext || '',
               intent,  // Skip re-classification inside MicroPipeline
+              language,
               onArtifact,
               // Layer 3: Action ledger accessors
               getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
@@ -931,6 +937,7 @@ class MessageProcessor {
               roomToken: extracted.token,
               warmMemory: focusContext || '',
               intent,  // Skip re-classification inside MicroPipeline
+              language,
               onArtifact,
               // Layer 3: Action ledger accessors
               getLastAction: session ? (dp) => this.sessionManager.getLastAction(session, dp) : undefined,
@@ -1236,7 +1243,7 @@ class MessageProcessor {
       await this.statusIndicator?.setStatus('ready');
       // Guarantee a response to the user even when pre-routing logic throws
       if (extracted.token) {
-        const fallback = "I ran into an unexpected error processing your message. Could you try rephrasing?";
+        const fallback = surfaceText('fallback_unexpected_error', this._resolveMessageLanguage(null));
         this.sendTalkReply(extracted.token, fallback, extracted.messageId).catch(err => {
           console.error('[Process] Failed to send fallback error reply:', err.message);
         });
@@ -1827,6 +1834,11 @@ class MessageProcessor {
     const verdict = await enforcer.classifyPendingReply(message);
     console.log(`[Message] PendingAction ${record.tool}: classifier=${verdict}`);
 
+    // Every surface below speaks the language the OFFER was born in, read from
+    // the record — never the language of the reply that resolves it. "ja" is one
+    // word; the classifier tags it OTHER, and re-deriving from it would answer a
+    // German offer in English (#276, amendment 4). The label was already
+    // rendered in that language at birth.
     if (verdict === 'approve') {
       const approved = enforcer.consumePendingAction(extracted.token);
       if (!approved) return null; // expired between lookup and consumption
@@ -1834,11 +1846,11 @@ class MessageProcessor {
         { name: approved.tool, arguments: approved.args }, extracted.token
       );
       const outcome = toolResult.success
-        ? (toolResult.result || 'Done.')
-        : `The action failed: ${toolResult.error}`;
+        ? (toolResult.result || surfaceText('outcome_done', approved.language))
+        : surfaceText('outcome_failed', approved.language, { error: toolResult.error });
       console.log(`[Message] PendingAction executed: ${approved.tool} success=${toolResult.success}`);
       const response = await this.agentLoop.narrateOutcome({
-        userMessage: message, label: approved.label, outcome
+        userMessage: message, label: approved.label, outcome, language: approved.language
       });
       return { response, result: { intent: 'pending_action_executed', provider: 'agent' } };
     }
@@ -1849,7 +1861,8 @@ class MessageProcessor {
       const response = await this.agentLoop.narrateOutcome({
         userMessage: message,
         label: denied.label,
-        outcome: 'Cancelled at your request. Nothing was changed.'
+        outcome: surfaceText('outcome_cancelled', denied.language),
+        language: denied.language
       });
       return { response, result: { intent: 'pending_action_denied', provider: 'agent' } };
     }

@@ -3,7 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 const { extractArtifact } = require('./artifact-extractor');
-const { stagesApprovalCeremony, stripApprovalMarker, buildNoActionTrailer, ACTION_REPROMPT_DIRECTIVE } = require('./action-guard');
+const { stagesApprovalCeremony, stripApprovalMarker, ACTION_REPROMPT_DIRECTIVE } = require('./action-guard');
+const { surfaceText, normalizeLanguage } = require('./surface-text');
 
 /**
  * AgentLoop - The Nervous System
@@ -464,7 +465,7 @@ class AgentLoop {
       }
 
       if (!lastResponse) {
-        lastResponse = 'I ran into a loop trying to process your request. Please try rephrasing.';
+        lastResponse = surfaceText('fallback_max_iterations', options.language);
         this.logger.warn(`[AgentLoop] Hit max iterations (${maxIter})`);
       }
 
@@ -520,7 +521,7 @@ class AgentLoop {
         `[AgentLoop] Honesty trailer appended: gate=action expectsMutation=true mutatingCall=none ` +
         `invoked=[${[...toolsInvokedThisTurn].join(', ')}] guardFired=${actionGuardFired} language=${options.language || 'unset'}`
       );
-      lastResponse = `${lastResponse}\n\n${buildNoActionTrailer(options.language)}`;
+      lastResponse = `${lastResponse}\n\n${surfaceText('no_action_trailer', options.language)}`;
     }
 
     const elapsed = Date.now() - startTime;
@@ -742,11 +743,17 @@ class AgentLoop {
    *
    * @param {Object} params
    * @param {string} params.userMessage - The user's reply that resolved the offer
-   * @param {string} params.label - Human-readable action label
+   * @param {string} params.label - Human-readable action label, already in the user's language
    * @param {string} params.outcome - What actually happened (tool result or cancellation)
+   * @param {string|null} [params.language] - The offer's birth language (#273/#276)
    * @returns {Promise<string>} A sentence for the user
    */
-  async narrateOutcome({ userMessage, label, outcome }) {
+  async narrateOutcome({ userMessage, label, outcome, language = null }) {
+    // "Reply in the person's language" is unusable here: the person said "ja".
+    // A one-word reply carries no language worth reading, which is why the
+    // offer's language was stored on the record at birth (#273). Name it.
+    const replyLanguage = normalizeLanguage(language);
+
     try {
       const response = await this.llmProvider.chat({
         job: 'synthesis',
@@ -754,7 +761,7 @@ class AgentLoop {
           'You report an outcome to the person you assist. The action is already finished.',
           '',
           'Rules:',
-          '  - Reply in the same language the person used.',
+          `  - Reply in this language: ${replyLanguage}. The person's own words may be too short to tell.`,
           '  - One or two sentences. State what happened.',
           '  - Never ask for confirmation. Never offer to do it again. It is done.',
         ].join('\n'),
@@ -825,7 +832,7 @@ class AgentLoop {
 
     // GuardrailEnforcer: dynamic Cockpit guardrails with HITL confirmation
     if (this.guardrailEnforcer) {
-      const result = await this.guardrailEnforcer.check(toolCall.name, toolCall.arguments, roomToken);
+      const result = await this.guardrailEnforcer.check(toolCall.name, toolCall.arguments, roomToken, { language });
       if (!result.allowed) {
         if (result.editRequest) {
           this.logger.info(`[AgentLoop] GuardrailEnforcer edit requested: ${toolCall.name}`);

@@ -3,6 +3,7 @@
 const { classifyConfirmationReply } = require('../shared/confirmation-classifier');
 const { PendingActionStore } = require('../pending-action-store');
 const { REQUIRES_APPROVAL } = require('../../security/guards/tool-guard');
+const { surfaceText, hasSurfaceText, toolLabel, fieldLabel } = require('./surface-text');
 
 /**
  * GuardrailEnforcer - Runtime Guardrail Enforcement
@@ -95,35 +96,23 @@ const HIGH_SEVERITY_TOOLS = new Set([
   'calendar_cancel_meeting',
 ]);
 
-const TOOL_APPROVAL_LABELS = {
-  deck_delete_card:        'Delete Deck card',
-  deck_delete_board:       'Delete Deck board',
-  deck_delete_stack:       'Delete Deck stack',
-  deck_setup_workflow:     'Set up Deck workflow',
-  deck_share_board:        'Share board',
-  file_delete:             'Delete file',
-  file_move:               'Move file',
-  file_write:              'Write file',
-  file_share:              'Share file',
-  calendar_create_event:   'Create calendar event',
-  calendar_update_event:   'Update calendar event',
-  calendar_delete_event:   'Delete calendar event',
-  calendar_cancel_meeting: 'Cancel meeting',
-  wiki_write:              'Write wiki page',
-  wiki_delete:             'Delete wiki page',
-  mail_send:               'Send email',
-};
+// The tool names a user reads live in surface-text.js (#276), keyed
+// `tool_label_<tool>`. `toolLabel()` renders one, falling back to the raw tool
+// name for anything unlabelled.
 
 // #107: the approval prompt renders the arguments the tool actually registered.
 // Keys are real schema arg names (see ToolRegistry); unmapped tools fall back to
 // a generic key-value render, so no tool can print a placeholder identifier.
+// The second element is a surface-text key, not a word — the mapping from
+// argument to label is structure and lives here; the label itself is text and
+// lives in the table.
 const TOOL_APPROVAL_FIELDS = {
-  deck_delete_card:       [['card', 'Card'], ['board', 'Board']],
-  file_delete:            [['path', 'Path']],
-  wiki_delete:            [['page_title', 'Page']],
-  deck_share_board:       [['board', 'Board'], ['participant', 'With'], ['permission', 'Permission']],
-  file_share:             [['path', 'Path'], ['share_with', 'With'], ['permission', 'Permission']],
-  calendar_cancel_meeting:[['event_uid', 'Event'], ['calendar_id', 'Calendar'], ['reason', 'Reason']],
+  deck_delete_card:       [['card', 'field_card'], ['board', 'field_board']],
+  file_delete:            [['path', 'field_path']],
+  wiki_delete:            [['page_title', 'field_page']],
+  deck_share_board:       [['board', 'field_board'], ['participant', 'field_with'], ['permission', 'field_permission']],
+  file_share:             [['path', 'field_path'], ['share_with', 'field_with'], ['permission', 'field_permission']],
+  calendar_cancel_meeting:[['event_uid', 'field_event'], ['calendar_id', 'field_calendar'], ['reason', 'field_reason']],
 };
 
 // Tools whose effect the user cannot walk back — the prompt says so explicitly
@@ -241,7 +230,7 @@ class GuardrailEnforcer {
    * @param {string|null} roomToken - Talk room token (null for workflow/non-interactive)
    * @returns {Promise<{allowed: boolean, reason: string|null, editRequest?: boolean, editMessage?: string}>}
    */
-  async check(toolName, toolArgs, roomToken) {
+  async check(toolName, toolArgs, roomToken, { language = null } = {}) {
     // Fail open: no cockpitManager → no guardrails to check
     if (!this.cockpitManager) {
       return { allowed: true, reason: null };
@@ -283,7 +272,7 @@ class GuardrailEnforcer {
 
       if (matchResult === 'YES') {
         // Guardrail triggered — request HITL confirmation
-        const response = await this._requestConfirmation(title, toolName, toolArgs, roomToken);
+        const response = await this._requestConfirmation(title, toolName, toolArgs, roomToken, language);
 
         if (response.decision === 'edit') {
           this.logger.info(`[GuardrailEnforcer] ${toolName}: "${title}" → EDIT requested`);
@@ -464,7 +453,7 @@ class GuardrailEnforcer {
    * @returns {Promise<{decision: 'yes'|'no'|'edit'|'timeout', message?: string}>}
    * @private
    */
-  async _requestConfirmation(guardrailTitle, toolName, toolArgs, roomToken) {
+  async _requestConfirmation(guardrailTitle, toolName, toolArgs, roomToken, language = null) {
     // Can't ask = fail closed
     if (!this.talkSendQueue || !this.conversationContext) {
       this.logger.warn('[GuardrailEnforcer] Cannot request confirmation — Talk unavailable, blocking');
@@ -476,7 +465,7 @@ class GuardrailEnforcer {
       return { decision: 'no' };
     }
 
-    const message = this._buildConfirmationMessage(toolName, toolArgs, guardrailTitle);
+    const message = this._buildConfirmationMessage(toolName, toolArgs, guardrailTitle, language);
     const requestTimestamp = Date.now();
     const searchAfter = Math.max(requestTimestamp, this._lastConsumedTimestamp);
 
@@ -577,46 +566,46 @@ class GuardrailEnforcer {
   // ── Confirmation message templates ──────────────────────────────
 
   /** @private */
-  _buildConfirmationMessage(toolName, toolArgs, guardrailTitle) {
-    const guardrailLine = `*Guardrail: "${guardrailTitle}"*`;
+  _buildConfirmationMessage(toolName, toolArgs, guardrailTitle, language) {
+    const guardrailLine = surfaceText('guardrail_attribution', language, { title: guardrailTitle });
 
     switch (toolName) {
       case 'mail_send':
       case 'mail_reply':
-        return this._buildEmailConfirmation(toolArgs, guardrailLine);
+        return this._buildEmailConfirmation(toolArgs, guardrailLine, language);
       case 'file_delete':
-        return this._buildFileDeleteConfirmation(toolArgs, guardrailLine);
+        return this._buildFileDeleteConfirmation(toolArgs, guardrailLine, language);
       case 'file_move':
-        return this._buildFileMoveConfirmation(toolArgs, guardrailLine);
+        return this._buildFileMoveConfirmation(toolArgs, guardrailLine, language);
       case 'calendar_create_event':
       case 'calendar_update_event':
-        return this._buildCalendarConfirmation(toolName, toolArgs, guardrailLine);
+        return this._buildCalendarConfirmation(toolName, toolArgs, guardrailLine, language);
       case 'calendar_delete_event':
       case 'calendar_cancel_meeting':
-        return this._buildCalendarDeleteConfirmation(toolArgs, guardrailLine);
+        return this._buildCalendarDeleteConfirmation(toolArgs, guardrailLine, language);
       case 'wiki_write':
-        return this._buildWikiWriteConfirmation(toolArgs, guardrailLine);
+        return this._buildWikiWriteConfirmation(toolArgs, guardrailLine, language);
       case 'wiki_delete':
       case 'deck_delete_card':
       case 'deck_share_board':
       case 'file_share':
-        return this._buildGenericConfirmation(toolName, toolArgs, guardrailLine);
+        return this._buildGenericConfirmation(toolName, toolArgs, guardrailLine, language);
       default:
-        return this._buildGenericConfirmation(toolName, toolArgs, guardrailLine);
+        return this._buildGenericConfirmation(toolName, toolArgs, guardrailLine, language);
     }
   }
 
   /** @private */
-  _buildEmailConfirmation(args, guardrailLine) {
+  _buildEmailConfirmation(args, guardrailLine, language) {
     const separator = '\u2500'.repeat(25);
-    const body = args.body || args.text || '(no body)';
-    const cc = args.cc ? `\nCC: ${args.cc}` : '';
+    const body = args.body || args.text || surfaceText('placeholder_no_body', language);
+    const cc = args.cc ? `\n${fieldLabel('field_cc', language)}: ${args.cc}` : '';
 
     return [
-      '\u{1f4e7} **Email ready to send**',
+      surfaceText('confirm_email_header', language),
       '',
-      `**To:** ${args.to || '(no recipient)'}${cc}`,
-      `**Subject:** ${args.subject || '(no subject)'}`,
+      `**${fieldLabel('field_to', language)}:** ${args.to || surfaceText('placeholder_no_recipient', language)}${cc}`,
+      `**${fieldLabel('field_subject', language)}:** ${args.subject || surfaceText('placeholder_no_subject', language)}`,
       '',
       separator,
       body.trim(),
@@ -624,123 +613,114 @@ class GuardrailEnforcer {
       '',
       guardrailLine,
       '',
-      'Reply **yes** to send \u00b7 **no** to cancel \u00b7 **edit** to revise',
+      surfaceText('confirm_email_reply', language),
     ].join('\n');
   }
 
   /** @private */
-  _buildFileDeleteConfirmation(args, guardrailLine) {
-    const filePath = args.path || args.file || args.filename || '(unknown file)';
+  _buildFileDeleteConfirmation(args, guardrailLine, language) {
+    const filePath = args.path || args.file || args.filename || surfaceText('placeholder_unknown_file', language);
     return [
-      '\u{1f5d1}\ufe0f **File deletion requires your approval**',
+      surfaceText('confirm_file_delete_header', language),
       '',
-      `**File:** ${filePath}`,
+      `**${fieldLabel('field_file', language)}:** ${filePath}`,
       '',
-      '\u26a0\ufe0f This action cannot be undone.',
+      surfaceText('confirm_file_delete_warning', language),
       '',
       guardrailLine,
       '',
-      'Reply **yes** to delete \u00b7 **no** to cancel',
+      surfaceText('confirm_delete_reply', language),
     ].join('\n');
   }
 
   /** @private */
-  _buildFileMoveConfirmation(args, guardrailLine) {
+  _buildFileMoveConfirmation(args, guardrailLine, language) {
+    const unknown = surfaceText('placeholder_unknown', language);
     return [
-      '\u{1f4c1} **File move requires your approval**',
+      surfaceText('confirm_file_move_header', language),
       '',
-      `**From:** ${args.from || args.source || args.path || '(unknown)'}`,
-      `**To:** ${args.to || args.destination || '(unknown)'}`,
+      `**${fieldLabel('field_from', language)}:** ${args.from || args.source || args.path || unknown}`,
+      `**${fieldLabel('field_to', language)}:** ${args.to || args.destination || unknown}`,
       '',
       guardrailLine,
       '',
-      'Reply **yes** to proceed \u00b7 **no** to cancel',
+      surfaceText('confirm_proceed_reply', language),
     ].join('\n');
   }
 
   /** @private */
-  _buildCalendarConfirmation(toolName, args, guardrailLine) {
-    const actionMap = {
-      calendar_create_event: 'Create event',
-      calendar_update_event: 'Update event',
-    };
-    const action = actionMap[toolName] || 'Calendar action';
+  _buildCalendarConfirmation(toolName, args, guardrailLine, language) {
+    const actionKey = {
+      calendar_create_event: 'calendar_action_create',
+      calendar_update_event: 'calendar_action_update',
+    }[toolName] || 'calendar_action_other';
+    const action = surfaceText(actionKey, language);
     const attendees = Array.isArray(args.attendees) ? args.attendees.join(', ') : (args.attendee || '');
 
     return [
-      '\u{1f4c5} **Calendar change requires your approval**',
+      surfaceText('confirm_calendar_header', language),
       '',
-      `**Action:** ${action}`,
-      `**Title:** ${args.title || args.summary || '(no title)'}`,
-      args.start ? `**Date:** ${args.start}` : null,
-      args.location ? `**Location:** ${args.location}` : null,
-      attendees ? `**Attendees:** ${attendees}` : null,
+      `**${fieldLabel('field_action', language)}:** ${action}`,
+      `**${fieldLabel('field_title', language)}:** ${args.title || args.summary || surfaceText('placeholder_no_title', language)}`,
+      args.start ? `**${fieldLabel('field_date', language)}:** ${args.start}` : null,
+      args.location ? `**${fieldLabel('field_location', language)}:** ${args.location}` : null,
+      attendees ? `**${fieldLabel('field_attendees', language)}:** ${attendees}` : null,
       '',
       guardrailLine,
       '',
-      'Reply **yes** to confirm \u00b7 **no** to cancel \u00b7 **edit** to revise',
+      surfaceText('confirm_calendar_reply', language),
     ].filter(line => line !== null).join('\n');
   }
 
   /** @private */
-  _buildCalendarDeleteConfirmation(args, guardrailLine) {
+  _buildCalendarDeleteConfirmation(args, guardrailLine, language) {
     return [
-      '\u{1f4c5} **Calendar deletion requires your approval**',
+      surfaceText('confirm_calendar_delete_header', language),
       '',
-      `**Event:** ${args.title || args.event_uid || args.eventId || '(unknown event)'}`,
-      args.reason ? `**Reason:** ${args.reason}` : null,
+      `**${fieldLabel('field_event', language)}:** ${args.title || args.event_uid || args.eventId || surfaceText('placeholder_unknown_event', language)}`,
+      args.reason ? `**${fieldLabel('field_reason', language)}:** ${args.reason}` : null,
       '',
-      '\u26a0\ufe0f This will remove the event from all attendees.',
+      surfaceText('confirm_calendar_delete_warning', language),
       '',
       guardrailLine,
       '',
-      'Reply **yes** to delete \u00b7 **no** to cancel',
+      surfaceText('confirm_delete_reply', language),
     ].filter(line => line !== null).join('\n');
   }
 
   /** @private */
-  _buildWikiWriteConfirmation(args, guardrailLine) {
-    const page = args.page_title || '(unknown page)';
+  _buildWikiWriteConfirmation(args, guardrailLine, language) {
+    const page = args.page_title || surfaceText('placeholder_unknown_page', language);
     const contentPreview = (args.content || '').slice(0, 200);
     const truncated = (args.content || '').length > 200 ? '...' : '';
 
     return [
-      '\u{1f4d6} **Wiki write requires your approval**',
+      surfaceText('confirm_wiki_write_header', language),
       '',
-      `**Page:** ${page}`,
-      `**Preview:** ${contentPreview}${truncated}`,
+      `**${fieldLabel('field_page', language)}:** ${page}`,
+      `**${fieldLabel('field_preview', language)}:** ${contentPreview}${truncated}`,
       '',
       guardrailLine,
       '',
-      'Reply **yes** to save \u00b7 **no** to cancel \u00b7 **edit** to revise',
+      surfaceText('confirm_wiki_write_reply', language),
     ].join('\n');
   }
 
   /** @private */
-  _buildGenericConfirmation(toolName, toolArgs, guardrailLine) {
-    const actionMap = {
-      mail_send: 'send an email',
-      file_delete: 'delete a file',
-      file_move: 'move a file',
-      calendar_create_event: 'create a calendar event',
-      calendar_update_event: 'update a calendar event',
-      calendar_delete_event: 'delete a calendar event',
-      wiki_delete: 'delete a wiki page',
-      deck_delete_card: 'delete a Deck card',
-      deck_share_board: 'share a Deck board',
-      file_share: 'share a file',
-      calendar_cancel_meeting: 'cancel a meeting',
-    };
-    const action = actionMap[toolName] || `perform an action (${toolName})`;
+  _buildGenericConfirmation(toolName, toolArgs, guardrailLine, language) {
+    const actionKey = `generic_action_${toolName}`;
+    const action = hasSurfaceText(actionKey)
+      ? surfaceText(actionKey, language)
+      : surfaceText('generic_action_fallback', language, { tool: toolName });
 
     return [
-      '\u26a0\ufe0f **Action requires your approval**',
+      surfaceText('confirm_generic_header', language),
       '',
-      `I'm about to: **${action}**`,
+      surfaceText('confirm_generic_intent', language, { action }),
       '',
       guardrailLine,
       '',
-      'Reply **yes** to proceed \u00b7 **no** to cancel',
+      surfaceText('confirm_proceed_reply', language),
     ].join('\n');
   }
 
@@ -789,7 +769,10 @@ class GuardrailEnforcer {
       return { allowed: true, reason: null };
     }
 
-    const label = TOOL_APPROVAL_LABELS[toolName] || toolName;
+    // The label is rendered in the user's language here, at the offer's birth,
+    // and stored on the PendingAction record with it. A resolution minutes later
+    // reads the record rather than re-deriving from a one-word reply (#273).
+    const label = toolLabel(toolName, language);
     const response = await this._requestToolApproval(label, toolName, toolArgs, roomToken, language);
 
     if (response.decision === 'yes') {
@@ -844,8 +827,13 @@ class GuardrailEnforcer {
     const userMessage = this._lastUserMessage(history);
     if (!userMessage) return false;
 
-    const label = TOOL_APPROVAL_LABELS[toolName] || toolName;
-    const rendered = this._renderApprovalFields(toolName, toolArgs)
+    // Pinned to English: this renders a tier-2 CLASSIFIER prompt, not a Talk
+    // surface. Its few-shot examples below are English ("Delete Deck card —
+    // Card: Q3 Planning"), and the action description must match them. The
+    // model reads the user's message in whatever language it arrives in; that
+    // is the model's job, not this string's.
+    const label = toolLabel(toolName, 'EN');
+    const rendered = this._renderApprovalFields(toolName, toolArgs, 'EN')
       .map(({ label: field, value }) => `${field}: ${value}`)
       .join(', ') || '(no arguments)';
 
@@ -1007,7 +995,7 @@ class GuardrailEnforcer {
       return { decision: 'no' };
     }
 
-    const message = this._buildToolApprovalMessage(label, toolName, toolArgs);
+    const message = this._buildToolApprovalMessage(label, toolName, toolArgs, language);
     const requestTimestamp = Date.now();
     const searchAfter = Math.max(requestTimestamp, this._lastConsumedTimestamp);
 
@@ -1115,20 +1103,22 @@ class GuardrailEnforcer {
    * @returns {string}
    * @private
    */
-  _buildToolApprovalMessage(label, toolName, toolArgs) {
-    const lines = [`${HITL_PROMPT_MARKER} **${label}** \u2014 requires approval\n`];
+  _buildToolApprovalMessage(label, toolName, toolArgs, language) {
+    // The marker codepoint is this module's, and language-independent; the
+    // words after it come from the table.
+    const lines = [`${HITL_PROMPT_MARKER} ${surfaceText('tool_approval_header', language, { label })}\n`];
 
-    for (const { label: field, value } of this._renderApprovalFields(toolName, toolArgs)) {
+    for (const { label: field, value } of this._renderApprovalFields(toolName, toolArgs, language)) {
       lines.push(`${field}: **${value}**`);
     }
 
     if (toolName === 'calendar_cancel_meeting') {
-      lines.push('\u26a0\ufe0f Cancellation notices will be sent to attendees.');
+      lines.push(surfaceText('tool_approval_cancellation_notice', language));
     } else if (IRREVERSIBLE_TOOLS.has(toolName)) {
-      lines.push('\u26a0\ufe0f This cannot be undone.');
+      lines.push(surfaceText('tool_approval_irreversible', language));
     }
 
-    lines.push('\nReply **yes** to approve or **no** to deny.');
+    lines.push(`\n${surfaceText('tool_approval_reply', language)}`);
     return lines.join('\n');
   }
 
@@ -1141,17 +1131,19 @@ class GuardrailEnforcer {
    *
    * @param {string} toolName
    * @param {Object} toolArgs
+   * @param {string|null} [language] - Resolved message language. Pass 'EN'
+   *   explicitly when rendering into a tier-2 prompt rather than a Talk surface.
    * @returns {Array<{label: string, value: string}>}
    * @private
    */
-  _renderApprovalFields(toolName, toolArgs) {
+  _renderApprovalFields(toolName, toolArgs, language = null) {
     const args = toolArgs || {};
     const fields = TOOL_APPROVAL_FIELDS[toolName];
 
     const entries = fields
       ? fields
         .filter(([key]) => args[key] !== undefined && args[key] !== null && args[key] !== '')
-        .map(([key, label]) => [label, args[key]])
+        .map(([key, labelKey]) => [fieldLabel(labelKey, language), args[key]])
       : Object.entries(args).slice(0, 5);
 
     return entries.map(([label, value]) => ({
@@ -1256,7 +1248,6 @@ module.exports = {
   GuardrailEnforcer,
   HIGH_SEVERITY_TOOLS,
   SENSITIVE_TOOLS,
-  TOOL_APPROVAL_LABELS,
   HITL_PROMPT_MARKER,
   getWriteClassTools,
 };

@@ -68,7 +68,12 @@ function createMockToolRegistry(tools = {}, readOnly = []) {
   };
 }
 
-const { NO_ACTION_TRAILER } = require('../../../src/lib/agent/action-guard');
+const { surfaceText } = require('../../../src/lib/agent/surface-text');
+const NO_ACTION_TRAILER = {
+  EN: surfaceText('no_action_trailer', 'EN'),
+  DE: surfaceText('no_action_trailer', 'DE'),
+  PT: surfaceText('no_action_trailer', 'PT'),
+};
 
 // Write a temp SOUL.md for testing
 const testSoulPath = path.join(__dirname, 'test-soul.md');

@@ -16,6 +16,7 @@
 const { buildMicroContext } = require('./micro-pipeline-context');
 const { extractArtifact } = require('./artifact-extractor');
 const { stagesApprovalCeremony } = require('./action-guard');
+const { surfaceText } = require('./surface-text');
 
 const INTENTS = Object.freeze({
   QUESTION: 'question',
@@ -209,7 +210,7 @@ class MicroPipeline {
       if (err.code === 'DOMAIN_ESCALATE') throw err;
       this.stats.errors++;
       this.logger.error(`[MicroPipeline] Error: ${err.message}`);
-      return 'I had trouble processing that. Could you rephrase or simplify your request?';
+      return surfaceText('fallback_processing_trouble', context.language);
     }
   }
 
@@ -779,7 +780,7 @@ Sub-questions:`;
             messages.push({ role: 'tool', content: `Error: Unknown tool "${toolCall.name}"` });
             continue;
           }
-          const toolResult = await this._executeWithGuards(toolCall, context.roomToken || null);
+          const toolResult = await this._executeWithGuards(toolCall, context.roomToken || null, context.language || null);
 
           // Capture artifact focus from structured tool results
           if (toolResult.success && context.onArtifact) {
@@ -838,14 +839,17 @@ Sub-questions:`;
    * @returns {Promise<Object>} { success, result, error? }
    * @private
    */
-  async _executeWithGuards(toolCall, roomToken) {
+  async _executeWithGuards(toolCall, roomToken, language = null) {
     // ToolGuard: hardcoded security policy
     if (this.toolGuard) {
       const guardResult = this.toolGuard.evaluate(toolCall.name);
       if (!guardResult.allowed) {
         if (guardResult.level === 'APPROVAL_REQUIRED' && this.guardrailEnforcer) {
+          // The resolved language rides along, as it does in AgentLoop: this
+          // path renders the same 🔐 ceremony, and rendered English here would
+          // have been a hole in "no surface resolves language independently".
           const approvalResult = await this.guardrailEnforcer.checkApproval(
-            toolCall.name, toolCall.arguments, roomToken, []
+            toolCall.name, toolCall.arguments, roomToken, [], { language }
           );
           if (!approvalResult.allowed) {
             this.logger.info(`[MicroPipeline] ToolGuard approval denied: ${toolCall.name} — ${approvalResult.reason}`);
@@ -861,7 +865,7 @@ Sub-questions:`;
 
     // GuardrailEnforcer: dynamic Cockpit guardrails with HITL confirmation
     if (this.guardrailEnforcer) {
-      const result = await this.guardrailEnforcer.check(toolCall.name, toolCall.arguments, roomToken);
+      const result = await this.guardrailEnforcer.check(toolCall.name, toolCall.arguments, roomToken, { language });
       if (!result.allowed) {
         // Edit requests treated as blocks (MicroPipeline has no revision loop)
         this.logger.info(`[MicroPipeline] GuardrailEnforcer blocked: ${toolCall.name} — ${result.reason}`);
