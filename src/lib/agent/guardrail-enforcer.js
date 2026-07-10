@@ -754,9 +754,14 @@ class GuardrailEnforcer {
    * @param {Object} toolArgs
    * @param {string|null} roomToken
    * @param {Array} conversationHistory - recent messages for LOW-tier check
+   * @param {Object} [options]
+   * @param {string|null} [options.language] - The language the user wrote in
+   *   (#273). Carried, never interpreted: a PendingAction born from a timed-out
+   *   offer stores it so the resolution minutes later speaks the language the
+   *   offer was made in, not the persona's.
    * @returns {Promise<{allowed: boolean, reason: string|null, editRequest?: boolean, editMessage?: string}>}
    */
-  async checkApproval(toolName, toolArgs, roomToken, conversationHistory = []) {
+  async checkApproval(toolName, toolArgs, roomToken, conversationHistory = [], { language = null } = {}) {
     const severity = this._classifySeverity(toolName);
 
     // No roomToken → non-interactive → block (can't ask for approval)
@@ -785,7 +790,7 @@ class GuardrailEnforcer {
     }
 
     const label = TOOL_APPROVAL_LABELS[toolName] || toolName;
-    const response = await this._requestToolApproval(label, toolName, toolArgs, roomToken);
+    const response = await this._requestToolApproval(label, toolName, toolArgs, roomToken, language);
 
     if (response.decision === 'yes') {
       this.approvalCache.set(approvalKey, Date.now());
@@ -914,9 +919,13 @@ class GuardrailEnforcer {
    * @param {string} toolName
    * @param {Object} toolArgs
    * @param {string} label
+   * @param {string|null} [language] - Language of the turn that raised the offer.
+   *   The record outlives the turn, and the reply that resolves it ("ja") is too
+   *   short to classify — one word is OTHER. So the offer's language is what the
+   *   resolution must speak, and it is stored here at birth (#273).
    * @private
    */
-  _rememberPendingAction(roomToken, toolName, toolArgs, label) {
+  _rememberPendingAction(roomToken, toolName, toolArgs, label, language = null) {
     if (!roomToken) return;
     const key = this._pendingKey(roomToken);
     this.pendingActions.clearType(key);
@@ -925,15 +934,16 @@ class GuardrailEnforcer {
       tool: toolName,
       args: toolArgs || {},
       label,
+      language: language || null,
       offeredAt: Date.now()
     }, { ttlMs: PENDING_ACTION_TTL_MS });
-    this.logger.info(`[GuardrailEnforcer] PendingAction born: tool=${toolName} label="${label}" room=${roomToken} ttlMs=${PENDING_ACTION_TTL_MS}`);
+    this.logger.info(`[GuardrailEnforcer] PendingAction born: tool=${toolName} label="${label}" room=${roomToken} language=${language || 'unset'} ttlMs=${PENDING_ACTION_TTL_MS}`);
   }
 
   /**
    * The live offer awaiting an answer in this room, if any.
    * @param {string} roomToken
-   * @returns {{tool: string, args: Object, label: string, offeredAt: number}|null}
+   * @returns {{tool: string, args: Object, label: string, language: string|null, offeredAt: number}|null}
    */
   getPendingAction(roomToken) {
     if (!roomToken) return null;
@@ -946,7 +956,7 @@ class GuardrailEnforcer {
    * or not the caller goes on to execute — a single consumer, by construction
    * (the #108 dual-consumer lesson).
    * @param {string} roomToken
-   * @returns {{tool: string, args: Object, label: string, offeredAt: number}|null}
+   * @returns {{tool: string, args: Object, label: string, language: string|null, offeredAt: number}|null}
    */
   consumePendingAction(roomToken) {
     const record = this.getPendingAction(roomToken);
@@ -982,10 +992,11 @@ class GuardrailEnforcer {
    * @param {string} toolName
    * @param {Object} toolArgs
    * @param {string} roomToken
+   * @param {string|null} [language] - Language of the turn that raised the offer
    * @returns {Promise<{decision: 'yes'|'no'|'edit'|'timeout', message?: string}>}
    * @private
    */
-  async _requestToolApproval(label, toolName, toolArgs, roomToken) {
+  async _requestToolApproval(label, toolName, toolArgs, roomToken, language = null) {
     if (!this.talkSendQueue || !this.conversationContext) {
       this.logger.warn('[GuardrailEnforcer] Cannot request tool approval — Talk unavailable');
       this.logger.info(
@@ -1092,7 +1103,7 @@ class GuardrailEnforcer {
     // The turn is over and (tool, args) are about to leave the stack. The offer
     // is still standing in the room, so the structure moves to the store — this
     // is the only birth path for a PendingAction record.
-    this._rememberPendingAction(roomToken, toolName, toolArgs, label);
+    this._rememberPendingAction(roomToken, toolName, toolArgs, label, language);
     return { decision: 'timeout' };
   }
 

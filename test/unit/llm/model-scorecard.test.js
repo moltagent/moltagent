@@ -364,15 +364,36 @@ asyncTest('getMeasuredScores maps candidates to per-language accuracies; unmeasu
 // ============================================================
 
 asyncTest('the verdict carries the producing model and prompt language', async () => {
+  // The scorecard buckets by the language the model was PROMPTED in — the
+  // persona. That is `promptLanguage`. `language` is the language the user
+  // wrote in, which only the model can report and which this response omits
+  // (→ OTHER). Before #273 one field carried both meanings, and the honesty
+  // trailer read the persona thinking it was reading the person.
   const router = new IntentRouter({
     provider: { chat: async () => ({ content: '{"gate":"knowledge","confidence":0.9}' }) },
     getLanguage: () => 'DE',
   });
   const verdict = await router._classifyWithModel('modelX', 'hallo');
   assert.strictEqual(verdict.model, 'modelX');
-  assert.strictEqual(verdict.language, 'DE');
+  assert.strictEqual(verdict.promptLanguage, 'DE', 'the persona, for the scorecard bucket');
+  assert.strictEqual(verdict.language, 'OTHER', 'the model reported no message language');
   assert.strictEqual(verdict.gate, 'knowledge');
   assert.ok(!verdict.parseFailed);
+});
+
+asyncTest('the scorecard buckets by prompt language, never by the message language', async () => {
+  // A German persona classifying an English message still scores in the DE
+  // bucket: the bucket measures how the model handles the DE example set, and
+  // the golden-set probe scores exactly that. Folding the detected message
+  // language into seat scoring is a maturation-loop question, not this change.
+  const samples = [];
+  const router = new IntentRouter({
+    provider: { chat: async () => ({ content: 'no json here at all' }) },
+    getLanguage: () => 'DE',
+    modelScorecard: { recordSample: (...args) => samples.push(args) },
+  });
+  await router._classifyWithModel('modelX', 'who is Alex?');
+  assert.deepStrictEqual(samples[0], ['classification', 'modelX', 'DE', false]);
 });
 
 asyncTest('a structural parse failure records a full-weight classification negative', async () => {

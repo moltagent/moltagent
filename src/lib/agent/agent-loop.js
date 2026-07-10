@@ -71,9 +71,15 @@ class AgentLoop {
    * @param {string} roomToken - NC Talk room token
    * @param {Object} [options]
    * @param {number} [options.messageId]
-   * @param {string} [options.gate] - Classification gate; 'action' arms the mutation guard
-   * @param {string} [options.language] - Cockpit language from the verdict ('EN'|'DE'|'PT'|'DE+EN'…),
-   *   used only to pick the honesty trailer's template. Unset falls back to EN.
+   * @param {string} [options.gate] - Classification gate; which pipeline the
+   *   message needs. With expectsMutation, 'action' arms the mutation guard.
+   * @param {boolean} [options.expectsMutation] - Whether the user asked for state
+   *   to be CHANGED, from the verdict (#272). Only an explicit `false` disarms the
+   *   honesty guard and trailer; absent or unknown leaves them armed.
+   * @param {string} [options.language] - The language the USER wrote in, resolved
+   *   from the verdict with the persona as fallback (#273). Picks the honesty
+   *   trailer's template and is carried into a PendingAction record at birth.
+   *   Unset falls back to EN.
    * @returns {Promise<string>} The agent's final text response
    */
   async process(message, roomToken, options = {}) {
@@ -187,6 +193,17 @@ class AgentLoop {
       typeof this.toolRegistry?.isMutating !== 'function' || this.toolRegistry.isMutating(name)
     );
 
+    // Did the user ask for state to be CHANGED? `gate=action` does not answer
+    // that: it answers "this message needs the tool pipeline", which a board
+    // overview also needs (#134). Reading the two meanings out of one field
+    // appended an apology beneath correct answers to read-only questions
+    // (#272), so the classifier now states the mutation expectation directly.
+    //
+    // Only an explicit `false` disarms the guard. Absent, unparseable, or
+    // unknown → armed: the guard is honesty enforcement, and the safe failure
+    // is a possible false apology, never a missed fabrication.
+    const expectsMutation = options.expectsMutation !== false;
+
     while (iteration < maxIter) {
       iteration++;
 
@@ -280,7 +297,7 @@ class AgentLoop {
           // whether it succeeded.
           toolsInvokedThisTurn.add(toolCall.name);
 
-          const toolResult = await this._executeWithGuards(toolCall, roomToken);
+          const toolResult = await this._executeWithGuards(toolCall, roomToken, { language: options.language });
 
           // Track tool failures (don't count errors toward maxIterations)
           if (!toolResult.success) {
@@ -393,7 +410,7 @@ class AgentLoop {
       // this on action would miss the #85 leak. The write-class signal stays
       // gate=action (a knowledge turn legitimately performs no write).
       const responseStagesApproval = stagesApprovalCeremony(response.content);
-      const actionWithoutMutation = options.gate === 'action' && !invokedMutatingTool();
+      const actionWithoutMutation = options.gate === 'action' && expectsMutation && !invokedMutatingTool();
       if (!actionGuardFired && (actionWithoutMutation || responseStagesApproval)) {
         actionGuardFired = true;
         maxIter = Math.max(maxIter, iteration + 1);
@@ -409,7 +426,7 @@ class AgentLoop {
 
         const reason = responseStagesApproval
           ? 'response staged HITL marker without destructive tool call'
-          : `no mutating tool call (gate=action, invoked=[${[...toolsInvokedThisTurn].join(', ')}])`;
+          : `no mutating tool call (gate=action expectsMutation=true, invoked=[${[...toolsInvokedThisTurn].join(', ')}])`;
         this.logger.warn(`[AgentLoop] Action-hallucination guard fired at iteration ${iteration} — re-prompting (${reason})`);
         // Maturation loop: the guard firing is a structural failure of the
         // (tools, model) pairing — an action turn that didn't act.
@@ -480,27 +497,27 @@ class AgentLoop {
     // confident falsehood ("Ich habe die Karte gelöscht — die Tool-Bestätigung
     // liegt vor", zero tool calls). One re-prompt is a request, not a guarantee.
     //
-    // So the turn's honesty is made structural rather than hoped for: a
-    // gate=action turn that invoked no write-class tool did not act, and says so
-    // in a code-owned sentence beneath whatever the model wrote. The trailer
-    // appends and never replaces — substituting it would delete a legitimate
-    // specific refusal ("I couldn't find that card"), the most useful sentence in
-    // such a turn, in favour of a generic one.
+    // So the turn's honesty is made structural rather than hoped for: a turn
+    // that was asked to change something and invoked no mutating tool did not
+    // act, and says so in a code-owned sentence beneath whatever the model
+    // wrote. The trailer appends and never replaces — substituting it would
+    // delete a legitimate specific refusal ("I couldn't find that card"), the
+    // most useful sentence in such a turn, in favour of a generic one.
     //
     // The trigger reads the turn's invoked tool names, never its prose. The
     // ProvenanceAnnotator's groundedRatio was the tempting alternative and is not
     // consulted: it scores a fabricated claim as grounded whenever the claim
     // echoes the user's own nouns (#267).
     //
-    // This is also a diagnostic. A read-only request misclassified as
-    // gate=action will visibly carry the trailer under an informational answer.
-    // That is a classifier-quality signal surfacing in production, not a defect
-    // here, and no heuristic suppresses it — the journal line below carries the
-    // gate and the invoked tool names so a recurring false fire is attributable
-    // to the classification, which is where the fix belongs.
-    if (options.gate === 'action' && !invokedMutatingTool() && lastResponse) {
+    // "Asked to change something" is the verdict's expectsMutation, not its
+    // gate. Until #272 this read gate=action alone, and every read-only deck or
+    // calendar question — which #134 correctly routes through the tool pipeline
+    // — carried an apology beneath a correct answer. The fix belonged in the
+    // classification, and that is where it went: the model states the
+    // expectation, the guard consumes it.
+    if (options.gate === 'action' && expectsMutation && !invokedMutatingTool() && lastResponse) {
       this.logger.warn(
-        `[AgentLoop] Honesty trailer appended: gate=action mutatingCall=none ` +
+        `[AgentLoop] Honesty trailer appended: gate=action expectsMutation=true mutatingCall=none ` +
         `invoked=[${[...toolsInvokedThisTurn].join(', ')}] guardFired=${actionGuardFired} language=${options.language || 'unset'}`
       );
       lastResponse = `${lastResponse}\n\n${buildNoActionTrailer(options.language)}`;
@@ -766,7 +783,7 @@ class AgentLoop {
    * @returns {Promise<{success: boolean, result: string, error?: string}>}
    * @private
    */
-  async _executeWithGuards(toolCall, roomToken, { approvalGranted = false } = {}) {
+  async _executeWithGuards(toolCall, roomToken, { approvalGranted = false, language = null } = {}) {
     // ToolGuard: hardcoded security policy
     if (this.toolGuard) {
       const guardResult = this.toolGuard.evaluate(toolCall.name);
@@ -780,8 +797,10 @@ class AgentLoop {
             const history = (roomToken && this.conversationContext)
               ? await this.conversationContext.getHistory(roomToken, { limit: 10 })
               : [];
+            // The resolved language rides along so a timed-out offer is born
+            // speaking the user's language, not the persona's (#273).
             const approvalResult = await this.guardrailEnforcer.checkApproval(
-              toolCall.name, toolCall.arguments, roomToken, history
+              toolCall.name, toolCall.arguments, roomToken, history, { language }
             );
             if (!approvalResult.allowed) {
               if (approvalResult.editRequest) {

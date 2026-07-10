@@ -1611,17 +1611,12 @@ asyncTest('action-hallucination guard: response stages HITL marker after read-on
   assert.strictEqual(response, 'Deleted card #42.');
 });
 
-asyncTest('a read-only turn misclassified as gate=action carries the trailer (diagnostic, not suppressed)', async () => {
-  // "how many cards" classified as action; list-then-summarize is the right work,
-  // but the classifier called it an action. Nothing structural distinguishes this
-  // from a prose offer — both are gate=action with only a read — and separating
-  // them would mean reading prose. So the guard re-prompts and the trailer lands.
-  //
-  // That is deliberate. The trailer is a classifier-quality signal surfacing in
-  // production: it says, truthfully, that this turn changed nothing. No heuristic
-  // suppresses it, and its journal line carries the gate and the invoked tool
-  // names so a recurring false fire is attributable to the classification, which
-  // is where the fix belongs.
+asyncTest('gate=action without expectsMutation arms the guard (fail-safe, no verdict field)', async () => {
+  // A verdict that never stated the expectation — the regex fallback, a legacy
+  // caller, a model that omitted the field — leaves the guard armed. The safe
+  // failure of an honesty guard is a possible false apology, never a missed
+  // fabrication. This is the pre-#272 behaviour, kept exactly, for the case
+  // where nothing is known.
   const provider = createMockProvider([
     { content: null, toolCalls: [{ id: 'call_1', name: 'deck_list_cards', arguments: {} }] },
     { content: 'There are 3 cards in Ideas.', toolCalls: null },
@@ -1645,6 +1640,106 @@ asyncTest('a read-only turn misclassified as gate=action carries the trailer (di
   assert.ok(response.startsWith('There are 3 cards in Ideas.'), 'informational answer preserved');
   assert.ok(response.endsWith(NO_ACTION_TRAILER.EN), 'trailer appended beneath it');
   assert.strictEqual(provider._getCallCount(), 3);  // one bounded re-prompt
+});
+
+asyncTest('#272: a read-only deck query at gate=action ends clean (expectsMutation=false)', async () => {
+  // "Was steht gerade auf meinem Board?" — #134 routes it through the tool
+  // pipeline (gate=action), and it changes nothing (expectsMutation=false).
+  // The guard must not re-prompt and the floor must not append: the user asked
+  // a question and got an answer. This is the live production bug #272.
+  const provider = createMockProvider([
+    { content: null, toolCalls: [{ id: 'call_1', name: 'deck_list_cards', arguments: {} }] },
+    { content: 'There are 3 cards in Ideas.', toolCalls: null }
+  ]);
+
+  const registry = createMockToolRegistry(
+    { deck_list_cards: async () => ({ success: true, result: '#1, #2, #3' }) },
+    ['deck_list_cards']
+  );
+
+  const loop = new AgentLoop({
+    toolRegistry: registry,
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('how many cards on the board', 'room-abc', {
+    gate: 'action', expectsMutation: false
+  });
+  assert.strictEqual(response, 'There are 3 cards in Ideas.', 'answer intact, no trailer');
+  assert.strictEqual(provider._getCallCount(), 2, 'no re-prompt');
+});
+
+asyncTest('#272 truth table: expected×happened — only expected-and-did-not fires', async () => {
+  // Four cells. The new field disarms the guard for turns not expected to
+  // mutate; it never disarms it for a turn that WAS expected to and did not,
+  // and it never arms it for a turn that actually mutated.
+  const cells = [
+    { expectsMutation: true,  mutates: true,  fires: false, why: 'asked to change, changed it' },
+    { expectsMutation: true,  mutates: false, fires: true,  why: 'asked to change, changed nothing' },
+    { expectsMutation: false, mutates: true,  fires: false, why: 'asked a question, changed something anyway' },
+    { expectsMutation: false, mutates: false, fires: false, why: 'asked a question, answered it' },
+  ];
+
+  for (const cell of cells) {
+    const toolName = cell.mutates ? 'deck_create_card' : 'deck_list_cards';
+    // The guard re-prompts once when it fires, so the mock needs a third turn.
+    const provider = createMockProvider([
+      { content: null, toolCalls: [{ id: 'call_1', name: toolName, arguments: {} }] },
+      { content: 'Done.', toolCalls: null },
+      { content: 'Done.', toolCalls: null }
+    ]);
+    const registry = createMockToolRegistry(
+      { [toolName]: async () => ({ success: true, result: 'ok' }) },
+      cell.mutates ? [] : [toolName]
+    );
+    const loop = new AgentLoop({
+      toolRegistry: registry,
+      conversationContext: createMockConversationContext(),
+      llmProvider: provider,
+      config: { soulPath: testSoulPath },
+      logger: silentLogger
+    });
+
+    const response = await loop.process('msg', 'room-abc', {
+      gate: 'action', expectsMutation: cell.expectsMutation
+    });
+
+    assert.strictEqual(
+      response.endsWith(NO_ACTION_TRAILER.EN), cell.fires,
+      `trailer ${cell.fires ? 'expected' : 'not expected'}: ${cell.why}`
+    );
+    assert.strictEqual(
+      provider._getCallCount(), cell.fires ? 3 : 2,
+      `re-prompt ${cell.fires ? 'expected' : 'not expected'}: ${cell.why}`
+    );
+  }
+});
+
+asyncTest('expectsMutation=false does NOT excuse a staged approval ceremony', async () => {
+  // The marker check is gate- and expectation-independent: the 🔐 codepoint
+  // belongs to GuardrailEnforcer's Talk surface, never a model response. A
+  // read-only verdict cannot license staging a fake ceremony (#81/#85).
+  const provider = createMockProvider([
+    { content: '\u{1F510} **Delete card 42** — requires approval', toolCalls: null },
+    { content: 'I cannot delete that card.', toolCalls: null }
+  ]);
+
+  const loop = new AgentLoop({
+    toolRegistry: createMockToolRegistry({}),
+    conversationContext: createMockConversationContext(),
+    llmProvider: provider,
+    config: { soulPath: testSoulPath },
+    logger: silentLogger
+  });
+
+  const response = await loop.process('what is on my board', 'room-abc', {
+    gate: 'action', expectsMutation: false
+  });
+  assert.ok(!response.includes('\u{1F510}'), 'staged marker never reaches the user');
+  assert.strictEqual(provider._getCallCount(), 2, 'guard re-prompted despite expectsMutation=false');
 });
 
 asyncTest('a read-only turn at gate=knowledge is untouched (no re-prompt, no trailer)', async () => {

@@ -226,11 +226,53 @@ asyncTest('TC-PROBE-005: empty candidates returns null model without throwing', 
 test('TC-PROBE-006: loadFixture parses the real golden-set fixture', () => {
   const fixturePath = path.join(__dirname, '../../fixtures/golden-set/classification-golden-set.json');
   const fixture = GoldenSetProbe.loadFixture(fixturePath);
-  assert.strictEqual(fixture.version, 1);
+  assert.strictEqual(fixture.version, 2);
   assert.strictEqual(fixture.threshold, 0.75);
   assert.ok(Array.isArray(fixture.languages.EN));
   assert.ok(Array.isArray(fixture.languages.DE));
   assert.ok(Array.isArray(fixture.languages.PT));
+});
+
+test('TC-PROBE-006b: every fixture example labels its language and mutation expectation (#272/#273)', () => {
+  const fixturePath = path.join(__dirname, '../../fixtures/golden-set/classification-golden-set.json');
+  const fixture = GoldenSetProbe.loadFixture(fixturePath);
+
+  for (const [lang, items] of Object.entries(fixture.languages)) {
+    assert.ok(items.length > 0, `${lang} has examples`);
+    for (const ex of items) {
+      assert.strictEqual(ex.language, lang,
+        `${lang}#${ex.id}: an example's language label must match its section`);
+      assert.strictEqual(typeof ex.expectsMutation, 'boolean',
+        `${lang}#${ex.id}: expectsMutation must be labelled`);
+    }
+  }
+});
+
+test('TC-PROBE-006c: the fixture is parallel across languages, including the read-only action trap', () => {
+  const fixturePath = path.join(__dirname, '../../fixtures/golden-set/classification-golden-set.json');
+  const fixture = GoldenSetProbe.loadFixture(fixturePath);
+  const langs = Object.keys(fixture.languages);
+
+  // Parallel: same ids, same labels, translated text. A per-language accuracy
+  // gap must reflect the model's language handling, not different difficulty.
+  const signature = (items) => items
+    .map(e => `${e.id}:${e.gate}:${e.domain}:${e.expectsMutation}`)
+    .sort().join('|');
+  const reference = signature(fixture.languages[langs[0]]);
+  for (const lang of langs.slice(1)) {
+    assert.strictEqual(signature(fixture.languages[lang]), reference,
+      `${lang} must carry the same labelled intents as ${langs[0]}`);
+  }
+
+  // The trap #272 is about: gate=action (needs the tool pipeline, #134) AND
+  // expectsMutation=false (changes nothing). Without these the fixture cannot
+  // catch a model that collapses the two meanings.
+  for (const lang of langs) {
+    const readOnlyActions = fixture.languages[lang]
+      .filter(e => e.gate === 'action' && e.expectsMutation === false);
+    assert.ok(readOnlyActions.length >= 3,
+      `${lang} needs read-only action examples; found ${readOnlyActions.length}`);
+  }
 });
 
 asyncTest('TC-PROBE-007: a transient all-error measurement is NOT cached and yields no pick (cold-Ollama poisoning guard)', async () => {

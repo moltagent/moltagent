@@ -716,14 +716,18 @@ class MessageProcessor {
         // Smart-mix: three-path routing (local text / local tools / cloud)
         // Build live context ONCE — passed to classifier, probes, synthesis, guard
         const liveContext = earlyLiveContext || (session ? buildLiveContext(session, pipelineMessage) : null);
-        const { useLocalPipeline, useDomainTools, intent, compound, gate, domain, clsModel, clsLanguage, clsParseFailed } = await this._smartMixClassify(pipelineMessage, session, extracted.token, liveContext);
+        const { useLocalPipeline, useDomainTools, intent, compound, gate, domain, language, expectsMutation, clsModel, clsPromptLanguage, clsParseFailed } = await this._smartMixClassify(pipelineMessage, session, extracted.token, liveContext);
         // The classifier names a PIPELINE, not a trust destination — the agent-loop
         // path's actual model/trust is resolved at the chokepoint (RouterChatBridge),
         // so the log reads the resolver rather than assuming 'cloud'.
         const pipelineLabel = useLocalPipeline
           ? (useDomainTools ? 'local-pipeline+tools' : 'local-pipeline')
           : `agent-loop (trust=${this._resolveJobTrust('tools')})`;
-        console.log(`[Message] Smart-mix classification: ${intent} → ${pipelineLabel}${compound ? ' [COMPOUND]' : ''}${gate ? ` (gate=${gate})` : ''}`);
+        // language and expectsMutation appear here because this is where a
+        // #272-class misfire becomes attributable: the guard's predicate and the
+        // surface's language are both decided upstream of any code that could be
+        // blamed for them.
+        console.log(`[Message] Smart-mix classification: ${intent} → ${pipelineLabel}${compound ? ' [COMPOUND]' : ''}${gate ? ` (gate=${gate})` : ''} language=${language} expectsMutation=${expectsMutation}`);
 
         // Intent-specific feedback: acknowledge the user immediately (fire-and-forget)
         const lang = this._getLanguage();
@@ -745,7 +749,8 @@ class MessageProcessor {
             user: extracted.user,
             gate,
             domain,
-            language: clsLanguage,
+            language,
+            expectsMutation,
             compound,
             systemSuffix: focusContext ? (flushPrompt ? flushPrompt + '\n' + focusContext : focusContext) : flushPrompt,
             onArtifact
@@ -814,7 +819,8 @@ class MessageProcessor {
                 user: extracted.user,
                 gate,
                 domain,
-                language: clsLanguage,
+                language,
+                expectsMutation,
                 compound,
                 systemSuffix: focusContext || undefined,
                 onArtifact
@@ -854,7 +860,8 @@ class MessageProcessor {
               user: extracted.user,
               gate,
               domain,
-              language: clsLanguage,
+              language,
+              expectsMutation,
               systemSuffix: focusContext || undefined,
               onArtifact
             });
@@ -903,7 +910,8 @@ class MessageProcessor {
               user: extracted.user,
               gate,
               domain,
-              language: clsLanguage,
+              language,
+              expectsMutation,
               systemSuffix: focusContext
                 ? (flushPrompt ? flushPrompt + '\n' + focusContext : focusContext)
                 : flushPrompt,
@@ -953,7 +961,8 @@ class MessageProcessor {
               user: extracted.user,
               gate,
               domain,
-              language: clsLanguage,
+              language,
+              expectsMutation,
               systemSuffix: focusContext || undefined,
               onArtifact
             });
@@ -984,7 +993,8 @@ class MessageProcessor {
               user: extracted.user,
               gate,
               domain,
-              language: clsLanguage,
+              language,
+              expectsMutation,
               systemSuffix: focusContext || undefined,
               onArtifact
             });
@@ -1025,7 +1035,8 @@ class MessageProcessor {
             user: extracted.user,
             gate,
             domain,
-            language: clsLanguage,
+            language,
+            expectsMutation,
             compound
           };
 
@@ -1058,7 +1069,7 @@ class MessageProcessor {
         // recorded here where every dispatch path converges. The result
         // marker is the structural outcome signal — escalation markers are
         // the negative (half-weight) escalation-correction samples.
-        this._recordClassificationOutcome(result, clsModel, clsLanguage, clsParseFailed);
+        this._recordClassificationOutcome(result, clsModel, clsPromptLanguage, clsParseFailed);
       } else if (this.agentLoop) {
         // Session 14: AgentLoop handles all natural language via tool-calling LLM
         // Generic feedback — no classification available in this path
@@ -1649,6 +1660,26 @@ class MessageProcessor {
   }
 
   /**
+   * The language every code-owned surface for this turn speaks. One home for
+   * the fallback chain, so no surface resolves language independently (#273).
+   *
+   * The verdict's `language` is the model's reading of the message. `OTHER`
+   * means "a language this system does not carry text in", not "unknown" — the
+   * user gets the persona language, which is the behaviour before this signal
+   * existed. An absent verdict field (regex fallback, legacy caller) resolves
+   * the same way, because nothing read the message.
+   *
+   * @param {Object} verdict - Classification verdict
+   * @returns {string} 'EN' | 'DE' | 'PT' | the persona language
+   * @private
+   */
+  _resolveMessageLanguage(verdict) {
+    const detected = verdict && verdict.language;
+    if (detected && detected !== 'OTHER') return detected;
+    return this._getLanguage() || 'EN';
+  }
+
+  /**
    * Record action(s) from a structured executor response onto the session ledger.
    * Handles both single actionRecord objects and arrays.
    *
@@ -1756,17 +1787,19 @@ class MessageProcessor {
    * structurally at IntentRouter and prove nothing further here.
    * @param {Object} result - Dispatch result carrying the smart_mix_* marker
    * @param {string|null} model - Verdict's producing model
-   * @param {string|null} language - Verdict's prompt language
+   * @param {string|null} promptLanguage - Language the prompt's examples were in
+   *   (the persona setting), which is the bucket the golden-set probe scores.
+   *   NOT the language the user wrote in — that is `verdict.language` (#273).
    * @param {boolean} parseFailed
    * @private
    */
-  _recordClassificationOutcome(result, model, language, parseFailed) {
+  _recordClassificationOutcome(result, model, promptLanguage, parseFailed) {
     if (!this.modelScorecard || !model || parseFailed) return;
     const marker = typeof result?.intent === 'string' ? result.intent : '';
     if (!marker.startsWith('smart_mix')) return;
     if (marker.startsWith('smart_mix_flush') || marker.startsWith('smart_mix_cloud_error')) return;
     const escalated = marker.startsWith('smart_mix_escalated') || marker === 'smart_mix_compound_fallback';
-    this.modelScorecard.recordSample('classification', model, language, !escalated,
+    this.modelScorecard.recordSample('classification', model, promptLanguage, !escalated,
       escalated ? { weight: this.modelScorecard.escalationWeight } : undefined);
   }
 
@@ -1869,10 +1902,18 @@ class MessageProcessor {
       // this verdict, in which prompt language, and whether it parse-failed
       // (a parse-failed verdict already yielded its structural negative at
       // IntentRouter; the fallback verdict proves nothing further).
+      //
+      // `clsPromptLanguage` is the persona setting that chose the prompt's
+      // examples — the ModelScorecard's bucket. `language` is the user's own
+      // language, resolved once here and threaded to every surface. They were
+      // one field until #273, which is why a German refusal wore an English
+      // trailer. `expectsMutation` is the honesty guard's predicate (#272).
       const clsMeta = {
         clsModel: classification.model || null,
-        clsLanguage: classification.language || null,
+        clsPromptLanguage: classification.promptLanguage || null,
         clsParseFailed: !!classification.parseFailed,
+        language: this._resolveMessageLanguage(classification),
+        expectsMutation: classification.expectsMutation !== false,
       };
 
       // The classifier chooses the PIPELINE, never a trust destination. Knowledge →
