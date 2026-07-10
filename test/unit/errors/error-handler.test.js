@@ -520,6 +520,79 @@ asyncTest('TC-RETHROW-002: Rethrow original error', async () => {
   }
 });
 
+// ============================================================
+// Cause-chain classification (#269)
+// ============================================================
+
+console.log('\n--- Cause-chain classification ---\n');
+
+test('TC-CAUSE-001: Wrapped exhaustion error classifies as its cause', () => {
+  const handler = new ErrorHandler();
+  const root = new Error('Ollama request timed out after 60000ms');
+  const wrapper = new Error('All providers exhausted for job tools. Tried: ollama-local');
+  wrapper.cause = root;
+
+  assert.strictEqual(handler.classify(wrapper), ErrorCategory.TIMEOUT);
+});
+
+test('TC-CAUSE-002: Top-level category is never overridden by the cause', () => {
+  const handler = new ErrorHandler();
+  const root = new Error('connection refused');
+  const wrapper = new Error('rate limit exceeded');
+  wrapper.cause = root;
+
+  assert.strictEqual(handler.classify(wrapper), ErrorCategory.RATE_LIMITED);
+});
+
+test('TC-CAUSE-003: Chain is walked past intermediate INTERNAL links', () => {
+  const handler = new ErrorHandler();
+  const root = new Error('socket hang up');
+  const middle = new Error('wrapper without a category');
+  middle.cause = root;
+  const top = new Error('another opaque wrapper');
+  top.cause = middle;
+
+  assert.strictEqual(handler.classify(top), ErrorCategory.NETWORK);
+});
+
+test('TC-CAUSE-004: Cyclic cause chain terminates', () => {
+  const handler = new ErrorHandler();
+  const a = new Error('opaque a');
+  const b = new Error('opaque b');
+  a.cause = b;
+  b.cause = a;
+
+  assert.strictEqual(handler.classify(a), ErrorCategory.INTERNAL);
+});
+
+test('TC-CAUSE-005: Depth is bounded — a cause past the limit is not consulted', () => {
+  const handler = new ErrorHandler();
+  let error = new Error('Ollama request timed out');
+  for (let i = 0; i < 6; i++) {
+    const wrapper = new Error(`opaque wrapper ${i}`);
+    wrapper.cause = error;
+    error = wrapper;
+  }
+
+  assert.strictEqual(handler.classify(error), ErrorCategory.INTERNAL);
+});
+
+test('TC-CAUSE-006: Non-Error cause is ignored', () => {
+  const handler = new ErrorHandler();
+  const wrapper = new Error('opaque wrapper');
+  wrapper.cause = 'timed out';
+
+  assert.strictEqual(handler.classify(wrapper), ErrorCategory.INTERNAL);
+});
+
+test('TC-CAUSE-007: MoltAgentError with INTERNAL category defers to its cause', () => {
+  const handler = new ErrorHandler();
+  const root = new Error('Ollama request timed out');
+  const wrapper = new MoltAgentError('Operation failed', { cause: root });
+
+  assert.strictEqual(handler.classify(wrapper), ErrorCategory.TIMEOUT);
+});
+
 // Summary
 setTimeout(() => {
   summary();

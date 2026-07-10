@@ -475,7 +475,7 @@ class LLMRouter {
 
       } catch (error) {
         console.log(`[LLMRouter] Provider ${providerId} failed: ${error.message}`);
-        errors.push({ provider: providerId, error: error.message, status: error.status });
+        errors.push({ provider: providerId, error: error.message, status: error.status, cause: error });
         failoverPath.push(providerId);
 
         // Record failure with circuit breaker
@@ -552,11 +552,16 @@ class LLMRouter {
     // All providers exhausted
     this.stats.errors++;
 
+    // The last provider error is the root cause of this exhaustion. Pre-flight
+    // entries (circuit open, budget, rate limit) carry no Error object; only a
+    // real provider throw does.
+    const lastCause = [...errors].reverse().find(e => e.cause instanceof Error)?.cause || null;
+
     await this.auditLog('llm_all_exhausted', {
       task,
       role,
       attempted: failoverPath,
-      errors
+      errors: errors.map(({ cause, ...rest }) => rest)
     });
 
     // Notify user
@@ -568,7 +573,10 @@ class LLMRouter {
     });
 
     const label = job ? `job ${job}` : `role ${role}`;
-    throw new Error(`All providers exhausted for ${label}. Tried: ${failoverPath.join(' -> ')}`);
+    const suffix = lastCause ? `. Last error: ${lastCause.message}` : '';
+    const exhausted = new Error(`All providers exhausted for ${label}. Tried: ${failoverPath.join(' -> ')}${suffix}`);
+    if (lastCause) exhausted.cause = lastCause;
+    throw exhausted;
   }
 
   /**
