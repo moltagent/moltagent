@@ -569,6 +569,42 @@ asyncTest('calendar_create_event with check_availability:true and a free slot cr
   assert.ok(result.result.includes('Free slot'));
 });
 
+// --- #160: calendar_update_event identifier validation dies structurally ---
+
+asyncTest('calendar_update_event with a missing identifier returns a specific correctable error (#160)', async () => {
+  const registry = new ToolRegistry({ calDAVClient: createMockCalDAVClient(), logger: silentLogger });
+
+  const result = await registry.execute('calendar_update_event', { title: 'New title' });
+
+  assert.ok(result.success, 'returns a tool result, not a thrown TypeError');
+  assert.ok(/event identifier required/i.test(result.result), 'names what was missing so the model can list-then-retry');
+  assert.ok(/calendar_list_events/.test(result.result), 'points the model at the recovery tool');
+});
+
+asyncTest('calendar_update_event with a non-string identifier never hits undefined.toLowerCase (#160)', async () => {
+  const registry = new ToolRegistry({ calDAVClient: createMockCalDAVClient(), logger: silentLogger });
+
+  // The exact D3 failure shape: a malformed (object) identifier that previously
+  // reached `.toLowerCase()` as a non-string and crashed with a generic error.
+  const result = await registry.execute('calendar_update_event', { event: {}, title: 'x' });
+
+  assert.ok(result.success, 'no TypeError — a correctable tool result comes back');
+  assert.ok(/event identifier required/i.test(result.result), 'correctable message, not a generic crash');
+});
+
+asyncTest('_findCalendarEvent coerces a non-string identifier instead of throwing (#160 backstop)', async () => {
+  const registry = new ToolRegistry({ calDAVClient: createMockCalDAVClient(), logger: silentLogger });
+  const cal = {
+    getEventCalendars: async () => [{ id: 'personal' }],
+    getEvents: async () => [{ uid: 'ev1', summary: 'Standup' }]
+  };
+
+  // Directly exercise the chokepoint with the crashing shape: undefined must
+  // resolve to "no match" (null), never a TypeError, regardless of caller.
+  const result = await registry._findCalendarEvent(cal, undefined);
+  assert.strictEqual(result, null, 'undefined identifier resolves to no match, no crash');
+});
+
 test('retired calendar tools are not registered (#169)', () => {
   const registry = new ToolRegistry({
     calDAVClient: createMockCalDAVClient(),

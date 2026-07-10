@@ -367,6 +367,31 @@ class CalDAVClient {
   }
 
   /**
+   * Past-date guard, shared by createEvent and updateEvent so both inherit ONE
+   * implementation, not two copies (#167-D2, #169). Rejects a start more than
+   * 24h in the past — the shape of an LLM date hallucination. Delete/cancel do
+   * NOT call this: removing a past event is legitimate.
+   *
+   * The thrown message is model-facing tier-2 text — a tool result the LLM reads
+   * and retries from — not user-facing surface text. It names the current
+   * datetime so the model can self-correct, stays English, and deliberately does
+   * NOT migrate to surface-text.js: it never reaches Talk verbatim, which is the
+   * surface-text pin's membership boundary.
+   *
+   * @param {Date|string} start - The event start being written
+   * @throws {Error} if start is a valid instant more than 24h in the past
+   * @private
+   */
+  _assertStartNotInPast(start) {
+    const startDate = start instanceof Date ? start : new Date(start);
+    const now = new Date();
+    const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    if (!isNaN(startDate.getTime()) && startDate < twentyFourHoursAgo) {
+      throw new Error(`Rejected: start date ${startDate.toISOString()} is in the past. Current date/time is ${now.toISOString()}. Please use the correct date.`);
+    }
+  }
+
+  /**
    * Create a new event
    * @param {Object} event - Event details
    * @param {string} event.summary - Event title
@@ -380,19 +405,11 @@ class CalDAVClient {
    * @returns {Promise<Object>} Created event
    */
   async createEvent(event) {
-    // Past-date guard at the substrate (#169). Every creation path — createEvent,
-    // quickSchedule, scheduleMeeting — routes through here, so the guard fires once
-    // and all paths inherit it (previously it lived in only one of four tool
-    // handlers). Reject starts more than 24h in the past: a likely LLM date
-    // hallucination. The message names the current datetime so the model can
-    // self-correct. Throwing matches createEvent's existing failure contract;
-    // ToolRegistry.execute() surfaces it to the model as an actionable error.
-    const startDate = event.start instanceof Date ? event.start : new Date(event.start);
-    const now = new Date();
-    const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    if (!isNaN(startDate.getTime()) && startDate < twentyFourHoursAgo) {
-      throw new Error(`Rejected: start date ${startDate.toISOString()} is in the past. Current date/time is ${now.toISOString()}. Please use the correct date.`);
-    }
+    // Past-date guard at the substrate (#167-D2, #169): a creation always sets
+    // the start, so createEvent unconditionally validates it. See
+    // _assertStartNotInPast for why the guard lives in one shared method that
+    // updateEvent also calls — one guard, inherited by both, not two copies.
+    this._assertStartNotInPast(event.start);
 
     const calendarId = event.calendarId || this.defaultCalendar;
     const uid = this._generateUID();
@@ -456,6 +473,15 @@ class CalDAVClient {
    * Update an existing event
    */
   async updateEvent(calendarId, uid, updates, etag = null) {
+    // Past-date guard, inherited from the same substrate method as createEvent
+    // (#167-D2). Fire ONLY when this update changes the start: rescheduling TO
+    // the past is the LLM-error shape the guard exists for, but editing the
+    // description/location of a past event is legitimate and must pass. An update
+    // that does not touch the start leaves `updates.start` undefined.
+    if (updates && updates.start !== undefined) {
+      this._assertStartNotInPast(updates.start);
+    }
+
     // Always fetch fresh to get current ETag + state (caller's ETag may be stale
     // from a REPORT query — RSVP replies can change the event between fetch and write)
     const current = await this.getEvent(calendarId, uid);

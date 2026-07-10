@@ -506,6 +506,16 @@ class ToolRegistry {
    * @private
    */
   async _findCalendarEvent(cal, searchTerm) {
+    // Structural backstop for #160: coerce the identifier to a string once, at
+    // the chokepoint every calendar-event lookup funnels through, so an
+    // undefined/object identifier can never reach `.toLowerCase()` as a
+    // non-string. An empty identifier resolves to no match rather than matching
+    // the first event (`''.includes('')` is true) — a missing id must never
+    // silently select an arbitrary event. Handlers still validate presence up
+    // front for a correctable message; this guarantees the TypeError class is
+    // unreachable regardless of caller.
+    const term = String(searchTerm ?? '').trim();
+    if (!term) return null;
     const now = new Date();
     const searchStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
     const searchEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
@@ -514,9 +524,9 @@ class ToolRegistry {
     for (const calendar of calendars) {
       const events = await cal.getEvents(calendar.id, searchStart, searchEnd);
       for (const event of events) {
-        const matchByUid = event.uid === searchTerm;
+        const matchByUid = event.uid === term;
         const matchByTitle = event.summary &&
-          event.summary.toLowerCase().includes(searchTerm.toLowerCase());
+          event.summary.toLowerCase().includes(term.toLowerCase());
         if (matchByUid || matchByTitle) {
           return { event, calendarId: calendar.id };
         }
@@ -2283,9 +2293,19 @@ class ToolRegistry {
         required: ['event']
       },
       handler: async (args) => {
-        const match = await this._findCalendarEvent(cal, args.event);
+        // #160 dies structurally: validate the identifier's presence and shape
+        // BEFORE any string op, returning a specific correctable tool-result the
+        // model can list-then-retry from — rather than letting an undefined/
+        // malformed identifier reach a `.toLowerCase()` TypeError that surfaces
+        // as a generic, uncorrectable error.
+        const identifier = typeof args.event === 'string' ? args.event.trim() : '';
+        if (!identifier) {
+          return 'event identifier required — provide the uid or the event title as returned by calendar_list_events.';
+        }
+
+        const match = await this._findCalendarEvent(cal, identifier);
         if (!match) {
-          return `No event found matching "${args.event}" in the next 30 days or past 7 days.`;
+          return `No event found matching "${identifier}" in the next 30 days or past 7 days.`;
         }
         const { event: foundEvent, calendarId: foundCalendar } = match;
 
