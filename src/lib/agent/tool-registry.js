@@ -2132,7 +2132,7 @@ class ToolRegistry {
       parameters: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: 'Event title' },
+          title: { type: 'string', description: 'Event title (optional). When omitted, the handler supplies a sensible default in the user\'s language — do NOT invent a title or ask the user for one; a request that states time and duration is complete.' },
           start: { type: 'string', description: 'Start datetime as ISO 8601 string' },
           end: { type: 'string', description: 'End datetime as ISO 8601 string. Overrides duration_minutes if both are given (default: start + duration_minutes, or +1 hour).' },
           duration_minutes: { type: 'number', description: 'Event length in minutes. Used to compute end when end is omitted (default: 60).' },
@@ -2152,12 +2152,37 @@ class ToolRegistry {
             }
           }
         },
-        required: ['title', 'start']
+        required: ['start']
       },
       handler: async (args) => {
         const startDate = new Date(args.start);
         if (isNaN(startDate.getTime())) {
           return `Invalid start date: "${args.start}". Use ISO 8601 format (e.g. 2026-02-26T14:00:00).`;
+        }
+
+        // Title is optional (#167 PR-1). A request that gives a time and duration
+        // is complete; it need not name the event. When no title is supplied the
+        // handler defaults one in the turn's language — rather than making the
+        // model invent one (small models fabricate, cloud models decline and the
+        // turn stalls into the #280 clarify loop). Enrichment is structural only: named
+        // attendees from the args append to the default; no prose is inspected.
+        // Calendar content reaches the user through CalDAV, not Talk, so this
+        // default lives in the handler, not surface-text.js (the same membership
+        // boundary the past-date guard's model-facing text observes).
+        const DEFAULT_TITLE = { EN: 'Meeting', DE: 'Termin', PT: 'Reunião' };
+        const suppliedTitle = typeof args.title === 'string' ? args.title.trim() : '';
+        let title = suppliedTitle;
+        let titleDefaulted = false;
+        if (!title) {
+          title = DEFAULT_TITLE[this.getRequestContext().language] || DEFAULT_TITLE.EN;
+          if (Array.isArray(args.attendees) && args.attendees.length > 0) {
+            const names = args.attendees
+              .map(a => (typeof a === 'string' ? a : a.name || a.email))
+              .filter(Boolean)
+              .join(', ');
+            if (names) title += `: ${names}`;
+          }
+          titleDefaulted = true;
         }
 
         // Past-date rejection lives in the CalDAVClient.createEvent substrate (#169),
@@ -2193,7 +2218,7 @@ class ToolRegistry {
         }
 
         const eventData = {
-          summary: args.title,
+          summary: title,
           start: startDate,
           end: endDate,
           description: args.description || '',
@@ -2245,14 +2270,17 @@ class ToolRegistry {
         const event = await cal.createEvent(eventData);
 
         if (!event || !event.uid) {
-          return `Calendar event "${args.title}" may not have been created — no event ID returned. Check the calendar to verify.`;
+          return `Calendar event "${title}" may not have been created — no event ID returned. Check the calendar to verify.`;
         }
 
         if (event.verified === false) {
-          return `Warning: "${args.title}" was sent to the server but could not be verified. The event may not have been saved. Event ID: ${event.uid}. Please check the calendar.`;
+          return `Warning: "${title}" was sent to the server but could not be verified. The event may not have been saved. Event ID: ${event.uid}. Please check the calendar.`;
         }
 
-        let msg = `Created "${args.title}" on ${startDate.toLocaleDateString()} at ${startDate.toLocaleTimeString()}. Event ID: ${event.uid}`;
+        let msg = `Created "${title}" on ${startDate.toLocaleDateString()} at ${startDate.toLocaleTimeString()}. Event ID: ${event.uid}`;
+        if (titleDefaulted) {
+          msg += ` No title was given, so the default "${title}" was applied — mention this so the user can rename it if they'd like.`;
+        }
         if (args.attendees && args.attendees.length > 0) {
           const names = args.attendees.map(a => a.name || a.email).join(', ');
           msg += ` Invitations sent to: ${names}.`;

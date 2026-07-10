@@ -92,9 +92,12 @@ class AgentLoop {
       this.llmProvider.resetConversation();
     }
 
-    // Propagate requesting user identity to tool handlers
-    if (options.user && this.toolRegistry.setRequestContext) {
-      this.toolRegistry.setRequestContext({ user: options.user });
+    // Propagate requesting user identity and the turn's language to tool
+    // handlers. The language (verdict-derived, #273/#274) lets a handler default
+    // user-facing calendar content — e.g. an absent event title — in the tongue
+    // the user wrote in, without any handler re-deriving it from message text.
+    if (this.toolRegistry.setRequestContext) {
+      this.toolRegistry.setRequestContext({ user: options.user, language: options.language });
     }
 
     // 1. Load context

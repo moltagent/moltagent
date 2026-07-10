@@ -414,6 +414,69 @@ asyncTest('calendar_create_event creates event', async () => {
   assert.ok(result.result.includes('Test meeting'));
 });
 
+asyncTest('calendar_create_event: title present is untouched (regression pin)', async () => {
+  let captured;
+  const cal = createMockCalDAVClient();
+  cal.createEvent = async (event) => { captured = event; return { uid: 'ev-t', ...event }; };
+  const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
+  registry.setRequestContext({ user: 'fu', language: 'DE' });
+
+  const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const result = await registry.execute('calendar_create_event', {
+    title: 'Budget Review',
+    start: futureDate.toISOString()
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(captured.summary, 'Budget Review', 'user title must win over the default');
+  assert.ok(!result.result.includes('default'), 'no defaulting note when a title was given');
+});
+
+asyncTest('calendar_create_event: absent title gets the language default and the result names it', async () => {
+  const cases = [
+    { language: 'EN', expected: 'Meeting' },
+    { language: 'DE', expected: 'Termin' },
+    { language: 'PT', expected: 'Reunião' },
+    { language: 'OTHER', expected: 'Meeting' },
+    { language: undefined, expected: 'Meeting' }
+  ];
+  const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+  for (const { language, expected } of cases) {
+    let captured;
+    const cal = createMockCalDAVClient();
+    cal.createEvent = async (event) => { captured = event; return { uid: 'ev-d', ...event }; };
+    const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
+    registry.setRequestContext({ user: 'fu', language });
+
+    const result = await registry.execute('calendar_create_event', {
+      start: futureDate.toISOString()
+    });
+
+    assert.ok(result.success, `lang=${language} should succeed`);
+    assert.strictEqual(captured.summary, expected, `lang=${language} default title`);
+    assert.ok(result.result.includes(expected), `lang=${language} result names the title`);
+    assert.ok(result.result.includes('default'), `lang=${language} result names the defaulting`);
+  }
+});
+
+asyncTest('calendar_create_event: absent title enriches from attendee args (structural, no prose)', async () => {
+  let captured;
+  const cal = createMockCalDAVClient();
+  cal.createEvent = async (event) => { captured = event; return { uid: 'ev-e', ...event }; };
+  const registry = new ToolRegistry({ calDAVClient: cal, logger: silentLogger });
+  registry.setRequestContext({ user: 'fu', language: 'EN' });
+
+  const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const result = await registry.execute('calendar_create_event', {
+    start: futureDate.toISOString(),
+    attendees: [{ email: 'antonio@example.com', name: 'Antonio' }]
+  });
+
+  assert.ok(result.success);
+  assert.strictEqual(captured.summary, 'Meeting: Antonio', 'attendee name appends to the default');
+});
+
 asyncTest('calendar_create_event rejects invalid start date', async () => {
   const registry = new ToolRegistry({
     calDAVClient: createMockCalDAVClient(),
