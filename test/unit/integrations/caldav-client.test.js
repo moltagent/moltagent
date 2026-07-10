@@ -791,6 +791,86 @@ asyncTest('TC-EVENT-GUARD-004: quickSchedule inherits the past-date guard', asyn
   }
 });
 
+// --- #167-D2: the guard is inherited by updateEvent, and only on start changes ---
+
+asyncTest('TC-EVENT-GUARD-005: updateEvent rejects an update that reschedules the start to the past', async () => {
+  const mockNC = createCalDAVMockNC();
+  const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
+
+  const past = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  try {
+    await client.updateEvent('personal', 'event1', {
+      start: past,
+      end: new Date(past.getTime() + 60 * 60 * 1000)
+    });
+    assert.fail('Should have rejected rescheduling to the past');
+  } catch (error) {
+    assert.ok(error.message.includes('in the past'), 'update inherits the same past-date rejection');
+    assert.ok(error.message.includes('Current date/time is'), 'same corrective message shape as createEvent');
+  }
+});
+
+asyncTest('TC-EVENT-GUARD-006: updateEvent leaves a past event alone when the start is not changed', async () => {
+  // SAMPLE_ICS (the default GET for event1) is dated in 2025 — a past event.
+  // Editing only its description is legitimate and must NOT trip the guard.
+  const mockNC = createCalDAVMockNC({
+    'PUT:/remote.php/dav/calendars/testuser/personal/event1.ics': {
+      status: 204,
+      body: '',
+      headers: {}
+    }
+  });
+  const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
+
+  const updated = await client.updateEvent('personal', 'event1', {
+    description: 'Corrected notes on a past meeting'
+  });
+
+  assert.ok(updated, 'description-only update on a past event succeeds');
+  assert.strictEqual(updated.description, 'Corrected notes on a past meeting');
+});
+
+asyncTest('TC-EVENT-GUARD-007: deleteEvent has NO start-time guard — deleting a past event succeeds', async () => {
+  // Deliberate: cancelling or deleting a past event is legitimate. This test
+  // pins that intent so the guard is never "helpfully" extended to delete.
+  const mockNC = createCalDAVMockNC();
+  const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
+
+  const result = await client.deleteEvent('personal', 'event1');
+  assert.strictEqual(result, true, 'past-dated event deletes without a past-date rejection');
+});
+
+asyncTest('TC-EVENT-GUARD-008: create and update route through ONE guard implementation', async () => {
+  // Structural single-guard assertion: both mutation paths invoke the same
+  // _assertStartNotInPast method, so there is one implementation site, not two
+  // copies that could drift.
+  const mockNC = createCalDAVMockNC({
+    'PUT:/remote.php/dav/calendars/testuser/personal/event1.ics': {
+      status: 204,
+      body: '',
+      headers: {}
+    }
+  });
+  const client = new CalDAVClient(mockNC, null, { username: 'testuser' });
+
+  const calls = [];
+  client._assertStartNotInPast = (start) => { calls.push(start); };
+
+  const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  await client.createEvent({
+    summary: 'Structural probe',
+    start: future,
+    end: new Date(future.getTime() + 60 * 60 * 1000),
+    calendarId: 'personal'
+  });
+  await client.updateEvent('personal', 'event1', {
+    start: future,
+    end: new Date(future.getTime() + 60 * 60 * 1000)
+  });
+
+  assert.strictEqual(calls.length, 2, 'both createEvent and updateEvent invoked the single shared guard');
+});
+
 asyncTest('TC-EVENT-006: Delete event', async () => {
   let deleteCalled = false;
 
