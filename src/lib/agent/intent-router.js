@@ -8,11 +8,18 @@
  * which routes to Haiku (cloud-ok) or local models (local-only).
  * Language-specific examples are injected based on cockpit persona language.
  *
+ * The verdict states four facts about the message, each with exactly one
+ * meaning: `gate` (which pipeline it needs), `domain` (which tools), `language`
+ * (what the user wrote in), and `expectsMutation` (whether they want state
+ * changed or want to be told something). The last two exist because the first
+ * was carrying their meanings too: `gate=action` doubled as "wants a mutation"
+ * (#272) and `language` named the persona rather than the person (#273).
+ *
  * No English-only regex guards. The LLM handles all languages natively.
  * Emergency regex fallback (English-only) fires only when all LLM models are down.
  *
  * @module agent/intent-router
- * @version 4.0.0
+ * @version 5.0.0
  */
 
 'use strict';
@@ -40,11 +47,17 @@ const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'se
 
 const COMPLEX_FALLBACK = Object.freeze({ gate: 'knowledge', intent: 'knowledge', domain: null, needsHistory: false, confidence: 0 });
 
+// The four language tags the verdict may carry. Anything else is OTHER — the
+// classifier never invents a fifth tag, and OTHER falls back to the persona.
+const VALID_LANGUAGES = new Set(['EN', 'DE', 'PT', 'OTHER']);
+
 const INTENT_SCHEMA = Object.freeze({
   type: 'object',
   properties: {
     gate: { type: 'string' },
     domain: { type: 'string' },
+    language: { type: 'string' },
+    expectsMutation: { type: 'boolean' },
     confidence: { type: 'number' }
   },
   required: ['gate']
@@ -312,14 +325,41 @@ CONTEXT-AWARE RULES:
 - When uncertain, prefer the domain of the most recent assistant action for continuations.
 - When uncertain and NOT continuing a conversation, prefer knowledge.
 
+LANGUAGE — The language the user wrote the LAST message in.
+  EN for English, DE for German, PT for Portuguese, OTHER for every other language.
+  The language of the message, not of this instruction or of the conversation history.
+  Spanish, French, Italian, Dutch and every other language are OTHER. Never answer
+  with the nearest of EN/DE/PT: Spanish is OTHER, not PT.
+  "Was steht auf meinem Board?" → language: DE
+  "Cria um cartão para o relatório" → language: PT
+  "Book a meeting on Friday" → language: EN
+  "¿Qué hay en mi tablero?" → language: OTHER
+
+EXPECTS_MUTATION — Does the user want something CHANGED, or want to be TOLD something?
+  true when the user asks you to create, send, book, move, update, delete, upload, or save.
+  false when the user asks a question, however much machinery answering it takes.
+  Reading a board, a calendar, or a mailbox to answer a question changes nothing: false.
+  "Lösch die Karte 'Onboarding'" → expectsMutation: true
+  "Envia um e-mail ao Alex" → expectsMutation: true
+  "Was steht gerade auf meinem Board?" → expectsMutation: false
+  "How many cards are in Doing?" → expectsMutation: false
+  "Quais são os meus eventos de amanhã?" → expectsMutation: false
+  Not this: "What's on my board?" → expectsMutation: true (it reads; it changes nothing).
+
+  EXPECTS_MUTATION is independent of GATE. A board overview is gate: action
+  (it needs the tools) AND expectsMutation: false (it changes nothing).
+
 Return JSON:
 {
   "gate": "knowledge" | "action" | "compound" | "thinking" | "greeting" | "chitchat" | "confirmation" | "confirmation_declined",
   "domain": "deck" | "calendar" | "email" | "wiki" | "file" | null,
+  "language": "EN" | "DE" | "PT" | "OTHER",
+  "expectsMutation": true | false,
   "confidence": 0.0-1.0
 }
 
 domain is only set when gate is "action" or "compound".
+language and expectsMutation are always set.
 Respond with JSON only.`;
 }
 
@@ -462,9 +502,11 @@ class IntentRouter {
     const verdict = this._parseClassification(raw, message);
     // Verdict custody: the producing model and the prompt language exist only
     // here — carry them on the verdict so downstream sample recording
-    // (maturation loop) attributes without re-deriving.
+    // (maturation loop) attributes without re-deriving. `promptLanguage` is the
+    // persona setting that chose the examples; `verdict.language` is the
+    // language the user wrote in. They are different facts (#273).
     verdict.model = result?.model || null;
-    verdict.language = language;
+    verdict.promptLanguage = language;
     this._recordStructuralOutcome(verdict);
     return verdict;
   }
@@ -512,8 +554,10 @@ class IntentRouter {
     const verdict = this._parseClassification(result.content || '', message);
     // Verdict custody: producing model + prompt language travel on the
     // verdict (computed once here, read by downstream sample recording).
+    // The message's own language is `verdict.language`, set by the parser
+    // from what the model reported — never overwritten with the persona.
     verdict.model = model || null;
-    verdict.language = lang;
+    verdict.promptLanguage = lang;
     // Probe runs (golden-set fixture replay) are excluded from the
     // maturation loop: their result already enters the score as the seed —
     // recording them as production samples would count the fixture twice.
@@ -534,8 +578,10 @@ class IntentRouter {
    * @param {string} message - Message to classify
    * @param {string} language - Language code the fixture example is written
    *   in (e.g. 'EN', 'DE', 'PT') — forces the matching example set rather
-   *   than reading the cockpit's current persona language.
-   * @returns {Promise<{gate: string, domain: string|null}>}
+   *   than reading the cockpit's current persona language. This is the PROMPT
+   *   language; the returned `language` is what the model detected in the
+   *   message, which the fixture asserts against its own section.
+   * @returns {Promise<{gate: string, domain: string|null, language: string, expectsMutation: boolean}>}
    */
   async probeClassify(model, message, language) {
     const r = await this._classifyWithModel(model, message, [], {
@@ -544,7 +590,15 @@ class IntentRouter {
       options: { temperature: 0, seed: 42 },
       probe: true
     });
-    return { gate: r.gate, domain: r.domain ?? null };
+    // Seat scoring reads gate/domain only (unchanged). The two enrichment
+    // fields ride along so the fixture tests can assert them without a
+    // second classification pass.
+    return {
+      gate: r.gate,
+      domain: r.domain ?? null,
+      language: r.language ?? 'OTHER',
+      expectsMutation: r.expectsMutation !== false
+    };
   }
 
   /**
@@ -559,7 +613,10 @@ class IntentRouter {
    */
   _recordStructuralOutcome(verdict) {
     if (!this.modelScorecard || !verdict || !verdict.parseFailed || !verdict.model) return;
-    this.modelScorecard.recordSample('classification', verdict.model, verdict.language || null, false);
+    // The scorecard buckets by the language the model was PROMPTED in — the
+    // same bucket the golden-set probe scores. A parse-failed verdict has no
+    // trustworthy message language to bucket by anyway.
+    this.modelScorecard.recordSample('classification', verdict.model, verdict.promptLanguage || null, false);
   }
 
   /**
@@ -586,6 +643,11 @@ class IntentRouter {
    * English-only emergency regex fallback when all LLM models are unavailable.
    * Non-English messages get safe 'knowledge' default routing.
    * This is a degraded-mode path — not expected in normal operation.
+   *
+   * The verdict carries neither `language` nor `expectsMutation`: no model read
+   * the message, so nothing here may claim to know either. Both absences resolve
+   * safely downstream — language falls back to the persona, and a missing
+   * expectsMutation leaves the honesty guard armed.
    * @param {string} message
    * @returns {{gate: string, intent: string, domain: string|null, needsHistory: boolean, confidence: number, compound: boolean}}
    * @private
@@ -673,6 +735,19 @@ class IntentRouter {
       let domain = (parsed.domain || '').toLowerCase().trim() || null;
       const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 0.8;
 
+      // The message's own language. Structural validation only (an unknown tag
+      // is not a fifth language, it is OTHER) — the model decides, the code
+      // checks the shape. OTHER falls back to the persona downstream.
+      const rawLanguage = String(parsed.language || '').toUpperCase().trim();
+      const language = VALID_LANGUAGES.has(rawLanguage) ? rawLanguage : 'OTHER';
+
+      // Does the user want state changed? The honesty guard arms on this, not on
+      // the gate — a board overview needs the tool pipeline (gate=action, #134)
+      // and changes nothing (#272). Only an explicit `false` disarms the guard:
+      // when the classifier abstains, the safe failure is a possible false
+      // apology, never a missed fabrication. See the predicate in agent-loop.js.
+      const expectsMutation = !(parsed.expectsMutation === false || parsed.expectsMutation === 'false');
+
       // Legacy format: LLM returned {"intent":"..."} instead of {"gate":"..."}
       if (!gate && parsed.intent) {
         const intent = parsed.intent.toLowerCase().trim();
@@ -697,7 +772,7 @@ class IntentRouter {
         return { ...COMPLEX_FALLBACK, compound: parsed.compound === true, parseFailed: true };
       }
 
-      console.log(`[IntentRouter] Parsed: gate=${gate}, domain=${domain}, confidence=${confidence}`);
+      console.log(`[IntentRouter] Parsed: gate=${gate}, domain=${domain}, language=${language}, expectsMutation=${expectsMutation}, confidence=${confidence}`);
       const compound = gate === 'compound' || parsed.compound === true;
 
       // Unknown → knowledge (knowledge is the safe default)
@@ -729,6 +804,11 @@ class IntentRouter {
         ? (result.domain || 'complex')
         : result.gate;
 
+      // Two more facts the model stated about the message. They travel on the
+      // verdict from here, computed once (signals keep custody).
+      result.language = language;
+      result.expectsMutation = expectsMutation;
+
       return result;
     } catch {
       return { ...COMPLEX_FALLBACK, parseFailed: true };
@@ -741,5 +821,6 @@ class IntentRouter {
 IntentRouter.buildClassificationPrompt = buildClassificationPrompt;
 IntentRouter.CLASSIFICATION_EXAMPLES = CLASSIFICATION_EXAMPLES;
 IntentRouter.VALID_GATES = VALID_GATES;
+IntentRouter.VALID_LANGUAGES = VALID_LANGUAGES;
 
 module.exports = IntentRouter;

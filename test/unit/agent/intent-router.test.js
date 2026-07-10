@@ -581,4 +581,107 @@ asyncTest('probeClassify() pins temperature 0 and a fixed seed; classify() keeps
   assert.strictEqual(captured[1].seed, undefined, 'production classification must not inherit the probe seed');
 });
 
+// ============================================================
+// Verdict enrichment: language (#273) + expectsMutation (#272)
+// ============================================================
+
+console.log('\n--- Verdict enrichment: language + expectsMutation ---\n');
+
+asyncTest('verdict carries the message language the model reported', async () => {
+  const router = createRouter('{"gate":"action","domain":"deck","language":"DE","expectsMutation":true}');
+  const result = await router.classify('Lösch die Karte Onboarding');
+  assert.strictEqual(result.language, 'DE');
+});
+
+asyncTest('an unknown language tag normalizes to OTHER, never a fifth tag', async () => {
+  const router = createRouter('{"gate":"knowledge","language":"ES","expectsMutation":false}');
+  const result = await router.classify('¿Quién es Alex?');
+  assert.strictEqual(result.language, 'OTHER');
+});
+
+asyncTest('a missing language field yields OTHER (nothing is guessed)', async () => {
+  const router = createRouter('{"gate":"knowledge"}');
+  const result = await router.classify('who is Alex?');
+  assert.strictEqual(result.language, 'OTHER');
+});
+
+asyncTest('promptLanguage is the persona, language is the message — they are distinct', async () => {
+  // The persona is EN; the user wrote German. Before #273 one field held both.
+  const router = new IntentRouter({
+    provider: createMockProvider('{"gate":"action","domain":"deck","language":"DE","expectsMutation":true}'),
+    getLanguage: () => 'EN',
+    config: { classifyTimeout: 5000 }
+  });
+  const result = await router.classify('Lösch die Karte Onboarding');
+  assert.strictEqual(result.language, 'DE', 'the language the user wrote in');
+  assert.strictEqual(result.promptLanguage, 'EN', 'the persona that chose the examples');
+});
+
+asyncTest('expectsMutation false travels when the model says so', async () => {
+  const router = createRouter('{"gate":"action","domain":"deck","language":"DE","expectsMutation":false}');
+  const result = await router.classify('Was steht gerade auf meinem Board?');
+  assert.strictEqual(result.gate, 'action', 'still routed to the tool pipeline (#134)');
+  assert.strictEqual(result.expectsMutation, false, 'and changes nothing (#272)');
+});
+
+asyncTest('a missing expectsMutation field leaves the guard armed', async () => {
+  const router = createRouter('{"gate":"action","domain":"deck"}');
+  const result = await router.classify('delete card 42');
+  assert.strictEqual(result.expectsMutation, true);
+});
+
+asyncTest('a string "false" from a loose model is honoured structurally', async () => {
+  const router = createRouter('{"gate":"action","domain":"deck","expectsMutation":"false"}');
+  const result = await router.classify("what's on my board");
+  assert.strictEqual(result.expectsMutation, false);
+});
+
+asyncTest('any other expectsMutation value arms the guard (fail-safe)', async () => {
+  const router = createRouter('{"gate":"action","domain":"deck","expectsMutation":"maybe"}');
+  const result = await router.classify('delete card 42');
+  assert.strictEqual(result.expectsMutation, true);
+});
+
+asyncTest('a parse-failed verdict states neither field, so both resolve safely', async () => {
+  const router = createRouter('total garbage, no json here');
+  const result = await router.classify('delete card 42');
+  assert.strictEqual(result.parseFailed, true);
+  assert.strictEqual(result.language, undefined, 'nothing read the message; nothing is claimed');
+  assert.notStrictEqual(result.expectsMutation, false, 'absence must not disarm the guard');
+});
+
+asyncTest('the regex fallback claims neither field', async () => {
+  // All models down: the emergency path never saw a model read the message.
+  const router = new IntentRouter({
+    provider: { chat: async () => { throw new Error('Ollama down'); } },
+    config: { classifyTimeout: 5 }
+  });
+  const result = await router.classify('delete the onboarding card');
+  assert.strictEqual(result.language, undefined);
+  assert.notStrictEqual(result.expectsMutation, false, 'absence must not disarm the guard');
+});
+
+test('the prompt states both fields, their values, and the read-only trap', () => {
+  const prompt = IntentRouter.buildClassificationPrompt('DE');
+  assert.ok(prompt.includes('LANGUAGE'), 'language field is specified');
+  assert.ok(prompt.includes('EXPECTS_MUTATION'), 'mutation expectation is specified');
+  for (const tag of ['EN', 'DE', 'PT', 'OTHER']) {
+    assert.ok(prompt.includes(`"${tag}"`) || prompt.includes(`${tag} for`), `${tag} named`);
+  }
+  // The trap case that motivated the field: needs tools, changes nothing.
+  assert.ok(prompt.includes('Was steht gerade auf meinem Board?'), 'DE read-only example');
+  assert.ok(prompt.includes('How many cards are in Doing?'), 'EN read-only example');
+  assert.ok(prompt.includes('Quais são os meus eventos de amanhã?'), 'PT read-only example');
+  assert.ok(prompt.includes('independent of GATE'), 'the two fields are stated to be orthogonal');
+});
+
+asyncTest('probeClassify returns both enrichment fields alongside gate/domain', async () => {
+  const router = createRouter('{"gate":"action","domain":"deck","language":"PT","expectsMutation":false}');
+  const r = await router.probeClassify('some-model', 'O que está no meu quadro agora?', 'PT');
+  assert.strictEqual(r.gate, 'action');
+  assert.strictEqual(r.domain, 'deck');
+  assert.strictEqual(r.language, 'PT');
+  assert.strictEqual(r.expectsMutation, false);
+});
+
 setTimeout(() => { summary(); exitWithCode(); }, 100);
