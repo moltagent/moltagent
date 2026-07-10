@@ -63,6 +63,11 @@ const LOG_LEVELS = {
 };
 
 /**
+ * How far classify() follows an error's `.cause` chain before giving up.
+ */
+const MAX_CAUSE_DEPTH = 5;
+
+/**
  * Custom error class for Moltagent
  */
 class MoltAgentError extends Error {
@@ -139,11 +144,40 @@ class ErrorHandler {
   }
 
   /**
-   * Classify an error into a category
+   * Classify an error into a category.
+   *
+   * An error that wraps another (`.cause`) inherits its category when it has
+   * none of its own: INTERNAL means "nothing here identified it", so the chain
+   * is walked until something does. The first non-INTERNAL category wins, so a
+   * top-level classification is never overridden by its cause.
+   *
    * @param {Error} error
    * @returns {string} - ErrorCategory value
    */
   classify(error) {
+    const seen = new Set();
+    let current = error;
+
+    for (let depth = 0; current && depth < MAX_CAUSE_DEPTH; depth++) {
+      if (seen.has(current)) break; // cycle
+      seen.add(current);
+
+      const category = this._classifyOne(current);
+      if (category !== ErrorCategory.INTERNAL) return category;
+
+      current = current.cause instanceof Error ? current.cause : null;
+    }
+
+    return ErrorCategory.INTERNAL;
+  }
+
+  /**
+   * Classify a single error, ignoring any cause it wraps.
+   * @param {Error} error
+   * @returns {string} - ErrorCategory value
+   * @private
+   */
+  _classifyOne(error) {
     if (!error) {
       return ErrorCategory.INTERNAL;
     }

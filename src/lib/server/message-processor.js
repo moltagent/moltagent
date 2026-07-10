@@ -840,6 +840,10 @@ class MessageProcessor {
             }
             result = { intent: 'smart_mix_knowledge', provider: 'local' };
           } catch (knowledgeErr) {
+            if (!this._cloudEscalationAvailable()) {
+              console.warn(`[Message] Knowledge query failed, escalation skipped (trust=${this._resolveJobTrust('tools')}), surfacing root error: ${knowledgeErr.message}`);
+              throw knowledgeErr;
+            }
             console.warn(`[Message] Knowledge query failed, escalating to cloud: ${knowledgeErr.message}`);
             if (this.agentLoop?.llmProvider?.skipLocalForConversation) {
               this.agentLoop.llmProvider.skipLocalForConversation();
@@ -885,6 +889,10 @@ class MessageProcessor {
             result = { intent: `smart_mix_domain:${intent}`, provider: 'local-tools' };
           } catch (domainErr) {
             // Domain escalation: local tool-calling failed → fall back to cloud
+            if (!this._cloudEscalationAvailable()) {
+              console.warn(`[Message] Domain ${intent} failed, escalation skipped (trust=${this._resolveJobTrust('tools')}), surfacing root error: ${domainErr.message}`);
+              throw domainErr;
+            }
             console.warn(`[Message] Domain ${intent} escalated to cloud: ${domainErr.message}`);
             if (this.agentLoop.llmProvider?.skipLocalForConversation) {
               this.agentLoop.llmProvider.skipLocalForConversation();
@@ -931,6 +939,10 @@ class MessageProcessor {
             }
             result = { intent: `smart_mix_local:${intent}`, provider: 'local' };
           } catch (chatErr) {
+            if (!this._cloudEscalationAvailable()) {
+              console.warn(`[Message] Chitchat failed, escalation skipped (trust=${this._resolveJobTrust('tools')}), surfacing root error: ${chatErr.message}`);
+              throw chatErr;
+            }
             console.warn(`[Message] Chitchat escalated to cloud: ${chatErr.message}`);
             if (this.agentLoop.llmProvider?.skipLocalForConversation) {
               this.agentLoop.llmProvider.skipLocalForConversation();
@@ -1610,6 +1622,30 @@ class MessageProcessor {
     const resolver = this.agentLoop && this.agentLoop.llmProvider && this.agentLoop.llmProvider.modelResolver;
     if (!resolver || typeof resolver.resolveTrust !== 'function') return 'unknown';
     try { return resolver.resolveTrust(job); } catch { return 'unknown'; }
+  }
+
+  /**
+   * Could a cloud retry possibly succeed? Consulted at the FIRST fork — the
+   * decision to escalate — by every failure-driven escalation site.
+   *
+   * The chokepoint (RouterChatBridge) still enforces trust at the last fork.
+   * Under local-only, escalating is worse than a no-op: skipLocalForConversation()
+   * demotes the only providers that exist, cloud stays forbidden, and the retry
+   * dies in "all providers exhausted" — a generic error replacing a classifiable
+   * root cause. Escalation is only meaningful where cloud is both permitted and
+   * present.
+   *
+   * @returns {boolean}
+   * @private
+   */
+  _cloudEscalationAvailable() {
+    if (this._resolveJobTrust('tools') === 'local-only') return false;
+
+    const router = this.agentLoop?.llmProvider?.router;
+    if (router && typeof router.hasCloudPlayers === 'function') {
+      return router.hasCloudPlayers();
+    }
+    return true; // Router absent (legacy wiring / tests): behave as today.
   }
 
   /**

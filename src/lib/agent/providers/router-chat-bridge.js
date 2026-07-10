@@ -360,7 +360,7 @@ class RouterChatBridge {
 
         return result;
       } catch (err) {
-        errors.push({ provider: providerId, error: err.message, status: err.status });
+        errors.push({ provider: providerId, error: err.message, status: err.status, cause: err });
         failoverPath.push(providerId);
 
         // Record failure with router
@@ -399,9 +399,15 @@ class RouterChatBridge {
     this.router.stats.errors++;
 
     const lastProvider = candidates[candidates.length - 1];
+    // The last provider error is the root cause of this exhaustion. Carrying it
+    // on `.cause` lets ErrorHandler.classify() name the real category (TIMEOUT,
+    // NETWORK) instead of falling back to INTERNAL on the wrapper's message.
+    const lastCause = errors[errors.length - 1]?.cause || null;
     const chainedErr = new Error(
-      `All providers exhausted for job ${job}. Tried: ${failoverPath.join(' → ')}`
+      `All providers exhausted for job ${job}. Tried: ${failoverPath.join(' → ')}` +
+      (lastCause ? `. Last error: ${lastCause.message}` : '')
     );
+    if (lastCause) chainedErr.cause = lastCause;
     chainedErr._errorChain = {
       primary: `${primaryId}: ${errors[0]?.error || 'failed'}`,
       fallback: errors.length > 1

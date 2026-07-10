@@ -518,6 +518,29 @@ asyncTest('TC-ERROR-002: Throw when all providers exhausted', async () => {
   }
 });
 
+asyncTest('TC-ERROR-002b: Exhaustion error carries the last provider error as cause (#269)', async () => {
+  const rootError = new Error('Ollama request timed out after 60000ms');
+  const failingProvider = createMockProvider({
+    id: 'failing',
+    generate: async () => {
+      throw rootError;
+    }
+  });
+
+  const router = new LLMRouter({
+    roles: { value: ['failing'] }
+  });
+  router.providers.set('failing', failingProvider);
+
+  try {
+    await router.route({ task: 'test', content: 'Hello' });
+    assert.fail('Should have thrown');
+  } catch (error) {
+    assert.strictEqual(error.cause, rootError);
+    assert.ok(error.message.includes('Last error: Ollama request timed out after 60000ms'));
+  }
+});
+
 asyncTest('TC-ERROR-003: Log audit when all exhausted', async () => {
   const mockAuditLog = createMockAuditLog();
   const failingProvider = createMockProvider({
