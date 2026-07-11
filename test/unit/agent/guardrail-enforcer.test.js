@@ -923,9 +923,12 @@ async function runTests() {
     assert.strictEqual(result.allowed, true);
   });
 
-  // --- Approval cache ---
+  // --- No approval cache: every GATE-governed call ceremonies fresh (#265, T-A) ---
 
-  await asyncTest('approval cache skips re-asking on retry for same guardrail+tool', async () => {
+  await asyncTest('GATE path: a second call on a different target ceremonies fresh (no cache)', async () => {
+    // The tool-keyed skip cache is deleted. An approval authorizes only the call
+    // it was granted for; a later call — even same tool, same room — renders its
+    // own ceremony. This is the GATE-path parallel of the T6 regression.
     const now = Date.now();
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
@@ -934,32 +937,18 @@ async function runTests() {
       talkSendQueue: queue,
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
-      ])
+      ]),
+      confirmationTimeoutMs: 200,
+      pollIntervalMs: 50
     });
 
     const r1 = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
     assert.strictEqual(r1.allowed, true);
-    assert.strictEqual(queue._getSent().length, 1);
+    assert.strictEqual(queue._getSent().length, 1, 'first call ceremonies');
 
-    const r2 = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
-    assert.strictEqual(r2.allowed, true);
-    assert.strictEqual(queue._getSent().length, 1);
-  });
-
-  await asyncTest('approval cache does not cross different tool names', async () => {
-    const now = Date.now();
-    const enforcer = makeEnforcer({
-      cockpitManager: createMockCockpit([gateGuardrail('Confirm everything')]),
-      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
-      talkSendQueue: createMockTalkQueue(),
-      conversationContext: createMockConversationContext([
-        { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
-      ])
-    });
-
-    await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
-    assert.ok(enforcer.approvalCache.has('Confirm everything:mail_send'));
-    assert.ok(!enforcer.approvalCache.has('Confirm everything:file_delete'));
+    // Different target, same tool, same room — the old cache would have skipped.
+    await enforcer.check('mail_send', { to: 'different@b.com' }, 'room1');
+    assert.strictEqual(queue._getSent().length, 2, 'second call renders a fresh ceremony, not a SKIP');
   });
 
   await asyncTest('denial is not cached — re-asks on retry after denial', async () => {
@@ -990,7 +979,6 @@ async function runTests() {
 
     const r1 = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
     assert.strictEqual(r1.allowed, false);
-    assert.ok(!enforcer.approvalCache.has('Confirm email:mail_send'));
 
     const r2 = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
     assert.strictEqual(r2.allowed, true);
@@ -1081,7 +1069,31 @@ async function runTests() {
     assert.ok(result.reason.includes('no interactive session'));
   });
 
-  await asyncTest('TC-APPROVE-002: checkApproval downgrades MEDIUM tool when the user asked for it', async () => {
+  await asyncTest('TC-APPROVE-002: write-class tool ceremonies even when the request is verdict=YES (T-B, #290)', async () => {
+    // The T5 shape, inverted. deck_delete_card is write-class, so the downgrade
+    // is ineligible: even a downgrade verdict=YES cannot waive the ceremony. The
+    // request may not manufacture the authority to authorize itself.
+    const queue = createMockTalkQueue();
+    const enforcer = makeEnforcer({
+      ollamaProvider: createMockDowngradeOllama('YES'),
+      talkSendQueue: queue,
+      conversationContext: createMockConversationContext([]),
+      confirmationTimeoutMs: 150,
+      pollIntervalMs: 50
+    });
+
+    const history = [
+      { role: 'user', content: 'Please delete the card Q3 Planning' }
+    ];
+    const result = await enforcer.checkApproval('deck_delete_card', { card: 'Q3 Planning' }, 'room1', history);
+    assert.strictEqual(result.allowed, false, 'no self-authorized execute for a write-class tool');
+    assert.strictEqual(queue._getSent().length, 1, 'the ceremony must render despite verdict=YES');
+  });
+
+  await asyncTest('TC-APPROVE-002b: non-write-class MEDIUM tool still downgrades on verdict=YES (T-B scoping)', async () => {
+    // The floor is scoped to the write class. A hypothetical non-write MEDIUM
+    // tool still takes the anti-nagging downgrade — judgment keeps its loosening
+    // authority everywhere the ceremony invariant does not apply.
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
       ollamaProvider: createMockDowngradeOllama('YES'),
@@ -1089,12 +1101,11 @@ async function runTests() {
       conversationContext: createMockConversationContext([])
     });
 
-    const history = [
-      { role: 'user', content: 'Please delete the card Q3 Planning' }
-    ];
-    const result = await enforcer.checkApproval('deck_delete_card', { card: 'Q3 Planning' }, 'room1', history);
-    assert.strictEqual(result.allowed, true);
-    assert.strictEqual(queue._getSent().length, 0, 'no ceremony when the request was the authorization');
+    const history = [{ role: 'user', content: 'look up the Q3 report' }];
+    // 'knowledge_search' is not in any write-class set → MEDIUM, downgrade eligible.
+    const result = await enforcer.checkApproval('knowledge_search', { query: 'Q3 report' }, 'room1', history);
+    assert.strictEqual(result.allowed, true, 'downgrade still applies off the write class');
+    assert.strictEqual(queue._getSent().length, 0, 'no ceremony for a downgraded non-write tool');
   });
 
   await asyncTest('TC-APPROVE-003: checkApproval asks HITL for MEDIUM tool when no confirmation', async () => {
@@ -1140,7 +1151,10 @@ async function runTests() {
     assert.strictEqual(queue._getSent().length, 1);
   });
 
-  await asyncTest('TC-APPROVE-005: checkApproval caches approval on yes', async () => {
+  await asyncTest('TC-APPROVE-005: a second delete on a different card ceremonies fresh (T-A, #265 T6 shape)', async () => {
+    // The #265 leak, inverted into a regression test. An approval for card 42
+    // must NOT carry over to a later delete of card 99. No tool-keyed cache: the
+    // second call renders its own ceremony.
     const now = Date.now();
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
@@ -1149,17 +1163,17 @@ async function runTests() {
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
       ]),
-      confirmationTimeoutMs: 500,
+      confirmationTimeoutMs: 200,
       pollIntervalMs: 50
     });
 
-    await enforcer.checkApproval('deck_delete_card', { cardId: 42 }, 'room1', []);
-    assert.ok(enforcer.approvalCache.has('toolguard:deck_delete_card'));
+    const r1 = await enforcer.checkApproval('deck_delete_card', { cardId: 42 }, 'room1', []);
+    assert.strictEqual(r1.allowed, true, 'first delete approved via ceremony');
+    assert.strictEqual(queue._getSent().length, 1, 'first call ceremonies');
 
-    // Second call should hit cache — no new message sent
-    const r2 = await enforcer.checkApproval('deck_delete_card', { cardId: 99 }, 'room1', []);
-    assert.strictEqual(r2.allowed, true);
-    assert.strictEqual(queue._getSent().length, 1); // only 1 message, not 2
+    // Different card, same tool, same room, inside what was the old TTL window.
+    await enforcer.checkApproval('deck_delete_card', { cardId: 99 }, 'room1', []);
+    assert.strictEqual(queue._getSent().length, 2, 'second call renders a fresh ceremony, not a SKIP');
   });
 
   await asyncTest('TC-APPROVE-006: checkApproval blocks on timeout', async () => {
@@ -1205,12 +1219,14 @@ async function runTests() {
     assert.strictEqual(enforcer._classifySeverity('delete_folder'), 'MEDIUM');
   });
 
-  // --- _userRequestedAction: the same-turn downgrade (#263) ---
+  // --- _userRequestedAction: the same-turn downgrade (#263), now floored (#290) ---
   //
-  // The regex table these replace was English-only: "delete the card X" skipped
-  // the ceremony, "Lösch die Karte X" did not. The decision is now the model's.
+  // The downgrade still runs the model for non-write tools. For write-class tools
+  // it is ineligible entirely (T-B): the ceremony renders regardless of verdict.
+  // #290 was a language-inconsistent verdict (YES in PT, NO in DE for the same
+  // delete); the floor makes language irrelevant by removing the loosening path.
 
-  await asyncTest('TC-APPROVE-010: downgrade decision is identical in DE, EN and PT', async () => {
+  await asyncTest('TC-APPROVE-010: a write-class delete ceremonies in DE, EN and PT even on verdict=YES (#290)', async () => {
     const messages = [
       'Delete the card Q3 Planning',
       'Lösch die Karte Q3 Planning',
@@ -1222,13 +1238,15 @@ async function runTests() {
       const enforcer = makeEnforcer({
         ollamaProvider: createMockDowngradeOllama('The message names the card and the action.\nYES'),
         talkSendQueue: queue,
-        conversationContext: createMockConversationContext([])
+        conversationContext: createMockConversationContext([]),
+        confirmationTimeoutMs: 150,
+        pollIntervalMs: 50
       });
       const result = await enforcer.checkApproval(
         'deck_delete_card', { card: 'Q3 Planning' }, 'room1', [{ role: 'user', content }]
       );
-      assert.strictEqual(result.allowed, true, `downgrade failed for: ${content}`);
-      assert.strictEqual(queue._getSent().length, 0, `ceremony ran for: ${content}`);
+      assert.strictEqual(result.allowed, false, `write-class must not self-authorize for: ${content}`);
+      assert.strictEqual(queue._getSent().length, 1, `ceremony must render for: ${content}`);
     }
   });
 
