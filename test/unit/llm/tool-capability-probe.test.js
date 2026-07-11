@@ -33,15 +33,31 @@ function captureLogger() {
   };
 }
 
+// The probe now sends TWO requests per capable candidate (#168): the tool-call
+// item (mark_ready) then the date-grounding item (schedule_event). A stub must
+// answer both. `dateStart` decides the second answer — omit for a grounded
+// tomorrow (fixed probe today is 2026-06-15 → tomorrow 2026-06-16).
+function dualStub({ dateStart = '2026-06-16T15:00:00', dateToolCalls } = {}) {
+  return async (_model, req) => {
+    const toolName = req && req.tools && req.tools[0] && req.tools[0].function && req.tools[0].function.name;
+    if (toolName === 'schedule_event') {
+      if (dateToolCalls !== undefined) return { content: 'no call', toolCalls: dateToolCalls };
+      return { content: null, toolCalls: [{ name: 'schedule_event', arguments: { start: dateStart } }] };
+    }
+    return { content: null, toolCalls: [{ name: 'mark_ready', arguments: { ready: true } }] };
+  };
+}
+
 (async () => {
-  // TC-TCP-001: a model that answers with the probe tool call passes.
-  await asyncTest('TC-TCP-001: tool-call response → tool-call verdict', async () => {
+  // TC-TCP-001: a model that answers the tool-call probe AND grounds the date passes.
+  await asyncTest('TC-TCP-001: tool-call + grounded date → tool-call verdict', async () => {
     const probe = new ToolCapabilityProbe({
-      chatFn: async () => ({ content: null, toolCalls: [{ id: 'x', name: 'mark_ready', arguments: { ready: true } }] }),
+      chatFn: dualStub(),
       cacheDir: tmpCacheDir(), logger: captureLogger(),
     });
     const [v] = await probe.run([{ name: 'qwen3:8b' }]);
     assert.strictEqual(v.status, VERDICT.TOOL_CALL);
+    assert.ok(v.detail.includes('date grounded'), 'detail records the date item passed');
   });
 
   // TC-TCP-002: prose response → flagged.
@@ -86,14 +102,15 @@ function captureLogger() {
   await asyncTest('TC-TCP-005: cached verdict served without a new probe call', async () => {
     const dir = tmpCacheDir();
     let calls = 0;
-    const chatFn = async () => { calls++; return { content: null, toolCalls: [{ name: 'mark_ready' }] }; };
+    const inner = dualStub();
+    const chatFn = async (m, req) => { calls++; return inner(m, req); };
     const probe1 = new ToolCapabilityProbe({ chatFn, cacheDir: dir, logger: captureLogger() });
     await probe1.run([{ name: 'qwen3:8b', digest: 'sha256:abc' }]);
-    assert.strictEqual(calls, 1);
+    assert.strictEqual(calls, 2, 'a capable candidate is measured on both items (tool-call + date)');
 
     const probe2 = new ToolCapabilityProbe({ chatFn, cacheDir: dir, logger: captureLogger() });
     const [v] = await probe2.run([{ name: 'qwen3:8b', digest: 'sha256:abc' }]);
-    assert.strictEqual(calls, 1, 'warm boot serves the cached verdict');
+    assert.strictEqual(calls, 2, 'warm boot serves the cached verdict — no new probe calls');
     assert.strictEqual(v.status, VERDICT.TOOL_CALL);
     assert.ok(v.detail.includes('cached'));
   });
@@ -105,6 +122,66 @@ function captureLogger() {
     const out = await probe.run([{ name: 'm' }]);
     assert.deepStrictEqual(out, []);
     assert.ok(logger.lines.warn.some((l) => l.includes('Missing chatFn')));
+  });
+
+  // TC-TCP-007: tool-call capable but anchors the date to 2023 → date-ungrounded (#168).
+  await asyncTest('TC-TCP-007: 2023-anchored start → date-ungrounded verdict', async () => {
+    const probe = new ToolCapabilityProbe({
+      chatFn: dualStub({ dateStart: '2023-10-10T15:00:00' }),
+      cacheDir: tmpCacheDir(), logger: captureLogger(),
+    });
+    const [v] = await probe.run([{ name: 'qwen3:8b' }]);
+    assert.strictEqual(v.status, VERDICT.DATE_UNGROUNDED);
+    assert.ok(v.detail.includes('off-window'), 'detail names the anchor failure');
+    assert.ok(v.detail.includes('2023-10-10'), 'detail records the emitted date');
+  });
+
+  // TC-TCP-008: date-ungrounded is a real measurement — it caches and demotes like prose.
+  await asyncTest('TC-TCP-008: date-ungrounded is cached (demotes like prose)', async () => {
+    const dir = tmpCacheDir();
+    let calls = 0;
+    const inner = dualStub({ dateStart: '2023-10-10T15:00:00' });
+    const chatFn = async (m, req) => { calls++; return inner(m, req); };
+    const probe1 = new ToolCapabilityProbe({ chatFn, cacheDir: dir, logger: captureLogger() });
+    const [v1] = await probe1.run([{ name: 'qwen3:8b', digest: 'sha256:d' }]);
+    assert.strictEqual(v1.status, VERDICT.DATE_UNGROUNDED);
+    const callsAfterFirst = calls;
+
+    const probe2 = new ToolCapabilityProbe({ chatFn, cacheDir: dir, logger: captureLogger() });
+    const [v2] = await probe2.run([{ name: 'qwen3:8b', digest: 'sha256:d' }]);
+    assert.strictEqual(v2.status, VERDICT.DATE_UNGROUNDED);
+    assert.strictEqual(calls, callsAfterFirst, 'a measured date failure is served from cache, not re-probed');
+  });
+
+  // TC-TCP-009: passes the tool-call item but answers the date item in prose → date-ungrounded.
+  await asyncTest('TC-TCP-009: prose on the date item → date-ungrounded', async () => {
+    const probe = new ToolCapabilityProbe({
+      chatFn: dualStub({ dateToolCalls: null }),
+      cacheDir: tmpCacheDir(), logger: captureLogger(),
+    });
+    const [v] = await probe.run([{ name: 'qwen3:8b' }]);
+    assert.strictEqual(v.status, VERDICT.DATE_UNGROUNDED);
+  });
+
+  // TC-TCP-010: a transport error on the date item → unmeasured, NOT cached (cold ≠ ungrounded).
+  await asyncTest('TC-TCP-010: date-item transport error → unmeasured, not cached', async () => {
+    const dir = tmpCacheDir();
+    let calls = 0;
+    const chatFn = async (_m, req) => {
+      calls++;
+      const toolName = req.tools[0].function.name;
+      if (toolName === 'schedule_event') throw new Error('socket hang up (cold on 2nd item)');
+      return { content: null, toolCalls: [{ name: 'mark_ready', arguments: { ready: true } }] };
+    };
+    const probe1 = new ToolCapabilityProbe({ chatFn, cacheDir: dir, logger: captureLogger() });
+    const [v1] = await probe1.run([{ name: 'qwen3:8b', digest: 'sha256:e' }]);
+    assert.strictEqual(v1.status, VERDICT.UNMEASURED);
+    const after = calls;
+    // Second run re-probes both items (nothing poisoned the cache).
+    const probe2 = new ToolCapabilityProbe({ chatFn, cacheDir: dir, logger: captureLogger() });
+    const [v2] = await probe2.run([{ name: 'qwen3:8b', digest: 'sha256:e' }]);
+    assert.strictEqual(v2.status, VERDICT.UNMEASURED);
+    assert.ok(calls > after, 'errored date measurement is not served from cache');
   });
 
   setTimeout(() => { summary(); exitWithCode(); }, 500);

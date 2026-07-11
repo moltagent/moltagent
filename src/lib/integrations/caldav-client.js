@@ -387,7 +387,11 @@ class CalDAVClient {
     const now = new Date();
     const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     if (!isNaN(startDate.getTime()) && startDate < twentyFourHoursAgo) {
-      throw new Error(`Rejected: start date ${startDate.toISOString()} is in the past. Current date/time is ${now.toISOString()}. Please use the correct date.`);
+      // Declarative + directive (#168, PR-4): naming the current datetime alone
+      // let the model PARROT the rejection instead of retrying. State the fact,
+      // then the corrective action, so the model recomputes from today within
+      // the same turn's loop rather than reporting a stall.
+      throw new Error(`Rejected: start ${startDate.toISOString()} is in the past. Today is ${now.toISOString()}. Recompute the start date from today and call the tool again with a start on or after now.`);
     }
   }
 

@@ -28,15 +28,27 @@
  *   tool-call failure. The probe converts that silent runtime discovery
  *   into a loud boot line.
  *
+ * Second item (#168, PR-4): a model that produces a tool call can still anchor
+ *   a relative date to its training prior (qwen3:8b emits ~October 2023 for
+ *   "tomorrow"). After the tool-call check passes, the probe sends one canned
+ *   scheduling request whose `start` schema carries the SAME live-date anchor
+ *   production ships (groundedStartDescription) against a FIXED injected
+ *   "today"; a start outside a sane window of that today is DATE_UNGROUNDED —
+ *   demoted like prose. The fixture measures the model as-shipped: if the
+ *   grounding text grounds it, this is a regression pin; if not, the seat
+ *   demotes honestly and the consequence is named, not tuned away (#275).
+ *
  * Data Flow:
  *   webhook-server (boot, inside the ModelScout .then, after the golden-set
  *   probe so the post-probe resolver re-log reflects both — NOTE(#233))
- *     → probe.run(candidates) → { name, status: 'tool-call'|'prose'|'unmeasured' }
- *     → modelResolver.markToolIncapable(name) per prose result
+ *     → probe.run(candidates) → { name, status: 'tool-call'|'prose'|'date-ungrounded'|'unmeasured' }
+ *     → modelResolver.markToolIncapable(name) per prose OR date-ungrounded result
  *
  * Dependency Map:
  *   src/lib/llm/tool-capability-probe.js
- *     ← (no internal imports — standalone; callers inject chatFn)
+ *     ← src/lib/agent/calendar-date-grounding (groundedStartDescription, isoDateInZone)
+ *       — the ONE pure leaf util so the probe's date anchor is byte-identical to
+ *         what production injects; callers still inject chatFn (no transport here).
  *
  * @module llm/tool-capability-probe
  * @license AGPL-3.0
@@ -46,12 +58,14 @@
 
 const fs = require('fs');
 const path = require('path');
+const { groundedStartDescription, isoDateInZone } = require('../agent/calendar-date-grounding');
 
 const CACHE_FILENAME = 'tool-capability-probe.json';
 
 // Bump when the probe schema/instruction or pass criterion changes — old
 // cached verdicts then re-measure instead of masquerading as comparable.
-const PROBE_REV = 1;
+// r2 (#168, PR-4): adds the relative-date grounding item below.
+const PROBE_REV = 2;
 
 // The trivial probe function: one boolean argument, no room for ambiguity.
 const PROBE_TOOL = {
@@ -72,10 +86,52 @@ const PROBE_TOOL = {
 const PROBE_SYSTEM = 'You are a function-calling assistant. You MUST answer by calling the provided function. Never answer in prose.';
 const PROBE_MESSAGE = 'Call the mark_ready function with ready set to true.';
 
+// --- Relative-date grounding item (#168, PR-4) -----------------------------
+// A model can produce a tool call and still anchor "tomorrow" to its training
+// prior (qwen3:8b → ~October 2023). This item measures the SHIPPED grounding
+// mechanism: a schedule tool whose `start` carries the exact live-date anchor
+// production injects (groundedStartDescription), against a FIXED injected
+// "today" so the verdict is deterministic and cacheable by PROBE_REV.
+const PROBE_DATE_TODAY = new Date('2026-06-15T12:00:00Z'); // fixed clock; UTC.
+const PROBE_DATE_TZ = 'UTC';
+const PROBE_DATE_TODAY_ISO = isoDateInZone(PROBE_DATE_TODAY, PROBE_DATE_TZ);
+const PROBE_DATE_TOMORROW_ISO = isoDateInZone(new Date(PROBE_DATE_TODAY.getTime() + 86400000), PROBE_DATE_TZ);
+
+// Sane window: a grounded model lands on or near today (tomorrow = +1). The
+// window catches the gross failure — a start years off (2023) — without
+// demanding tomorrow-exact precision. Inclusive [today-1d, today+7d].
+const PROBE_DATE_WINDOW_MS = 7 * 86400000;
+
+const PROBE_DATE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'schedule_event',
+    description: 'Schedule an event at a given time. Call this — do not answer in text.',
+    parameters: {
+      type: 'object',
+      properties: {
+        start: {
+          type: 'string',
+          description: groundedStartDescription('Start datetime as ISO 8601 string', {
+            today: PROBE_DATE_TODAY_ISO,
+            tomorrow: PROBE_DATE_TOMORROW_ISO,
+            weekday: new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: PROBE_DATE_TZ }).format(PROBE_DATE_TODAY),
+          }),
+        },
+      },
+      required: ['start'],
+    },
+  },
+};
+
+const PROBE_DATE_SYSTEM = `Today is ${PROBE_DATE_TODAY_ISO}. You are a scheduling assistant; call the schedule_event function with an ISO 8601 start.`;
+const PROBE_DATE_MESSAGE = 'Schedule a meeting tomorrow at 15:00.';
+
 /** Probe verdicts. */
 const VERDICT = {
-  TOOL_CALL: 'tool-call',   // produced a tool call naming the probe function
+  TOOL_CALL: 'tool-call',   // produced a tool call AND grounded the relative date
   PROSE: 'prose',           // answered without a usable tool call
+  DATE_UNGROUNDED: 'date-ungrounded', // called a tool but anchored the date off-window (e.g. 2023)
   UNMEASURED: 'unmeasured', // transport error/timeout — presence unknown, retry next boot
 };
 
@@ -131,8 +187,12 @@ class ToolCapabilityProbe {
         });
         const calls = res && Array.isArray(res.toolCalls) ? res.toolCalls : [];
         if (calls.some(tc => tc && tc.name === PROBE_TOOL.function.name)) {
-          status = VERDICT.TOOL_CALL;
-          detail = 'tool call produced';
+          // Tool-call capable. Now the second item: can it ground a relative
+          // date (#168)? A throw here (transport) propagates to the catch →
+          // UNMEASURED, so a cold host never caches a false date failure.
+          const date = await this._probeDateGrounding(candidate.name);
+          status = date.status;
+          detail = date.detail;
         } else {
           status = VERDICT.PROSE;
           const preview = res && typeof res.content === 'string' ? res.content.slice(0, 60) : '';
@@ -155,6 +215,45 @@ class ToolCapabilityProbe {
 
     if (cacheChanged) this._saveCache(diskCache);
     return results;
+  }
+
+  /**
+   * The relative-date grounding item (#168, PR-4). Sends one canned scheduling
+   * request against a FIXED injected "today", with the shipped grounding anchor
+   * in the `start` schema. A tool call whose start lands in the sane window is
+   * grounded (TOOL_CALL); a start years off (the 2023 anchor) is DATE_UNGROUNDED
+   * and demotes the seat like prose. A transport error throws to the caller,
+   * which records UNMEASURED (not cached) — cold is not an ungrounded date.
+   *
+   * @param {string} model
+   * @returns {Promise<{status: string, detail: string}>}
+   * @private
+   */
+  async _probeDateGrounding(model) {
+    const res = await this.chatFn(model, {
+      system: PROBE_DATE_SYSTEM,
+      messages: [{ role: 'user', content: PROBE_DATE_MESSAGE }],
+      tools: [PROBE_DATE_TOOL],
+    });
+    const calls = res && Array.isArray(res.toolCalls) ? res.toolCalls : [];
+    const call = calls.find(tc => tc && tc.name === PROBE_DATE_TOOL.function.name) || calls[0];
+    if (!call) {
+      return { status: VERDICT.DATE_UNGROUNDED, detail: 'date probe: prose, no scheduling call' };
+    }
+    const args = typeof call.arguments === 'string'
+      ? (() => { try { return JSON.parse(call.arguments); } catch (_e) { return {}; } })()
+      : (call.arguments || {});
+    const startStr = args.start;
+    const startMs = startStr ? Date.parse(startStr) : NaN;
+    if (!startStr || Number.isNaN(startMs)) {
+      return { status: VERDICT.DATE_UNGROUNDED, detail: `date probe: no parseable start (${startStr || 'absent'})` };
+    }
+    const todayMs = PROBE_DATE_TODAY.getTime();
+    const grounded = startMs >= todayMs - 86400000 && startMs <= todayMs + PROBE_DATE_WINDOW_MS;
+    const startDay = String(startStr).slice(0, 10);
+    return grounded
+      ? { status: VERDICT.TOOL_CALL, detail: `tool call + date grounded (start ${startDay})` }
+      : { status: VERDICT.DATE_UNGROUNDED, detail: `date anchored off-window: start ${startDay}, today ${PROBE_DATE_TODAY_ISO}` };
   }
 
   /** @private */
