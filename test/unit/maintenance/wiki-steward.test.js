@@ -149,6 +149,13 @@ function makeFullDeps(overrides = {}) {
     llmRouter:         makeMockRouter({ actions: [] }),
     observationLog:    makeObservationLog(),
     logger:            silentLogger,
+    // Isolate rotation/visit state from any persisted file. Without this the
+    // steward defaults dataDir to `cwd/data` and loads the live service's
+    // `data/wiki-steward-state.json`, so a "fresh" steward inherits a non-zero
+    // lens ring and the _nextSteward tests fail on a box where the service runs
+    // (green from a clean cwd). `dataDir: null` disables load and save (#282).
+    // Overridable — a persistence test can still pass its own tmp dataDir.
+    config:            { dataDir: null },
     ...overrides,
   };
 }
