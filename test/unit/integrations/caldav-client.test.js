@@ -738,7 +738,8 @@ asyncTest('TC-EVENT-GUARD-001: createEvent rejects a start more than 24h in the 
     assert.fail('Should have rejected the past-dated event');
   } catch (error) {
     assert.ok(error.message.includes('in the past'), 'message names the past-date rejection');
-    assert.ok(error.message.includes('Current date/time is'), 'message names the current datetime for self-correction');
+    assert.ok(error.message.includes('Today is'), 'message names the current datetime for self-correction');
+    assert.ok(/recompute/i.test(error.message), 'message directs a retry, not just a fact (#168 — model parroted the old fact-only message)');
   }
 });
 
@@ -806,7 +807,7 @@ asyncTest('TC-EVENT-GUARD-005: updateEvent rejects an update that reschedules th
     assert.fail('Should have rejected rescheduling to the past');
   } catch (error) {
     assert.ok(error.message.includes('in the past'), 'update inherits the same past-date rejection');
-    assert.ok(error.message.includes('Current date/time is'), 'same corrective message shape as createEvent');
+    assert.ok(error.message.includes('Today is') && /recompute/i.test(error.message), 'same declarative + retry shape as createEvent');
   }
 });
 

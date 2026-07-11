@@ -5,6 +5,7 @@ const path = require('path');
 const { extractArtifact } = require('./artifact-extractor');
 const { stagesApprovalCeremony, stripApprovalMarker, ACTION_REPROMPT_DIRECTIVE } = require('./action-guard');
 const { surfaceText, normalizeLanguage } = require('./surface-text');
+const { injectLiveDate } = require('./calendar-date-grounding');
 
 /**
  * AgentLoop - The Nervous System
@@ -147,9 +148,21 @@ class AgentLoop {
     const scopeDomain = (options.domain && !options.compound && this.toolRegistry.hasDomainTools(options.domain))
       ? options.domain
       : null;
-    const tools = scopeDomain
-      ? this.toolRegistry.getToolSubset(scopeDomain)
-      : this.toolRegistry.getToolDefinitions();
+    // The live date is injected INTO the calendar tools' `start` description
+    // here, at the single per-turn seam where the subset and full paths
+    // converge (#168, PR-4). qwen3:8b ignores the "Today is …" system header —
+    // far from the argument it generates — and anchors "tomorrow" to its ~2023
+    // training prior; a schema description sits next to that argument. The
+    // transform clones (never mutates the shared registry schema), so a stale
+    // date cannot leak into a later turn. Inert for cloud models, which already
+    // ground. See calendar-date-grounding.js.
+    const tools = injectLiveDate(
+      scopeDomain
+        ? this.toolRegistry.getToolSubset(scopeDomain)
+        : this.toolRegistry.getToolDefinitions(),
+      new Date(),
+      this.timezone
+    );
 
     const messages = [
       ...history.map(m => ({ role: m.role, content: m.content })),

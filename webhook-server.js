@@ -2248,8 +2248,16 @@ async function initialize() {
                       if (v.status === VERDICT.PROSE) {
                         modelResolver.markToolIncapable(v.name);
                         console.warn(`[BOOT][WARN] Tool-capability probe: ${v.name} answered a tool-requiring instruction with prose — flagged (#118); runtime chain falls back on tool-call failure`);
+                      } else if (v.status === VERDICT.DATE_UNGROUNDED) {
+                        // #168: emits tool calls but anchors relative dates to its
+                        // training prior (~2023) even with the shipped grounding
+                        // anchor. Demote the tools seat honestly — the consequence
+                        // (which model serves tools next, at what latency) is the
+                        // #275 decision, surfaced here, not tuned away.
+                        modelResolver.markToolIncapable(v.name);
+                        console.warn(`[BOOT][WARN] Tool-capability probe: ${v.name} could not ground a relative date (${v.detail}) — flagged (#168); tools seat demotes to the next candidate`);
                       } else if (v.status === VERDICT.TOOL_CALL) {
-                        console.log(`[INIT] Tool-capability probe: ${v.name} → tool call OK${/\(cached\)/.test(v.detail || '') ? ' (cached)' : ''}`);
+                        console.log(`[INIT] Tool-capability probe: ${v.name} → tool call + date grounded OK${/\(cached\)/.test(v.detail || '') ? ' (cached)' : ''}`);
                       }
                     }
                   }
