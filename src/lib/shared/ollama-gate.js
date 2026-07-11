@@ -49,6 +49,15 @@ module.exports = {
   /**
    * Returns true if a user message is being processed or was very recent.
    * Heartbeat should skip LLM calls when this returns true.
+   *
+   * Bound (#287): the timestamp is set at turn entry and NOT refreshed mid-turn,
+   * so a turn longer than COOLDOWN_MS loses tail protection for its final
+   * seconds — a probe parked on idle() can resume while the turn's last tool
+   * call is still in flight (the #285 stampede turn ran ~97s). Small, bounded
+   * harm; not fixed here because the timestamp model is exactly what keeps this
+   * gate reference-count-free. Candidate fix (#287): refresh the timestamp once
+   * per agent-loop iteration — extends protection to arbitrarily long turns
+   * without changing the gate's shape.
    */
   isUserActive() {
     if (_lastUserMessageAt === 0) return false;
