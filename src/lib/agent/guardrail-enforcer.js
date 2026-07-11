@@ -25,7 +25,10 @@ const { surfaceText, hasSurfaceText, toolLabel, fieldLabel } = require('./surfac
  *   2. Same-turn — "did the user's own message explicitly request this action?"
  *      (the anti-nagging downgrade). One LLM call at this chokepoint, posed with
  *      the tool label and the rendered args. Any answer but a clear YES runs the
- *      ceremony: the failure direction is always toward asking.
+ *      ceremony: the failure direction is always toward asking. Write-class tools
+ *      are ineligible for this downgrade entirely (#290, Phase 1 T-B) — a request
+ *      may never manufacture the authority to waive its own ceremony; judgment
+ *      escalates severity, never lowers it past the threshold.
  *
  * Neither question is answered by a cache. A prior approval authorizes the one
  * call it was granted for; the tool-keyed skip cache that let it leak across
@@ -749,8 +752,16 @@ class GuardrailEnforcer {
       return { allowed: false, reason: `${toolName} requires approval but no interactive session available` };
     }
 
-    // MEDIUM: the user's own message may already be the authorization
-    if (severity === 'MEDIUM') {
+    // MEDIUM: the user's own message may already be the authorization — but a
+    // write-class tool is ineligible for this downgrade (#290, Phase 1 T-B). A
+    // request cannot manufacture the authority to waive its own ceremony;
+    // judgment keeps escalation authority only, never loosening past the
+    // threshold. The floor is structural, not a more-consistent judgment: the
+    // same delete request was judged YES in PT and NO in DE at one boot (S126
+    // T5), and the fix for a language-inconsistent security judgment is to
+    // remove its loosening authority, not to seek consistency. Non-write-class
+    // MEDIUM tools still downgrade as before.
+    if (severity === 'MEDIUM' && !getWriteClassTools().has(toolName)) {
       const requested = await this._userRequestedAction(conversationHistory, toolName, toolArgs);
       if (requested) {
         this.logger.info(`[GuardrailEnforcer] checkApproval: ${toolName} → LOW (user's message requested this action)`);

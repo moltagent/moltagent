@@ -1069,7 +1069,31 @@ async function runTests() {
     assert.ok(result.reason.includes('no interactive session'));
   });
 
-  await asyncTest('TC-APPROVE-002: checkApproval downgrades MEDIUM tool when the user asked for it', async () => {
+  await asyncTest('TC-APPROVE-002: write-class tool ceremonies even when the request is verdict=YES (T-B, #290)', async () => {
+    // The T5 shape, inverted. deck_delete_card is write-class, so the downgrade
+    // is ineligible: even a downgrade verdict=YES cannot waive the ceremony. The
+    // request may not manufacture the authority to authorize itself.
+    const queue = createMockTalkQueue();
+    const enforcer = makeEnforcer({
+      ollamaProvider: createMockDowngradeOllama('YES'),
+      talkSendQueue: queue,
+      conversationContext: createMockConversationContext([]),
+      confirmationTimeoutMs: 150,
+      pollIntervalMs: 50
+    });
+
+    const history = [
+      { role: 'user', content: 'Please delete the card Q3 Planning' }
+    ];
+    const result = await enforcer.checkApproval('deck_delete_card', { card: 'Q3 Planning' }, 'room1', history);
+    assert.strictEqual(result.allowed, false, 'no self-authorized execute for a write-class tool');
+    assert.strictEqual(queue._getSent().length, 1, 'the ceremony must render despite verdict=YES');
+  });
+
+  await asyncTest('TC-APPROVE-002b: non-write-class MEDIUM tool still downgrades on verdict=YES (T-B scoping)', async () => {
+    // The floor is scoped to the write class. A hypothetical non-write MEDIUM
+    // tool still takes the anti-nagging downgrade — judgment keeps its loosening
+    // authority everywhere the ceremony invariant does not apply.
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
       ollamaProvider: createMockDowngradeOllama('YES'),
@@ -1077,12 +1101,11 @@ async function runTests() {
       conversationContext: createMockConversationContext([])
     });
 
-    const history = [
-      { role: 'user', content: 'Please delete the card Q3 Planning' }
-    ];
-    const result = await enforcer.checkApproval('deck_delete_card', { card: 'Q3 Planning' }, 'room1', history);
-    assert.strictEqual(result.allowed, true);
-    assert.strictEqual(queue._getSent().length, 0, 'no ceremony when the request was the authorization');
+    const history = [{ role: 'user', content: 'look up the Q3 report' }];
+    // 'knowledge_search' is not in any write-class set → MEDIUM, downgrade eligible.
+    const result = await enforcer.checkApproval('knowledge_search', { query: 'Q3 report' }, 'room1', history);
+    assert.strictEqual(result.allowed, true, 'downgrade still applies off the write class');
+    assert.strictEqual(queue._getSent().length, 0, 'no ceremony for a downgraded non-write tool');
   });
 
   await asyncTest('TC-APPROVE-003: checkApproval asks HITL for MEDIUM tool when no confirmation', async () => {
@@ -1196,12 +1219,14 @@ async function runTests() {
     assert.strictEqual(enforcer._classifySeverity('delete_folder'), 'MEDIUM');
   });
 
-  // --- _userRequestedAction: the same-turn downgrade (#263) ---
+  // --- _userRequestedAction: the same-turn downgrade (#263), now floored (#290) ---
   //
-  // The regex table these replace was English-only: "delete the card X" skipped
-  // the ceremony, "Lösch die Karte X" did not. The decision is now the model's.
+  // The downgrade still runs the model for non-write tools. For write-class tools
+  // it is ineligible entirely (T-B): the ceremony renders regardless of verdict.
+  // #290 was a language-inconsistent verdict (YES in PT, NO in DE for the same
+  // delete); the floor makes language irrelevant by removing the loosening path.
 
-  await asyncTest('TC-APPROVE-010: downgrade decision is identical in DE, EN and PT', async () => {
+  await asyncTest('TC-APPROVE-010: a write-class delete ceremonies in DE, EN and PT even on verdict=YES (#290)', async () => {
     const messages = [
       'Delete the card Q3 Planning',
       'Lösch die Karte Q3 Planning',
@@ -1213,13 +1238,15 @@ async function runTests() {
       const enforcer = makeEnforcer({
         ollamaProvider: createMockDowngradeOllama('The message names the card and the action.\nYES'),
         talkSendQueue: queue,
-        conversationContext: createMockConversationContext([])
+        conversationContext: createMockConversationContext([]),
+        confirmationTimeoutMs: 150,
+        pollIntervalMs: 50
       });
       const result = await enforcer.checkApproval(
         'deck_delete_card', { card: 'Q3 Planning' }, 'room1', [{ role: 'user', content }]
       );
-      assert.strictEqual(result.allowed, true, `downgrade failed for: ${content}`);
-      assert.strictEqual(queue._getSent().length, 0, `ceremony ran for: ${content}`);
+      assert.strictEqual(result.allowed, false, `write-class must not self-authorize for: ${content}`);
+      assert.strictEqual(queue._getSent().length, 1, `ceremony must render for: ${content}`);
     }
   });
 
