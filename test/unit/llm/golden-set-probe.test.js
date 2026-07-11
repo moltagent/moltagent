@@ -313,7 +313,7 @@ asyncTest('TC-PROBE-007: a transient all-error measurement is NOT cached and yie
   }
 });
 
-asyncTest('TC-PROBE-008: editing a label without bumping version invalidates the cache (content-hash salt)', async () => {
+asyncTest('TC-PROBE-008: a fixture-content change seats the prior score provisionally and defers re-measurement to idle (#285)', async () => {
   const cacheDir = uniqueTmpDir();
   try {
     const fixtureA = makeFixture();
@@ -324,16 +324,34 @@ asyncTest('TC-PROBE-008: editing a label without bumping version invalidates the
     const probeA = new GoldenSetProbe({ classifyFn, fixture: fixtureA, cacheDir, logger: silentLogger });
     await probeA.run(candidates);
     const afterA = callCount;
+    assert.ok(afterA > 0, 'first boot measures the model');
 
-    // Same version (1), but a label changed. The content-hash salt must differ,
-    // so the prior entry does NOT hit and the model is re-probed.
+    // Same version (1), but a label changed → the content-hash salt differs, so
+    // the current-rev key misses (the invalidation still happens). Under #285
+    // that miss does NOT re-measure at BOOT: the prior-rev score seats the model
+    // provisionally, and re-measurement is deferred to the idle lane so the boot
+    // walk never stampedes serving.
     const fixtureB = makeFixture();
     fixtureB.languages.DE[1].gate = 'knowledge'; // was 'action'
     const classifyFnB = async (...args) => { callCount++; return perfectClassifyFn(fixtureB)(...args); };
     const probeB = new GoldenSetProbe({ classifyFn: classifyFnB, fixture: fixtureB, cacheDir, logger: silentLogger });
-    await probeB.run(candidates);
+    const rB = await probeB.run(candidates);
 
-    assert.ok(callCount > afterA, 'a fixture content change must invalidate the cache even without a version bump');
+    assert.strictEqual(callCount, afterA, 'a fixture change must NOT re-measure at boot — the prior score seats provisionally');
+    assert.strictEqual(rB.model, 'm', 'the provisional prior score still seats select()');
+
+    // The provisional seat is queued for idle re-measurement…
+    assert.deepStrictEqual(probeB.getUnmeasuredCandidates(candidates).map(c => c.name), ['m'],
+      'a provisionally-seated model must appear in the idle lane for re-measurement');
+
+    // …and measureOne() (the idle-lane unit) re-measures it against the NEW
+    // fixture and clears the provisional flag.
+    const before = callCount;
+    const one = await probeB.measureOne(candidates[0]);
+    assert.ok(callCount > before, 'idle re-measurement runs the classifier against the current fixture');
+    assert.strictEqual(one.measured, true);
+    assert.deepStrictEqual(probeB.getUnmeasuredCandidates(candidates), [],
+      'after idle re-measurement the model is no longer provisional');
   } finally {
     fs.rmSync(cacheDir, { recursive: true, force: true });
   }
@@ -740,6 +758,87 @@ asyncTest('TC-EXIT-005: idle lane is fenced out while a boot run() is in flight'
     await running;
     // After run() completes the fence lifts and the skipped candidate surfaces.
     assert.deepStrictEqual(probe.getUnmeasuredCandidates().map(c => c.name), ['big']);
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+// ============================================================
+// Admission gate (#285): the measurement loop yields to a live turn between
+// fixture examples so a boot re-measurement walk never stampedes serving.
+// ============================================================
+
+console.log('\n--- Admission gate: probe yields to serving (#285) ---\n');
+
+// A deterministic fake of shared/ollama-gate: serving state and idle()
+// resolution are driven by the test, no real timers.
+function controllableGate() {
+  let serving = false;
+  let resolver = null;
+  return {
+    setServing(v) { serving = v; },
+    isServing: () => serving,
+    idle() { return new Promise(res => { resolver = res; }); },
+    release(result) {
+      const r = resolver; resolver = null;
+      if (r) r(result || { waited: true, timedOut: false });
+    },
+    get waiting() { return resolver !== null; },
+  };
+}
+
+asyncTest('TC-GATE-PROBE-001: run() pauses while serving and resumes after the turn — the turn is never queued behind probe calls', async () => {
+  const fixture = makeFixture();
+  const cacheDir = uniqueTmpDir();
+  try {
+    const seen = [];
+    const classifyFn = async (_model, message) => {
+      seen.push(message);
+      return truthMap(fixture)[message] || { gate: 'knowledge', domain: null };
+    };
+    const gate = controllableGate();
+    gate.setServing(true); // a live turn is in flight when the boot walk starts
+    const probe = new GoldenSetProbe({
+      classifyFn, fixture, cacheDir, servingGate: gate, logger: silentLogger,
+    });
+
+    const running = probe.run([{ name: 'm', paramSize: 3, digest: 'd' }]);
+    // Let run() reach its first pre-example yield.
+    await Promise.resolve(); await Promise.resolve();
+    assert.strictEqual(seen.length, 0, 'no classify runs while a turn is serving — the probe is parked at the gate');
+    assert.ok(gate.waiting, 'the probe is waiting on idle()');
+
+    // The turn ends; the gate releases the probe.
+    gate.setServing(false);
+    gate.release();
+    const result = await running;
+    assert.ok(seen.length > 0, 'the probe resumed and measured after serving went idle');
+    assert.strictEqual(result.model, 'm');
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+asyncTest('TC-GATE-PROBE-002: the wait cap lets the probe proceed on a chatty deployment (no starvation), and logs it', async () => {
+  const fixture = makeFixture();
+  const cacheDir = uniqueTmpDir();
+  try {
+    // Serving never ends; idle() always resolves at the cap (timedOut).
+    const gate = {
+      isServing: () => true,
+      idle: () => Promise.resolve({ waited: true, timedOut: true }),
+    };
+    const logger = capturingLogger();
+    const probe = new GoldenSetProbe({
+      classifyFn: perfectClassifyFn(fixture), fixture, cacheDir,
+      servingGate: gate, servingWaitMs: 1000, logger,
+    });
+    const result = await probe.run([{ name: 'm', paramSize: 3, digest: 'd' }]);
+    assert.strictEqual(result.model, 'm', 'measurement still completes after the cap fires');
+    assert.ok(
+      logger.warnings.some(w => w.includes('cap') && w.includes('measuring anyway')),
+      'the cap firing is logged loudly'
+    );
   } finally {
     fs.rmSync(cacheDir, { recursive: true, force: true });
   }

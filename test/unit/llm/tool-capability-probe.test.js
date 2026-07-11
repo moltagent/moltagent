@@ -184,5 +184,113 @@ function dualStub({ dateStart = '2026-06-16T15:00:00', dateToolCalls } = {}) {
     assert.ok(calls > after, 'errored date measurement is not served from cache');
   });
 
+  // ==========================================================================
+  // Admission gate + idle lane (#285)
+  // ==========================================================================
+
+  // TC-TCP-011: at boot, only the bootSet is measured; the rest defer to idle.
+  await asyncTest('TC-TCP-011: bootSet scopes boot measurement; non-boot candidates drain in the idle lane (#285)', async () => {
+    const dir = tmpCacheDir();
+    let calls = 0;
+    const inner = dualStub();
+    const chatFn = async (m, req) => { calls++; return inner(m, req); };
+    const probe = new ToolCapabilityProbe({ chatFn, cacheDir: dir, logger: captureLogger() });
+
+    const candidates = [{ name: 'seated', digest: 'd-a' }, { name: 'bench', digest: 'd-b' }];
+    const results = await probe.run(candidates, { bootSet: ['seated'] });
+
+    // Only the seated model is measured at boot (2 items = 2 calls); no results
+    // are emitted for the non-boot candidate.
+    assert.strictEqual(results.length, 1, 'only the boot set produces a boot verdict');
+    assert.strictEqual(results[0].name, 'seated');
+    assert.strictEqual(results[0].status, VERDICT.TOOL_CALL);
+    assert.strictEqual(calls, 2, 'the non-boot candidate is NOT measured at boot');
+
+    // The non-boot candidate is the idle lane's work.
+    assert.deepStrictEqual(probe.getUnmeasuredCandidates().map(c => c.name), ['bench']);
+
+    const r = await probe.measureOne({ name: 'bench', digest: 'd-b' });
+    assert.strictEqual(r.measured, true);
+    assert.strictEqual(r.status, VERDICT.TOOL_CALL);
+    assert.deepStrictEqual(probe.getUnmeasuredCandidates().map(c => c.name), [], 'idle lane drained');
+  });
+
+  // TC-TCP-012: a prior-PROBE_REV verdict seats provisionally at boot (no
+  // re-measure) and re-measures in idle.
+  await asyncTest('TC-TCP-012: a prior-rev verdict seats provisionally, re-measures in idle (#285)', async () => {
+    const dir = tmpCacheDir();
+    // Seed a PRIOR-rev cache entry (r1) for the model, as a REV bump would leave.
+    const priorKey = 'sha256:p__toolprobe_r1';
+    fs.writeFileSync(
+      path.join(dir, 'tool-capability-probe.json'),
+      JSON.stringify({ [priorKey]: { status: VERDICT.PROSE, detail: 'prose (r1)', at: '2026-01-01T00:00:00Z' } }),
+      'utf8'
+    );
+
+    let calls = 0;
+    const inner = dualStub();
+    const chatFn = async (m, req) => { calls++; return inner(m, req); };
+    const probe = new ToolCapabilityProbe({ chatFn, cacheDir: dir, logger: captureLogger() });
+    const candidate = { name: 'p-model', digest: 'sha256:p' };
+
+    const [v] = await probe.run([candidate], { bootSet: ['p-model'] });
+    assert.strictEqual(v.status, VERDICT.PROSE, 'the prior-rev verdict seats the flag provisionally');
+    assert.strictEqual(v.provisional, true, 'marked provisional');
+    assert.strictEqual(calls, 0, 'NO boot re-measurement — the stampede this fix removes');
+
+    // Queued for idle re-measurement…
+    assert.deepStrictEqual(probe.getUnmeasuredCandidates().map(c => c.name), ['p-model']);
+
+    // …and measureOne re-measures against the current rev (now tool-call) and
+    // writes the current-rev entry; a demotion/promotion takes effect exactly
+    // as a fresh measurement would (here the model now passes).
+    const r = await probe.measureOne(candidate);
+    assert.strictEqual(r.measured, true);
+    assert.strictEqual(r.status, VERDICT.TOOL_CALL);
+    assert.ok(calls > 0, 'idle re-measurement calls the provider');
+    assert.deepStrictEqual(probe.getUnmeasuredCandidates(), [], 'no longer provisional');
+
+    // A fresh probe over the same dir now serves the current-rev verdict.
+    const probe2 = new ToolCapabilityProbe({ chatFn, cacheDir: dir, logger: captureLogger() });
+    const [v2] = await probe2.run([candidate], { bootSet: ['p-model'] });
+    assert.strictEqual(v2.status, VERDICT.TOOL_CALL);
+    assert.ok(/cached/.test(v2.detail), 'current-rev verdict is now cached');
+  });
+
+  // TC-TCP-013: the probe yields to a live turn between items, and the turn is
+  // never queued behind probe calls.
+  await asyncTest('TC-TCP-013: probe pauses while serving and resumes after the turn (#285)', async () => {
+    const order = [];
+    const gate = (() => {
+      let serving = true, resolver = null;
+      return {
+        setServing(v) { serving = v; },
+        isServing: () => serving,
+        idle() { return new Promise(res => { resolver = res; }); },
+        release() { const r = resolver; resolver = null; if (r) r({ waited: true, timedOut: false }); },
+        get waiting() { return resolver !== null; },
+      };
+    })();
+    const chatFn = async (_m, req) => {
+      order.push(req.tools[0].function.name);
+      if (req.tools[0].function.name === 'schedule_event') {
+        return { content: null, toolCalls: [{ name: 'schedule_event', arguments: { start: '2026-06-16T15:00:00' } }] };
+      }
+      return { content: null, toolCalls: [{ name: 'mark_ready', arguments: { ready: true } }] };
+    };
+    const probe = new ToolCapabilityProbe({ chatFn, cacheDir: tmpCacheDir(), servingGate: gate, logger: captureLogger() });
+
+    const running = probe.run([{ name: 'm', digest: 'd' }]);
+    await Promise.resolve(); await Promise.resolve();
+    assert.strictEqual(order.length, 0, 'no probe call while a turn is serving — parked at the gate');
+    assert.ok(gate.waiting, 'the probe is waiting on idle()');
+
+    gate.setServing(false);
+    gate.release();
+    const [v] = await running;
+    assert.strictEqual(v.status, VERDICT.TOOL_CALL, 'the probe resumed and measured after the turn');
+    assert.deepStrictEqual(order, ['mark_ready', 'schedule_event'], 'both items ran, in order, after serving idle');
+  });
+
   setTimeout(() => { summary(); exitWithCode(); }, 500);
 })();

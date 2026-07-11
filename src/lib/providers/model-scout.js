@@ -236,6 +236,24 @@ class ModelScout {
   }
 
   /**
+   * Every tool-capable (Declared `tools`) text-generation model, smallest-first,
+   * for the tool-capability probe's idle lane (#285). The probe measures ONLY
+   * the seated boot set at boot; this is the full pool the idle lane drains one
+   * candidate per pulse so a model the maturation loop might later seat already
+   * has a capability verdict. Same {name, paramSize, digest} shape as
+   * getClassificationCandidates(); no param ceiling — tool models can be large
+   * and calibration runs in downtime.
+   * @returns {Array<{name: string, paramSize: number|null, digest: string|null}>}
+   */
+  getToolCandidates() {
+    if (!this._discovered || this._discovered.length === 0) return [];
+    return this._discovered
+      .filter(m => this._isTextGen(m) && this._capsOf(m).includes('tools'))
+      .sort((a, b) => this._compareSize(a, b))
+      .map(m => ({ name: m.name, paramSize: m.paramSize, digest: m.digest || null }));
+  }
+
+  /**
    * Get a compact text summary of discovered models for status display.
    * @returns {string}
    */

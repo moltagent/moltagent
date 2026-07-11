@@ -159,6 +159,14 @@ class HeartbeatManager {
       ? config.getGoldenSetProbe
       : null;
 
+    // ToolCapabilityProbe idle lane (#285): a thunk, like getGoldenSetProbe. The
+    // boot probe measures only the seated tool models; the idle branch drains
+    // one non-boot / provisional tool-capable candidate per pulse so capability
+    // calibration converges in downtime instead of competing with serving.
+    this.getToolCapabilityProbe = typeof config.getToolCapabilityProbe === 'function'
+      ? config.getToolCapabilityProbe
+      : null;
+
     this.getNicheAssignment = typeof config.getNicheAssignment === 'function'
       ? config.getNicheAssignment
       : null;
@@ -627,6 +635,29 @@ class HeartbeatManager {
           } catch (err) {
             console.warn('[Heartbeat] Probe idle measurement error:', err.message);
             results.errors.push({ component: 'goldenSetProbe', error: err.message });
+          }
+        }
+
+        // ToolCapabilityProbe idle lane (#285): same shape as the golden-set
+        // lane above. The boot probe measures only the seated tool models; the
+        // non-boot candidates and any provisional (prior-rev) seats are drained
+        // here, one per pulse. Seat-neutral — it warms the capability cache for
+        // the next boot's verdict; the runtime QUICK chain still guards live.
+        const toolProbe = this.getToolCapabilityProbe ? this.getToolCapabilityProbe() : null;
+        if (toolProbe && typeof toolProbe.getUnmeasuredCandidates === 'function') {
+          try {
+            const unmeasured = toolProbe.getUnmeasuredCandidates();
+            if (unmeasured.length > 0) {
+              const r = await toolProbe.measureOne(unmeasured[0]);
+              if (r && r.measured) {
+                console.log(`[Heartbeat] Tool-probe idle measurement: ${r.name} → ${r.status}; ${unmeasured.length - 1} candidate(s) remain`);
+              } else {
+                console.log(`[Heartbeat] Tool-probe idle measurement: ${r?.name || unmeasured[0].name} incomplete (${r?.detail || 'unknown'}); will retry next idle pulse`);
+              }
+            }
+          } catch (err) {
+            console.warn('[Heartbeat] Tool-probe idle measurement error:', err.message);
+            results.errors.push({ component: 'toolCapabilityProbe', error: err.message });
           }
         }
 
