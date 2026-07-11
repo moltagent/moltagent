@@ -27,6 +27,10 @@ const { surfaceText, hasSurfaceText, toolLabel, fieldLabel } = require('./surfac
  *      the tool label and the rendered args. Any answer but a clear YES runs the
  *      ceremony: the failure direction is always toward asking.
  *
+ * Neither question is answered by a cache. A prior approval authorizes the one
+ * call it was granted for; the tool-keyed skip cache that let it leak across
+ * targets is gone (#265, Phase 1 T-A). Bound one-shot approvals arrive in Phase 2.
+ *
  * @module agent/guardrail-enforcer
  */
 
@@ -196,9 +200,13 @@ class GuardrailEnforcer {
     // key: `${guardrailTitle}:${toolName}` → { result: 'YES'|'NO', timestamp }
     this.matchCache = new Map();
 
-    // Approval cache: once a guardrail is approved for a tool, don't re-ask on retry.
-    // key: `${guardrailTitle}:${toolName}` → timestamp of approval
-    this.approvalCache = new Map();
+    // The tool-keyed approval cache is gone (#265, Phase 1 T-A). It skipped the
+    // ceremony for MATCH_CACHE_TTL after any one approval, keyed by tool name
+    // alone — so a "ja" for deleting card A silently authorized a later delete
+    // of card B on the same tool. There is no fast-path exit now: every
+    // write-class call ceremonies fresh until Phase 2's bound one-shot approvals
+    // land. The semantic matchCache above is a different cache (does a guardrail
+    // govern a tool CATEGORY) and keeps its own TTL.
 
     // Tracks the timestamp of the last consumed HITL response so the poll
     // doesn't re-match the same message (poll reads the Talk API, which carries
@@ -259,15 +267,6 @@ class GuardrailEnforcer {
       const title = guardrail.title || '';
       if (!title) continue;
 
-      const approvalKey = `${title}:${toolName}`;
-
-      // Skip guardrails already approved for this tool (prevents re-asking on retry)
-      const approved = this.approvalCache.get(approvalKey);
-      if (approved && (Date.now() - approved) < MATCH_CACHE_TTL) {
-        this.logger.info(`[GuardrailEnforcer] ${toolName}: "${title}" → SKIP (already approved)`);
-        continue;
-      }
-
       const matchResult = await this._evaluateGuardrail(title, toolName, toolArgs);
 
       if (matchResult === 'YES') {
@@ -289,8 +288,8 @@ class GuardrailEnforcer {
           return { allowed: false, reason: `Guardrail "${title}" — action denied or timed out` };
         }
 
-        // User approved — cache approval so retries don't re-ask
-        this.approvalCache.set(approvalKey, Date.now());
+        // User approved. The approval authorizes this call only — no cache, so a
+        // later call ceremonies fresh (#265, Phase 1 T-A).
         this.logger.info(`[GuardrailEnforcer] ${toolName}: "${title}" → APPROVED by user`);
       }
     }
@@ -759,15 +758,9 @@ class GuardrailEnforcer {
       }
     }
 
-    // MEDIUM and HIGH: full HITL via Talk
+    // MEDIUM and HIGH: full HITL via Talk. No approval cache (#265, Phase 1 T-A):
+    // every call renders its own ceremony; a prior approval never carries over.
     this.logger.info(`[GuardrailEnforcer] checkApproval: ${toolName} → ${severity} severity, requesting HITL`);
-
-    const approvalKey = `toolguard:${toolName}`;
-    const cached = this.approvalCache.get(approvalKey);
-    if (cached && (Date.now() - cached) < MATCH_CACHE_TTL) {
-      this.logger.info(`[GuardrailEnforcer] checkApproval: ${toolName} → SKIP (already approved)`);
-      return { allowed: true, reason: null };
-    }
 
     // The label is rendered in the user's language here, at the offer's birth,
     // and stored on the PendingAction record with it. A resolution minutes later
@@ -776,7 +769,6 @@ class GuardrailEnforcer {
     const response = await this._requestToolApproval(label, toolName, toolArgs, roomToken, language);
 
     if (response.decision === 'yes') {
-      this.approvalCache.set(approvalKey, Date.now());
       return { allowed: true, reason: null };
     }
 

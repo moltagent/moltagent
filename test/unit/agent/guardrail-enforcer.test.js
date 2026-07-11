@@ -923,9 +923,12 @@ async function runTests() {
     assert.strictEqual(result.allowed, true);
   });
 
-  // --- Approval cache ---
+  // --- No approval cache: every GATE-governed call ceremonies fresh (#265, T-A) ---
 
-  await asyncTest('approval cache skips re-asking on retry for same guardrail+tool', async () => {
+  await asyncTest('GATE path: a second call on a different target ceremonies fresh (no cache)', async () => {
+    // The tool-keyed skip cache is deleted. An approval authorizes only the call
+    // it was granted for; a later call — even same tool, same room — renders its
+    // own ceremony. This is the GATE-path parallel of the T6 regression.
     const now = Date.now();
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
@@ -934,32 +937,18 @@ async function runTests() {
       talkSendQueue: queue,
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
-      ])
+      ]),
+      confirmationTimeoutMs: 200,
+      pollIntervalMs: 50
     });
 
     const r1 = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
     assert.strictEqual(r1.allowed, true);
-    assert.strictEqual(queue._getSent().length, 1);
+    assert.strictEqual(queue._getSent().length, 1, 'first call ceremonies');
 
-    const r2 = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
-    assert.strictEqual(r2.allowed, true);
-    assert.strictEqual(queue._getSent().length, 1);
-  });
-
-  await asyncTest('approval cache does not cross different tool names', async () => {
-    const now = Date.now();
-    const enforcer = makeEnforcer({
-      cockpitManager: createMockCockpit([gateGuardrail('Confirm everything')]),
-      ollamaProvider: createDualMockOllama('YES', 'APPROVE'),
-      talkSendQueue: createMockTalkQueue(),
-      conversationContext: createMockConversationContext([
-        { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
-      ])
-    });
-
-    await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
-    assert.ok(enforcer.approvalCache.has('Confirm everything:mail_send'));
-    assert.ok(!enforcer.approvalCache.has('Confirm everything:file_delete'));
+    // Different target, same tool, same room — the old cache would have skipped.
+    await enforcer.check('mail_send', { to: 'different@b.com' }, 'room1');
+    assert.strictEqual(queue._getSent().length, 2, 'second call renders a fresh ceremony, not a SKIP');
   });
 
   await asyncTest('denial is not cached — re-asks on retry after denial', async () => {
@@ -990,7 +979,6 @@ async function runTests() {
 
     const r1 = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
     assert.strictEqual(r1.allowed, false);
-    assert.ok(!enforcer.approvalCache.has('Confirm email:mail_send'));
 
     const r2 = await enforcer.check('mail_send', { to: 'a@b.com' }, 'room1');
     assert.strictEqual(r2.allowed, true);
@@ -1140,7 +1128,10 @@ async function runTests() {
     assert.strictEqual(queue._getSent().length, 1);
   });
 
-  await asyncTest('TC-APPROVE-005: checkApproval caches approval on yes', async () => {
+  await asyncTest('TC-APPROVE-005: a second delete on a different card ceremonies fresh (T-A, #265 T6 shape)', async () => {
+    // The #265 leak, inverted into a regression test. An approval for card 42
+    // must NOT carry over to a later delete of card 99. No tool-keyed cache: the
+    // second call renders its own ceremony.
     const now = Date.now();
     const queue = createMockTalkQueue();
     const enforcer = makeEnforcer({
@@ -1149,17 +1140,17 @@ async function runTests() {
       conversationContext: createMockConversationContext([
         { role: 'user', content: 'yes', timestamp: Math.ceil(now / 1000) + 1 }
       ]),
-      confirmationTimeoutMs: 500,
+      confirmationTimeoutMs: 200,
       pollIntervalMs: 50
     });
 
-    await enforcer.checkApproval('deck_delete_card', { cardId: 42 }, 'room1', []);
-    assert.ok(enforcer.approvalCache.has('toolguard:deck_delete_card'));
+    const r1 = await enforcer.checkApproval('deck_delete_card', { cardId: 42 }, 'room1', []);
+    assert.strictEqual(r1.allowed, true, 'first delete approved via ceremony');
+    assert.strictEqual(queue._getSent().length, 1, 'first call ceremonies');
 
-    // Second call should hit cache — no new message sent
-    const r2 = await enforcer.checkApproval('deck_delete_card', { cardId: 99 }, 'room1', []);
-    assert.strictEqual(r2.allowed, true);
-    assert.strictEqual(queue._getSent().length, 1); // only 1 message, not 2
+    // Different card, same tool, same room, inside what was the old TTL window.
+    await enforcer.checkApproval('deck_delete_card', { cardId: 99 }, 'room1', []);
+    assert.strictEqual(queue._getSent().length, 2, 'second call renders a fresh ceremony, not a SKIP');
   });
 
   await asyncTest('TC-APPROVE-006: checkApproval blocks on timeout', async () => {
