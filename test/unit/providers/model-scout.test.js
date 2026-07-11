@@ -430,6 +430,28 @@ scenario('getClassificationCandidates() never goes dark — an all-large pool fa
   });
 });
 
+// -- getToolCandidates(): every tool-capable text model, smallest-first (#285) --
+scenario('getToolCandidates() returns tool-capable text models smallest-first, excluding non-tool/embedding/vision', async () => {
+  await withMock(mockFetch(TAGS_MODELS, SHOW_BY_MODEL), async () => {
+    const scout = new ModelScout({ ollamaEndpoint: 'http://localhost:11434', logger: silentLogger });
+    await scout.discover();
+    const names = scout.getToolCandidates().map(c => c.name);
+    // Only qwen3:8b and qwen2.5:3b declare `tools`; smaller-first → 3b before 8b.
+    assert.deepStrictEqual(names, ['qwen2.5:3b', 'qwen3:8b']);
+    assert.ok(!names.includes('gemma2:2b'), 'a text-only model is not a tool candidate');
+    assert.ok(!names.includes('nomic-embed-text:latest') && !names.includes('llava:7b'),
+      'embedding/vision specialists are never tool candidates');
+    // Shape mirrors getClassificationCandidates(): name/paramSize/digest.
+    const one = scout.getToolCandidates()[0];
+    assert.ok('name' in one && 'paramSize' in one && 'digest' in one, 'each candidate carries name/paramSize/digest');
+  });
+});
+
+scenario('getToolCandidates() is empty before discovery and with no tool-capable pool', async () => {
+  const scout = new ModelScout({ logger: silentLogger });
+  assert.deepStrictEqual(scout.getToolCandidates(), [], 'empty before discovery');
+});
+
 // Run the fetch-mocking scenarios sequentially, then report.
 (async () => {
   for (const { name, fn } of suite) {

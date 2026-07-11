@@ -526,6 +526,13 @@ let judgeQueue = null; // Session 4: bounded judge-then-delete retention of judg
 let localJudge = null; // Session 4: heartbeat-idle grader for writing/thinking
 let nicheAssignment = null; // Session 5 (Layer 3): carrying-capacity plan over the winners
 let goldenSetProbe = null; // #260: retained so the heartbeat idle lane drains the candidates run()'s early exit skipped
+let toolCapabilityProbe = null; // #285: retained so the heartbeat idle lane drains non-boot / provisional tool candidates
+
+// #285: the shared serving-active admission gate. The message processor already
+// brackets every turn (markUserActive/markUserDone); the boot/idle calibration
+// probes read isServing()/idle() through this ONE home so a re-measurement walk
+// yields to a live turn instead of stampeding it.
+const servingGate = require('./src/lib/shared/ollama-gate');
 
 // Residency-signal sink for every local Ollama adapter (both families).
 // Late-bound: no-ops until NicheAssignment is constructed after discovery,
@@ -2182,6 +2189,7 @@ async function initialize() {
               classifyFn: (m, msg, lang) => intentRouter.probeClassify(m, msg, lang),
               fixture,
               cacheDir: path.join(__dirname, 'data'),
+              servingGate, // #285: yield the boot walk to a live turn
               logger: console,
             });
             // Retain the instance so the heartbeat idle lane can drain the
@@ -2231,23 +2239,40 @@ async function initialize() {
                     const toolProbe = new ToolCapabilityProbe({
                       chatFn: (model, req) => probeProvider.chat({ ...req, model }),
                       cacheDir: path.join(__dirname, 'data'),
+                      servingGate, // #285: yield the boot walk to a live turn
                       logger: console,
                     });
-                    const seen = new Set();
-                    const toolCandidates = [];
+                    // #285: the boot SET is only the seated tool models (measure
+                    // exactly what serves now); the full tool-capable pool is
+                    // handed to run() so the idle lane can drain the rest one per
+                    // pulse. Retain the instance for the heartbeat thunk.
+                    toolCapabilityProbe = toolProbe;
+                    const bootSet = new Set();
                     for (const job of ['tools', 'quick']) {
                       const r = modelResolver.resolve(job);
-                      if (r.model && String(r.provider || '').startsWith('ollama') && !seen.has(r.model)) {
-                        seen.add(r.model);
-                        const disc = (modelScout._discovered || []).find(m => m && m.name === r.model);
-                        toolCandidates.push({ name: r.model, digest: disc && disc.digest });
+                      if (r.model && String(r.provider || '').startsWith('ollama')) {
+                        bootSet.add(r.model);
                       }
                     }
-                    const verdicts = await toolProbe.run(toolCandidates);
+                    const digestOf = (name) => {
+                      const disc = (modelScout._discovered || []).find(m => m && m.name === name);
+                      return disc && disc.digest;
+                    };
+                    // Full tool-capable pool (idle-lane residents); ensure the
+                    // seated boot models are present even if discovery missed a cap.
+                    const toolCandidates = (typeof modelScout.getToolCandidates === 'function'
+                      ? modelScout.getToolCandidates()
+                      : []);
+                    const known = new Set(toolCandidates.map(c => c.name));
+                    for (const name of bootSet) {
+                      if (!known.has(name)) toolCandidates.push({ name, digest: digestOf(name) });
+                    }
+                    const verdicts = await toolProbe.run(toolCandidates, { bootSet });
                     for (const v of verdicts) {
+                      const prov = v.provisional ? ' (provisional; re-measured in idle)' : '';
                       if (v.status === VERDICT.PROSE) {
                         modelResolver.markToolIncapable(v.name);
-                        console.warn(`[BOOT][WARN] Tool-capability probe: ${v.name} answered a tool-requiring instruction with prose — flagged (#118); runtime chain falls back on tool-call failure`);
+                        console.warn(`[BOOT][WARN] Tool-capability probe: ${v.name} answered a tool-requiring instruction with prose — flagged (#118)${prov}; runtime chain falls back on tool-call failure`);
                       } else if (v.status === VERDICT.DATE_UNGROUNDED) {
                         // #168: emits tool calls but anchors relative dates to its
                         // training prior (~2023) even with the shipped grounding
@@ -2255,9 +2280,9 @@ async function initialize() {
                         // (which model serves tools next, at what latency) is the
                         // #275 decision, surfaced here, not tuned away.
                         modelResolver.markToolIncapable(v.name);
-                        console.warn(`[BOOT][WARN] Tool-capability probe: ${v.name} could not ground a relative date (${v.detail}) — flagged (#168); tools seat demotes to the next candidate`);
+                        console.warn(`[BOOT][WARN] Tool-capability probe: ${v.name} could not ground a relative date (${v.detail}) — flagged (#168)${prov}; tools seat demotes to the next candidate`);
                       } else if (v.status === VERDICT.TOOL_CALL) {
-                        console.log(`[INIT] Tool-capability probe: ${v.name} → tool call + date grounded OK${/\(cached\)/.test(v.detail || '') ? ' (cached)' : ''}`);
+                        console.log(`[INIT] Tool-capability probe: ${v.name} → tool call + date grounded OK${/\(cached\)/.test(v.detail || '') ? ' (cached)' : ''}${prov}`);
                       }
                     }
                   }
@@ -2663,6 +2688,10 @@ async function initialize() {
         // the async ModelScout discovery block, after this manager. The idle
         // lane drains its unmeasured candidates one per pulse.
         getGoldenSetProbe: () => goldenSetProbe,
+        // #285: same thunk pattern — the tool-capability probe is constructed in
+        // the same async block. The idle lane drains its non-boot / provisional
+        // tool candidates one per pulse.
+        getToolCapabilityProbe: () => toolCapabilityProbe,
         onOllamaTimings: ollamaTimingsSink,
         dailyBriefing,
         reviewUser: appConfig.cockpit?.adminUser || appConfig.knowledge?.adminUser || '',

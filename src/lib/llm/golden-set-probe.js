@@ -48,6 +48,11 @@ const crypto = require('crypto');
 const DEFAULT_THRESHOLD = 0.75;
 const CACHE_FILENAME = 'golden-set-probe.json';
 
+// How long a probe measurement will wait for a live turn to finish before it
+// proceeds anyway (admission gate, #285). Generous — measurement must eventually
+// happen; the gate trades its latency, never its existence.
+const DEFAULT_SERVING_WAIT_MS = 3 * 60 * 1000;
+
 // Bump when the MEANING of a cached score changes even though model digest and
 // fixture are identical — e.g. the decoding options probeClassify pins (m2:
 // temperature 0 + fixed seed, #232). Old-revision entries then miss the cache
@@ -70,14 +75,25 @@ class GoldenSetProbe {
    *   { version, threshold, languages: { EN:[...], DE:[...], PT:[...] } }.
    * @param {string} [opts.cacheDir] - Directory for the results cache.
    *   Defaults to `data/` under the process cwd.
+   * @param {Object} [opts.servingGate] - The shared serving-active admission
+   *   gate (shared/ollama-gate). When set, the measurement loop yields to a live
+   *   turn between fixture examples so a boot re-measurement walk never stampedes
+   *   serving (#285). Null → no yielding (the pre-#285 behaviour; tests that
+   *   don't exercise the gate omit it).
+   * @param {number} [opts.servingWaitMs] - Cap on the per-yield wait before the
+   *   probe proceeds anyway. Defaults to DEFAULT_SERVING_WAIT_MS.
    * @param {Object} [opts.logger=console]
    */
-  constructor({ classifyFn, fixture, cacheDir, logger } = {}) {
+  constructor({ classifyFn, fixture, cacheDir, servingGate, servingWaitMs, logger } = {}) {
     this.classifyFn = typeof classifyFn === 'function' ? classifyFn : null;
     this.fixture = fixture || null;
     this.cacheDir = cacheDir || path.resolve(process.cwd(), 'data');
     this._cacheFile = path.join(this.cacheDir, CACHE_FILENAME);
     this.logger = logger || console;
+    this.servingGate = servingGate && typeof servingGate.isServing === 'function' ? servingGate : null;
+    this._servingWaitMs = Number.isFinite(servingWaitMs) && servingWaitMs > 0
+      ? servingWaitMs
+      : DEFAULT_SERVING_WAIT_MS;
 
     // In-memory scores for the candidates most recently run(), keyed the
     // same way as the on-disk cache. select() reads only this — it makes
@@ -96,6 +112,14 @@ class GoldenSetProbe {
     // idle lane can drain the models run()'s early exit skipped without
     // re-deriving the list (#260). getUnmeasuredCandidates() defaults to it.
     this._lastCandidates = [];
+
+    // Current-rev cache keys seated PROVISIONALLY on a prior-rev score this boot
+    // (#285): a fixture/rev bump turns a cached score "not comparable," not the
+    // model "unknown." Rather than re-measure at boot (the stampede), the prior
+    // score seats select() and the key is marked here so the idle lane still
+    // re-measures it against the current fixture. Cleared per key by measureOne()
+    // once a current-rev measurement replaces the provisional seat.
+    this._provisional = new Set();
 
     // True only while run()'s measurement loop + final cache save are in flight.
     // The idle lane (getUnmeasuredCandidates) no-ops while set, so a nighttime
@@ -174,8 +198,19 @@ class GoldenSetProbe {
       if (candidate.name === this._incumbent) incumbentSettled = true;
 
       const cached = diskCache[key];
+      const priorScores = (cached && cached.scores) ? null : this._priorRevScores(diskCache, candidate);
       if (cached && cached.scores) {
         this._scores[key] = cached.scores;
+      } else if (priorScores) {
+        // #285: no current-rev score, but this model has a prior-rev score. Seat
+        // it PROVISIONALLY (it feeds select() like a measured score) and mark it
+        // for idle re-measurement, rather than re-measuring at boot where it
+        // competes with serving. A score from fixture v1 is a better prior than
+        // an unmeasured zero; the idle lane corrects it against the current
+        // fixture (and any #275-style demotion takes effect then).
+        this._scores[key] = priorScores;
+        this._provisional.add(key);
+        this.logger.log(`[GoldenSetProbe] ${candidate.name}: seated provisionally on a prior-rev score; re-measuring in idle.`);
       } else {
         const { scores, complete } = await this._measureCandidate(candidate);
         if (complete) {
@@ -369,6 +404,9 @@ class GoldenSetProbe {
     const diskCache = this._loadCache();
     return list.filter(c => {
       const key = this._cacheKey(c);
+      // A provisional seat (prior-rev score, #285) still needs a current-rev
+      // measurement, even though _scores[key] is populated for select().
+      if (this._provisional.has(key)) return true;
       if (this._scores[key]) return false;
       const cached = diskCache[key];
       return !(cached && cached.scores);
@@ -400,9 +438,12 @@ class GoldenSetProbe {
     // Load-modify-save so a concurrent seat write (SELECTION_KEY) or another
     // candidate's cached score is preserved — this runs long after run()'s save.
     const diskCache = this._loadCache();
-    diskCache[this._cacheKey(candidate)] = { scores, at: new Date().toISOString() };
+    const key = this._cacheKey(candidate);
+    diskCache[key] = { scores, at: new Date().toISOString() };
     this._saveCache(diskCache);
-    this._scores[this._cacheKey(candidate)] = scores;
+    this._scores[key] = scores;
+    // A current-rev measurement replaces any provisional seat for this key (#285).
+    this._provisional.delete(key);
     return { name: candidate.name, measured: true, complete: true, scores };
   }
 
@@ -431,6 +472,11 @@ class GoldenSetProbe {
       let correct = 0;
       let errored = 0;
       for (const item of examples) {
+        // Admission gate (#285): yield to a live turn before each example, so a
+        // boot walk that collides with serving pauses within one example's
+        // granularity and resumes after the turn. An in-flight classify is never
+        // aborted — the gate controls admission, not abortion.
+        await this._yieldToServing(candidate.name);
         try {
           const predicted = await this.classifyFn(candidate.name, item.message, lang);
           if (predicted && predicted.gate === item.gate &&
@@ -446,6 +492,58 @@ class GoldenSetProbe {
       scores[lang] = examples.length > 0 ? correct / examples.length : 0;
     }
     return { scores, complete };
+  }
+
+  /**
+   * @private
+   * Yield the Ollama slot to a live turn (#285). If the serving gate reports a
+   * user turn in flight, wait for it to finish (or the cap) before the next
+   * measurement item. No-op when no gate is wired or nothing is serving.
+   * @param {string} label - candidate name, for the log line.
+   */
+  async _yieldToServing(label) {
+    if (!this.servingGate || !this.servingGate.isServing()) return;
+    this.logger.log(`[GoldenSetProbe] probe paused: serving active, yielding (${label})`);
+    const r = await this.servingGate.idle(this._servingWaitMs);
+    if (r && r.timedOut) {
+      this.logger.warn(`[GoldenSetProbe] probe resumed after ${this._servingWaitMs}ms cap while still serving — measuring anyway (${label})`);
+    } else {
+      this.logger.log(`[GoldenSetProbe] probe resumed: serving idle (${label})`);
+    }
+  }
+
+  /**
+   * @private
+   * The candidate's stable identity in a cache key — the digest when present
+   * (survives a re-tag), else the name. The prefix before the fixture salt.
+   */
+  _candidateId(candidate) {
+    return (candidate && (candidate.digest || candidate.name)) || 'unknown';
+  }
+
+  /**
+   * @private
+   * The most recent cached score for this model under a DIFFERENT fixture salt
+   * than the current one (#285): same model identity, prior fixture/rev. Used to
+   * seat a model provisionally when its current-rev score is missing, instead of
+   * re-measuring at boot. Returns the score map, or null if the model has never
+   * been measured under any rev.
+   * @param {Object} diskCache
+   * @param {{name: string, digest?: string}} candidate
+   * @returns {Object<string, number>|null}
+   */
+  _priorRevScores(diskCache, candidate) {
+    const currentKey = this._cacheKey(candidate);
+    const id = this._candidateId(candidate);
+    let best = null;
+    for (const [k, v] of Object.entries(diskCache)) {
+      if (k === currentKey || k === SELECTION_KEY) continue;
+      if (!v || !v.scores) continue;
+      const sep = k.lastIndexOf('__');
+      if (sep < 0 || k.slice(0, sep) !== id) continue;
+      if (!best || (v.at && (!best.at || v.at > best.at))) best = v;
+    }
+    return best ? best.scores : null;
   }
 
   /**
