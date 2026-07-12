@@ -1,3 +1,7 @@
+**English** | [Deutsch](readme_i18n/README.de.md) | [Português](readme_i18n/README.pt.md)
+
+---
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
