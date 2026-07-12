@@ -58,6 +58,9 @@
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7"
   },
+  "overrides": {
+    "undici": "^7.28.0"
+  },
   "lint-staged": {
     "*.js": "eslint"
   }
