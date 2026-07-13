@@ -120,11 +120,16 @@ class ConversationContext {
       .filter(m => (now - m.timestamp * 1000) < maxAge)
       // Sort chronologically (Talk API returns newest-first, we want oldest-first)
       .reverse()
-      // Map to conversation format
+      // Map to conversation format. actorId/actorType ride along so the approval
+      // poll can tell WHICH human replied (Approval Custody Phase 2, §4). Additive
+      // fields — existing callers that read id/role/name/content/timestamp are
+      // unaffected.
       .map(m => ({
         id: m.id,
         role: m.actorId === ncUser ? 'assistant' : 'user',
         name: m.actorDisplayName || m.actorId,
+        actorId: m.actorId,
+        actorType: m.actorType,
         content: m.message || '',
         timestamp: m.timestamp
       }));

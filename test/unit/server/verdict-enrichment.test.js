@@ -160,29 +160,38 @@ function createEnforcer() {
   });
 }
 
-test('TC-LANG-008: a PendingAction born from a timed-out offer stores its language', () => {
-  const enforcer = createEnforcer();
-  enforcer._rememberPendingAction('room-abc', 'deck_delete_card', { card: '42' }, 'Delete Deck card', 'DE');
+// The record stores the offer's birth language as `resolvedLanguage` (#273);
+// the resolution minutes later reads it rather than re-deriving from a one-word
+// reply. Converted to the Phase 2 custody record.
+const mintDelete = (enforcer, room, language) => enforcer._mintRecord({
+  room, requestingUser: 'fu',
+  invocations: [{ tool: 'deck_delete_card', args: { card: '42' }, label: 'Delete Deck card' }],
+  language
+});
 
-  const record = enforcer.getPendingAction('room-abc');
-  assert.strictEqual(record.language, 'DE');
-  assert.strictEqual(record.tool, 'deck_delete_card');
+test('TC-LANG-008: a custody record stores its birth language', () => {
+  const enforcer = createEnforcer();
+  mintDelete(enforcer, 'room-abc', 'DE');
+
+  const record = enforcer.getPendingRecords('room-abc')[0];
+  assert.strictEqual(record.resolvedLanguage, 'DE');
+  assert.strictEqual(record.heldInvocations[0].tool, 'deck_delete_card');
 });
 
 test('TC-LANG-009: an offer born without a language stores null, never a guess', () => {
   const enforcer = createEnforcer();
-  enforcer._rememberPendingAction('room-abc', 'deck_delete_card', { card: '42' }, 'Delete Deck card');
+  mintDelete(enforcer, 'room-abc', undefined);
 
-  assert.strictEqual(enforcer.getPendingAction('room-abc').language, null);
+  assert.strictEqual(enforcer.getPendingRecords('room-abc')[0].resolvedLanguage, null);
 });
 
-test('TC-LANG-010: the language survives consumption — the resolution reads it', () => {
+test('TC-LANG-010: the language survives release — the resolution reads it', () => {
   const enforcer = createEnforcer();
-  enforcer._rememberPendingAction('room-abc', 'deck_delete_card', { card: '42' }, 'Delete Deck card', 'PT');
+  const record = mintDelete(enforcer, 'room-abc', 'PT');
 
-  const consumed = enforcer.consumePendingAction('room-abc');
-  assert.strictEqual(consumed.language, 'PT');
-  assert.strictEqual(enforcer.getPendingAction('room-abc'), null, 'record is spent');
+  assert.strictEqual(enforcer._releaseRecord(record), true);
+  assert.strictEqual(record.resolvedLanguage, 'PT', 'the released record still carries its language');
+  assert.strictEqual(enforcer.getPendingRecords('room-abc').length, 0, 'record is spent');
 });
 
 // Summary

@@ -9,7 +9,6 @@ const { test, asyncTest, summary, exitWithCode } = require('../../helpers/test-r
 
 const { GuardrailEnforcer } = require('../../../src/lib/agent/guardrail-enforcer');
 const { toolLabel } = require('../../../src/lib/agent/surface-text');
-const { PendingActionStore } = require('../../../src/lib/pending-action-store');
 
 // ============================================================
 // Helpers
@@ -112,9 +111,15 @@ function makeEnforcer(overrides = {}) {
     semanticTimeoutMs: overrides.semanticTimeoutMs || 5000,
     confirmationTimeoutMs: overrides.confirmationTimeoutMs || 500,
     pollIntervalMs: overrides.pollIntervalMs || 50,
-    pendingActionStore: overrides.pendingActionStore || undefined,
+    freshnessWindowMs: overrides.freshnessWindowMs,
+    now: overrides.now,
     logger: silentLogger
   });
+}
+
+// A single held invocation, the shape checkApprovalBatch/_mintRecord consume.
+function held(tool, args, label) {
+  return { tool, args, label: label || tool };
 }
 
 // Shorthand: create a GATE guardrail (the common case in tests)
@@ -1371,9 +1376,12 @@ async function runTests() {
     }
   });
 
-  // ── PendingAction record (#104) ────────────────────────────────
+  // ── PendingAction custody record (Approval Custody Phase 2) ─────
+  // Converted from the #104 single-store shape. The record is born at the hold
+  // and persists past a timeout as PENDING; consumption is one-shot; records no
+  // longer supersede (multiple pending per room), and never expire by a clock.
 
-  await asyncTest('TC-RECORD-001: a timed-out offer is born as a record', async () => {
+  await asyncTest('TC-RECORD-001: a timed-out offer stays a pending record', async () => {
     const enforcer = makeEnforcer({
       talkSendQueue: createMockTalkQueue(),
       conversationContext: createMockConversationContext([]),
@@ -1381,16 +1389,17 @@ async function runTests() {
       pollIntervalMs: 50
     });
 
-    assert.strictEqual(enforcer.getPendingAction('room1'), null);
+    assert.strictEqual(enforcer.getPendingRecords('room1').length, 0);
 
     const result = await enforcer.checkApproval('deck_delete_card', { card: 'Q3 Planning' }, 'room1', []);
     assert.strictEqual(result.allowed, false);
 
-    const record = enforcer.getPendingAction('room1');
-    assert.ok(record, 'poll timeout must persist the offer');
-    assert.strictEqual(record.tool, 'deck_delete_card');
-    assert.deepStrictEqual(record.args, { card: 'Q3 Planning' });
-    assert.strictEqual(record.label, 'Delete Deck card');
+    const record = enforcer.getPendingRecords('room1')[0];
+    assert.ok(record, 'poll timeout must leave the record pending');
+    assert.strictEqual(record.state, 'pending');
+    assert.strictEqual(record.heldInvocations[0].tool, 'deck_delete_card');
+    assert.deepStrictEqual(record.heldInvocations[0].args, { card: 'Q3 Planning' });
+    assert.strictEqual(record.heldInvocations[0].label, 'Delete Deck card');
   });
 
   await asyncTest('TC-RECORD-002: a denied offer leaves no record', async () => {
@@ -1407,60 +1416,162 @@ async function runTests() {
 
     const result = await enforcer.checkApproval('deck_delete_card', { card: 'X' }, 'room1', []);
     assert.strictEqual(result.allowed, false);
-    assert.strictEqual(enforcer.getPendingAction('room1'), null, 'the poll answered; nothing to remember');
+    assert.strictEqual(enforcer.getPendingRecords('room1').length, 0, 'a denied offer is voided, not remembered');
   });
 
   test('TC-RECORD-003: records are room-scoped', () => {
     const enforcer = makeEnforcer({});
-    enforcer._rememberPendingAction('roomA', 'deck_delete_card', { card: 'A' }, 'Delete Deck card');
-    enforcer._rememberPendingAction('roomB', 'file_delete', { path: '/b' }, 'Delete file');
+    enforcer._mintRecord({ room: 'roomA', requestingUser: 'fu', invocations: [held('deck_delete_card', { card: 'A' }, 'Delete Deck card')], language: 'EN' });
+    enforcer._mintRecord({ room: 'roomB', requestingUser: 'fu', invocations: [held('file_delete', { path: '/b' }, 'Delete file')], language: 'EN' });
 
-    assert.strictEqual(enforcer.getPendingAction('roomA').tool, 'deck_delete_card');
-    assert.strictEqual(enforcer.getPendingAction('roomB').tool, 'file_delete');
-    assert.strictEqual(enforcer.getPendingAction('roomC'), null);
+    assert.strictEqual(enforcer.getPendingRecords('roomA')[0].heldInvocations[0].tool, 'deck_delete_card');
+    assert.strictEqual(enforcer.getPendingRecords('roomB')[0].heldInvocations[0].tool, 'file_delete');
+    assert.strictEqual(enforcer.getPendingRecords('roomC').length, 0);
   });
 
-  test('TC-RECORD-004: a newer offer supersedes the older one in the same room', () => {
+  test('TC-RECORD-004: distinct targets coexist; an identical held invocation is suppressed', () => {
     const enforcer = makeEnforcer({});
-    enforcer._rememberPendingAction('room1', 'deck_delete_card', { card: 'Old' }, 'Delete Deck card');
-    enforcer._rememberPendingAction('room1', 'deck_delete_card', { card: 'New' }, 'Delete Deck card');
+    // No supersede: two distinct offers stay pending together (§4 disambiguation).
+    enforcer._mintRecord({ room: 'room1', requestingUser: 'fu', invocations: [held('deck_delete_card', { card: 'Old' }, 'Delete Deck card')], language: 'EN' });
+    enforcer._mintRecord({ room: 'room1', requestingUser: 'fu', invocations: [held('deck_delete_card', { card: 'New' }, 'Delete Deck card')], language: 'EN' });
+    assert.strictEqual(enforcer.getPendingRecords('room1').length, 2);
 
-    assert.strictEqual(enforcer.pendingActions.size('offered-work:room1'), 1);
-    assert.strictEqual(enforcer.getPendingAction('room1').args.card, 'New');
+    // Duplicate suppression (§3): an identical held invocation is found, not stacked.
+    const dup = enforcer._findDuplicate('room1', [held('deck_delete_card', { card: 'Old' })]);
+    assert.ok(dup, 'an identical held invocation is recognised as a duplicate');
+    assert.strictEqual(enforcer._findDuplicate('room1', [held('deck_delete_card', { card: 'Other' })]), null);
   });
 
-  test('TC-RECORD-005: consumption is single-shot', () => {
+  test('TC-RECORD-005: release is single-shot, consumedAt set atomically', () => {
     const enforcer = makeEnforcer({});
-    enforcer._rememberPendingAction('room1', 'deck_delete_card', { card: 'A' }, 'Delete Deck card');
+    const rec = enforcer._mintRecord({ room: 'room1', requestingUser: 'fu', invocations: [held('deck_delete_card', { card: 'A' }, 'Delete Deck card')], language: 'EN' });
 
-    const first = enforcer.consumePendingAction('room1');
-    assert.strictEqual(first.args.card, 'A');
-    assert.strictEqual(enforcer.consumePendingAction('room1'), null, 'a spent record cannot be re-read');
-    assert.strictEqual(enforcer.getPendingAction('room1'), null);
+    assert.strictEqual(enforcer._releaseRecord(rec), true);
+    assert.strictEqual(rec.state, 'released');
+    assert.ok(rec.consumedAt, 'consumedAt is stamped on release');
+    assert.strictEqual(enforcer._releaseRecord(rec), false, 'a released record can never release again');
   });
 
-  test('TC-RECORD-006: dropPendingAction forgets the offer', () => {
+  test('TC-RECORD-006: voidRecord forgets the offer', () => {
     const enforcer = makeEnforcer({});
-    enforcer._rememberPendingAction('room1', 'deck_delete_card', { card: 'A' }, 'Delete Deck card');
-    enforcer.dropPendingAction('room1');
-    assert.strictEqual(enforcer.getPendingAction('room1'), null);
+    const rec = enforcer._mintRecord({ room: 'room1', requestingUser: 'fu', invocations: [held('deck_delete_card', { card: 'A' }, 'Delete Deck card')], language: 'EN' });
+    enforcer.voidRecord(rec, 'test');
+    assert.strictEqual(enforcer.getPendingRecords('room1').length, 0);
   });
 
-  test('TC-RECORD-007: an expired record is invisible', () => {
-    const store = new PendingActionStore({ defaultTTLMs: 1, cleanupIntervalMs: 60000 });
-    const enforcer = makeEnforcer({ pendingActionStore: store });
-    // The store stamps expiresAt from its own TTL; write one already in the past.
-    store.set('offered-work:room1', { tool: 'deck_delete_card', args: {}, label: 'x' }, { ttlMs: -1 });
-
-    assert.strictEqual(enforcer.getPendingAction('room1'), null);
-    store.stop();
+  test('TC-RECORD-007: a custody record never expires by a clock (Q6)', () => {
+    let t = 1000;
+    const enforcer = makeEnforcer({ now: () => t });
+    enforcer._mintRecord({ room: 'room1', requestingUser: 'fu', invocations: [held('deck_delete_card', { card: 'A' }, 'Delete Deck card')], language: 'EN' });
+    t += 24 * 60 * 60 * 1000; // a full day later
+    assert.strictEqual(enforcer.getPendingRecords('room1').length, 1, 'the question still binds — it never silently expires');
   });
 
   test('TC-RECORD-008: no roomToken, no record', () => {
     const enforcer = makeEnforcer({});
-    enforcer._rememberPendingAction(null, 'deck_delete_card', { card: 'A' }, 'Delete Deck card');
-    assert.strictEqual(enforcer.pendingActions.size(), 0);
-    assert.strictEqual(enforcer.getPendingAction(null), null);
+    assert.strictEqual(enforcer.getPendingRecords(null).length, 0);
+    assert.strictEqual(enforcer.getPendingRecords('').length, 0);
+  });
+
+  // ── Batch contract (§6 / #84) ──────────────────────────────────
+
+  await asyncTest('TC-BATCH-001: N calls become ONE record with an enumerated set', async () => {
+    const queue = createMockTalkQueue();
+    const enforcer = makeEnforcer({
+      talkSendQueue: queue,
+      conversationContext: createMockConversationContext([]),
+      confirmationTimeoutMs: 120,
+      pollIntervalMs: 40
+    });
+
+    const decision = await enforcer.checkApprovalBatch([
+      { tool: 'deck_delete_card', arguments: { card: 'A' } },
+      { tool: 'deck_delete_card', arguments: { card: 'B' } },
+      { tool: 'deck_delete_card', arguments: { card: 'C' } },
+    ], 'room1', { language: 'DE', requestingUser: 'fu' });
+
+    assert.strictEqual(decision.decision, 'timeout');
+    const records = enforcer.getPendingRecords('room1');
+    assert.strictEqual(records.length, 1, 'one request → one record, not three');
+    assert.strictEqual(records[0].heldInvocations.length, 3);
+
+    // The ceremony enumerates every target — never truncated to "and N more".
+    const msg = queue._getSent()[0].message;
+    assert.ok(msg.includes('A') && msg.includes('B') && msg.includes('C'), 'all three targets are listed');
+  });
+
+  await asyncTest('TC-BATCH-002: one fresh yes releases the whole set', async () => {
+    const nowSec = Math.floor(Date.now() / 1000) + 1;
+    const enforcer = makeEnforcer({
+      ollamaProvider: createMockOllama('APPROVE'),
+      talkSendQueue: createMockTalkQueue(),
+      conversationContext: createMockConversationContext([
+        { role: 'user', content: 'ja', timestamp: nowSec, actorId: 'fu', id: 9 }
+      ]),
+      confirmationTimeoutMs: 500,
+      pollIntervalMs: 40
+    });
+
+    const decision = await enforcer.checkApprovalBatch([
+      { tool: 'deck_delete_card', arguments: { card: 'A' } },
+      { tool: 'deck_delete_card', arguments: { card: 'B' } },
+    ], 'room1', { language: 'EN', requestingUser: 'fu' });
+
+    assert.strictEqual(decision.decision, 'yes');
+    assert.strictEqual(enforcer.getPendingRecords('room1').length, 0, 'the released record is spent');
+  });
+
+  // ── Freshness-gated release (§5) ───────────────────────────────
+
+  await asyncTest('TC-FRESH-001: a fresh yes releases; a late yes re-presents', async () => {
+    let t = 100000;
+    const enforcer = makeEnforcer({
+      ollamaProvider: createMockOllama('APPROVE'),
+      now: () => t,
+      freshnessWindowMs: 5000
+    });
+
+    // Fresh: minted at t, answered at t+1s → release.
+    enforcer._mintRecord({ room: 'r1', requestingUser: 'fu', invocations: [held('deck_delete_card', { card: 'A' }, 'Delete Deck card')], language: 'EN' });
+    t += 1000;
+    const fresh = await enforcer.resolveReply({ room: 'r1', answeringUser: 'fu', text: 'ja', botUser: 'moltagent' });
+    assert.strictEqual(fresh.action, 'release');
+
+    // Late: minted at t, answered a day later → re-present, nothing executes yet.
+    enforcer._mintRecord({ room: 'r2', requestingUser: 'fu', invocations: [held('deck_delete_card', { card: 'B' }, 'Delete Deck card')], language: 'EN' });
+    t += 24 * 60 * 60 * 1000;
+    const late = await enforcer.resolveReply({ room: 'r2', answeringUser: 'fu', text: 'ja', botUser: 'moltagent' });
+    assert.strictEqual(late.action, 'represent');
+    assert.strictEqual(enforcer.getPendingRecords('r2').length, 1, 'a late yes does not spend the record');
+  });
+
+  await asyncTest('TC-FRESH-002: void on drift — all targets gone voids the record', () => {
+    const enforcer = makeEnforcer({});
+    const rec = enforcer._mintRecord({ room: 'r1', requestingUser: 'fu', invocations: [held('deck_delete_card', { card: 'A' }, 'Delete Deck card')], language: 'EN' });
+    const outcome = enforcer.applyRepresentation(rec, { surviving: [], vanished: rec.heldInvocations });
+    assert.strictEqual(outcome.voided, true);
+    assert.strictEqual(enforcer.getPendingRecords('r1').length, 0, 'a release never fires into a vanished world');
+  });
+
+  // ── In-poll approver rule (§4) ─────────────────────────────────
+
+  await asyncTest('TC-APPROVER-001: a non-matching human in-poll does not release', async () => {
+    const nowSec = Math.floor(Date.now() / 1000) + 1;
+    const queue = createMockTalkQueue();
+    const enforcer = makeEnforcer({
+      ollamaProvider: createMockOllama('APPROVE'),
+      talkSendQueue: queue,
+      conversationContext: createMockConversationContext([
+        { role: 'user', content: 'ja', timestamp: nowSec, actorId: 'ada', id: 7 }
+      ]),
+      confirmationTimeoutMs: 160,
+      pollIntervalMs: 40
+    });
+
+    const result = await enforcer.checkApproval('deck_delete_card', { card: 'A' }, 'room1', [], { requestingUser: 'fu' });
+    assert.strictEqual(result.allowed, false, 'a wrong approver never releases the hold');
+    assert.ok(queue._getSent().some(s => /requested this|angefragt|pediu/i.test(s.message)), 'the non-approver notice fired once');
+    assert.strictEqual(enforcer.getPendingRecords('room1').length, 1, 'the record still stands for the real approver');
   });
 
   // ── isPendingConfirmation (HITL duplicate prevention) ──────────

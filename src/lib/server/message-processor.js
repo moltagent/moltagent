@@ -1827,57 +1827,131 @@ class MessageProcessor {
   async _resolvePendingAction(extracted, message) {
     const enforcer = this.agentLoop?.guardrailEnforcer;
     if (!enforcer || !extracted.token) return null;
+    if (enforcer.getPendingRecords(extracted.token).length === 0) return null;
 
-    const record = enforcer.getPendingAction(extracted.token);
-    if (!record) return null;
+    // The custody brain decides: approver rule, disambiguation, and freshness are
+    // resolved in the enforcer against the record; the substrate re-read (void on
+    // drift) and the execution stay here, where the tool clients live. Nothing is
+    // re-derived from history text. Every surface below speaks the language the
+    // OFFER was born in, read from the record — never the reply's ("ja" is too
+    // short to read; #276).
+    const decision = await enforcer.resolveReply({
+      room: extracted.token,
+      answeringUser: extracted.user,
+      text: message,
+      botUser: this.botUsername
+    });
+    console.log(`[Message] PendingAction resolveReply: action=${decision.action} answeringUser=${extracted.user}`);
 
-    const verdict = await enforcer.classifyPendingReply(message);
-    console.log(`[Message] PendingAction ${record.tool}: classifier=${verdict}`);
+    switch (decision.action) {
+      case 'none':
+        // Not an answer to a held invocation. Routes on as ordinary work; the
+        // records stay live (they never expire — Q6).
+        return null;
 
-    // Every surface below speaks the language the OFFER was born in, read from
-    // the record — never the language of the reply that resolves it. "ja" is one
-    // word; the classifier tags it OTHER, and re-deriving from it would answer a
-    // German offer in English (#276, amendment 4). The label was already
-    // rendered in that language at birth.
-    if (verdict === 'approve') {
-      const approved = enforcer.consumePendingAction(extracted.token);
-      if (!approved) return null; // expired between lookup and consumption
-      const toolResult = await this.agentLoop.executeApprovedTool(
-        { name: approved.tool, arguments: approved.args }, extracted.token
-      );
-      const outcome = toolResult.success
-        ? (toolResult.result || surfaceText('outcome_done', approved.language))
-        : surfaceText('outcome_failed', approved.language, { error: toolResult.error });
-      console.log(`[Message] PendingAction executed: ${approved.tool} success=${toolResult.success}`);
+      case 'not-approver':
+        // A non-matching human answered. Stated once (§4); a repeat routes on as
+        // ordinary work rather than nagging about the pending question.
+        if (decision.notify) {
+          return {
+            response: enforcer.buildNonApproverNotice(decision.language),
+            result: { intent: 'pending_action_not_approver', provider: 'agent' }
+          };
+        }
+        return null;
+
+      case 'disambiguate':
+        return {
+          response: enforcer.buildDisambiguationMessage(decision.records, decision.language),
+          result: { intent: 'pending_action_disambiguate', provider: 'agent' }
+        };
+
+      case 'edit':
+        // The reply revises the offer; the record is dropped and the message
+        // routes on as the fresh request it is.
+        console.log('[Message] PendingAction dropped — reply revises the offer; routing as new work');
+        return null;
+
+      case 'deny': {
+        const response = await this.agentLoop.narrateOutcome({
+          userMessage: message,
+          label: decision.record.heldInvocations[0].label,
+          outcome: surfaceText('outcome_cancelled', decision.language),
+          language: decision.language
+        });
+        return { response, result: { intent: 'pending_action_denied', provider: 'agent' } };
+      }
+
+      case 'release':
+        return this._executeReleasedRecord(decision, message);
+
+      case 'represent':
+        return this._representRecord(enforcer, decision);
+
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * Execute a released record's held invocation(s) and report the outcome (§6).
+   * One invocation → a narrated sentence; a batch → per-target results, stated
+   * plainly, a member's failure not halting the others.
+   * @private
+   */
+  async _executeReleasedRecord(decision, message) {
+    const { record, language, invocations } = decision;
+    const results = [];
+    for (const held of invocations) {
+      const r = await this.agentLoop.executeApprovedTool({ name: held.tool, arguments: held.args }, record.room);
+      results.push({ label: held.label, success: r.success, error: r.error, result: r.result });
+      console.log(`[Message] PendingAction executed: ${held.tool} success=${r.success}`);
+    }
+
+    if (results.length === 1) {
+      const r = results[0];
+      const outcome = r.success
+        ? (r.result || surfaceText('outcome_done', language))
+        : surfaceText('outcome_failed', language, { error: r.error });
       const response = await this.agentLoop.narrateOutcome({
-        userMessage: message, label: approved.label, outcome, language: approved.language
+        userMessage: message, label: r.label, outcome, language
       });
       return { response, result: { intent: 'pending_action_executed', provider: 'agent' } };
     }
 
-    if (verdict === 'deny') {
-      const denied = enforcer.consumePendingAction(extracted.token);
-      if (!denied) return null;
-      const response = await this.agentLoop.narrateOutcome({
-        userMessage: message,
-        label: denied.label,
-        outcome: surfaceText('outcome_cancelled', denied.language),
-        language: denied.language
-      });
-      return { response, result: { intent: 'pending_action_denied', provider: 'agent' } };
-    }
+    const response = this.agentLoop.guardrailEnforcer.buildBatchResults(
+      results.map(r => ({ label: r.label, success: r.success, error: r.error })), language
+    );
+    return { response, result: { intent: 'pending_action_batch_executed', provider: 'agent' } };
+  }
 
-    if (verdict === 'edit') {
-      // The reply revises the offer. The record cannot be patched into the new
-      // shape without re-deciding what to execute, so it dies here and the
-      // message goes through the pipeline as the fresh request it is.
-      enforcer.dropPendingAction(extracted.token);
-      console.log('[Message] PendingAction dropped — reply revises the offer; routing as new work');
+  /**
+   * Re-present a late "yes" against current substrate (§5). Each held target is
+   * re-read; vanished ones void, survivors are re-asked as one set. If nothing
+   * survives, the whole record voids and says so — a release never fires into a
+   * world that no longer matches the approval.
+   * @private
+   */
+  async _representRecord(enforcer, decision) {
+    const { record, language } = decision;
+    const surviving = [];
+    const vanished = [];
+    for (const held of record.heldInvocations) {
+      const presence = await this.agentLoop.readTargetPresence(held);
+      if (presence.known && !presence.present) vanished.push(held);
+      else surviving.push(held);
     }
-
-    // 'unknown' → the reply is not an answer to the offer. The record stays live
-    // until it expires; the message routes on as ordinary work.
-    return null;
+    const outcome = enforcer.applyRepresentation(record, { surviving, vanished });
+    if (outcome.voided) {
+      return {
+        response: enforcer.buildVoidMessage(language),
+        result: { intent: 'pending_action_voided', provider: 'agent' }
+      };
+    }
+    return {
+      response: enforcer.buildRepresentationMessage(record, vanished, language),
+      result: { intent: 'pending_action_represented', provider: 'agent' }
+    };
   }
 
   async _smartMixClassify(message, session, roomToken, liveContext) {
