@@ -44,12 +44,17 @@ const { getFeedbackMessage } = require('../talk/feedback-messages');
 const IntentDecomposer = require('../agent/intent-decomposer');
 const { surfaceText } = require('../agent/surface-text');
 const ollamaGate = require('../shared/ollama-gate');
+const { ocsData } = require('../shared/ocs-response');
 const CONFIG = require('../config');
 const { OBSERVATION_TYPES } = require('../maintenance/observation-log');
 const { parseFrontmatter } = require('../knowledge/frontmatter');
 const { deriveSection } = require('../integrations/collectives-client');
 
 /** Domain intents that can be handled locally with focused tool subsets. */
+// Spreed conversation type: 1 = one-to-one. Any other type (group, public, …)
+// is a room where the bot responds only when addressed (#301).
+const ROOM_TYPE_ONE_TO_ONE = 1;
+
 const DOMAIN_INTENTS = new Set(['deck', 'calendar', 'email', 'wiki', 'file', 'search', 'knowledge', 'confirmation', 'confirmation_declined']);
 
 /**
@@ -1435,17 +1440,30 @@ class MessageProcessor {
         '/ocs/v2.php/apps/spreed/api/v4/room/' + extracted.token,
         { method: 'GET', headers: { 'OCS-APIRequest': 'true', 'Accept': 'application/json' } }
       );
-      const room = response.body?.ocs?.data;
-      if (!room) return 'respond';
+      // One tolerant OCS read, shared with the history reader (#301). The body
+      // may be a raw JSON string; reading it unparsed used to yield `undefined`
+      // here and fail the gate open to respond-to-all in every group room.
+      const room = ocsData(response);
+      if (!room) {
+        console.info(`[Message] Room behavior: unreadable room shape → respond (token=${extracted.token})`);
+        return 'respond';
+      }
 
-      const participantCount = room.participantCount || 0;
+      // `type` is the primary signal, not participantCount. A one-to-one room
+      // (spreed type 1) responds to everything; any group/public room requires
+      // addressing — a group room is a group room even with only two humans in
+      // it, and participantCount is absent on the single-room read (#301).
+      // Fall back to the count only when `type` is missing.
+      const isDirect = room.type === ROOM_TYPE_ONE_TO_ONE
+        || (room.type == null && (room.participantCount || 0) <= 2);
+      if (isDirect) return 'respond';
 
-      // 1:1 or just the user and bot — respond to everything
-      if (participantCount <= 2) return 'respond';
-
-      // Larger room — only respond when addressed
-      if (this._isAddressed(extracted)) return 'respond';
-
+      // Group/public room — only respond when addressed.
+      if (this._isAddressed(extracted)) {
+        console.info(`[Message] Room behavior: group (type=${room.type}) + addressed → respond`);
+        return 'respond';
+      }
+      console.info(`[Message] Room behavior: group (type=${room.type}) + not addressed → silent (user=${extracted.user})`);
       return 'silent';
     } catch (err) {
       console.warn('[Message] Room lookup failed, defaulting to respond:', err.message);
