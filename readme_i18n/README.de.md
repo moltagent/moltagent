@@ -48,11 +48,11 @@ Dein KI-Mitarbeiter. Deine Infrastruktur. Deine Regeln.
 
 Ich bin Seriengründer und helfe Menschen dabei, Unternehmen zu führen. Redaktionsbüros, Content-Produktion, Kundenarbeit. Wir brauchten einen KI-Assistenten, der E-Mail, Kalender, Recherche und Content-Workflows im kleinen Team handhaben könnte.
 
-Alles, das wir ausprobiert haben, hatte das gleiche Problem: Unsere Daten verlassen unsere Infrastruktur und landen auf fremden Servern, unter fremder Jurisdiktion, unter fremden Nutzungsbedingungen. Selbst wenn dir GDPR egal ist, läufst du Gefahr, deine Arbeit, deine Einrichtung und deinen Geschäftskontext zu verlieren, wenn sich das politische oder kommerzielle Rahmenwerk verschiebt. Und genau das passiert gerade.
+Alles, was wir ausprobiert haben, hatte das gleiche Problem: Unsere Daten verlassen unsere Infrastruktur und landen auf fremden Servern, unter fremder Jurisdiktion, unter fremden Nutzungsbedingungen. Selbst wenn dir GDPR egal ist, läufst du Gefahr, deine Arbeit, deine Einrichtung und deinen Geschäftskontext zu verlieren, wenn sich das politische oder kommerzielle Rahmenwerk verschiebt. Und genau das passiert gerade.
 
 Anmeldedaten werden weiß Gott wo gespeichert. Es gibt keine Möglichkeit zu prüfen, was die KI zugegriffen und getan hat. Kein Kill-Switch, der in unter einer Minute funktioniert. Revokation kann zum Albtraum werden.
 
-Wir suchten nach etwas, das auf unserer eigenen Infrastruktur läuft, möglicherweise auf einem Rechner im Keller einer stromausfallsicheren Farm. Es sollte sich mit den Tools integrieren, die wir bereits nutzen, und uns echte Kontrolle geben. Und irgendwie gab es das nicht.
+Wir suchten nach etwas, das auf unserer eigenen Infrastruktur läuft, möglicherweise auf einem Rechner im Keller einer netzunabhängigen Farm. Es sollte sich mit den Tools integrieren, die wir bereits nutzen, und uns echte Kontrolle geben. Und irgendwie gab es das nicht.
 
 Also habe ich es gebaut.
 
@@ -192,7 +192,7 @@ Wir nutzen Moltagent täglich für unsere eigenen Operationen. Hier ein Überbli
 
 ## Erste Schritte
 
-Moltagent läuft als systemd-Service auf Linux mit Nextcloud-Backend. Das empfohlene Setup nutzt drei Hetzner-VMs mit Netzwerk-Isolation. Monatliche Infrastruktur-Kosten: ~30 Euro/Monat für den Anfang, unter 250 Euro/Monat für ernsthaften Business.
+Moltagent läuft als systemd-Service auf Linux mit Nextcloud-Backend. Das empfohlene Setup nutzt drei Hetzner-VMs mit Netzwerk-Isolation. Monatliche Infrastruktur-Kosten: ~30 Euro/Monat für den Anfang, unter 250 Euro/Monat für ernsthaftes Business.
 
 Das ist keine One-Click-Installation. Du musst mit Server-Administration vertraut sein oder jemand, der das ist.
 
@@ -218,7 +218,7 @@ Moltagent wird von einem Solo-Gründer mit Claude als Architektur- und Implement
 4. **GEBAUT ≠ VERIFIZIERT**
    Eine Funktion ist nur vollständig nach bestätigtem Produktions-Verhalten, nicht nachdem Tests bestanden haben. Wir laufen jede Änderung in Produktion auf unserer eigenen Infrastruktur, bevor wir sie für fertig erklären.
 
-Die Commit-Historie spiegelt echte Debugging-Sessions, Architektur-Entscheidungen und Produktions-Beobachtungen. Das ist absicht. Ich möchte, dass der Entwicklungsprozess lesbar ist, nicht nur der finale Code.
+Die Commit-Historie spiegelt echte Debugging-Sessions, Architektur-Entscheidungen und Produktions-Beobachtungen. Das ist Absicht. Ich möchte, dass der Entwicklungsprozess lesbar ist, nicht nur der finale Code.
 
 ---
 
@@ -236,7 +236,7 @@ Das ist was Moltagent ist.
 
 ### Souveräne KI
 
-Souveräne KI sollte kein Buzzword sein. Es bedeutet, dass dein Business nicht von jemand anderem weitergeführtes Funktionieren abhängt. Es läuft auf deiner Infrastruktur mit deinen Daten. Und wenn morgen ein Provider verschwindet, kannst du noch arbeiten.
+Souveräne KI sollte kein Buzzword sein. Es bedeutet, dass dein Business nicht davon abhängt, dass jemand anderes weiter funktioniert. Es läuft auf deiner Infrastruktur mit deinen Daten. Und wenn morgen ein Provider verschwindet, kannst du noch arbeiten.
 
 Moltagent läuft auf einem Rechner in deinem Büro, deiner Werkstatt oder deiner Farm. Oder auf einem virtuellen Server bei Hetzner. Du entscheidest.
 
@@ -251,7 +251,7 @@ Moltagent läuft auf einem Rechner in deinem Büro, deiner Werkstatt oder deiner
 | [Deployment-Anleitung](../docs/deployment.md)   | SearXNG, Speaches, E-Mail, Anmeldedaten, vollständiges Setup    |
 | [Architektur](../docs/architecture.md)     | Drei-VM-Isolation, Netzwerk-Segmentierung             |
 | [Sicherheits-Modell](../docs/security-model.md) | Vertrauensgrenzen, Credential-Brokering, Threat-Modell |
-| [Anmeldedaten](../docs/credentials.md)       | NC Passwords-Feld-Mapping für jeden Anmeldedaten      |
+| [Anmeldedaten](../docs/credentials.md)       | NC Passwords-Feld-Mapping für jede Anmeldeinformation      |
 | [Konfiguration](../docs/configuration.md)   | Vollständige Referenz für config.yaml                       |
 | [LLM-Provider](../docs/providers.md)       | 13 Adapter, Job-Routing, Kostenoptimierung          |
 
