@@ -12,10 +12,13 @@ const { proposeSlots, parseHoursMarker } = require('./slot-proposer');
 
 const DEFAULT_DATA_DIR = path.resolve(process.cwd(), 'data');
 
-// Gate audit-comment marker (Phase 3, §2). The "waiting for review" comment the
-// engine posts on a gated card carries this token and doubles as the DURABLE
-// notification-dedup marker: _notifiedGates is only its in-memory/on-disk cache, so
-// a restart that re-mints the record checks for this marker before re-notifying.
+// Gate audit-comment prefixes (Phase 3). Human-legible tags on the wait and
+// resolution comments the engine posts on a gated card. These are NOT the
+// notification-dedup mechanism — that is the durable `_notifiedGates` set (persisted
+// to workflow-notified-gates.json and cleared at resolution, so it is scoped to the
+// current hold, not the card's comment history). A comment-presence scan was
+// rejected: it false-matches a prior gate cycle's comment and silently suppresses
+// the re-gate notification on revision loops.
 const GATE_MARKER_TOKEN = '**GATE**';
 const GATE_WAIT_MARKER   = '⏸️ **GATE**:'; // "⏸️ **GATE**:"
 
@@ -85,9 +88,16 @@ class WorkflowEngine {
     // surface features. Production injects the shared enforcer (one substrate, D1);
     // when none is provided (unit tests) a fresh, side-effect-free instance gives
     // the engine its own gate substrate so the resolver is always the single path.
-    this.guardrailEnforcer = guardrailEnforcer
-      || (agentLoop && agentLoop.guardrailEnforcer)
-      || new GuardrailEnforcer();
+    this.guardrailEnforcer = guardrailEnforcer || (agentLoop && agentLoop.guardrailEnforcer) || null;
+    if (!this.guardrailEnforcer) {
+      // No shared enforcer wired. In production this is a D1 violation (gate records
+      // would live in a substrate separate from conversation approvals) — log it loud
+      // so a future wiring regression is noisy, not silent. Unit tests hit this
+      // deliberately and get their own isolated, side-effect-free substrate.
+      console.warn('[Workflow] No shared GuardrailEnforcer injected — using an isolated ' +
+        'gate substrate (expected only in tests; a D1 violation in production).');
+      this.guardrailEnforcer = new GuardrailEnforcer();
+    }
     this.botUsername    = this.config.botUsername || 'moltagent';
     this.emailHandler   = emailHandler || null;
     this.ncMailClient   = ncMailClient || null;
@@ -878,11 +888,16 @@ class WorkflowEngine {
       console.log(`[Workflow] GATE label restored (projection drift) on "${card.title}" (record=${verdict.record?.id})`);
     }
 
-    // Notify once. The audit comment carrying GATE_MARKER_TOKEN is the durable dedup
-    // marker (§2); _notifiedGates is its cache. On a restart that re-mints, the
-    // persisted cache — or, failing that, the marker comment — suppresses a duplicate.
+    // Notify once per hold. Dedup is the durable `_notifiedGates` set — persisted to
+    // workflow-notified-gates.json (Phase 0 finding: it already survives restart) and
+    // CLEARED at resolution, so it is scoped to THIS hold, not the card's whole
+    // comment history. That scoping is why the earlier comment-marker scan was
+    // removed: a comment-presence check matches the wait comment from a PRIOR gate
+    // cycle, so a re-gated card (a normal revision-loop shape, same gate stack →
+    // same held identity) would be silently suppressed and the reviewer never pinged.
+    // The durable set re-notifies correctly on re-gate and dedups across restart.
     const gateKey = `${board.id}:${card.id}`;
-    if (!this._notifiedGates.has(gateKey) && !(await this._gateMarkerPresent(card))) {
+    if (!this._notifiedGates.has(gateKey)) {
       const rej = wb.stacks.find(s => this._isRejectionStack(s));
       const declineLine = rej ? `\nMove to "${rej.title}" to decline.` : '';
 
@@ -1026,24 +1041,6 @@ class WorkflowEngine {
     });
 
     return true;
-  }
-
-  /**
-   * Whether the durable gate marker comment is already present on a card (§2). Used
-   * on (re)mint to suppress a duplicate notification across a restart when the
-   * in-memory/on-disk _notifiedGates cache is unavailable. Best-effort: an
-   * unreadable comment list falls back to the cache alone (never blocks notifying).
-   * @private
-   */
-  async _gateMarkerPresent(card) {
-    if (!this.deck.getComments) return false;
-    try {
-      const raw = await this.deck.getComments(card.id);
-      const list = (raw && raw.body) || raw || [];
-      return Array.isArray(list) && list.some(c => (c.message || '').includes(GATE_MARKER_TOKEN));
-    } catch (_err) {
-      return false;
-    }
   }
 
   /**

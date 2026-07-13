@@ -301,6 +301,45 @@ function makeBoard({ cardLabels = [], assignedUsers = [], extraCards = [] } = {}
       'System addition should mention REJECTED');
   });
 
+  // Test 6b (review regression): a re-gated card must notify its reviewer AGAIN.
+  // Revision loops re-enter the same gate stack, so the held identity repeats; dedup
+  // is scoped to the hold (the _notifiedGates key, cleared at resolution), NOT to the
+  // card's comment history — otherwise cycle 1's wait comment would silently suppress
+  // cycle 2's notification and the reviewer would never be pinged.
+  await asyncTest('Re-gated card notifies its reviewer again on the second cycle (revision loop)', async () => {
+    const agentLoop = createMockAgentLoop();
+    const mockDeck = createMockDeck();
+    mockDeck.getBoard = async () => ({ labels: [] });
+    const talkQueue = createMockTalkQueue();
+
+    const { board, gateCard } = makeDragBoard('TERMINAL: true');
+    const engine = new WorkflowEngine({
+      workflowDetector: createMockDetector([board]),
+      deckClient: mockDeck,
+      agentLoop,
+      talkSendQueue: talkQueue,
+      talkToken: 'test-token'
+    });
+
+    // Cycle 1: mint + notify.
+    await engine.processAll();
+    assert.strictEqual(talkQueue._messages.length, 1, 'Cycle 1: reviewer notified once');
+
+    // Reviewer drags the card out → resolution clears the hold's notify key.
+    board.stacks[0].cards = board.stacks[0].cards.filter(c => c.id !== 100);
+    gateCard.lastModified = new Date(Date.now() + 120000).toISOString();
+    board.stacks[1].cards.push(gateCard);
+    await engine.processAll();
+
+    // Revision loop: the card is moved BACK into the gate stack for a re-review.
+    board.stacks[1].cards = board.stacks[1].cards.filter(c => c.id !== 100);
+    gateCard.lastModified = new Date(Date.now() + 180000).toISOString();
+    board.stacks[0].cards.push(gateCard);
+    await engine.processAll();
+
+    assert.strictEqual(talkQueue._messages.length, 2, 'Cycle 2: reviewer notified again (not suppressed)');
+  });
+
   // Test 7: workflow_deck_assign_label handler calls the Deck API
   await asyncTest('workflow_deck_assign_label handler calls assignLabel endpoint', async () => {
     const requestCalls = [];
