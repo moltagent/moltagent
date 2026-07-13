@@ -312,6 +312,74 @@ const SURFACE_TEXT = {
     PT: 'Cancelado a teu pedido. Nada foi alterado.',
   },
 
+  // ── Phase 2 custody surfaces: freshness, void, approver, disambiguation, batch ──
+  // Re-presentation of a late "yes" (§5): the question never expired, so a yes
+  // long after the window re-presents the request against the target's CURRENT
+  // state before anything runs. `tool_approval_reply` supplies the yes/no line.
+  represent_header: {
+    EN: '⏳ You asked for this earlier. Confirming against the current state before I proceed:',
+    DE: '⏳ Du hattest das vorhin angefragt. Ich bestätige noch einmal anhand des aktuellen Stands, bevor ich es ausführe:',
+    PT: '⏳ Pediste isto há pouco. Confirmo novamente com o estado atual antes de avançar:',
+  },
+  // Void on drift (§5): the target is gone, so a release would fire into a world
+  // that no longer matches the approval. State it; do not ask again.
+  void_target_gone: {
+    EN: '✓ Nothing to do — the target no longer exists (it was already removed). I\'ve cleared the request.',
+    DE: '✓ Nichts zu tun — das Ziel existiert nicht mehr (es wurde bereits entfernt). Ich habe die Anfrage verworfen.',
+    PT: '✓ Nada a fazer — o alvo já não existe (foi entretanto removido). Descartei o pedido.',
+  },
+  // For a batch, the members that vanished are listed as voided, the rest re-asked.
+  void_members_header: {
+    EN: 'These are already gone and will be skipped:',
+    DE: 'Diese sind bereits weg und werden übersprungen:',
+    PT: 'Estes já desapareceram e serão ignorados:',
+  },
+  // The approver rule (§4): a confirmation belongs to the person who asked. Stated
+  // once per non-matching answerer; no repeat nagging. Names no account id.
+  approver_mismatch_notice: {
+    EN: 'Only the person who requested this can confirm it. I\'ll wait for them.',
+    DE: 'Nur wer das angefragt hat, kann es bestätigen. Ich warte darauf.',
+    PT: 'Só quem pediu isto o pode confirmar. Fico à espera.',
+  },
+  // Disambiguation (§4): two or more requests pending, a bare "yes". Header sits
+  // above the enumerated list of pending actions.
+  disambiguate_header: {
+    EN: 'There\'s more than one action waiting for your approval. Which one?',
+    DE: 'Es warten mehrere Aktionen auf deine Freigabe. Welche?',
+    PT: 'Há mais do que uma ação à espera da tua aprovação. Qual delas?',
+  },
+  // Batch ceremony (§6, #84): one request, N targets, one approval over the set.
+  batch_header: {
+    EN: '**{count} actions** need your approval:',
+    DE: '**{count} Aktionen** brauchen deine Freigabe:',
+    PT: '**{count} ações** precisam da tua aprovação:',
+  },
+  batch_chunk_header: {
+    EN: 'Approval request {index}/{total}:',
+    DE: 'Freigabe-Anfrage {index}/{total}:',
+    PT: 'Pedido de aprovação {index}/{total}:',
+  },
+  batch_approval_reply: {
+    EN: 'Reply **yes** to approve all · **no** to cancel. It\'s all or none.',
+    DE: 'Antworte **ja**, um alle freizugeben · **nein** zum Abbrechen. Alle oder keine.',
+    PT: 'Responde **sim** para aprovar todas · **não** para cancelar. Todas ou nenhuma.',
+  },
+  batch_results_header: {
+    EN: 'Results:',
+    DE: 'Ergebnisse:',
+    PT: 'Resultados:',
+  },
+  batch_result_ok: {
+    EN: '✓ {target}',
+    DE: '✓ {target}',
+    PT: '✓ {target}',
+  },
+  batch_result_fail: {
+    EN: '✗ {target} — {error}',
+    DE: '✗ {target} — {error}',
+    PT: '✗ {target} — {error}',
+  },
+
   // ── Terminal fallbacks that reach Talk verbatim ──────────────────────────
   fallback_max_iterations: {
     EN: 'I ran into a loop trying to process your request. Please try rephrasing.',

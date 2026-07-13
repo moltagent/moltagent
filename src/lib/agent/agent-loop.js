@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { extractArtifact } = require('./artifact-extractor');
 const { stagesApprovalCeremony, stripApprovalMarker, ACTION_REPROMPT_DIRECTIVE } = require('./action-guard');
+const { isWriteClass } = require('./guardrail-enforcer');
 const { surfaceText, normalizeLanguage } = require('./surface-text');
 const { injectLiveDate } = require('./calendar-date-grounding');
 
@@ -283,6 +284,31 @@ class AgentLoop {
           tool_calls: toolCallEntries
         });
 
+        // Batch approval (Approval Custody Phase 2, §6 / #84): a turn that
+        // resolves to N approval-required calls gets ONE ceremony over the
+        // enumerated set, not N. Gather them and run the single ceremony before
+        // executing anything; the per-call loop then reads this one decision.
+        // Scope: ToolGuard APPROVAL_REQUIRED (the #265/#84 core). The Cockpit GATE
+        // path (`check()`) stays per-call — a noted follow-up.
+        let batchApproval = null;      // 'yes' | 'no' | 'timeout' | 'edit' | null
+        let batchEditMessage = null;
+        if (roomToken && this.guardrailEnforcer && this.toolGuard) {
+          const approvalCalls = response.toolCalls.filter((tc) => {
+            if ((toolFailureCounts[tc.name] || 0) >= MAX_CONSECUTIVE_TOOL_FAILURES) return false;
+            const g = this.toolGuard.evaluate(tc.name);
+            return !g.allowed && g.level === 'APPROVAL_REQUIRED';
+          });
+          if (approvalCalls.length > 0) {
+            const decision = await this.guardrailEnforcer.checkApprovalBatch(
+              approvalCalls.map(tc => ({ tool: tc.name, arguments: tc.arguments })),
+              roomToken, { language: options.language, requestingUser: options.user }
+            );
+            batchApproval = decision.decision;
+            batchEditMessage = decision.message || null;
+            this.logger.info(`[AgentLoop] batch approval: targets=${approvalCalls.length} decision=${batchApproval}`);
+          }
+        }
+
         // Execute each tool and append results
         const iterationToolsCalled = [];
         for (const toolCall of response.toolCalls) {
@@ -314,7 +340,29 @@ class AgentLoop {
           // whether it succeeded.
           toolsInvokedThisTurn.add(toolCall.name);
 
-          const toolResult = await this._executeWithGuards(toolCall, roomToken, { language: options.language });
+          // A call covered by the batch ceremony above uses that one decision
+          // instead of raising its own. approved → execute (approval held as a
+          // fact); anything else → blocked, per-target, without re-asking.
+          const batchGuard = (roomToken && this.guardrailEnforcer && this.toolGuard)
+            ? this.toolGuard.evaluate(toolCall.name) : { allowed: true };
+          const inBatch = batchApproval !== null && !batchGuard.allowed && batchGuard.level === 'APPROVAL_REQUIRED';
+
+          let toolResult;
+          if (inBatch) {
+            if (batchApproval === 'yes') {
+              toolResult = await this._executeWithGuards(toolCall, roomToken, { language: options.language, user: options.user, approvalGranted: true });
+            } else if (batchApproval === 'edit') {
+              toolResult = {
+                success: false, result: '', error:
+                  `The user wants to revise this before it runs. Their message: "${batchEditMessage || 'edit'}". ` +
+                  'Ask what they\'d like to change, then retry with the updated content.'
+              };
+            } else {
+              toolResult = { success: false, result: '', error: `Action blocked: approval ${batchApproval === 'timeout' ? 'timed out' : 'denied'}.` };
+            }
+          } else {
+            toolResult = await this._executeWithGuards(toolCall, roomToken, { language: options.language, user: options.user });
+          }
 
           // Track tool failures (don't count errors toward maxIterations)
           if (!toolResult.success) {
@@ -753,6 +801,32 @@ class AgentLoop {
   }
 
   /**
+   * Re-read a held invocation's target to detect drift before a late "yes"
+   * releases (Approval Custody Phase 2, §5, void-on-drift). A release must never
+   * fire into a world that no longer matches the approval — if the card was
+   * deleted by other means while the question sat, the record voids instead.
+   *
+   * Deck cards are read precisely (the gate's drift case). For tools without a
+   * cheap presence read here, `known:false` returns present:true — the safe
+   * direction is to re-present with the stored state, never to falsely void.
+   *
+   * @param {{tool: string, args: Object}} held
+   * @returns {Promise<{known: boolean, present: boolean}>}
+   */
+  async readTargetPresence(held) {
+    try {
+      const deck = this.toolRegistry?.clients?.deckClient;
+      if (held.tool === 'deck_delete_card' && deck && typeof this.toolRegistry._resolveCardOnBoard === 'function') {
+        const res = await this.toolRegistry._resolveCardOnBoard(deck, held.args.card, held.args.board);
+        return { known: true, present: !!res.found };
+      }
+    } catch (err) {
+      this.logger.warn(`[AgentLoop] target presence read failed for ${held.tool}: ${err.message}`);
+    }
+    return { known: false, present: true };
+  }
+
+  /**
    * Narrate an outcome the code already decided. The model is not re-involved in
    * deciding what to execute — it receives the result and tells the user about
    * it, in whatever language they were speaking.
@@ -806,7 +880,7 @@ class AgentLoop {
    * @returns {Promise<{success: boolean, result: string, error?: string}>}
    * @private
    */
-  async _executeWithGuards(toolCall, roomToken, { approvalGranted = false, language = null } = {}) {
+  async _executeWithGuards(toolCall, roomToken, { approvalGranted = false, language = null, user = null } = {}) {
     // ToolGuard: hardcoded security policy
     if (this.toolGuard) {
       const guardResult = this.toolGuard.evaluate(toolCall.name);
@@ -823,7 +897,7 @@ class AgentLoop {
             // The resolved language rides along so a timed-out offer is born
             // speaking the user's language, not the persona's (#273).
             const approvalResult = await this.guardrailEnforcer.checkApproval(
-              toolCall.name, toolCall.arguments, roomToken, history, { language }
+              toolCall.name, toolCall.arguments, roomToken, history, { language, requestingUser: user }
             );
             if (!approvalResult.allowed) {
               if (approvalResult.editRequest) {
@@ -861,6 +935,25 @@ class AgentLoop {
         this.logger.info(`[AgentLoop] GuardrailEnforcer blocked: ${toolCall.name} — ${result.reason}`);
         return { success: false, result: '', error: `Action blocked: ${result.reason}` };
       }
+    }
+
+    // Authority ledger (Approval Custody Phase 2, §2). Every write-class
+    // execution that passes this chokepoint carries exactly one nameable
+    // authority — `release` (a held PendingAction was released for it) or
+    // `standing-policy` (an operator-governed context authorized it: a workflow
+    // card under a null room, or a conversational SENSITIVE write no active GATE
+    // guardrail gates). Reads are `not-write-class` and need no line. This makes
+    // the implicit authorities explicit and loggable (§7 task 3); it does not
+    // change which paths execute.
+    if (isWriteClass(toolCall.name)) {
+      const authority = approvalGranted ? 'release' : 'standing-policy';
+      const authorityRef = approvalGranted
+        ? 'pending-action'
+        : (roomToken ? 'conversational:no-active-gate' : 'workflow:null-room');
+      this.logger.info(
+        `[AgentLoop] write-class authority: tool=${toolCall.name} authority=${authority} ` +
+        `authorityRef=${authorityRef} room=${roomToken || 'none'} user=${user || 'none'}`
+      );
     }
 
     return this.toolRegistry.execute(toolCall.name, toolCall.arguments);

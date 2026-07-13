@@ -26,14 +26,19 @@ const { GuardrailEnforcer } = require('../../../src/lib/agent/guardrail-enforcer
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
 
-/** Enforcer with one live offer for room1, unless `seed` is false. */
+/** Enforcer with one live offer for room1 (requester 'fu'), unless `seed` false. */
 function makeEnforcer(verdict, seed = true) {
   const enforcer = new GuardrailEnforcer({
     ollamaProvider: { chat: async () => ({ content: verdict }) },
     logger: silentLogger
   });
   if (seed) {
-    enforcer._rememberPendingAction('room1', 'deck_delete_card', { card: 'Q3 Planning' }, 'Delete Deck card');
+    enforcer._mintRecord({
+      room: 'room1',
+      requestingUser: 'fu',
+      invocations: [{ tool: 'deck_delete_card', args: { card: 'Q3 Planning' }, label: 'Delete Deck card' }],
+      language: 'EN'
+    });
   }
   return enforcer;
 }
@@ -51,7 +56,9 @@ function makeAgentLoop(enforcer, toolResult = { success: true, result: 'Deleted 
     narrateOutcome: async (params) => {
       calls.narrated.push(params);
       return `narrated: ${params.outcome}`;
-    }
+    },
+    // Void-on-drift re-read: default present, so a late "yes" would re-present.
+    readTargetPresence: async () => ({ known: true, present: true })
   };
 }
 
@@ -59,8 +66,13 @@ function makeAgentLoop(enforcer, toolResult = { success: true, result: 'Deleted 
 function makeProcessor(agentLoop) {
   const mp = Object.create(MessageProcessor.prototype);
   mp.agentLoop = agentLoop;
+  mp.botUsername = 'moltagent';
   return mp;
 }
+
+// The answering actor. Matches the seeded record's requesting user so the
+// approver rule (§4) is satisfied; a mismatch is exercised in the enforcer suite.
+const FU = { token: 'room1', user: 'fu' };
 
 async function main() {
   await asyncTest('no enforcer → the message is not ours', async () => {
@@ -71,7 +83,7 @@ async function main() {
   await asyncTest('no roomToken → the message is not ours', async () => {
     const enforcer = makeEnforcer('APPROVE');
     const mp = makeProcessor(makeAgentLoop(enforcer));
-    assert.strictEqual(await mp._resolvePendingAction({ token: null }, 'ja'), null);
+    assert.strictEqual(await mp._resolvePendingAction({ token: null, user: 'fu' }, 'ja'), null);
   });
 
   await asyncTest('no record → the reply routes on, unclassified', async () => {
@@ -80,16 +92,16 @@ async function main() {
     enforcer.ollamaProvider = { chat: async () => { classified++; return { content: 'APPROVE' }; } };
     const mp = makeProcessor(makeAgentLoop(enforcer));
 
-    assert.strictEqual(await mp._resolvePendingAction({ token: 'room1' }, 'ja'), null);
+    assert.strictEqual(await mp._resolvePendingAction(FU, 'ja'), null);
     assert.strictEqual(classified, 0, 'no record means nothing to classify');
   });
 
-  await asyncTest('approve → the stored (tool, args) execute, once', async () => {
+  await asyncTest('approve → the held (tool, args) execute, once', async () => {
     const enforcer = makeEnforcer('APPROVE');
     const agentLoop = makeAgentLoop(enforcer);
     const mp = makeProcessor(agentLoop);
 
-    const outcome = await mp._resolvePendingAction({ token: 'room1' }, 'ja');
+    const outcome = await mp._resolvePendingAction(FU, 'ja');
 
     assert.ok(outcome, 'the record answers the reply');
     assert.strictEqual(outcome.result.intent, 'pending_action_executed');
@@ -105,8 +117,8 @@ async function main() {
     assert.strictEqual(agentLoop.calls.narrated[0].outcome, 'Deleted "Q3 Planning".');
     assert.ok(outcome.response.includes('Deleted "Q3 Planning".'));
 
-    // Single consumer: the record is spent.
-    assert.strictEqual(enforcer.getPendingAction('room1'), null);
+    // One-shot: the record is spent (released and forgotten).
+    assert.strictEqual(enforcer.getPendingRecords('room1').length, 0);
   });
 
   await asyncTest('approve → a failing tool is narrated honestly, not as success', async () => {
@@ -114,7 +126,7 @@ async function main() {
     const agentLoop = makeAgentLoop(enforcer, { success: false, result: '', error: 'card not found' });
     const mp = makeProcessor(agentLoop);
 
-    const outcome = await mp._resolvePendingAction({ token: 'room1' }, 'ja');
+    const outcome = await mp._resolvePendingAction(FU, 'ja');
     assert.ok(outcome.response.includes('card not found'));
     assert.ok(agentLoop.calls.narrated[0].outcome.startsWith('The action failed'));
   });
@@ -124,11 +136,11 @@ async function main() {
     const agentLoop = makeAgentLoop(enforcer);
     const mp = makeProcessor(agentLoop);
 
-    const outcome = await mp._resolvePendingAction({ token: 'room1' }, 'nein');
+    const outcome = await mp._resolvePendingAction(FU, 'nein');
 
     assert.strictEqual(outcome.result.intent, 'pending_action_denied');
     assert.strictEqual(agentLoop.calls.executed.length, 0);
-    assert.strictEqual(enforcer.getPendingAction('room1'), null);
+    assert.strictEqual(enforcer.getPendingRecords('room1').length, 0);
   });
 
   await asyncTest('edit → the record is dropped and the reply routes on as new work', async () => {
@@ -136,11 +148,11 @@ async function main() {
     const agentLoop = makeAgentLoop(enforcer);
     const mp = makeProcessor(agentLoop);
 
-    const outcome = await mp._resolvePendingAction({ token: 'room1' }, 'ja, aber die Karte Budget');
+    const outcome = await mp._resolvePendingAction(FU, 'ja, aber die Karte Budget');
 
     assert.strictEqual(outcome, null, 'routes onward through the normal pipeline');
     assert.strictEqual(agentLoop.calls.executed.length, 0, 'the record is never mutated into the new request');
-    assert.strictEqual(enforcer.getPendingAction('room1'), null, 'and never survives an edit');
+    assert.strictEqual(enforcer.getPendingRecords('room1').length, 0, 'and never survives an edit');
   });
 
   await asyncTest('unknown → the offer stays live and the message routes on', async () => {
@@ -148,18 +160,35 @@ async function main() {
     const agentLoop = makeAgentLoop(enforcer);
     const mp = makeProcessor(agentLoop);
 
-    const outcome = await mp._resolvePendingAction({ token: 'room1' }, 'what is on my calendar?');
+    const outcome = await mp._resolvePendingAction(FU, 'what is on my calendar?');
 
     assert.strictEqual(outcome, null);
     assert.strictEqual(agentLoop.calls.executed.length, 0);
-    assert.ok(enforcer.getPendingAction('room1'), 'an unrelated message does not spend the offer');
+    assert.strictEqual(enforcer.getPendingRecords('room1').length, 1, 'an unrelated message does not spend the offer');
+  });
+
+  await asyncTest('a non-matching human does not bind; the requester still can', async () => {
+    const enforcer = makeEnforcer('APPROVE');
+    const agentLoop = makeAgentLoop(enforcer);
+    const mp = makeProcessor(agentLoop);
+
+    // A second human answers "ja" — it does not release; the notice fires once.
+    const other = await mp._resolvePendingAction({ token: 'room1', user: 'ada' }, 'ja');
+    assert.strictEqual(other.result.intent, 'pending_action_not_approver');
+    assert.strictEqual(agentLoop.calls.executed.length, 0, 'a wrong approver never releases');
+    assert.strictEqual(enforcer.getPendingRecords('room1').length, 1, 'the record still stands');
+
+    // The requester's "ja" releases.
+    const mine = await mp._resolvePendingAction(FU, 'ja');
+    assert.strictEqual(mine.result.intent, 'pending_action_executed');
+    assert.strictEqual(agentLoop.calls.executed.length, 1);
   });
 
   await asyncTest('approve in DE, EN and PT resolves the same record', async () => {
     for (const reply of ['ja', 'yes', 'sim']) {
       const enforcer = makeEnforcer('APPROVE');
       const agentLoop = makeAgentLoop(enforcer);
-      const outcome = await makeProcessor(agentLoop)._resolvePendingAction({ token: 'room1' }, reply);
+      const outcome = await makeProcessor(agentLoop)._resolvePendingAction(FU, reply);
       assert.strictEqual(outcome.result.intent, 'pending_action_executed', `failed for "${reply}"`);
       assert.strictEqual(agentLoop.calls.executed.length, 1, `failed for "${reply}"`);
     }
