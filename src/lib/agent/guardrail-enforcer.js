@@ -139,9 +139,13 @@ const DEFAULT_POLL_INTERVAL_MS = 3000;
 const FRESHNESS_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
 // The single custody substrate is kind-discriminated (design brief §4, D1).
-// Only conversation-approval is implemented in Phase 2; workflow-gate is defined
-// so Phase 3 rides the same store without a schema change.
+// conversation-approval (Phase 2) holds a tool invocation; workflow-gate (Phase 3)
+// holds a card transition. Both ride the same store, the same lifecycle states,
+// and the same _releaseRecord/_voidRecord/_forget — only the mint shape and the
+// approver rule differ. A gate record never carries a freshness window: a gate's
+// whole nature is to wait, so there is no "late yes" to distinguish (§3, Q6).
 const KIND_CONVERSATION_APPROVAL = 'conversation-approval';
+const KIND_WORKFLOW_GATE = 'workflow-gate';
 
 // The record's lifecycle states. No state means "expired": the absence of an
 // answer changes nothing (§3).
@@ -365,11 +369,17 @@ class GuardrailEnforcer {
     return record;
   }
 
-  /** All pending records in a room, newest first. @private */
+  /**
+   * All pending CONVERSATION-APPROVAL records in a room, newest first. Kind-scoped:
+   * workflow-gate records carry room:null and must never surface to the cross-turn
+   * conversation resolver, even if a future gate ever carried a room.
+   * @private
+   */
   _pendingRecordsForRoom(room) {
     if (!room) return [];
     return Array.from(this._records.values())
-      .filter(r => r.room === room && r.state === RECORD_STATE.PENDING)
+      .filter(r => r.kind === KIND_CONVERSATION_APPROVAL
+        && r.room === room && r.state === RECORD_STATE.PENDING)
       .sort((a, b) => b.createdAt - a.createdAt);
   }
 
@@ -447,6 +457,163 @@ class GuardrailEnforcer {
     for (const key of this._approverNoticed) {
       if (key.startsWith(prefix)) this._approverNoticed.delete(key);
     }
+  }
+
+  // ── Workflow-gate custody (Phase 3) ─────────────────────────────────────────
+  // A gate record holds a card TRANSITION, not a tool invocation: `held` names the
+  // board, card, and gate stack the card is held at. The declared REVIEWER is the
+  // approver rule (never the bot — the engine's _resolveGateReviewer guarantees
+  // that). `room` is null (gates live on boards, not chat rooms), which keeps gate
+  // records out of every room-scoped conversation query. Non-expiring: a gate that
+  // waits a month is a gate doing its job (§3, Q6), so no freshness window.
+
+  /**
+   * Mint a pending workflow-gate record. Idempotent by caller contract: the engine
+   * mints only when no pending record exists for (boardId, cardId) — one code path
+   * for both the ENTRY (a card first reaches the gate stack) and the RECONSTRUCTION
+   * (a restart forgot the in-memory record but the card still sits in the gate
+   * stack) cases (§2/§3). The card's presence in the gate stack IS the durable fact;
+   * the record is the working set re-derived from it.
+   *
+   * @param {Object} p
+   * @param {number} p.boardId
+   * @param {number} p.cardId
+   * @param {number} p.gateStackId
+   * @param {string|null} p.reviewer       - declared REVIEWER uid (approver rule)
+   * @param {string|null} p.requestingUser - workflow identity for the audit trail
+   * @returns {Object} the stored record (live reference)
+   * @private
+   */
+  _mintGateRecord({ boardId, cardId, gateStackId, reviewer, requestingUser }) {
+    const now = this._now();
+    const id = `wg_${now}_${++this._recordCounter}`;
+    const record = {
+      id,
+      kind: KIND_WORKFLOW_GATE,
+      held: { boardId, cardId, gateStackId },
+      room: null,
+      requestingUser: requestingUser || null,
+      // The declared reviewer is the approver; the bot is never valid (§2). A null
+      // reviewer (none declared, no admin) leaves the rule open — the record still
+      // renders the assignee projection, and enforcement stays dormant.
+      approverRule: { type: 'reviewer', userId: reviewer || null },
+      createdAt: now,
+      state: RECORD_STATE.PENDING,
+      consumedAt: null,
+    };
+    this._records.set(id, record);
+    this.logger.info(
+      `[GuardrailEnforcer] PendingAction born: id=${id} kind=${record.kind} ` +
+      `held=board-${boardId}/card-${cardId}/stack-${gateStackId} ` +
+      `reviewer=${reviewer || 'unset'} requestingUser=${requestingUser || 'unset'}`
+    );
+    return record;
+  }
+
+  /**
+   * The pending workflow-gate record for a card, or null. Kind- and state-scoped
+   * so it never returns a conversation record or a spent gate record.
+   * @private
+   */
+  _pendingGateRecord(boardId, cardId) {
+    for (const r of this._records.values()) {
+      if (r.kind === KIND_WORKFLOW_GATE
+        && r.state === RECORD_STATE.PENDING
+        && r.held?.boardId === boardId
+        && r.held?.cardId === cardId) {
+        return r;
+      }
+    }
+    return null;
+  }
+
+  /** Whether a card is currently held at a gate (a pending record exists). */
+  hasPendingGateRecord(boardId, cardId) {
+    return this._pendingGateRecord(boardId, cardId) !== null;
+  }
+
+  /**
+   * The single authority on gate state — the one function that replaces the four
+   * inference sites the GATE quartet (#187/#193/#200/#201) each read differently.
+   * The engine supplies the Deck-derived facts; this owns the record and the
+   * verdict. No card surface feature (label, title prefix, assignment) is read
+   * here: gate state is the record, and nothing else.
+   *
+   * @param {Object} p
+   * @param {number} p.boardId
+   * @param {number} p.cardId
+   * @param {boolean} p.inGateStack        - is the card's CURRENT stack a gate stack?
+   * @param {boolean} [p.hasGateLabel]     - does the card carry the GATE label? The
+   *   mint trigger, read once by the engine WITH stack context (so #201's
+   *   context-free label read cannot fire) and passed in as a boolean — the enforcer
+   *   still reads no card surface feature. Label ADD (with stack context) mints;
+   *   label REMOVE is nothing (an existing record governs regardless), so a removed
+   *   label on a held card is projection drift, never a release.
+   * @param {boolean} [p.isRejectionStack] - is that stack a declared REJECTED: stack?
+   * @param {number}  [p.gateStackId]      - the gate stack id, for a fresh mint
+   * @param {string|null} [p.reviewer]     - declared REVIEWER uid, for a fresh mint
+   * @param {string|null} [p.requestingUser] - workflow identity, for a fresh mint
+   * @param {string|null} [p.actor]        - who performed the move, when known. Null
+   *   today (the mover-identity wire is unbuilt — see the wiring issue); the
+   *   enforcement branch below is dormant until actor is non-null, at which point it
+   *   turns on with no change to this resolver.
+   * @returns {{ gated: boolean, record: Object|null, reviewer: string|null,
+   *             action: ('mint-and-hold'|'hold'|'release'|'reject'|'none'),
+   *             reason?: string }}
+   */
+  resolveGateState({ boardId, cardId, inGateStack, hasGateLabel = false,
+    isRejectionStack = false, gateStackId, reviewer = null, requestingUser = null,
+    actor = null }) {
+    const existing = this._pendingGateRecord(boardId, cardId);
+
+    if (existing) {
+      const ruleUser = existing.approverRule?.userId || null;
+      if (inGateStack) {
+        // Still held — waiting for the reviewer's drag. The record governs: the
+        // GATE label may have been removed (projection drift), but that is not a
+        // release — only the drag-out of the gate stack is (rule 1). The caller
+        // re-renders the label under projection sync.
+        return { gated: true, record: existing, reviewer: ruleUser, action: 'hold' };
+      }
+      // The card left the gate stack — the drag IS the approval/decline gesture.
+      // Approver enforcement, gated on actor identity being available (§5 fallback):
+      // when the mover is known and is NOT the declared reviewer, the drag does not
+      // release — the record stays held, projection sync returns the truth. actor is
+      // null today, so this branch is dormant and every drag releases (actor=unknown
+      // logged by the caller). It flips on with no resolver change once the wire lands.
+      if (actor && ruleUser && actor.toLowerCase() !== ruleUser.toLowerCase()) {
+        return { gated: true, record: existing, reviewer: ruleUser,
+          action: 'hold', reason: 'non-reviewer' };
+      }
+      // Release/void transitions the record and forgets it: the card's absence from
+      // the gate stack is the durable "resolved" fact, so a spent record need not
+      // linger. The returned reference survives the Map deletion for the caller's
+      // audit-comment render. A released record can never re-arm (#200): a later
+      // pulse finds no pending record and a non-gate stack → action 'none'.
+      if (isRejectionStack) {
+        this._voidRecord(existing, 'gate-rejected');
+        this._forget(existing);
+        return { gated: false, record: existing, reviewer: ruleUser, action: 'reject' };
+      }
+      this._releaseRecord(existing);
+      this._forget(existing);
+      return { gated: false, record: existing, reviewer: ruleUser, action: 'release' };
+    }
+
+    // No pending record. Mint iff the card is BOTH in a gate stack AND carries the
+    // GATE label (the shipped "ready for review" condition, Option 1). Entry and
+    // reconstruction are one path (§2/§3): the label + stack membership both persist
+    // in Deck, so a restart re-mints on the same condition, and the marker comment
+    // dedups the notification.
+    if (inGateStack && hasGateLabel) {
+      const record = this._mintGateRecord({ boardId, cardId, gateStackId, reviewer, requestingUser });
+      return { gated: true, record, reviewer: record.approverRule.userId, action: 'mint-and-hold' };
+    }
+    // Otherwise not gated. #201's inference (a GATE label outside a gate stack ⇒
+    // "was dragged out" ⇒ approved) has no expression here: nothing is minted,
+    // nothing is released, no approval of anything. A GATE-labelled card in a
+    // non-gate stack, or an unlabelled card in a gate stack, is simply not a gate.
+    return { gated: false, record: null, reviewer: null, action: 'none' };
   }
 
   /**

@@ -110,7 +110,11 @@ function createMockTalkQueue() {
         stacks: [{
           id: 10, title: 'Review',
           cards: [
-            { id: 200, title: 'GATE: Approval Required', description: 'Wait for human', labels: [] }
+            // A CONFIG:GATE card makes the stack a gate stack; the content card
+            // carries the GATE label → mint (Phase 3: label ∧ gate stack).
+            { id: 901, title: 'CONFIG: GATE review', description: 'Human review', labels: [{ title: 'System' }] },
+            { id: 200, title: 'Approval Required', description: 'Wait for human', labels: [{ title: 'GATE' }],
+              lastModified: new Date(Date.now() + 60000).toISOString() }
           ]
         }],
         description: 'WORKFLOW: pipeline',
@@ -1069,7 +1073,7 @@ function createMockTalkQueue() {
     // Seed the gate as already notified so the Talk/comment path is skipped
     engine._notifiedGates.add('1:200');
 
-    await engine._handleGate(wb, stack, card);
+    await engine._handleGate(wb, stack, card, { inGateStack: true, hasGateLabel: true });
 
     const puts = requestCalls.filter(c => c.method === 'PUT');
     assert.strictEqual(puts.length, 0, 'TC-GATE-183-01: must make zero assign/unassign PUTs');
@@ -1113,7 +1117,7 @@ function createMockTalkQueue() {
 
     engine._notifiedGates.add('1:200');
 
-    await engine._handleGate(wb, stack, card);
+    await engine._handleGate(wb, stack, card, { inGateStack: true, hasGateLabel: true });
 
     const puts = requestCalls.filter(c => c.method === 'PUT');
     assert.strictEqual(puts.length, 2, 'TC-GATE-183-02: expect exactly 2 PUTs');
@@ -1162,8 +1166,8 @@ function createMockTalkQueue() {
 
     engine._notifiedGates.add('1:200');
 
-    await engine._handleGate(wb, stack, card);
-    await engine._handleGate(wb, stack, card);
+    await engine._handleGate(wb, stack, card, { inGateStack: true, hasGateLabel: true });
+    await engine._handleGate(wb, stack, card, { inGateStack: true, hasGateLabel: true });
 
     const puts = requestCalls.filter(c => c.method === 'PUT');
     assert.strictEqual(puts.length, 0, 'TC-GATE-183-03: zero PUTs across both runs');
@@ -1207,7 +1211,7 @@ function createMockTalkQueue() {
 
     engine._notifiedGates.add('1:200');
 
-    await engine._handleGate(wb, stack, card);
+    await engine._handleGate(wb, stack, card, { inGateStack: true, hasGateLabel: true });
 
     const puts = requestCalls.filter(c => c.method === 'PUT');
     assert.strictEqual(puts.length, 0, 'TC-GATE-183-04: no bot→bot reassign');
@@ -1259,7 +1263,7 @@ function createMockTalkQueue() {
 
     engine._notifiedGates.add('1:200');
 
-    await engine._handleGate(wb, stack, card);
+    await engine._handleGate(wb, stack, card, { inGateStack: true, hasGateLabel: true });
 
     const puts = requestCalls.filter(c => c.method === 'PUT');
     assert.strictEqual(puts.length, 2, 'TC-GATE-183-05a: expect 2 PUTs (unassign bot + assign sam)');
@@ -1308,7 +1312,7 @@ function createMockTalkQueue() {
 
     engine._notifiedGates.add('1:200');
 
-    await engine._handleGate(wb, stack, card);
+    await engine._handleGate(wb, stack, card, { inGateStack: true, hasGateLabel: true });
 
     const puts = requestCalls.filter(c => c.method === 'PUT');
     assert.strictEqual(puts.length, 2, 'TC-GATE-183-05b: expect 2 PUTs (unassign bot + assign dana)');
@@ -1360,7 +1364,7 @@ function createMockTalkQueue() {
 
     engine._notifiedGates.add('1:200');
 
-    await engine._handleGate(wb, stack, card);
+    await engine._handleGate(wb, stack, card, { inGateStack: true, hasGateLabel: true });
 
     const puts = requestCalls.filter(c => c.method === 'PUT');
     assert.strictEqual(puts.length, 2, 'TC-GATE-183-05c: expect 2 PUTs (unassign bot + assign quinn)');
@@ -1409,7 +1413,7 @@ function createMockTalkQueue() {
 
     engine._notifiedGates.add('1:200');
 
-    await engine._handleGate(wb, stack, card);
+    await engine._handleGate(wb, stack, card, { inGateStack: true, hasGateLabel: true });
 
     const puts = requestCalls.filter(c => c.method === 'PUT');
     assert.strictEqual(puts.length, 2, 'TC-GATE-183-05d: expect 2 PUTs');
@@ -1418,8 +1422,11 @@ function createMockTalkQueue() {
     assert.strictEqual(assign.body.userId, 'quinn', 'TC-GATE-183-05d: must assign quinn, not the board owner pat');
   });
 
-  // TC-GATE-183-06: APPROVED card → final assign is bot, processWorkflowTask invoked.
-  await asyncTest('TC-GATE-183-06: APPROVED label → handoff to bot, processWorkflowTask called', async () => {
+  // TC-GATE-183-06: reviewer drags the gated card OUT of the gate stack → the
+  // record releases, the engine hands the card back to the bot, and
+  // processWorkflowTask runs the outcome. Under Phase 3 the APPROVED label is a
+  // projection, not the resolution trigger — the drag-out is.
+  await asyncTest('TC-GATE-183-06: drag-out release → handoff to bot, processWorkflowTask called', async () => {
     const agentLoop = createMockAgentLoop();
     const mockDeck = createMockDeck();
     const requestCalls = [];
@@ -1442,20 +1449,29 @@ function createMockTalkQueue() {
 
     const wb = {
       board: { id: 1, title: 'Partner Inquiries', owner: 'jordan' },
-      stacks: [{ id: 10, title: 'Review', cards: [] }],
+      stacks: [{ id: 10, title: 'Review', cards: [] }, { id: 20, title: 'Done', cards: [] }],
       description: 'WORKFLOW: pipeline',
       _plainDescription: 'RULES: After APPROVED move to Done.'
     };
-    const stack = { id: 10, title: 'Review', cards: [] };
-    // Card has APPROVED label — resolution path fires
+    // The non-gate destination stack the card has been dragged into.
+    const destStack = { id: 20, title: 'Done', cards: [
+      { id: 902, title: 'CONFIG: Done', description: 'TERMINAL: true', labels: [{ title: 'System' }] }
+    ] };
     const card = {
       id: 200,
-      title: 'GATE: Review Partner Proposal',
-      labels: [{ title: 'GATE' }, { title: 'APPROVED' }],
+      title: 'Review Partner Proposal',
+      labels: [{ title: 'GATE' }],
       assignedUsers: [{ participant: { uid: 'jordan' } }]
     };
 
-    const resolved = await engine._handleGate(wb, stack, card);
+    // Seed the pending gate record as if minted on a prior pulse (card held in gate
+    // stack 10, reviewer jordan). The drag-out of the gate stack releases it.
+    engine.guardrailEnforcer.resolveGateState({
+      boardId: 1, cardId: 200, inGateStack: true, hasGateLabel: true,
+      gateStackId: 10, reviewer: 'jordan', requestingUser: 'workflow:board-1'
+    });
+
+    const resolved = await engine._handleGate(wb, destStack, card, { inGateStack: false, hasGateLabel: true });
 
     assert.strictEqual(resolved, true, 'TC-GATE-183-06: resolved gate must return true');
     assert.strictEqual(agentLoop._calls.length, 1, 'TC-GATE-183-06: processWorkflowTask must be called');

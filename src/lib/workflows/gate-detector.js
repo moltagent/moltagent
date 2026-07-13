@@ -11,30 +11,29 @@
  *            "no regex for intelligence" principle. It also scanned comments to
  *            determine approval/rejection, making comment content load-bearing.
  *
- * Pattern:   Label-based detection plus stack-move detection (#197). A card IS a
- *            gate if it carries the "GATE" label. A gate IS resolved either when
- *            the human applies APPROVED/REJECTED (legacy, backward-compatible) OR
- *            when the human drags the still-GATE-labelled card OUT of the gate
- *            stack — the move itself is the approval gesture (Option B, #197).
- *            Forward moves are approvals; a move into a stack declared
- *            `REJECTED: true` on its CONFIG card is a rejection. This makes the
- *            state machine explicit and auditable in the Deck UI with no comment
- *            scanning required.
+ * Pattern:   Two pure classifiers, no state. isGate() — does a card carry the
+ *            "GATE" label (the coarse classifier the engine uses for hygiene and as
+ *            the mint TRIGGER, read WITH stack context). isGateStack() — does a
+ *            stack's CONFIG card declare it a gate stack. Both return booleans the
+ *            engine feeds to the custody substrate.
+ *
+ *            Phase 3 (Approval Custody Arc) deleted checkGateResolution(): gate
+ *            resolution is no longer INFERRED from card surface features. Gate state
+ *            lives in a workflow-gate PendingAction record and the enforcer's
+ *            resolveGateState() is the single authority; APPROVED/REJECTED labels
+ *            and stack membership are projections/inputs, never read here as the
+ *            resolution verdict. This killed the GATE quartet (#187/#193/#200/#201),
+ *            four read sites that each inferred gate state differently.
  *
  *            Regex is still used on CONFIG card text in isGateStack() — that is
- *            human-authored structured config (not LLM output), so pattern
- *            matching there is plumbing, not intelligence. The REJECTED: marker is
- *            read by the engine (_isRejectionStack, mirrors #196 TERMINAL) and the
- *            resulting boolean is passed in, so this module stays lean (no
- *            schedule-handler dependency).
+ *            human-authored structured config (not LLM output), so pattern matching
+ *            there is plumbing, not intelligence.
  *
  * Key Dependencies: deck-card-classifier (hasLabel)
  *
  * Data Flow:
- *   card { labels }                       → isGate() → boolean
- *   cards[]                               → isGateStack() → boolean (CONFIG scan)
- *   card, currentStack, isRejectionStack  → checkGateResolution()
- *                                         → { resolved, decision, via }
+ *   card { labels }  → isGate()      → boolean (coarse classifier / mint trigger)
+ *   cards[]          → isGateStack() → boolean (CONFIG scan; passed to resolver)
  *
  * Dependency Map:
  *   gate-detector  <──  workflow-engine
@@ -47,9 +46,7 @@ const { hasLabel } = require('../integrations/deck-card-classifier');
 /**
  * Reserved workflow labels. Title matches are case-insensitive via hasLabel().
  */
-const LABEL_GATE     = 'GATE';
-const LABEL_APPROVED = 'APPROVED';
-const LABEL_REJECTED = 'REJECTED';
+const LABEL_GATE = 'GATE';
 
 class GateDetector {
 
@@ -110,76 +107,15 @@ class GateDetector {
     return /\bGATE\b/i.test(text);
   }
 
-  /**
-   * Check whether a GATE card has been resolved.
-   *
-   * Resolution sources, evaluated IN ORDER:
-   *
-   *   1. APPROVED label  → resolved, decision = 'approved', via = 'label'
-   *   2. REJECTED label  → resolved, decision = 'rejected', via = 'label'
-   *      (Backward-compat MUST stay first: a transition card may carry GATE +
-   *       APPROVED while still sitting in the gate stack. It must resolve as
-   *       approved here, never be mis-read as an unresolved in-stack gate below.)
-   *   3. GATE label present (no APPROVED/REJECTED):
-   *        - still in a gate stack  → unresolved (decision = null, via = null)
-   *        - moved OUT of gate stack → resolved via the drag gesture (#197):
-   *            decision = isRejectionStack ? 'rejected' : 'approved', via = 'move'
-   *   4. No workflow label → pass-through (resolved with no decision, via = null)
-   *
-   * `currentStack` carries the cards needed to call isGateStack() on the card's
-   * present location. `isRejectionStack` is precomputed by the engine
-   * (_isRejectionStack, which reads the REJECTED: CONFIG marker off the same
-   * CONFIG card as #196 TERMINAL) and passed in, so this module needs no
-   * schedule-handler dependency. `allStacks` is intentionally NOT a parameter:
-   * both gate-stack and rejection-stack detection resolve from `currentStack`
-   * alone, so a board-wide list would be dead weight.
-   *
-   * When `currentStack` is omitted (legacy direct callers that cannot observe a
-   * move), a GATE-only card is reported unresolved — preserving prior behavior.
-   *
-   * @param {Object} card - Deck card object with labels array and title
-   * @param {Object|null} [currentStack] - The stack the card is in now ({ cards })
-   * @param {boolean} [isRejectionStack] - True when currentStack is a declared
-   *                                        REJECTED: true stack (engine-computed)
-   * @returns {{ resolved: boolean, decision: string|null, via: ('label'|'move'|null) }}
-   */
-  static checkGateResolution(card, currentStack = null, isRejectionStack = false) {
-    if (!card || typeof card !== 'object') {
-      return { resolved: false, decision: null, via: null };
-    }
-
-    // (1)/(2) Legacy label path — MUST stay first (see JSDoc).
-    if (hasLabel(card, LABEL_APPROVED)) {
-      return { resolved: true, decision: 'approved', via: 'label' };
-    }
-
-    if (hasLabel(card, LABEL_REJECTED)) {
-      return { resolved: true, decision: 'rejected', via: 'label' };
-    }
-
-    // (3) GATE label present, no explicit decision label.
-    if (hasLabel(card, LABEL_GATE)) {
-      // Stack-move detection (#197).
-      if (currentStack) {
-        if (GateDetector.isGateStack(currentStack.cards)) {
-          // Card is still in the gate stack — waiting for human drag.
-          return { resolved: false, decision: null, via: null };
-        }
-        // Card has been dragged OUT of the gate stack — the move is the approval gesture.
-        return {
-          resolved: true,
-          decision: isRejectionStack ? 'rejected' : 'approved',
-          via: 'move'
-        };
-      }
-
-      // currentStack omitted — legacy caller, no move observable → unresolved.
-      return { resolved: false, decision: null, via: null };
-    }
-
-    // (4) Card has no workflow label — treat as pass-through.
-    return { resolved: true, decision: null, via: null };
-  }
+  // checkGateResolution() was deleted in Phase 3 (Approval Custody Arc). Gate
+  // resolution is no longer INFERRED from card surface features (APPROVED/REJECTED
+  // labels + stack membership) — that inference was the GATE quartet
+  // (#187/#193/#200/#201), each read site reading differently. Gate state now lives
+  // in a workflow-gate PendingAction record; the enforcer's resolveGateState() is the
+  // single authority. This module keeps only isGate() (the coarse card classifier,
+  // used for hygiene) and isGateStack() (stack detection, whose boolean the engine
+  // passes to the resolver). Labels are projections rendered from the record, never
+  // read back as truth.
 }
 
 module.exports = GateDetector;

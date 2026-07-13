@@ -7,9 +7,20 @@ const GateDetector = require('./gate-detector');
 const { ScheduleHandler, parseScheduleBlock, findConfigCard, stripHtml } = require('./schedule-handler');
 const { isStructuralCard, hasLabel } = require('../integrations/deck-card-classifier');
 const DeckClient = require('../integrations/deck-client');
+const { GuardrailEnforcer } = require('../agent/guardrail-enforcer');
 const { proposeSlots, parseHoursMarker } = require('./slot-proposer');
 
 const DEFAULT_DATA_DIR = path.resolve(process.cwd(), 'data');
+
+// Gate audit-comment prefixes (Phase 3). Human-legible tags on the wait and
+// resolution comments the engine posts on a gated card. These are NOT the
+// notification-dedup mechanism — that is the durable `_notifiedGates` set (persisted
+// to workflow-notified-gates.json and cleared at resolution, so it is scoped to the
+// current hold, not the card's comment history). A comment-presence scan was
+// rejected: it false-matches a prior gate cycle's comment and silently suppresses
+// the re-gate notification on revision loops.
+const GATE_MARKER_TOKEN = '**GATE**';
+const GATE_WAIT_MARKER   = '⏸️ **GATE**:'; // "⏸️ **GATE**:"
 
 // Upper bound for a CONFIG-declared MAX_ITERATIONS. A research stage legitimately
 // needs more steps than the pipeline default of 3, but a typo (70 vs 7) must not
@@ -64,7 +75,7 @@ class WorkflowEngine {
    *   receive a best-effort deep-link back to the original message in NC Mail.
    * @param {Object} [options.config]
    */
-  constructor({ workflowDetector, deckClient, agentLoop, talkSendQueue, talkToken, emailHandler, ncMailClient, config, budgetEnforcer }) {
+  constructor({ workflowDetector, deckClient, agentLoop, talkSendQueue, talkToken, emailHandler, ncMailClient, config, budgetEnforcer, guardrailEnforcer }) {
     this.detector = workflowDetector;
     this.deck = deckClient;
     this.agent = agentLoop;
@@ -72,6 +83,21 @@ class WorkflowEngine {
     this.talkToken = talkToken || null;
     this.config = config || {};
     this.budgetEnforcer = budgetEnforcer || null;
+    // The custody substrate (Phase 3). Gate state lives in a workflow-gate record
+    // here, resolved via enforcer.resolveGateState — never inferred from card
+    // surface features. Production injects the shared enforcer (one substrate, D1);
+    // when none is provided (unit tests) a fresh, side-effect-free instance gives
+    // the engine its own gate substrate so the resolver is always the single path.
+    this.guardrailEnforcer = guardrailEnforcer || (agentLoop && agentLoop.guardrailEnforcer) || null;
+    if (!this.guardrailEnforcer) {
+      // No shared enforcer wired. In production this is a D1 violation (gate records
+      // would live in a substrate separate from conversation approvals) — log it loud
+      // so a future wiring regression is noisy, not silent. Unit tests hit this
+      // deliberately and get their own isolated, side-effect-free substrate.
+      console.warn('[Workflow] No shared GuardrailEnforcer injected — using an isolated ' +
+        'gate substrate (expected only in tests; a D1 violation in production).');
+      this.guardrailEnforcer = new GuardrailEnforcer();
+    }
     this.botUsername    = this.config.botUsername || 'moltagent';
     this.emailHandler   = emailHandler || null;
     this.ncMailClient   = ncMailClient || null;
@@ -303,17 +329,31 @@ class WorkflowEngine {
             }
           }
 
-          // Card hygiene: ensure due date and assignment
+          // Card hygiene: due date. Assignment is handled per gate-state below — a
+          // gate card's assignee is a projection of its record (the declared
+          // reviewer), never the bot; non-gate cards get the bot after the gate check.
           await this._ensureDueDate(wb, stack, card);
-          await this._ensureAssignment(wb, stack, card);
 
-          // Is this a GATE card?
-          if (GateDetector.isGate(card)) {
+          // Gate handling (Phase 3): gate state is the workflow-gate record, not a
+          // card surface feature. A card is minted into a gate iff it carries the
+          // GATE label AND sits in a gate stack (the shipped "ready for review"
+          // condition; the label is the entry trigger, read once WITH stack context
+          // so #201's context-free read cannot fire). Once minted, the record
+          // governs and the drag-out of the gate stack is the only release. Engage
+          // the machinery when the card qualifies for a mint OR already holds a
+          // pending record (so a drag-out or a label-drift is seen).
+          const inGateStack = GateDetector.isGateStack(stack.cards);
+          const hasGateLabel = hasLabel(card, 'GATE');
+          if ((hasGateLabel && inGateStack)
+            || this.guardrailEnforcer.hasPendingGateRecord(board.id, card.id)) {
             result.gatesFound++;
-            const gateResolved = await this._handleGate(wb, stack, card);
+            const gateResolved = await this._handleGate(wb, stack, card, { inGateStack, hasGateLabel });
             if (gateResolved) result.gatesResolved++;
             continue;
           }
+
+          // Non-gate hygiene: ensure the bot is assigned for active processing.
+          await this._ensureAssignment(wb, stack, card);
 
           // Should we process this card?
           let cardWasTouched = false;
@@ -759,139 +799,119 @@ class WorkflowEngine {
   }
 
   /**
-   * Handle a GATE card — check for human resolution, notify if needed.
-   * @returns {boolean} Whether the gate was resolved
+   * Handle a GATE card through the custody substrate (Phase 3). Gate state is the
+   * workflow-gate record resolved by `enforcer.resolveGateState` — the four inference
+   * sites the GATE quartet (#187/#193/#200/#201) each read differently are gone.
+   * Card surface features (GATE label, assignee, "GATE:" title prefix) are
+   * one-directional PROJECTIONS rendered from the record, never read back as
+   * gate-state truth. The caller has already established that this card qualifies
+   * for a mint (GATE label ∧ gate stack) or holds a pending record.
+   *
+   * @param {Object} wb
+   * @param {Object} stack - the card's CURRENT stack
+   * @param {Object} card
+   * @param {{ inGateStack: boolean, hasGateLabel: boolean }} facts - Deck-derived,
+   *   computed once by the caller WITH stack context.
+   * @returns {boolean} whether the gate was resolved (released or rejected)
    * @private
    */
-  async _handleGate(wb, stack, card) {
+  async _handleGate(wb, stack, card, { inGateStack, hasGateLabel } = {}) {
     const { board } = wb;
-
-    // Resolution check (#197): two sources, evaluated in GateDetector —
-    //   via 'label' → legacy APPROVED/REJECTED stamp (backward-compat)
-    //   via 'move'  → reviewer dragged the GATE card OUT of the gate stack.
-    // The engine computes whether the card's CURRENT stack is a declared
-    // rejection target; GateDetector decides gate-stack membership from `stack`.
     const isRejectionStack = this._isRejectionStack(stack);
-    const resolution = GateDetector.checkGateResolution(card, stack, isRejectionStack);
+    const reviewer = this._resolveGateReviewer(wb, stack);
 
-    if (resolution.resolved && resolution.decision) {
-      // Post-resolution label swap (#197, Part 2). Only for via==='move' — a
-      // 'label' resolution already carries its record-keeping label, so re-stamping
-      // would be redundant. Run BEFORE the processWorkflowTask handoff so the
-      // record-keeping state is deterministic regardless of what the LLM does downstream.
-      if (resolution.via === 'move') {
-        await this._removeLabelFromCard(board.id, stack.id, card.id, 'GATE');
-        await this._addLabelToCard(board.id, stack.id, card.id,
-          resolution.decision === 'rejected' ? 'REJECTED' : 'APPROVED');
-        // Idempotency: removing the GATE label makes isGate() false next pulse,
-        // so the card is not re-handled. Known edge: isGate() also matches a
-        // "GATE:" TITLE prefix, so a move-resolved card whose title starts
-        // "GATE:" could re-enter via the APPROVED label path — tracked in #200.
-        console.log(`[Workflow] GATE resolved: card "${card.title}" ` +
-          `${resolution.decision} (moved from gate stack to "${stack.title}")`);
-      } else {
-        // Legacy label-stamp resolution (backward-compat path).
-        console.log(`[Workflow] GATE resolved: "${card.title}" -> ${resolution.decision}`);
-      }
+    // The single authority. The engine supplies Deck-derived facts; the enforcer
+    // owns the record and the verdict. actor is null today — the mover-identity wire
+    // is unbuilt (see the wiring issue), so the resolver's approver-enforcement
+    // branch is dormant and every reviewer drag releases (logged actor=unknown).
+    const verdict = this.guardrailEnforcer.resolveGateState({
+      boardId: board.id,
+      cardId: card.id,
+      inGateStack: !!inGateStack,
+      hasGateLabel: !!hasGateLabel,
+      isRejectionStack,
+      gateStackId: stack.id,
+      reviewer,
+      requestingUser: `workflow:board-${board.id}`,
+      actor: null,
+    });
 
-      // Clear notification dedup so card can be re-gated later if needed
-      const gateKey = `${board.id}:${card.id}`;
-      this._notifiedGates.delete(gateKey);
-      this._saveNotifiedGates();
-
-      // Handoff back: unassign human, assign bot for automated processing
-      const botUser = this.deck.username || this.botUsername;
-      const humanUser = this._resolveGateReviewer(wb, stack);
-      if (humanUser && humanUser !== botUser) {
-        await this._safeUnassign(board.id, stack.id, card.id, humanUser);
-      }
-      await this._safeAssign(board.id, stack.id, card.id, botUser);
-      console.log(`[Workflow] GATE resolution handoff: "${card.title}" → ${botUser}`);
-
-      let { forceLocal } = this._getRoleForCard(wb, card);
-      const configCard = findConfigCard(stack);
-      const { allowCloud, cloudTier } = this._extractStackLlmRouting(configCard);
-
-      // Budget check before cloud processing
-      if (!forceLocal && this.budgetEnforcer) {
-        const check = this.budgetEnforcer.canSpend('cloud', 0.02);
-        if (!check.allowed) {
-          console.log(`[Workflow] Budget exceeded: ${check.reason} — forcing local for GATE "${card.title}"`);
-          forceLocal = true;
-        }
-      }
-
-      // Fetch board labels so the LLM can assign them by ID during resolution
-      let gateLabelBlock = '';
-      try {
-        const fullBoard = await this.deck.getBoard(board.id);
-        const boardLabels = (fullBoard.labels || []);
-        if (boardLabels.length > 0) {
-          gateLabelBlock = '\n**Available Labels:**\n' +
-            boardLabels.map(l => `  - "${l.title}" (ID: ${l.id})`).join('\n') + '\n';
-        }
-      } catch (err) {
-        console.warn(`[Workflow] Could not fetch labels for GATE resolution on board ${board.id}: ${err.message}`);
-      }
-
-      const context = [
-        '## GATE Resolution',
-        '',
-        `The human has ${resolution.decision} the GATE card.`,
-        `Board: ${board.title} (ID: ${board.id})`,
-        `Card: ${card.title} (ID: ${card.id})`,
-        `Stack: ${stack.title} (ID: ${stack.id})`,
-        `Decision: ${resolution.decision}`,
-        '',
-        `**All Stacks:**`,
-        wb.stacks.map(s => `  - "${s.title}" (ID: ${s.id})`).join('\n'),
-        gateLabelBlock,
-        'Board Rules:',
-        wb._plainDescription,
-        '',
-        `Follow the board rules for what happens after ${resolution.decision}.`,
-        'This may involve moving the card, creating new cards, sending notifications, etc.',
-        'Use workflow_deck_* tools with numeric IDs.'
-      ].join('\n');
-
-      await this.agent.processWorkflowTask({
-        systemAddition: context,
-        task: `GATE "${card.title}" was ${resolution.decision}. Follow the workflow rules for this outcome.`,
-        boardId: board.id,
-        cardId: card.id,
-        stackId: stack.id,
-        forceLocal,
-        allowCloud,
-        cloudTier
+    if (verdict.action === 'release' || verdict.action === 'reject') {
+      return this._renderGateResolution(wb, stack, card, verdict);
+    }
+    if (verdict.action === 'mint-and-hold' || verdict.action === 'hold') {
+      await this._renderGateHold(wb, stack, card, verdict, {
+        minted: verdict.action === 'mint-and-hold',
+        hasGateLabel: !!hasGateLabel,
       });
+      return false;
+    }
+    // action 'none' — not a gate (defensive; the caller only enters when engaged).
+    return false;
+  }
 
-      return true;
+  /**
+   * Render the HOLD projections for a gated card and notify the reviewer once.
+   * Nothing here is read back as gate-state truth — the record is the state.
+   * @private
+   */
+  async _renderGateHold(wb, stack, card, verdict, { minted, hasGateLabel }) {
+    const { board } = wb;
+    const reviewer = verdict.reviewer;
+
+    // Assignment projection (#193/#187 fix). Rendered ONCE at mint from the record's
+    // declared reviewer, never the bot. There is no per-pulse re-read of
+    // card.assignedUsers — that stale-snapshot re-read across pulses was #187, and
+    // the safety-net that did it is deleted. The record is the truth; this write is
+    // one-directional.
+    if (minted && reviewer) {
+      const bot = this.deck.username || this.botUsername;
+      if (reviewer !== bot) {
+        const assignedUids = (card.assignedUsers || []).map(u => u.participant?.uid).filter(Boolean);
+        if (assignedUids.includes(bot)) {
+          await this._safeUnassign(board.id, stack.id, card.id, bot);
+        }
+        if (!assignedUids.includes(reviewer)) {
+          await this._safeAssign(board.id, stack.id, card.id, reviewer);
+        }
+        console.log(`[Workflow] GATE assignee rendered: "${card.title}" → ${reviewer} (record=${verdict.record?.id})`);
+      }
     }
 
-    // Not resolved (has GATE label, no APPROVED/REJECTED) — notify human once
+    // Label projection restore (rule 3 / gate 2b). The GATE label is a projection of
+    // the record; if it was removed while the record is pending, re-render it. Label
+    // removal is NEVER a release — only the drag-out of the gate stack is (rule 1).
+    let labelRestored = false;
+    if (!hasGateLabel) {
+      await this._addLabelToCard(board.id, stack.id, card.id, 'GATE');
+      labelRestored = true;
+      console.log(`[Workflow] GATE label restored (projection drift) on "${card.title}" (record=${verdict.record?.id})`);
+    }
+
+    // Notify once per hold. Dedup is the durable `_notifiedGates` set — persisted to
+    // workflow-notified-gates.json (Phase 0 finding: it already survives restart) and
+    // CLEARED at resolution, so it is scoped to THIS hold, not the card's whole
+    // comment history. That scoping is why the earlier comment-marker scan was
+    // removed: a comment-presence check matches the wait comment from a PRIOR gate
+    // cycle, so a re-gated card (a normal revision-loop shape, same gate stack →
+    // same held identity) would be silently suppressed and the reviewer never pinged.
+    // The durable set re-notifies correctly on re-gate and dedups across restart.
     const gateKey = `${board.id}:${card.id}`;
     if (!this._notifiedGates.has(gateKey)) {
-      // Notification text reflects the new gesture (#197, Part 4): the approval
-      // signal is the stack MOVE, not a label. These are fixed system strings
-      // (not NL classification), so a static template is acceptable.
       const rej = wb.stacks.find(s => this._isRejectionStack(s));
       const declineLine = rej ? `\nMove to "${rej.title}" to decline.` : '';
 
-      // Notify in Talk once per process lifecycle (in-memory dedup via _notifiedGates).
       if (this.talkQueue && this.talkToken) {
         await this.talkQueue.enqueue(this.talkToken,
-          `\u23F8\uFE0F Workflow "${wb.board.title}" is waiting for your review.\n` +
+          `⏸️ Workflow "${wb.board.title}" is waiting for your review.\n` +
           `Card: **${card.title}**\n` +
           'Move this card forward to approve.' + declineLine
         );
       }
-
-      // Also comment on the card so the GATE state is visible in the Deck UI.
-      // This is informational only — state is tracked by label, not comment content.
       if (this.deck.addComment) {
         try {
           await this.deck.addComment(card.id,
-            `\u23F8\uFE0F **GATE**: Waiting for human review.\n` +
+            `${GATE_WAIT_MARKER} Waiting for human review.\n` +
             'Move this card forward to approve.' + declineLine
           );
         } catch (_err) {
@@ -901,30 +921,151 @@ class WorkflowEngine {
 
       this._notifiedGates.add(gateKey);
       this._saveNotifiedGates();
-      console.log(`[Workflow] GATE notification sent for "${card.title}"`);
+      console.log(`[Workflow] GATE notification sent for "${card.title}" (reviewer=${reviewer || 'unresolved'})`);
+    } else if (labelRestored && this.deck.addComment) {
+      // Already notified, but a drifted label was just restored — leave an audit note.
+      try {
+        await this.deck.addComment(card.id,
+          `${GATE_WAIT_MARKER} Label restored — this card is still held for review.`);
+      } catch (_err) {
+        // Non-fatal
+      }
     }
+  }
 
-    // Safety net: if GATE card is still assigned to bot, reassign to human.
-    // This catches cases where the LLM stamped GATE but forgot to reassign.
-    {
-      const bot = this.deck.username || this.botUsername;
-      const assignedUids = (card.assignedUsers || []).map(u => u.participant?.uid).filter(Boolean);
-      // Terminal: already assigned to a real (non-bot) human → done, never touch.
-      if (!assignedUids.some(uid => uid !== bot)) {
-        // Only act if the card is still assigned to the bot.
-        if (assignedUids.includes(bot)) {
-          const human = this._resolveGateReviewer(wb, stack);
-          // No human resolvable → do NOT churn (notification already fired once above).
-          if (human && human !== bot) {
-            await this._safeUnassign(board.id, stack.id, card.id, bot);
-            await this._safeAssign(board.id, stack.id, card.id, human);
-            console.log(`[Workflow] GATE safety net: reassigned "${card.title}" from ${bot} to ${human}`);
-          }
-        }
+  /**
+   * Render the RESOLUTION of a gate (release/reject) and run the onward handoff.
+   * The record has already been consumed and forgotten by the resolver; `verdict`
+   * carries the (now detached) record reference for the audit trail.
+   * @private
+   */
+  async _renderGateResolution(wb, stack, card, verdict) {
+    const { board } = wb;
+    const decision = verdict.action === 'reject' ? 'rejected' : 'approved';
+    // Mover identity is not yet on the gate path (§5 fallback — see the wiring
+    // issue). The reviewer approver rule is recorded but cannot be enforced against
+    // an anonymous drag, so the release is honest about who acted: unknown.
+    const actor = 'unknown';
+
+    // Label projection: swap GATE → APPROVED/REJECTED for human legibility.
+    await this._removeLabelFromCard(board.id, stack.id, card.id, 'GATE');
+    await this._addLabelToCard(board.id, stack.id, card.id,
+      decision === 'rejected' ? 'REJECTED' : 'APPROVED');
+
+    // Title projection: clean any stale "GATE:" prefix. Never read for decisions now
+    // (the entry trigger is the label WITH stack context), so this is cosmetic §4
+    // sync — the surface matches the record (gate 3).
+    await this._stripGateTitlePrefix(board.id, stack.id, card);
+
+    // Audit comment: the resolution and the resolving actor (§4).
+    if (this.deck.addComment) {
+      try {
+        await this.deck.addComment(card.id,
+          `${decision === 'rejected' ? '❌' : '✅'} ${GATE_MARKER_TOKEN} ${decision} (actor: ${actor}).`);
+      } catch (_err) {
+        // Non-fatal
       }
     }
 
-    return false;
+    // Clear notification dedup so the card can be re-gated later.
+    const gateKey = `${board.id}:${card.id}`;
+    this._notifiedGates.delete(gateKey);
+    this._saveNotifiedGates();
+
+    console.log(`[Workflow] GATE ${decision}: card "${card.title}" (id=${card.id}) released ` +
+      `from gate stack to "${stack.title}" actor=${actor} record=${verdict.record?.id}`);
+
+    // Onward handoff — deliberately preserved from the proven path (a bounded scope
+    // decision; the resolver replaces resolution DETECTION, not the ACTION taken).
+    // Unassign the reviewer, assign the bot, then run the resolution task.
+    const botUser = this.deck.username || this.botUsername;
+    const humanUser = this._resolveGateReviewer(wb, stack);
+    if (humanUser && humanUser !== botUser) {
+      await this._safeUnassign(board.id, stack.id, card.id, humanUser);
+    }
+    await this._safeAssign(board.id, stack.id, card.id, botUser);
+
+    let { forceLocal } = this._getRoleForCard(wb, card);
+    const configCard = findConfigCard(stack);
+    const { allowCloud, cloudTier } = this._extractStackLlmRouting(configCard);
+
+    if (!forceLocal && this.budgetEnforcer) {
+      const check = this.budgetEnforcer.canSpend('cloud', 0.02);
+      if (!check.allowed) {
+        console.log(`[Workflow] Budget exceeded: ${check.reason} — forcing local for GATE "${card.title}"`);
+        forceLocal = true;
+      }
+    }
+
+    let gateLabelBlock = '';
+    try {
+      const fullBoard = await this.deck.getBoard(board.id);
+      const boardLabels = (fullBoard.labels || []);
+      if (boardLabels.length > 0) {
+        gateLabelBlock = '\n**Available Labels:**\n' +
+          boardLabels.map(l => `  - "${l.title}" (ID: ${l.id})`).join('\n') + '\n';
+      }
+    } catch (err) {
+      console.warn(`[Workflow] Could not fetch labels for GATE resolution on board ${board.id}: ${err.message}`);
+    }
+
+    const context = [
+      '## GATE Resolution',
+      '',
+      `The human has ${decision} the GATE card.`,
+      `Board: ${board.title} (ID: ${board.id})`,
+      `Card: ${card.title} (ID: ${card.id})`,
+      `Stack: ${stack.title} (ID: ${stack.id})`,
+      `Decision: ${decision}`,
+      '',
+      `**All Stacks:**`,
+      wb.stacks.map(s => `  - "${s.title}" (ID: ${s.id})`).join('\n'),
+      gateLabelBlock,
+      'Board Rules:',
+      wb._plainDescription,
+      '',
+      `Follow the board rules for what happens after ${decision}.`,
+      'This may involve moving the card, creating new cards, sending notifications, etc.',
+      'Use workflow_deck_* tools with numeric IDs.'
+    ].join('\n');
+
+    await this.agent.processWorkflowTask({
+      systemAddition: context,
+      task: `GATE "${card.title}" was ${decision}. Follow the workflow rules for this outcome.`,
+      boardId: board.id,
+      cardId: card.id,
+      stackId: stack.id,
+      forceLocal,
+      allowCloud,
+      cloudTier
+    });
+
+    return true;
+  }
+
+  /**
+   * Strip a structural "GATE:" prefix off a card title (projection sync, §4). The
+   * prefix is a structural marker like CONFIG:/WORKFLOW: — plumbing, not NL — so the
+   * anchored pattern is appropriate here. No-op when absent.
+   * @private
+   */
+  async _stripGateTitlePrefix(boardId, stackId, card) {
+    const title = typeof card.title === 'string' ? card.title : '';
+    if (!/^\s*GATE:\s*/i.test(title)) return;
+    const cleaned = title.replace(/^\s*GATE:\s*/i, '').trim() || title;
+    if (cleaned === title) return;
+    try {
+      await this._putCardToLiveStack(boardId, stackId, card.id, (cardData) => ({
+        title: cleaned,
+        type: cardData.type || 'plain',
+        owner: cardData.owner?.uid || cardData.owner || '',
+        description: cardData.description || '',
+        duedate: cardData.duedate || null
+      }));
+      console.log(`[Workflow] GATE title prefix cleaned on card ${card.id}`);
+    } catch (err) {
+      console.warn(`[Workflow] Could not clean GATE title prefix on card ${card.id}: ${err.message}`);
+    }
   }
 
   /**
