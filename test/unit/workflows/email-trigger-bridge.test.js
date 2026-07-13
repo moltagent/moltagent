@@ -778,6 +778,8 @@ function makeEmail(overrides = {}) {
     assert.ok(/\nFrom:/.test(desc), 'footer must contain \\nFrom: line');
     assert.ok(/\[Open the original email in Mail\]\(/.test(desc),
       'footer must contain standalone [Open the original email in Mail](...) link');
+    assert.ok(/\n\n\[Open the original email in Mail\]\(/.test(desc),
+      '#195: Mail link must be its own paragraph (blank line before it), not a single \\n that Markdown glues onto the Date line');
     assert.ok(!desc.includes('Message-ID'), 'footer must NOT contain Message-ID');
   });
 

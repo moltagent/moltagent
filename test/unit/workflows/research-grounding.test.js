@@ -102,8 +102,9 @@ function makeWb({ cardDescription = '' } = {}) {
 }
 
 // Post-B2 footer format: no Message-ID line (dropped by _ingestTriggerEmails after #206 fix).
+// #195: the Mail link is separated from the Date line by a blank line (own paragraph).
 const FROM_FOOTER = '\n\n---\nFrom: Alice Example <alice@acme.com>\nDate: 2026-06-22';
-const MAIL_LINK_FOOTER = '\n\n---\nFrom: Alice Example <alice@acme.com>\nDate: 2026-06-22\n[Open the original email in Mail](https://nc.example.com/apps/mail/inbox/1234)';
+const MAIL_LINK_FOOTER = '\n\n---\nFrom: Alice Example <alice@acme.com>\nDate: 2026-06-22\n\n[Open the original email in Mail](https://nc.example.com/apps/mail/inbox/1234)';
 
 // ---------------------------------------------------------------------------
 // Helper: run engine against one wb, return captured processWorkflowTask calls

@@ -576,7 +576,7 @@ class WorkflowEngine {
     // Generic cards and other boards receive no grounding block.
     //
     // The From: footer is written by the email trigger ingest path (#185) as:
-    //   <body>\n\n---\nFrom: <Name> <addr>\nDate: ...\n[Open the original email in Mail](...)
+    //   <body>\n\n---\nFrom: <Name> <addr>\nDate: ...\n\n[Open the original email in Mail](...)
     // We parse from the RAW description (not the stripHtml version) because
     // stripHtml strips angle-bracket content (e.g. <alice@acme.com> → stripped).
     // This is structural parsing of a machine-authored marker — Rule 1 clean.
@@ -1307,7 +1307,14 @@ class WorkflowEngine {
         try {
           const mailUrl = await this.ncMailClient.resolveThreadUrl(trigger.locator, email.messageId);
           if (mailUrl) {
-            description += '\n[Open the original email in Mail](' + mailUrl + ')';
+            // #195: separate the Mail link from the Date footer line with a blank
+            // line, not a single "\n". A single newline is a Markdown soft break —
+            // Deck renders it inline, gluing the link onto the preceding line
+            // ("...Date: ...Open the original email in Mail"). A blank line makes
+            // the link its own paragraph, which every CommonMark renderer breaks.
+            // NOTE(#208): final card-description assembly ownership is moving into
+            // the engine; that consolidation should carry this separated form.
+            description += '\n\n[Open the original email in Mail](' + mailUrl + ')';
           } else {
             console.log('[Workflow] NC Mail back-link: no match for Message-ID ' + email.messageId + ' (message may not yet be synced) — omitting Mail link');
           }
