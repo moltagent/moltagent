@@ -32,6 +32,8 @@
 
 'use strict';
 
+const { ocsData } = require('../shared/ocs-response');
+
 class ConversationContext {
   /**
    * @param {Object} config - Configuration options
@@ -78,19 +80,15 @@ class ConversationContext {
         }
       );
 
-      // NCRequestManager returns {status, body, headers} where body is pre-parsed JSON
-      // But also handle fetch-style response.json() for compatibility
-      let data;
-      if (response.body && typeof response.body === 'object') {
-        data = response.body;
-      } else if (typeof response.json === 'function') {
-        data = await response.json();
-      } else {
-        data = response;
+      // One tolerant OCS read, shared with the room-behaviour gate (#301). Body
+      // may be a parsed object or a raw JSON string; fetch-style response.json()
+      // stays as a test-compat fallback.
+      let messages = ocsData(response);
+      if (messages == null && typeof response.json === 'function') {
+        const parsed = await response.json();
+        messages = parsed?.ocs?.data ?? null;
       }
-
-      const messages = data?.ocs?.data || [];
-      return this._formatMessages(messages, options.excludeMessageId);
+      return this._formatMessages(messages || [], options.excludeMessageId);
     } catch (err) {
       this.logger.error('[ConversationContext] Failed to fetch history:', err.message);
       return [];  // Graceful degradation — proceed without history
