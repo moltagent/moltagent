@@ -780,7 +780,7 @@ Sub-questions:`;
             messages.push({ role: 'tool', content: `Error: Unknown tool "${toolCall.name}"` });
             continue;
           }
-          const toolResult = await this._executeWithGuards(toolCall, context.roomToken || null, context.language || null);
+          const toolResult = await this._executeWithGuards(toolCall, context.roomToken || null, context.language || null, context.userName || null);
 
           // Capture artifact focus from structured tool results
           if (toolResult.success && context.onArtifact) {
@@ -839,7 +839,7 @@ Sub-questions:`;
    * @returns {Promise<Object>} { success, result, error? }
    * @private
    */
-  async _executeWithGuards(toolCall, roomToken, language = null) {
+  async _executeWithGuards(toolCall, roomToken, language = null, requestingUser = null) {
     // ToolGuard: hardcoded security policy
     if (this.toolGuard) {
       const guardResult = this.toolGuard.evaluate(toolCall.name);
@@ -849,7 +849,7 @@ Sub-questions:`;
           // path renders the same 🔐 ceremony, and rendered English here would
           // have been a hole in "no surface resolves language independently".
           const approvalResult = await this.guardrailEnforcer.checkApproval(
-            toolCall.name, toolCall.arguments, roomToken, [], { language }
+            toolCall.name, toolCall.arguments, roomToken, [], { language, requestingUser }
           );
           if (!approvalResult.allowed) {
             this.logger.info(`[MicroPipeline] ToolGuard approval denied: ${toolCall.name} — ${approvalResult.reason}`);

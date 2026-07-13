@@ -440,7 +440,13 @@ class GuardrailEnforcer {
 
   /** Drop a record from the store entirely (spent — released or voided). @private */
   _forget(record) {
-    if (record) this._records.delete(record.id);
+    if (!record) return;
+    this._records.delete(record.id);
+    // Prune this record's approver-notice keys so the set stays bounded.
+    const prefix = `${record.id}:`;
+    for (const key of this._approverNoticed) {
+      if (key.startsWith(prefix)) this._approverNoticed.delete(key);
+    }
   }
 
   /**
