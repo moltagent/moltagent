@@ -1481,12 +1481,27 @@ class MessageProcessor {
    */
   _isAddressed(extracted) {
     const text = (extracted.content || '').toLowerCase();
+    const bot = (this.botUsername || 'moltagent').toLowerCase();
+    const isBotId = (id) => {
+      const v = String(id || '').toLowerCase();
+      return v === bot || v === 'moltagent';
+    };
 
-    // 1. @mention in raw message data
     const messageObj = extracted._rawMessage || {};
-    if (messageObj.mentions?.some(m =>
-      m.id === this.botUsername || m.id === 'moltagent'
-    )) return true;
+
+    // 1. @mention. Talk delivers mentions in `messageParameters` as
+    //    {type:'user', id:'Moltagent'} (rendered in the text as a {mention-…}
+    //    placeholder, so the bot name never appears literally). Match
+    //    case-insensitively — the Talk actor id ("Moltagent") is cased
+    //    differently from the configured bot user ("moltagent"). A legacy
+    //    `mentions[]` array is also honoured.
+    const params = messageObj.messageParameters || {};
+    for (const p of Object.values(params)) {
+      if (p && p.type === 'user' && (isBotId(p.id) || isBotId(p['mention-id']))) return true;
+    }
+    if (Array.isArray(messageObj.mentions) && messageObj.mentions.some(m => isBotId(m.id))) {
+      return true;
+    }
 
     // 2. Name at start of message
     for (const name of this.botNames) {
@@ -1504,8 +1519,7 @@ class MessageProcessor {
     }
 
     // 4. Reply to bot's previous message
-    if (messageObj.parent?.actorId === this.botUsername ||
-        messageObj.parent?.actorId === 'moltagent') return true;
+    if (isBotId(messageObj.parent?.actorId)) return true;
 
     return false;
   }

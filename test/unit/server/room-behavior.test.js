@@ -66,9 +66,20 @@ asyncTest('group (type 2): silent when NOT addressed', async () => {
   assert.strictEqual(await mp._getRoomBehavior(msg('lösch die Karte X')), 'silent');
 });
 
-asyncTest('group (type 2): responds when @mentioned', async () => {
+asyncTest('group (type 2): responds when @mentioned (legacy mentions[] array)', async () => {
   const mp = makeProcessor({ ocs: { data: { type: 2 } } });
   const m = msg('lösch die Karte X', { _rawMessage: { mentions: [{ id: 'moltagent' }] } });
+  assert.strictEqual(await mp._getRoomBehavior(m), 'respond');
+});
+
+asyncTest('group (type 2): responds to a real Talk @mention (messageParameters, mixed case)', async () => {
+  // The exact shape that failed live: mention in messageParameters, id "Moltagent"
+  // (capitalised) vs configured bot user "moltagent"; the text is a placeholder.
+  const mp = makeProcessor({ ocs: { data: { type: 2 } } });
+  const m = msg('{mention-user1} what time is it?', {
+    content: 'what time is it?',
+    _rawMessage: { messageParameters: { 'mention-user1': { type: 'user', id: 'Moltagent', 'mention-id': 'Moltagent' } } }
+  });
   assert.strictEqual(await mp._getRoomBehavior(m), 'respond');
 });
 
