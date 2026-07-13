@@ -2123,6 +2123,7 @@ async function initialize() {
         emailHandler,
         ncMailClient: ncRequestManager ? new NCMailClient(ncRequestManager) : null,
         budgetEnforcer: llmRouter?.router?.budget || null,
+        guardrailEnforcer: agentLoop.guardrailEnforcer,
         config: { botUsername: CONFIG.nc.username, adminUser: appConfig.cockpit?.adminUser || appConfig.knowledge?.adminUser || '', dataDir: true }
       });
       console.log('[INIT] WorkflowEngine ready');

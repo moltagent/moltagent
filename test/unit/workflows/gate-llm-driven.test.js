@@ -213,66 +213,91 @@ function makeBoard({ cardLabels = [], assignedUsers = [], extraCards = [] } = {}
     assert.strictEqual(assignCalls.length, 0, 'No reassignment should happen when human is assigned');
   });
 
-  // Test 5: GATE card with APPROVED label → triggers processWorkflowTask
-  await asyncTest('GATE card with APPROVED label triggers processWorkflowTask', async () => {
+  // Build a two-stack board: a gate stack (Review) and a destination stack the
+  // reviewer drags the card into. `destTerminal` sets the destination CONFIG marker
+  // (TERMINAL for an approval target, REJECTED for a decline target).
+  function makeDragBoard(destConfigDesc) {
+    const gateCard = {
+      id: 100, title: 'Content Card', description: 'Do something',
+      labels: [{ title: 'GATE' }], assignedUsers: [{ participant: { uid: 'jordan' } }],
+      lastModified: new Date(Date.now() + 60000).toISOString()
+    };
+    const board = {
+      board: { id: 1, title: 'Test Workflow', owner: { uid: 'jordan' } },
+      stacks: [
+        { id: 10, title: 'Review', cards: [
+          { id: 901, title: 'CONFIG: GATE review', description: 'Gate review step', labels: [{ title: 'System' }] },
+          gateCard
+        ] },
+        { id: 20, title: 'Destination', cards: [
+          { id: 902, title: 'CONFIG: Destination', description: destConfigDesc, labels: [{ title: 'System' }] }
+        ] }
+      ],
+      description: 'WORKFLOW: pipeline\nREVIEWER: jordan\nRULES: Process cards.',
+      workflowType: 'pipeline', boardId: 1
+    };
+    return { board, gateCard };
+  }
+
+  // Test 5: reviewer drags a held GATE card OUT of the gate stack → approved.
+  // Phase 3: the drag-out is the resolution trigger, not any label.
+  await asyncTest('GATE card dragged out of the gate stack → approved, triggers processWorkflowTask', async () => {
     const agentLoop = createMockAgentLoop();
     const mockDeck = createMockDeck();
     mockDeck.getBoard = async () => ({ labels: [] });
 
-    const wb = makeBoard({
-      cardLabels: [
-        { title: 'GATE', color: 'ff0000' },
-        { title: 'APPROVED', color: '00ff00' }
-      ]
-    });
-
+    const { board, gateCard } = makeDragBoard('TERMINAL: true');
     const engine = new WorkflowEngine({
-      workflowDetector: createMockDetector([wb]),
+      workflowDetector: createMockDetector([board]),
       deckClient: mockDeck,
       agentLoop,
       talkSendQueue: createMockTalkQueue(),
       talkToken: 'test-token'
     });
 
-    const results = await engine.processAll();
+    // Pulse 1: card held in the gate stack → minted, not resolved.
+    const p1 = await engine.processAll();
+    assert.strictEqual(p1.gatesResolved, 0, 'Pulse 1: gate held, not resolved');
+    assert.strictEqual(agentLoop._calls.length, 0, 'Pulse 1: no handoff yet');
 
-    assert.strictEqual(results.gatesFound, 1, 'One gate found');
-    assert.strictEqual(results.gatesResolved, 1, 'Gate should be resolved');
-    assert.strictEqual(agentLoop._calls.length, 1, 'AgentLoop should be called for resolution');
+    // The reviewer drags the card out of the gate stack into the destination.
+    board.stacks[0].cards = board.stacks[0].cards.filter(c => c.id !== 100);
+    gateCard.lastModified = new Date(Date.now() + 120000).toISOString();
+    board.stacks[1].cards.push(gateCard);
 
-    const call = agentLoop._calls[0];
-    assert.ok(call.systemAddition.toLowerCase().includes('approved'),
+    // Pulse 2: card is out of the gate stack → record releases → approved.
+    const p2 = await engine.processAll();
+    assert.strictEqual(p2.gatesResolved, 1, 'Pulse 2: drag-out resolves the gate');
+    assert.strictEqual(agentLoop._calls.length, 1, 'Pulse 2: processWorkflowTask runs the outcome');
+    assert.ok(agentLoop._calls[0].systemAddition.toLowerCase().includes('approved'),
       'System addition should mention APPROVED');
   });
 
-  // Test 6: GATE card with REJECTED label → triggers processWorkflowTask
-  await asyncTest('GATE card with REJECTED label triggers processWorkflowTask', async () => {
+  // Test 6: reviewer drags a held GATE card into a REJECTED stack → rejected.
+  await asyncTest('GATE card dragged into a REJECTED stack → rejected, triggers processWorkflowTask', async () => {
     const agentLoop = createMockAgentLoop();
     const mockDeck = createMockDeck();
     mockDeck.getBoard = async () => ({ labels: [] });
 
-    const wb = makeBoard({
-      cardLabels: [
-        { title: 'GATE', color: 'ff0000' },
-        { title: 'REJECTED', color: 'ff6600' }
-      ]
-    });
-
+    const { board, gateCard } = makeDragBoard('REJECTED: true');
     const engine = new WorkflowEngine({
-      workflowDetector: createMockDetector([wb]),
+      workflowDetector: createMockDetector([board]),
       deckClient: mockDeck,
       agentLoop,
       talkSendQueue: createMockTalkQueue(),
       talkToken: 'test-token'
     });
 
-    const results = await engine.processAll();
+    await engine.processAll(); // pulse 1: mint/held
 
-    assert.strictEqual(results.gatesResolved, 1, 'Gate should be resolved');
+    board.stacks[0].cards = board.stacks[0].cards.filter(c => c.id !== 100);
+    gateCard.lastModified = new Date(Date.now() + 120000).toISOString();
+    board.stacks[1].cards.push(gateCard);
+
+    const p2 = await engine.processAll(); // pulse 2: drag into REJECTED stack
+    assert.strictEqual(p2.gatesResolved, 1, 'Gate should be resolved (rejected)');
     assert.strictEqual(agentLoop._calls.length, 1, 'AgentLoop should be called for resolution');
-
-    const call = agentLoop._calls[0];
-    assert.ok(call.systemAddition.toLowerCase().includes('rejected'),
+    assert.ok(agentLoop._calls[0].systemAddition.toLowerCase().includes('rejected'),
       'System addition should mention REJECTED');
   });
 
@@ -419,6 +444,13 @@ function makeBoard({ cardLabels = [], assignedUsers = [], extraCards = [] } = {}
       talkToken: 'test-token'
     });
 
+    // Phase 3: resolution requires a prior record. Seed it as if the card was
+    // minted while held in the gate stack; this pulse sees it already dragged out.
+    engine.guardrailEnforcer.resolveGateState({
+      boardId: 1, cardId: 100, inGateStack: true, hasGateLabel: true,
+      gateStackId: 10, reviewer: 'jordan', requestingUser: 'workflow:board-1'
+    });
+
     const results = await engine.processAll();
 
     assert.strictEqual(results.gatesFound, 1, 'One gate found');
@@ -450,6 +482,13 @@ function makeBoard({ cardLabels = [], assignedUsers = [], extraCards = [] } = {}
       agentLoop,
       talkSendQueue: createMockTalkQueue(),
       talkToken: 'test-token'
+    });
+
+    // Phase 3: seed the prior record (held in gate stack), then this pulse sees the
+    // card dragged into the REJECTED destination stack.
+    engine.guardrailEnforcer.resolveGateState({
+      boardId: 1, cardId: 100, inGateStack: true, hasGateLabel: true,
+      gateStackId: 10, reviewer: 'jordan', requestingUser: 'workflow:board-1'
     });
 
     const results = await engine.processAll();

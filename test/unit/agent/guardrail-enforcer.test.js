@@ -1640,6 +1640,124 @@ async function runTests() {
     assert.strictEqual(enforcer.isMessageConsumed(-1), false);
   });
 
+  // ============================================================
+  // Workflow-gate custody — resolveGateState (Phase 3, the GATE quartet's close)
+  // The resolver is the single authority; these tests pin each quartet repro plus
+  // gate 2b (label-drift), reconstruction idempotency, and the dormant approver.
+  // ============================================================
+
+  const gateArgs = (over = {}) => ({
+    boardId: 1, cardId: 100, gateStackId: 10, reviewer: 'sam',
+    requestingUser: 'workflow:board-1', ...over,
+  });
+
+  test('TC-GATE-MINT: GATE label ∧ in gate stack, no record → mint-and-hold', () => {
+    const e = makeEnforcer();
+    const v = e.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: true }));
+    assert.strictEqual(v.action, 'mint-and-hold');
+    assert.strictEqual(v.gated, true);
+    assert.strictEqual(v.reviewer, 'sam');
+    assert.strictEqual(v.record.kind, 'workflow-gate');
+    assert.deepStrictEqual(v.record.held, { boardId: 1, cardId: 100, gateStackId: 10 });
+    assert.strictEqual(v.record.room, null);
+    assert.strictEqual(v.record.approverRule.type, 'reviewer');
+    assert.strictEqual(v.record.approverRule.userId, 'sam');
+    assert.strictEqual(v.record.consumedAt, null);
+    assert.strictEqual(e.hasPendingGateRecord(1, 100), true);
+  });
+
+  test('TC-GATE-201: GATE label but NOT in gate stack, no record → none (no mint, no release)', () => {
+    const e = makeEnforcer();
+    const v = e.resolveGateState(gateArgs({ inGateStack: false, hasGateLabel: true }));
+    assert.strictEqual(v.action, 'none');
+    assert.strictEqual(v.gated, false);
+    assert.strictEqual(v.record, null);
+    assert.strictEqual(e.hasPendingGateRecord(1, 100), false); // #201: nothing minted
+  });
+
+  test('TC-GATE-NOLABEL: in gate stack but no GATE label → none (mint needs the label)', () => {
+    const e = makeEnforcer();
+    const v = e.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: false }));
+    assert.strictEqual(v.action, 'none');
+    assert.strictEqual(e.hasPendingGateRecord(1, 100), false);
+  });
+
+  test('TC-GATE-HOLD: existing record + still in gate stack → hold', () => {
+    const e = makeEnforcer();
+    e.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: true })); // mint
+    const v = e.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: true }));
+    assert.strictEqual(v.action, 'hold');
+    assert.strictEqual(v.gated, true);
+  });
+
+  test('TC-GATE-187: mint is idempotent — a second pulse does not mint a 2nd record', () => {
+    const e = makeEnforcer();
+    e.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: true }));
+    e.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: true }));
+    const count = Array.from(e._records.values())
+      .filter(r => r.kind === 'workflow-gate' && r.held.cardId === 100).length;
+    assert.strictEqual(count, 1); // no per-pulse churn — #187's stale re-fire has no expression
+  });
+
+  test('TC-GATE-RELEASE: existing record dragged OUT of gate stack → release, forgotten', () => {
+    const e = makeEnforcer();
+    e.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: true }));
+    const v = e.resolveGateState(gateArgs({ inGateStack: false, hasGateLabel: true }));
+    assert.strictEqual(v.action, 'release');
+    assert.strictEqual(v.gated, false);
+    assert.strictEqual(v.record.state, 'released');
+    assert.ok(v.record.consumedAt);
+    assert.strictEqual(e.hasPendingGateRecord(1, 100), false); // forgotten
+  });
+
+  test('TC-GATE-REJECT: existing record dragged into a REJECTED stack → reject', () => {
+    const e = makeEnforcer();
+    e.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: true }));
+    const v = e.resolveGateState(gateArgs({ inGateStack: false, isRejectionStack: true }));
+    assert.strictEqual(v.action, 'reject');
+    assert.strictEqual(v.record.state, 'voided');
+  });
+
+  test('TC-GATE-200: a released record never re-arms', () => {
+    const e = makeEnforcer();
+    e.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: true }));
+    e.resolveGateState(gateArgs({ inGateStack: false, hasGateLabel: true })); // release
+    // A later pulse — even with a stale GATE label still on the card — finds no
+    // pending record and a non-gate stack → none. No re-entry (#200).
+    const v = e.resolveGateState(gateArgs({ inGateStack: false, hasGateLabel: true }));
+    assert.strictEqual(v.action, 'none');
+    assert.strictEqual(v.record, null);
+  });
+
+  test('TC-GATE-2b: GATE label removed while record pending → still held (label-drift, not release)', () => {
+    const e = makeEnforcer();
+    e.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: true }));
+    const v = e.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: false }));
+    assert.strictEqual(v.action, 'hold'); // rule 1: label removal is never a release
+    assert.strictEqual(e.hasPendingGateRecord(1, 100), true);
+  });
+
+  test('TC-GATE-APPROVER: dormant branch — actor≠reviewer holds; null actor releases', () => {
+    // Enforcement present but gated on actor availability (§5 fallback).
+    const e1 = makeEnforcer();
+    e1.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: true }));
+    const held = e1.resolveGateState(gateArgs({ inGateStack: false, actor: 'mallory' }));
+    assert.strictEqual(held.action, 'hold');
+    assert.strictEqual(held.reason, 'non-reviewer'); // a wrong-actor drag does not release
+
+    const e2 = makeEnforcer();
+    e2.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: true }));
+    const rel = e2.resolveGateState(gateArgs({ inGateStack: false, actor: null }));
+    assert.strictEqual(rel.action, 'release'); // actor unknown today → releases (fallback)
+  });
+
+  test('TC-GATE-ISOLATION: gate records never surface to the conversation room query', () => {
+    const e = makeEnforcer();
+    e.resolveGateState(gateArgs({ inGateStack: true, hasGateLabel: true }));
+    assert.strictEqual(e.getPendingRecords(null).length, 0);
+    assert.strictEqual(e.getPendingRecords('any-room').length, 0);
+  });
+
   const { passed, failed } = summary();
   exitWithCode();
 }
