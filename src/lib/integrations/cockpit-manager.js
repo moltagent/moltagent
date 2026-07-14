@@ -820,6 +820,13 @@ class CockpitManager {
         const mode = modeMatch ? modeMatch[1].toLowerCase() : 'research';
         const validModes = ['research', 'internal-first', 'sovereign'];
         config.searchPolicy = validModes.includes(mode) ? mode : 'research';
+      } else if (title === 'Perception Ceremony Exclusion') {
+        // Phase 4 Wave B gate (temporary — removed with M1's flag in the arm-3
+        // cleanup, #308/#292). A self-contained `state: on|off` config marker,
+        // default off. An absent card leaves the key undefined so the heartbeat
+        // skips it and PerceptionCustody's own default (off) holds.
+        const stateMatch = (card.description || '').match(/state:\s*(on|off)/i);
+        config.ceremonyExclusion = stateMatch ? stateMatch[1].toLowerCase() === 'on' : false;
       }
     }
 

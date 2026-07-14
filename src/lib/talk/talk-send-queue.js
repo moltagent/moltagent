@@ -10,6 +10,18 @@
  * @module talk/talk-send-queue
  */
 
+const { ocsData } = require('../shared/ocs-response');
+
+/**
+ * @typedef {Object} SendResult
+ * @property {boolean} ok - true when the message was delivered (or was an
+ *   empty no-op); false on a delivery error.
+ * @property {number|null} id - the created Talk message id when the send path
+ *   returned one, else null. Perception Custody (Phase 4) keys its ceremony-
+ *   exclusion (M1) and correction-as-replacement (M2) registries on this id.
+ *   Empty no-ops and failures carry id:null.
+ */
+
 class TalkSendQueue {
   // NC Talk message limit is ~32KB; truncate below that with buffer for JSON overhead
   static MAX_MESSAGE_LENGTH = 30000;
@@ -34,7 +46,10 @@ class TalkSendQueue {
    * @param {string} token - Talk room token
    * @param {string} message - Message text
    * @param {number|null} [replyTo=null] - Message ID to reply to
-   * @returns {Promise<boolean>} true if sent successfully
+   * @returns {Promise<SendResult>} resolves to {ok, id}. Read `.ok` for
+   *   success — the object is always truthy, so a bare `if (await enqueue())`
+   *   would treat a failure as success. `.id` carries the created message id
+   *   when the send returned one.
    */
   enqueue(token, message, replyTo = null) {
     // Coerce non-string messages (e.g. objects from executor pipelines)
@@ -52,9 +67,9 @@ class TalkSendQueue {
       }
     }
 
-    // Don't send empty messages
+    // Don't send empty messages. A no-op is a success with no message id.
     if (!sanitized) {
-      return Promise.resolve(true);
+      return Promise.resolve({ ok: true, id: null });
     }
 
     return new Promise((resolve, reject) => {
@@ -117,7 +132,7 @@ class TalkSendQueue {
   /**
    * Send a single Talk message via NCRequestManager.
    * Pre-truncates oversized messages; retries with shorter truncation on 413.
-   * @returns {Promise<boolean>}
+   * @returns {Promise<SendResult>} {ok, id}
    */
   async _send(token, message, replyTo) {
     // Pre-truncate to avoid 413
@@ -131,7 +146,7 @@ class TalkSendQueue {
       const retry = await this._sendOnce(token, shorter, replyTo);
       if (retry === '413') {
         this.metrics.failed++;
-        return false;
+        return { ok: false, id: null };
       }
       return retry;
     }
@@ -140,7 +155,9 @@ class TalkSendQueue {
 
   /**
    * Send a single message attempt.
-   * @returns {Promise<boolean|'413'>} true on success, false on error, '413' on entity too large
+   * @returns {Promise<SendResult|'413'>} {ok, id} on a completed attempt
+   *   (ok:false on a >=400 status), or the internal '413' sentinel so `_send`
+   *   can retry at half length.
    */
   async _sendOnce(token, message, replyTo) {
     const body = { message };
@@ -163,15 +180,33 @@ class TalkSendQueue {
       if (response.status === 413) return '413';
       if (response.status >= 400) {
         this.metrics.failed++;
-        return false;
+        return { ok: false, id: null };
       }
       this.metrics.sent++;
-      return true;
+      // NC Talk's chat POST returns the created chat message in ocs.data; its
+      // id is the substrate handle Perception Custody's M1/M2 registries key on.
+      // Parsing our own OCS response for our own id is plumbing (like reading
+      // ocs.data.id elsewhere), not content inspection.
+      return { ok: true, id: this._extractMessageId(response) };
     } catch (err) {
       // NCRequestManager may throw on 413 instead of returning status
       if (err.message && err.message.includes('413')) return '413';
       throw err;
     }
+  }
+
+  /**
+   * Pull the created message id out of a Talk chat POST response. Tolerant of a
+   * missing/oddly-shaped body — returns null rather than a NaN id, so the
+   * registries never key on garbage.
+   * @param {Object} response - NCRequestManager response ({status, headers, body})
+   * @returns {number|null}
+   * @private
+   */
+  _extractMessageId(response) {
+    const raw = ocsData(response)?.id;
+    const num = Number(raw);
+    return Number.isFinite(num) ? num : null;
   }
 
   /**

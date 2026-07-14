@@ -656,7 +656,7 @@ async function notifyUser(notification) {
 
   try {
     const result = await talkQueue.enqueue(defaultTalkToken, message);
-    if (!result) {
+    if (!result.ok) {
       console.warn('[NOTIFY] Talk API returned error, message logged only');
     }
   } catch (error) {
@@ -2850,7 +2850,7 @@ async function sendTalkReply(token, message, replyTo) {
     return await talkQueue.enqueue(token, message, replyTo);
   } catch (error) {
     console.error('[Talk] Reply error:', error.message);
-    return false;
+    return { ok: false, id: null };
   }
 }
 

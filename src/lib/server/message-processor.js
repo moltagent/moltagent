@@ -1183,7 +1183,18 @@ class MessageProcessor {
 
       // Send reply asynchronously (fire-and-forget) - don't block webhook response
       if (extracted.token) {
-        this.sendTalkReply(extracted.token, response, extracted.messageId).catch(err => {
+        // M2 (correction-as-replacement): if the honesty trailer fired this turn,
+        // a correction was staged for this room. Take it synchronously (before the
+        // async send) and, once the send returns the created message id, bind
+        // (id → corrected form) so the model perceives the correction on its next
+        // turn. The Talk record keeps the original claim + trailer untouched.
+        const perception = this.agentLoop?.guardrailEnforcer?.perceptionCustody;
+        const stagedCorrection = perception ? perception.takeStagedCorrection(extracted.token) : null;
+        this.sendTalkReply(extracted.token, response, extracted.messageId).then(res => {
+          if (stagedCorrection && res && res.ok && res.id != null) {
+            perception.noteCorrection(extracted.token, res.id, stagedCorrection);
+          }
+        }).catch(err => {
           console.error('[Process] Failed to send Talk reply:', err.message);
         });
       }

@@ -60,7 +60,8 @@ async function runTests() {
     const result = await queue.enqueue('room1', '<think>The user is asking about their calendar and I need to think about');
 
     assert.strictEqual(mock.calls.length, 0, 'Should not send any message');
-    assert.strictEqual(result, true, 'Should resolve with true (silently dropped)');
+    // A dropped empty message is a no-op success carrying no id ({ok,id} contract).
+    assert.deepStrictEqual(result, { ok: true, id: null }, 'Should resolve with {ok:true, id:null} (silently dropped)');
   });
 
   // Test 3: Response with no think tags passes through unchanged
