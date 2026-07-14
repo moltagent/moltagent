@@ -3,6 +3,7 @@
 const { classifyConfirmationReply } = require('../shared/confirmation-classifier');
 const { REQUIRES_APPROVAL } = require('../../security/guards/tool-guard');
 const { surfaceText, hasSurfaceText, toolLabel, fieldLabel } = require('./surface-text');
+const { PerceptionCustody } = require('./perception-custody');
 
 /**
  * GuardrailEnforcer - Runtime Guardrail Enforcement
@@ -318,6 +319,35 @@ class GuardrailEnforcer {
     // notice per non-matching record, so a wrong-approver reply does not nag on
     // every retry (§4). Keyed `${recordId}:${answeringUser}`.
     this._approverNoticed = new Set();
+
+    // Perception Custody (Phase 4, #292/#81): the enforcer owns the registry
+    // that records the ids of the ceremony it sends, so context assembly can
+    // exclude that imitable ceremony from the model's perception (M1) and swap
+    // trailer-corrected false claims (M2). Co-located here because ceremony ids
+    // are born here and the authoritative pending/resolved state lives here
+    // (getPendingRecords) — read live at assembly, never re-derived. Reachable
+    // as agentLoop.guardrailEnforcer.perceptionCustody with no extra wiring.
+    this.perceptionCustody = new PerceptionCustody({ logger: this.logger });
+  }
+
+  /**
+   * Send a ceremony message and record its id for Perception Custody (M1). One
+   * chokepoint for every enforcer-rendered ceremony/notice, so identification is
+   * "everything the enforcer sends" — structural (own id for own message), never
+   * a read of content. The created id is surfaced by TalkSendQueue's {ok, id}
+   * contract; an empty/failed send simply records nothing.
+   *
+   * @param {string} roomToken
+   * @param {string} message
+   * @param {Object} [meta] - {recordId, label} passed through to the registry
+   * @returns {Promise<{ok: boolean, id: (number|null)}>}
+   */
+  async _emitCeremony(roomToken, message, meta = {}) {
+    const res = await this.talkSendQueue.enqueue(roomToken, message);
+    if (res && res.ok && res.id != null) {
+      this.perceptionCustody.noteCeremony(roomToken, res.id, meta);
+    }
+    return res;
   }
 
   // ── Custody record model (Phase 2) ──────────────────────────────────────────
@@ -855,7 +885,11 @@ class GuardrailEnforcer {
     const searchAfter = Math.max(requestTimestamp, this._lastConsumedTimestamp);
 
     try {
-      this.talkSendQueue.enqueue(roomToken, message);
+      // Ceremony id recorded for M1. This dynamic-guardrail path resolves
+      // in-turn (blocking poll below) and mints no PendingAction, so at the next
+      // assembly it is dropped with no replacement — there is no cross-turn state
+      // to convey, only the imitable template to remove.
+      await this._emitCeremony(roomToken, message, { label: toolLabel(toolName, language) });
       this._pendingConfirmation = true;
     } catch (err) {
       this.logger.warn(`[GuardrailEnforcer] Failed to send confirmation: ${err.message}`);
@@ -1593,8 +1627,18 @@ class GuardrailEnforcer {
 
     const requestTimestamp = Date.now();
     const searchAfter = Math.max(requestTimestamp, this._lastConsumedTimestamp);
+    // The state line the model perceives while this record is pending (M1).
+    // A batch's several ceremony messages all carry the same recordId; the
+    // assembler collapses them to one pending line, so the label summarises.
+    const stateLabel = isBatch
+      ? `${record.heldInvocations.length} actions`
+      : (record.heldInvocations[0] && record.heldInvocations[0].label) || null;
     try {
-      for (const m of messages) this.talkSendQueue.enqueue(roomToken, m);
+      // Ceremony ids recorded for M1, tied to this record so assembly can read
+      // pending/resolved live from getPendingRecords (single custody source).
+      for (const m of messages) {
+        await this._emitCeremony(roomToken, m, { recordId: record.id, label: stateLabel });
+      }
       this._pendingConfirmation = true;
     } catch (err) {
       this.logger.warn(`[GuardrailEnforcer] Failed to send approval request: ${err.message}`);
@@ -1641,7 +1685,7 @@ class GuardrailEnforcer {
             const key = answering.toLowerCase();
             if (!notified.has(key)) {
               notified.add(key);
-              try { this.talkSendQueue.enqueue(roomToken, this.buildNonApproverNotice(language)); } catch { /* best-effort */ }
+              this._emitCeremony(roomToken, this.buildNonApproverNotice(language), {}).catch(() => { /* best-effort */ });
             }
             this.logger.info(`[GuardrailEnforcer] poll non-approver ignored: id=${record.id} actor=${answering}`);
             continue;

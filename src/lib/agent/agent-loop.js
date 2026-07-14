@@ -5,6 +5,7 @@ const path = require('path');
 const { extractArtifact } = require('./artifact-extractor');
 const { stagesApprovalCeremony, stripApprovalMarker, ACTION_REPROMPT_DIRECTIVE } = require('./action-guard');
 const { isWriteClass } = require('./guardrail-enforcer');
+const { NO_ACTION_PERCEPTION } = require('./perception-custody');
 const { surfaceText, normalizeLanguage } = require('./surface-text');
 const { injectLiveDate } = require('./calendar-date-grounding');
 
@@ -165,14 +166,67 @@ class AgentLoop {
       this.timezone
     );
 
+    // Perception custody (Phase 4, #292/#81): context assembly is the one
+    // boundary where truth crosses into the model, which has no senses of its
+    // own. Enforcer ceremony is excluded (M1, gated) and trailer-corrected false
+    // claims are replaced (M2) in what the MODEL perceives — the Talk record
+    // stays whole and honest for humans. Pending/resolved state is read LIVE
+    // from the enforcer's custody, never re-derived. Identification is by
+    // message id, never by reading content (Rule 1).
+    let perceivedHistory = history;
+    const perception = this.guardrailEnforcer?.perceptionCustody;
+    let perceptionStats = null;
+    if (perception && roomToken) {
+      const pendingRecords = this.guardrailEnforcer.getPendingRecords
+        ? this.guardrailEnforcer.getPendingRecords(roomToken)
+        : [];
+      const redacted = perception.redactForModel(history, roomToken, { pendingRecords });
+      perceivedHistory = redacted.history;
+      perceptionStats = redacted.stats;
+    }
+
     const messages = [
-      ...history.map(m => ({ role: m.role, content: m.content })),
+      ...perceivedHistory.map(m => ({ role: m.role, content: m.content })),
       { role: 'user', content: message }
     ];
 
     // Inject optional system-level context (e.g. memory flush prompt)
     if (options.systemSuffix) {
       messages.push({ role: 'system', content: options.systemSuffix });
+    }
+
+    // M3 (recordless-confirmation injection): a confirmation-shaped turn (the
+    // classifier's gate) with NO pending record in the room routes on as ordinary
+    // work; the honesty floor does not arm on gate=confirmation, so a false
+    // completion ("já deletado") could ship unguarded. The signal is fully
+    // STRUCTURAL — the verdict's gate plus a live record count from the custody
+    // substrate, never a read of the reply text. The two facts meet here, the one
+    // point before generation where both are visible (Phase 0 §3.4). Feed the
+    // truth in (Rule 2 — prompt-side truth, not an output filter) so the model
+    // answers groundedly and phrases it in the room's language itself. The trailer
+    // is NOT extended to confirmation turns; injection is the mechanism.
+    let injectionCount = 0;
+    const recordlessConfirmation = options.gate === 'confirmation' && roomToken
+      && typeof this.guardrailEnforcer?.getPendingRecords === 'function'
+      && this.guardrailEnforcer.getPendingRecords(roomToken).length === 0;
+    if (recordlessConfirmation) {
+      messages.push({
+        role: 'system',
+        content: 'No pending action exists in this conversation. Nothing has been executed or is awaiting confirmation.'
+      });
+      injectionCount = 1;
+    }
+
+    // One debug journal line per assembled context (Phase 4 observability): the
+    // live gates read this, and so will every future session that touches
+    // perception. Counts what the substrate changed between the honest Talk
+    // record and what the model was handed this turn.
+    if (perceptionStats || injectionCount) {
+      const s = perceptionStats || { excluded: 0, replaced: 0, corrected: 0 };
+      this.logger.debug(
+        `[PerceptionCustody] context assembled: excluded=${s.excluded} replaced=${s.replaced} ` +
+        `corrected=${s.corrected} injected=${injectionCount} room=${roomToken}`
+      );
     }
 
     // 3. Agent loop
@@ -586,6 +640,18 @@ class AgentLoop {
         `invoked=[${[...toolsInvokedThisTurn].join(', ')}] guardFired=${actionGuardFired} language=${options.language || 'unset'}`
       );
       lastResponse = `${lastResponse}\n\n${surfaceText('no_action_trailer', options.language)}`;
+
+      // M2 (correction-as-replacement): the Talk record keeps this false claim +
+      // its honesty trailer, untouched, for humans. But on the model's next turn
+      // it must perceive a replacement, not the fiction it just wrote — the
+      // poisoning cascade (#292) survives only when the model can re-read its own
+      // claim. The outgoing message id is not known here (this is still text,
+      // sent later), so the correction is staged and committed with the real id
+      // at the send site.
+      const perception = this.guardrailEnforcer?.perceptionCustody;
+      if (perception && roomToken) {
+        perception.stageCorrection(roomToken, NO_ACTION_PERCEPTION);
+      }
     }
 
     const elapsed = Date.now() - startTime;

@@ -815,6 +815,15 @@ class HeartbeatManager {
               this._cockpitDailyDigest = cockpitConfig.system.dailyDigest;
             }
 
+            // Perception Custody M1 ceremony-exclusion gate (Phase 4, Wave B,
+            // default off). Cockpit-governed so the read-out session can flip it
+            // live without a redeploy. Removed with M1's flag in the arm-3
+            // cleanup commit (#308/#292).
+            if (cockpitConfig.system.ceremonyExclusion !== undefined) {
+              const pc = this.messageProcessor?.agentLoop?.guardrailEnforcer?.perceptionCustody;
+              if (pc) pc.setCeremonyExclusion(cockpitConfig.system.ceremonyExclusion);
+            }
+
             // Models/roster propagation (trust-based)
             if (cockpitConfig.system.modelsConfig && this.llmRouter) {
               const mc = cockpitConfig.system.modelsConfig;
